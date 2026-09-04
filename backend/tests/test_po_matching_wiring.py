@@ -184,6 +184,129 @@ async def test_refresh_po_match_partial_is_info_severity():
     assert warnings[0]["severity"] == "info"
 
 
+# ---------- over-receipt reaches the exception queue -----------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_po_match_raises_on_over_receipt():
+    """An over-receipt must reach the exception queue, not just the modal.
+
+    The matcher flags `received > ordered` on `po_match.over_receipt` and
+    renders it into the invoice modal, but nothing here raised it — so no
+    exception row was ever opened and no clerk was asked about quantities
+    nobody ordered. `warning`, not the `info` a partial receipt gets: a short
+    delivery is routinely benign (goods in transit), whereas an over-delivery
+    cannot be explained by timing, and it is how an invoice for unauthorised
+    quantities acquires its supporting receipt.
+
+    It is raised INDEPENDENTLY of `status` — the amount control owns `status`,
+    so an over-receipt rides alongside a perfectly `matched` invoice, which is
+    exactly the case that used to disappear.
+    """
+    from app.services import invoice_warnings
+    from app.services.po_matching import MatchResult
+
+    inv = _fake_invoice()
+    warnings: list[dict] = []
+    fake_match = MatchResult(
+        match_type="3-way",
+        status="matched",
+        po_number="PO-001",
+        po_total=100.0,
+        within_tolerance=True,
+        over_receipt=True,
+        issues=["Over-receipt: 14 received against 10 ordered (+4)"],
+    )
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock(return_value=fake_match)),
+        patch.object(invoice_warnings, "_ensure_exception", AsyncMock()) as ensure,
+    ):
+        await invoice_warnings._refresh_po_match(db=AsyncMock(), invoice=inv, warnings=warnings)
+
+    assert len(warnings) == 1, warnings
+    assert warnings[0]["type"] == "po_mismatch"
+    assert warnings[0]["severity"] == "warning"
+    # The matcher's own composed detail is reused verbatim, plus the PO ref.
+    assert "Over-receipt: 14 received against 10 ordered (+4)" in warnings[0]["message"]
+    assert "PO-001" in warnings[0]["message"]
+
+    ensure.assert_awaited_once()
+    assert ensure.await_args.args[2] == "po_mismatch"
+    assert ensure.await_args.args[3] == "warning"
+
+
+@pytest.mark.asyncio
+async def test_refresh_po_match_over_receipt_rides_alongside_an_amount_mismatch():
+    """Both legs report. The amount message stays the amount message.
+
+    `_ensure_exception` de-dupes per (invoice, type, open), so the second call
+    is a no-op at the DB — but the WARNING must still land, because that is
+    where the reviewer reads why the invoice is flagged, and the amount
+    branch's message says nothing about quantities.
+    """
+    from app.services import invoice_warnings
+    from app.services.po_matching import MatchResult
+
+    inv = _fake_invoice()
+    warnings: list[dict] = []
+    fake_match = MatchResult(
+        match_type="3-way",
+        status="mismatch",
+        po_number="PO-001",
+        po_total=100.0,
+        amount_variance=50.0,
+        amount_variance_pct=50.0,
+        within_tolerance=False,
+        over_receipt=True,
+        issues=[
+            "Amount mismatch: invoice $150.00 vs PO $100.00 (+50.0%)",
+            "Over-receipt: 14 received against 10 ordered (+4)",
+        ],
+    )
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock(return_value=fake_match)),
+        patch.object(invoice_warnings, "_ensure_exception", AsyncMock()),
+    ):
+        await invoice_warnings._refresh_po_match(db=AsyncMock(), invoice=inv, warnings=warnings)
+
+    messages = [w["message"] for w in warnings]
+    assert len(messages) == 2, messages
+    assert any("Amount variance" in m for m in messages)
+    assert any("Over-receipt" in m for m in messages)
+    # The amount-variance message is untouched — `mismatch` stays the amount
+    # control's, and its text must not start describing quantities.
+    amount_msg = next(m for m in messages if "Amount variance" in m)
+    assert "Over-receipt" not in amount_msg
+
+
+@pytest.mark.asyncio
+async def test_refresh_po_match_no_over_receipt_raises_nothing_extra():
+    """The default `over_receipt=False` adds no warning — narrow by design."""
+    from app.services import invoice_warnings
+    from app.services.po_matching import MatchResult
+
+    inv = _fake_invoice()
+    warnings: list[dict] = []
+    fake_match = MatchResult(
+        match_type="3-way",
+        status="matched",
+        po_number="PO-001",
+        po_total=100.0,
+        within_tolerance=True,
+    )
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock(return_value=fake_match)),
+        patch.object(invoice_warnings, "_ensure_exception", AsyncMock()) as ensure,
+    ):
+        await invoice_warnings._refresh_po_match(db=AsyncMock(), invoice=inv, warnings=warnings)
+
+    assert warnings == []
+    ensure.assert_not_awaited()
+
+
 # ---------- refresh_warnings skips PO matching when there's no po_number ----
 
 

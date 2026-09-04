@@ -31,7 +31,8 @@ import pytest
 from sqlalchemy import select
 
 from app.models.entity import Entity
-from app.models.invoice import Invoice
+from app.models.exception import Exception as APException
+from app.models.invoice import Invoice, InvoiceStatus
 from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
 from app.services.po_matching import match_invoice_to_po
 
@@ -80,6 +81,10 @@ async def _add_invoice(session, org_id, entity_id, *, po_number, amount):
         vendor_name="Acme",
         amount=Decimal(amount),
         po_number=po_number,
+        # `refresh_warnings` deliberately skips PO matching on a draft `new`
+        # invoice (nothing has been extracted yet), so the end-to-end tests
+        # need a post-extraction status.
+        status=InvoiceStatus.ready_for_review,
         organization_id=org_id,
         entity_id=entity_id,
     )
@@ -222,6 +227,94 @@ async def test_over_receipt_survives_the_json_boundary(realdb):
     # The pre-existing keys every downstream reader relies on are untouched.
     for key in ("status", "match_type", "po_number", "po_total", "issues", "details"):
         assert key in payload
+
+
+@pytest.mark.asyncio
+async def test_over_receipt_opens_an_exception_end_to_end(realdb):
+    """The whole chain: real rows -> matcher -> refresh_warnings -> queue.
+
+    `tests/test_po_matching_wiring.py` proves `_refresh_po_match` routes an
+    over-receipt to a `po_mismatch` warning + exception with the matcher
+    patched out. This proves the two halves actually meet against real
+    Postgres rows — the flag reaches the exception queue a clerk works, not
+    only the invoice modal.
+    """
+    from app.services.invoice_warnings import refresh_warnings
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    number = f"PO-E2E-{uuid.uuid4().hex[:6]}"
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(s, org_id, ent, po_number=number, total="1000.00", lines=["10"])
+        await _add_gr(s, org_id, ent, po.id, status="received", received=["14"])
+        inv = await _add_invoice(s, org_id, ent, po_number=number, amount="1000.00")
+        await s.commit()
+
+        await refresh_warnings(s, inv)
+        await s.commit()
+
+        assert inv.po_match["over_receipt"] is True
+        assert any(
+            w["type"] == "po_mismatch" and "Over-receipt" in w["message"]
+            for w in (inv.warnings or [])
+        ), inv.warnings
+
+        rows = (
+            (
+                await s.execute(
+                    select(APException).where(
+                        APException.invoice_id == inv.id,
+                        APException.exception_type == "po_mismatch",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1, rows
+        assert rows[0].severity == "warning"
+        assert "Over-receipt" in rows[0].description
+
+
+@pytest.mark.asyncio
+async def test_cancelled_receipt_does_not_open_an_over_receipt_exception(realdb):
+    """The two fixes compose: a cancelled over-delivery raises nothing.
+
+    A cancelled GR of 14 against a 10-unit order would have tripped the new
+    over-receipt branch if the status filter were ever dropped — so this pins
+    the interaction rather than each half alone.
+    """
+    from app.services.invoice_warnings import refresh_warnings
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    number = f"PO-E2EC-{uuid.uuid4().hex[:6]}"
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(s, org_id, ent, po_number=number, total="1000.00", lines=["10"])
+        await _add_gr(s, org_id, ent, po.id, status="cancelled", received=["14"])
+        inv = await _add_invoice(s, org_id, ent, po_number=number, amount="1000.00")
+        await s.commit()
+
+        await refresh_warnings(s, inv)
+        await s.commit()
+
+        assert inv.po_match["over_receipt"] is False
+        assert inv.po_match["match_type"] == "2-way"
+        rows = (
+            (
+                await s.execute(
+                    select(APException).where(
+                        APException.invoice_id == inv.id,
+                        APException.exception_type == "po_mismatch",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == []
 
 
 def test_cancelled_status_roster_is_lowercase_and_covers_both_spellings():

@@ -898,6 +898,38 @@ async def _refresh_po_match(
         warnings.append({"type": "po_mismatch", "severity": "info", "message": msg})
         await _ensure_exception(db, invoice, "po_mismatch", "info", msg, org_settings=org_settings)
 
+    # 3-way: an OVER-receipt (more units booked in than were ordered).
+    # Independent of the po-status handling above, and for the same reason the
+    # inspection block below is: `status` is owned by the AMOUNT control, so an
+    # over-receipt can ride alongside a perfectly `matched` invoice — which is
+    # exactly the case that used to disappear. The matcher flagged it on
+    # `po_match.over_receipt` and rendered it into the invoice modal, but
+    # nothing raised it here, so it never reached the exception queue and no
+    # clerk was ever asked about it.
+    #
+    # `warning`, not the `info` a partial receipt gets: a short delivery is
+    # routinely benign (goods in transit), whereas quantities nobody ordered
+    # cannot be explained by timing — and an over-delivery is how an invoice
+    # for unauthorised quantities acquires its supporting receipt.
+    #
+    # `po_mismatch` is the type: an over-receipt IS an invoice-vs-PO
+    # discrepancy, and the roster in `services/exception_lifecycle` is a fixed
+    # vocabulary. When the amount leg already opened one, `_ensure_exception`
+    # de-dupes per (invoice, type, open) and this is a no-op — the warning
+    # still lands on the invoice, which is where a reviewer reads it.
+    if match.over_receipt:
+        detail = next((i for i in match.issues if i.startswith("Over-receipt")), None)
+        po_ref = match.po_number or invoice.po_number or ""
+        msg = (
+            f"{detail} on PO {po_ref}"
+            if detail
+            else f"More goods received than ordered on PO {po_ref}"
+        )
+        warnings.append({"type": "po_mismatch", "severity": "warning", "message": msg})
+        await _ensure_exception(
+            db, invoice, "po_mismatch", "warning", msg, org_settings=org_settings
+        )
+
     # 4-way: quality-inspection outcomes route to a `quality_hold` exception.
     # Independent of the po-status handling above — a quality failure can ride
     # alongside an otherwise-matched amount. Maps verdict → severity:
