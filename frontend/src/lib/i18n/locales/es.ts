@@ -1199,6 +1199,7 @@ export const messages = {
 	'cfoMetrics.concentration.top50': 'Los 50 principales proveedores',
 	'cfoMetrics.concentration.largest': 'Proveedor principal',
 	'cfoMetrics.fraudTrend.title': 'Tendencia de tasa de excepciones (6 meses)',
+	'cfoMetrics.fraudTrend.noInvoices': 'sin facturas: tasa no calculable',
 	'cfoMetrics.fx.title': 'Ganancia / pérdida cambiaria no realizada',
 	'cfoMetrics.fx.colCurrency': 'Moneda',
 	'cfoMetrics.fx.colOpen': 'Abierto (original)',

@@ -1182,6 +1182,7 @@ export const messages = {
 	'cfoMetrics.concentration.top50': '上位50社',
 	'cfoMetrics.concentration.largest': '最大の仕入先',
 	'cfoMetrics.fraudTrend.title': '例外率の推移(6か月)',
+	'cfoMetrics.fraudTrend.noInvoices': '請求書なし — 率は算出不可',
 	'cfoMetrics.fx.title': '未実現為替差損益',
 	'cfoMetrics.fx.colCurrency': '通貨',
 	'cfoMetrics.fx.colOpen': '未決済(原通貨)',

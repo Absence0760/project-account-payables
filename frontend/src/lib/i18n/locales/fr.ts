@@ -1200,6 +1200,7 @@ export const messages = {
 	'cfoMetrics.concentration.top50': 'Top 50 fournisseurs',
 	'cfoMetrics.concentration.largest': 'Plus grand fournisseur',
 	'cfoMetrics.fraudTrend.title': "Tendance du taux d'exceptions (6 mois)",
+	'cfoMetrics.fraudTrend.noInvoices': 'aucune facture — taux non calculable',
 	'cfoMetrics.fx.title': 'Gain / perte de change latent',
 	'cfoMetrics.fx.colCurrency': 'Devise',
 	'cfoMetrics.fx.colOpen': 'Ouvert (original)',

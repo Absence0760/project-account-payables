@@ -35,6 +35,19 @@
 		return formatMoney(amount, { currency: orgCurrency.currency, whole: true });
 	}
 
+	/** Format a figure in the currency the RESPONSE says it is denominated in.
+	 *
+	 *  The cash-position curve carries its own `opening_balance_currency` — "the
+	 *  reporting currency the whole curve is denominated in" — and the two
+	 *  warning banners above the table already print it. The table itself went
+	 *  through `fmt`, i.e. the separately-fetched org-settings currency, so the
+	 *  page could render "3 outflows could not be converted to GBP" directly
+	 *  above a column of `$`. A currency label has to come from the same payload
+	 *  as the number it labels. Mirrors `CfoMetrics.svelte`'s own `fmtIn`. */
+	function fmtIn(amount: MoneyAmount, currency: string | undefined): string {
+		return formatMoney(amount, { currency: currency || orgCurrency.currency, whole: true });
+	}
+
 	// `opening_balance_provider_skipped` means a live bank balance EXISTED and the
 	// resolution chain refused it, so the curve starts from the next link down.
 	// The mapping (and its deliberate speak-anyway fallback) is the pure
@@ -331,11 +344,12 @@
 					</thead>
 					<tbody>
 						{#each position.periods as p (p.period)}
+							{@const ccy = position.opening_balance_currency}
 							<tr class:breach={p.below_threshold} data-breach={p.below_threshold}>
 								<td>{formatPeriod(p.period)}</td>
-								<td class="num">{fmt(p.opening)}</td>
-								<td class="num">-{fmt(p.outflow)}</td>
-								<td class="num closing">{fmt(p.closing)}</td>
+								<td class="num">{fmtIn(p.opening, ccy)}</td>
+								<td class="num">-{fmtIn(p.outflow, ccy)}</td>
+								<td class="num closing">{fmtIn(p.closing, ccy)}</td>
 							</tr>
 						{/each}
 						{#if position.periods.length === 0}

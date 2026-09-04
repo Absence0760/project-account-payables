@@ -157,7 +157,16 @@ export interface CfoFraudTrendPoint {
 	month: string;
 	invoice_count: number;
 	exception_count: number;
-	rate_pct: number;
+	/**
+	 * Exceptions / invoices, as a percentage — `null` when the month booked no
+	 * invoices at all, because a rate with an empty denominator is NOT
+	 * COMPUTABLE. It used to arrive as `0`, which drew the most reassuring bar
+	 * on the chart over the one period carrying no information (and hardest in
+	 * the "no invoices but exceptions raised anyway" case). Render the
+	 * `insufficient_data` state, never a zero. `docs/decisions.md` §34.
+	 */
+	rate_pct: number | null;
+	insufficient_data: boolean;
 }
 
 export interface CfoRebateYield {

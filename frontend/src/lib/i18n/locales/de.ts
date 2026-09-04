@@ -1201,6 +1201,7 @@ export const messages = {
 	'cfoMetrics.concentration.top50': 'Top 50 Lieferanten',
 	'cfoMetrics.concentration.largest': 'Größter Lieferant',
 	'cfoMetrics.fraudTrend.title': 'Ausnahmequote-Trend (6 Monate)',
+	'cfoMetrics.fraudTrend.noInvoices': 'keine Rechnungen — Quote nicht berechenbar',
 	'cfoMetrics.fx.title': 'Nicht realisierter Wechselkursgewinn/-verlust',
 	'cfoMetrics.fx.colCurrency': 'Währung',
 	'cfoMetrics.fx.colOpen': 'Offen (Original)',

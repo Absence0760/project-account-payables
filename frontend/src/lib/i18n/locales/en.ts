@@ -1252,6 +1252,7 @@ export const en = {
 	'cfoMetrics.concentration.top50': 'Top 50 vendors',
 	'cfoMetrics.concentration.largest': 'Largest vendor',
 	'cfoMetrics.fraudTrend.title': 'Exception rate trend (6 months)',
+	'cfoMetrics.fraudTrend.noInvoices': 'no invoices — rate not computable',
 	'cfoMetrics.fx.title': 'Unrealized FX gain / loss',
 	'cfoMetrics.fx.colCurrency': 'Currency',
 	'cfoMetrics.fx.colOpen': 'Open (original)',
