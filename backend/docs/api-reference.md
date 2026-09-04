@@ -298,7 +298,7 @@ See [`access-reviews.md`](access-reviews.md).
 | `POST`   | `/api/vendors/sync-erp`         | admin/manager | Pull vendors from connected ERP |
 | `GET`    | `/api/vendors/counts`           | admin/manager/cfo | Per-status tallies for the list filter chips — `{total, by_status}` via a server-side GROUP BY, so the red "Unverified" attention badge can't undercount past page 1. Honours the list's population filters (`search`, `source`) through the SAME `_vendor_list_filters` builder as `GET /api/vendors` and `/ids` — **not** `status` (the dimension being tallied). Entity-scoped. Mirrors `/api/invoices/counts`. |
 | `GET`    | `/api/vendors/counts`           | admin/manager/cfo | Per-status tallies for the list filter chips — `{total, by_status}` via a server-side GROUP BY, so the red "Unverified" attention badge can't undercount past page 1. Honours the list's population filters (`search`, `source`) through the SAME `_vendor_list_filters` builder as `GET /api/vendors` and `/ids` — **not** `status` (the dimension being tallied). Entity-scoped. Mirrors `/api/invoices/counts`. |
-| `GET`    | `/api/vendors/change-requests/counts`  | admin/manager/cfo | Whole-set tallies for the dual-control queue (`{total, pending, by_status}`); counts only, PII-free — drives the nav badge |
+| `GET`    | `/api/vendors/change-requests/counts`  | admin/manager | Whole-set tallies for the dual-control queue (`{total, pending, by_status}`); counts only, PII-free — drives the nav badge. Gated **exactly** like the queue list (decisions §48): it previously admitted `cfo`, who cannot read the queue, so the size of the staged-bank-change review set was visible to a role excluded from it |
 | `GET`    | `/api/vendors/change-requests`  | admin/manager | Pending supplier change-request queue (`?status=`); proposed value masked |
 | `GET`    | `/api/vendors/{id}/change-requests` | admin/manager/cfo | One vendor's change requests; value revealed |
 | `POST`   | `/api/vendors/change-requests/{id}/approve` | admin/manager | Apply staged bank/tax change to the vendor (exactly-once) |
@@ -309,7 +309,7 @@ See [`access-reviews.md`](access-reviews.md).
 | Method | Path                           | Roles | Description |
 |--------|--------------------------------|-------|-------------|
 | `GET`  | `/api/purchase-orders`         | * | List POs (filterable by `status`, `vendor_id`, `search`) |
-| `GET`  | `/api/purchase-orders/counts`  | * | Whole-set status tallies for the filter chips — `{total, by_status}`, entity-scoped, honours `search` + `vendor_id` (but not `status`, the dimension being tallied). Mirrors `GET /api/vendors/counts`; the list's `total` counts only the ACTIVE filter's result set, so it can't label the All chip. |
+| `GET`  | `/api/purchase-orders/counts`  | * | Whole-set status tallies for the filter chips — `{total, by_status}`, entity-scoped, honours `search` + `vendor_id` through the SAME `_purchase_order_list_filters` builder as the list (but not `status`, the dimension being tallied). Mirrors `GET /api/vendors/counts`; the list's `total` counts only the ACTIVE filter's result set, so it can't label the All chip. A malformed `vendor_id` is a 422 from the boundary on both endpoints. |
 | `POST` | `/api/purchase-orders/sync-erp` | admin/manager | Pull POs from connected ERP |
 
 ## GL Accounts
