@@ -3,6 +3,10 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { hasPartialRealisedSet, partialRealisedCount } from '$lib/utils/discountPartialSet';
+	import {
+		formatAmountWithoutCurrency,
+		recommendationCurrency
+	} from '$lib/utils/discountRecommendation';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
@@ -88,10 +92,19 @@
 
 	let hasMore = $derived(offers.length < total);
 
-	// Aggregate (tenant-wide) money uses the org default currency. Per-offer
-	// rows render their own `currency` via <Money>.
-	function aggMoney(n: number | null | undefined): string {
-		return formatMoney(n ?? 0, { currency: orgCurrency.currency, whole: true });
+	// Aggregate (tenant-wide) money is labelled with the currency the RESPONSE
+	// says it is denominated in — `dashboard.currency` / `optimization.currency`
+	// — never the org-default store. Both responses state it precisely because
+	// the totals are sums across offers that carry their own currencies, and the
+	// page already renders that same field in the guard text two lines away; a
+	// tenant whose reporting currency had moved read one figure under two codes.
+	// `orgCurrency` remains the fallback for the pre-load render, where every
+	// figure is still 0.
+	function aggMoney(
+		n: number | null | undefined,
+		currency: string | null | undefined
+	): string {
+		return formatMoney(n ?? 0, { currency: currency || orgCurrency.currency, whole: true });
 	}
 
 	/** Friendly relative "in 3 days" / "5 days ago" for a deadline. */
@@ -287,12 +300,12 @@
 		<!-- KPI row -->
 		<div class="kpi-row">
 			<KpiCard
-				value={aggMoney(dashboard?.captured_amount)}
+				value={aggMoney(dashboard?.captured_amount, dashboard?.currency)}
 				label={m('discounts.kpi.captured', { n: dashboard?.captured_count ?? 0 })}
 				highlight="green"
 			/>
 			<KpiCard
-				value={aggMoney(dashboard?.missed_amount)}
+				value={aggMoney(dashboard?.missed_amount, dashboard?.currency)}
 				label={m('discounts.kpi.missed', { n: dashboard?.missed_count ?? 0 })}
 				highlight="red"
 			/>
@@ -301,7 +314,7 @@
 				label={m('discounts.kpi.captureRate')}
 			/>
 			<KpiCard
-				value={aggMoney(dashboard?.projected_savings)}
+				value={aggMoney(dashboard?.projected_savings, dashboard?.currency)}
 				label={m('discounts.kpi.projectedSavings')}
 				highlight="green"
 			/>
@@ -366,9 +379,9 @@
 
 			{#if optimization}
 				<div class="opt-summary">
-					<span>{m('discounts.opt.availableSavings')} <strong>{aggMoney(optimization.total_savings_available)}</strong></span>
-					<span>{m('discounts.opt.selectedSavings')} <strong class="pos">{aggMoney(optimization.total_savings_selected)}</strong></span>
-					<span>{m('discounts.opt.selectedOutlay')} <strong>{aggMoney(optimization.total_outlay_selected)}</strong></span>
+					<span>{m('discounts.opt.availableSavings')} <strong>{aggMoney(optimization.total_savings_available, optimization.currency)}</strong></span>
+					<span>{m('discounts.opt.selectedSavings')} <strong class="pos">{aggMoney(optimization.total_savings_selected, optimization.currency)}</strong></span>
+					<span>{m('discounts.opt.selectedOutlay')} <strong>{aggMoney(optimization.total_outlay_selected, optimization.currency)}</strong></span>
 					<span>{m('discounts.opt.costOfCapital')} <strong>{optimization.cost_of_capital_pct.toFixed(1)}%</strong></span>
 				</div>
 				<!-- The optimizer half of the same guard: an offer in another
@@ -386,6 +399,12 @@
 				{#if optimization.recommendations.length > 0}
 					<div class="scenario-grid">
 						{#each optimization.recommendations as rec (rec.offer_id)}
+							<!-- `roi.savings` is computed from the OFFER's own base amount, so
+							     it is in the OFFER's currency. `unconvertible` is the response's
+							     statement that this row is NOT in the totals' currency — and it
+							     never says which one it IS in, so there is no code to stamp on
+							     it. See `utils/discountRecommendation.ts`. -->
+							{@const recCurrency = recommendationCurrency(rec, optimization.currency)}
 							<div class="scenario-card" class:best={rec.selected}>
 								<span class="scenario-title">
 									{rec.vendor_name ?? rec.invoice_number ?? rec.offer_id.slice(0, 8)}
@@ -394,9 +413,25 @@
 									{rec.roi.annualized_return_pct.toFixed(1)}% APR
 								</span>
 								<span class="scenario-sub">
-									{m('discounts.opt.save')} <Money amount={rec.roi.savings} currency={orgCurrency.currency} />
+									{m('discounts.opt.save')}
+									{#if recCurrency}
+										<Money amount={rec.roi.savings} currency={recCurrency} />
+									{:else}
+										<span class="money" data-testid="rec-savings-unlabelled"
+											>{formatAmountWithoutCurrency(rec.roi.savings)}</span
+										>
+									{/if}
 									· {rec.discount_percent}% / {rec.tier_days}d
 								</span>
+								<!-- The banner above reports how MANY rows are excluded; this
+								     says which one you are looking at. Without it the card
+								     showed a figure the totals do not contain, in a currency
+								     the page had guessed. -->
+								{#if rec.unconvertible}
+									<span class="scenario-warn" data-testid="rec-unconvertible">
+										{m('discounts.opt.recUnconvertible', { currency: optimization.currency })}
+									</span>
+								{/if}
 								<span class="scenario-sub">{m('discounts.opt.payBy', { date: formatDate(rec.pay_by) })}</span>
 								<span class="scenario-flag" class:selected={rec.selected}>
 									{rec.selected ? m('discounts.opt.selected') : m('discounts.opt.notSelected')}
@@ -684,6 +719,13 @@
 	}
 	.scenario-flag.selected {
 		color: #1fa86a;
+	}
+	/* Amber, same tone as `.disc-skipped`: this row's money is real, it just
+	   is not in the currency the totals above are stated in. */
+	.scenario-warn {
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: #d4940a;
 	}
 
 	/* --- Offers table cells --- */
