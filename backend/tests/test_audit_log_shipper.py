@@ -315,7 +315,11 @@ async def test_ship_tenant_leaves_rows_unshipped_when_an_adapter_fails(realdb):
     stamps = await _shipped_at_map(realdb, "a", ids)
     assert len(stamps) == 4
     assert all(v is None for v in stamps.values())
-    assert bad.calls == 1
+    # Batch attempt, then the bounded isolation pass (`test_audit_shipper_poison_row`
+    # covers it): the first row alone, then that row with the quarantine marker.
+    # An adapter refusing the marker too is a SINK outage, not a poison row, so
+    # the pass gives up there instead of probing all four rows.
+    assert bad.calls == 3
 
 
 async def test_ship_tenant_failed_batch_reships_fully_on_retry(realdb):
