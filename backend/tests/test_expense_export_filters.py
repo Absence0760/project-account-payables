@@ -207,31 +207,54 @@ async def test_export_is_tenant_scoped(realdb):
     assert _csv_rows(resp.text) == []
 
 
+# Presentation, not filtering: a CSV has no page and carries its own order.
+_VIEW_ONLY_PARAMS = {"sort", "order", "page", "page_size"}
+
+
+def _openapi_query_params(path: str) -> set[str]:
+    """Query-parameter names FastAPI actually resolves for `GET path`.
+
+    Read off the MOUNTED schema rather than `inspect.signature`, because a
+    scalar parameter declared with a plain default (`search: str | None = None`)
+    is a real query parameter to FastAPI but is NOT a `fastapi.params.Query`
+    instance. A signature-level check keyed on that isinstance passes
+    *vacuously* the moment a parameter is written that way — the precise defect
+    that let the previous whole-set-KPI guard sit green while checking nothing
+    on `/api/recurring` (PR #356). Same resolution `tests/
+    test_whole_set_kpi_rollups.py` uses, for the same reason.
+    """
+    from app.main import app
+
+    operation = app.openapi()["paths"][path]["get"]
+    return {p["name"] for p in operation.get("parameters", []) if p.get("in") == "query"}
+
+
 async def test_export_declares_every_filter_the_list_offers(realdb):
-    """A signature-level guard, cheap and total: whatever a user can narrow the
+    """A contract-level guard, cheap and total: whatever a user can narrow the
     list by, the CSV button must be able to send. This is what would have
     caught the missing `search` leg the day it diverged — the behavioural tests
     above only cover the filters someone thought to write a case for."""
-    from app.api.expenses import export_expenses, list_expenses
+    list_params = _openapi_query_params("/api/expenses") - _VIEW_ONLY_PARAMS
+    export_params = _openapi_query_params("/api/expenses/export")
 
-    def query_params(fn) -> set[str]:
-        import inspect
+    # Guards the guard: if parameter resolution ever stops seeing the list's
+    # filters, `list_only` empties and the assertion below becomes a no-op.
+    assert {"status", "search", "report_id"} <= list_params, sorted(list_params)
 
-        from fastapi import Query
-        from fastapi.params import Query as QueryParam
-
-        names: set[str] = set()
-        for name, param in inspect.signature(fn).parameters.items():
-            default = param.default
-            if isinstance(default, QueryParam) or default is Query:
-                names.add(getattr(default, "alias", None) or name)
-        return names
-
-    list_only = query_params(list_expenses) - query_params(export_expenses)
-    # `sort` / `order` / `page` / `page_size` are presentation, not filtering:
-    # a CSV has no page and carries its own order.
-    assert list_only <= {"sort", "order", "page", "page_size"}, (
-        f"GET /api/expenses/export cannot express the list filter(s) {sorted(list_only)}. "
+    list_only = sorted(list_params - export_params)
+    assert not list_only, (
+        f"GET /api/expenses/export cannot express the list filter(s) {list_only}. "
         "FastAPI drops an undeclared query param silently, so the CSV would "
         "quietly cover a wider set than the table it was exported from."
     )
+
+
+async def test_export_only_filters_are_not_on_the_list_surface(realdb):
+    """The other direction, recorded so it stays deliberate: `category` and the
+    date range are export-only. If one of them ever lands on the list too, it
+    has to move into the shared `_expense_list_filters` — otherwise the CSV and
+    the table would each apply their own copy of the same predicate, which is
+    the drift the shared builder exists to prevent."""
+    list_params = _openapi_query_params("/api/expenses")
+    export_only = _openapi_query_params("/api/expenses/export") - list_params
+    assert export_only == {"category", "date_from", "date_to"}, sorted(export_only)
