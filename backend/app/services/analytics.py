@@ -223,52 +223,195 @@ def compute_approval_bottleneck(
 # ---------------------------------------------------------------------------
 
 
+def discount_window_open(discount_date, today) -> bool:
+    """Is an early-pay discount still capturable as of ``today``?
+
+    The single owner of the elapsed-window rule. A discount window is open
+    only while its deadline has NOT passed; a row with no ``discount_date``
+    has no window that can be shown to have elapsed, so it is not "missed"
+    either — both cases are "undecided", which is what the callers key off.
+
+    Restating ``discount_date >= today`` inline is how the consumers of the
+    same economics (``bucket_outflows``' discount-eligible amount, the
+    ``early`` what-if scenario, ``discount_optimizer.optimize``,
+    ``discount_offers._tier_achievable`` and the dashboard's capture rate)
+    drifted apart in the first place — the dashboard was the one that never
+    applied the gate and reported every still-open window as already missed.
+    """
+    return discount_date is not None and discount_date >= today
+
+
 @dataclass(frozen=True)
 class DiscountCaptureMetrics:
-    """Net of the early-pay discount opportunity for a period."""
+    """Net of the early-pay discount opportunity for a period.
+
+    Three buckets, not two. ``captured`` and ``missed`` are the DECIDED
+    population — the discount was taken, or its window elapsed without being
+    taken. ``pending`` is the rest: an invoice whose discount deadline is
+    still in the future (or which carries no deadline at all) has not missed
+    anything yet, and counting it as missed made the dashboard report a
+    growing pile of forgone savings that were in fact still on the table.
+
+    ``capture_rate_pct`` is ``None`` — never ``0`` — when nothing has been
+    decided yet, because "we have not missed a discount yet" and "we captured
+    none of the discounts we could have" are opposite facts and 0% reads as
+    the bad one (``docs/decisions.md`` §34).
+
+    ``*_reporting`` are the same three figures expressed in the org's
+    reporting currency; the bare ones are per-row face values and mix
+    currencies the moment one eligible invoice is foreign.
+    ``unconverted_count`` is how many eligible rows could not be converted
+    and so contribute face value to the reporting figures.
+    """
 
     eligible_count: int
     captured_count: int
     missed_count: int
+    pending_count: int
     captured_amount: Decimal
     missed_amount: Decimal
-    capture_rate_pct: Decimal
+    pending_amount: Decimal
+    captured_amount_reporting: Decimal
+    missed_amount_reporting: Decimal
+    pending_amount_reporting: Decimal
+    unconverted_count: int
+    capture_rate_pct: Decimal | None
+    insufficient_data: bool
 
 
 def compute_discount_capture(invoice_rows: list) -> DiscountCaptureMetrics:
-    """Inputs: invoice rows that have a `discount_amount` plus
-    flags `discount_eligible` and `paid_before_discount_date`.
-    We don't model the dates directly here — the SQL layer
-    computes the flags from `PaymentSchedule.discount_date` /
-    `Payment.completed_at`. This keeps the math layer pure."""
+    """Inputs: invoice rows that have a `discount_amount` plus flags
+    `discount_eligible`, `paid_before_discount_date` and
+    `discount_window_elapsed`. We don't model the dates directly here — the
+    SQL layer computes the flags from `PaymentSchedule.discount_date` /
+    `Payment.completed_at` against `discount_window_open`. This keeps the
+    math layer pure.
+
+    Optional per-row extras, defaulted so a caller that has only face-value
+    figures still works: `discount_amount_reporting` (the same discount
+    expressed in the org's reporting currency; falls back to
+    `discount_amount`) and `unconverted` (that fallback was taken).
+    """
     eligible = 0
     captured = 0
+    missed = 0
+    pending = 0
+    unconverted = 0
     captured_amt = Decimal("0")
     missed_amt = Decimal("0")
+    pending_amt = Decimal("0")
+    captured_rep = Decimal("0")
+    missed_rep = Decimal("0")
+    pending_rep = Decimal("0")
     for r in invoice_rows:
         if not getattr(r, "discount_eligible", False):
             continue
         eligible += 1
         amt = Decimal(str(getattr(r, "discount_amount", "0") or "0"))
+        rep_raw = getattr(r, "discount_amount_reporting", None)
+        rep = Decimal(str(rep_raw)) if rep_raw is not None else amt
+        if getattr(r, "unconverted", False):
+            unconverted += 1
         if getattr(r, "paid_before_discount_date", False):
             captured += 1
             captured_amt += amt
-        else:
+            captured_rep += rep
+        elif getattr(r, "discount_window_elapsed", False):
+            # The window closed and we did not take it — the only shape that
+            # is genuinely a miss.
+            missed += 1
             missed_amt += amt
-    missed = eligible - captured
+            missed_rep += rep
+        else:
+            pending += 1
+            pending_amt += amt
+            pending_rep += rep
+    decided = captured + missed
     rate = (
-        (Decimal(captured) / Decimal(eligible) * Decimal("100")).quantize(Decimal("0.1"))
-        if eligible > 0
-        else Decimal("0")
+        (Decimal(captured) / Decimal(decided) * Decimal("100")).quantize(Decimal("0.1"))
+        if decided > 0
+        else None
     )
     return DiscountCaptureMetrics(
         eligible_count=eligible,
         captured_count=captured,
         missed_count=missed,
+        pending_count=pending,
         captured_amount=captured_amt.quantize(Decimal("0.01")),
         missed_amount=missed_amt.quantize(Decimal("0.01")),
+        pending_amount=pending_amt.quantize(Decimal("0.01")),
+        captured_amount_reporting=captured_rep.quantize(Decimal("0.01")),
+        missed_amount_reporting=missed_rep.quantize(Decimal("0.01")),
+        pending_amount_reporting=pending_rep.quantize(Decimal("0.01")),
+        unconverted_count=unconverted,
         capture_rate_pct=rate,
+        insufficient_data=decided == 0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Touchless (straight-through-processing) rate
+# ---------------------------------------------------------------------------
+#
+# The population is "every invoice that has FINISHED the review stage".
+# Numerator = the ones that cleared it without a human bouncing them back.
+# Stated once, here, because the dashboard carried a hand-written copy that
+# had drifted: `sending_to_erp` — reachable ONLY from `approved` — was in
+# neither leg, so an invoice sitting in the ERP export hop vanished from the
+# board metric it had already earned a place in.
+
+# Statuses an invoice can only be in because review finished and it cleared.
+# `done` is included as it always has been: it is terminal and is normally
+# reached through approval.
+TOUCHLESS_CLEARED_STATUSES: tuple[str, ...] = (
+    "approved",
+    "sending_to_erp",
+    "sent_to_erp",
+    "posted_in_erp",
+    "payment_scheduled",
+    "paid",
+    "done",
+)
+
+# Review finished and the invoice did NOT clear — denominator only.
+TOUCHLESS_BOUNCED_STATUSES: tuple[str, ...] = ("rejected",)
+
+
+def compute_touchless_rate(
+    pipeline: dict,
+    *,
+    failed_cleared_count: int = 0,
+    failed_total_count: int | None = None,
+) -> float:
+    """Straight-through-processing share, in [0, 100].
+
+    `pipeline` is the dashboard's `{status: count}` map.
+
+    `failed` is the one status this cannot read on its own: an invoice
+    reaches it EITHER from `pending` (extraction failed — it never got near
+    review) or from `sending_to_erp` (approved, then the ERP export failed) —
+    both edges are in `workflow_engine.VALID_TRANSITIONS`. Status alone
+    cannot separate them, so the caller passes `failed_cleared_count`: the
+    `failed` invoices carrying a durable approval stamp
+    (`Invoice.approval_date`, written on every approval path and never
+    cleared). Those count in BOTH legs; the extraction failures count in
+    neither, because an invoice that never finished review is evidence
+    neither for nor against touchless processing.
+
+    The numerator is a strict subset of the denominator, so the rate can
+    never go negative (BUG 9).
+    """
+    cleared = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_CLEARED_STATUSES)
+    bounced = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_BOUNCED_STATUSES)
+    approved_failed = int(failed_cleared_count or 0)
+    if failed_total_count is not None:
+        # Never claim more cleared-failures than there are failures.
+        approved_failed = min(approved_failed, int(failed_total_count))
+    cleared += approved_failed
+    reviewed_total = cleared + bounced
+    if reviewed_total <= 0:
+        return 0.0
+    return round(cleared / reviewed_total * 100, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +679,19 @@ def compute_fraud_rate_trend(
     """`monthly_buckets`: list of `{"month": "YYYY-MM",
     "invoice_count": int, "exception_count": int,
     "by_type": {type: count}}`. Returns the same shape with
-    `rate_pct` appended per row (exceptions / invoices × 100)."""
+    `rate_pct` and `insufficient_data` appended per row.
+
+    **A month with no invoices has no fraud rate — it does not have a rate of
+    zero.** Returning `Decimal("0")` for an empty denominator reported the
+    single most reassuring value on the chart for the one shape that carries
+    no information at all, and did it hardest in the case that most warrants
+    a look: zero invoices booked but exceptions raised anyway. `rate_pct` is
+    therefore `None` there, flagged by `insufficient_data`, exactly as
+    `compute_cash_conversion_cycle` returns `None` when a leg is unknown and
+    `compute_effectiveness` refuses to fabricate a percentage under its
+    minimum sample. See `docs/decisions.md` §34 — "cannot attest" must never
+    render as "yes".
+    """
     out: list[dict] = []
     for b in monthly_buckets:
         inv_count = int(b.get("invoice_count", 0) or 0)
@@ -544,9 +699,9 @@ def compute_fraud_rate_trend(
         rate = (
             (Decimal(exc_count) / Decimal(inv_count) * Decimal("100")).quantize(Decimal("0.1"))
             if inv_count > 0
-            else Decimal("0")
+            else None
         )
-        out.append({**b, "rate_pct": rate})
+        out.append({**b, "rate_pct": rate, "insufficient_data": rate is None})
     return out
 
 
@@ -759,10 +914,8 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
         # what-if scenario directly below already apply — the four consumers of
         # the same economics must not disagree about which discounts are on the
         # table.
-        discount_date = r.get("discount_date")
         if (
-            discount_date is not None
-            and discount_date >= today
+            discount_window_open(r.get("discount_date"), today)
             and Decimal(str(r.get("discount_percent") or "0")) > 0
         ):
             b["discount_eligible_amount"] += amount
@@ -848,9 +1001,10 @@ def apply_payment_timing_scenario(
             continue
         amount = _row_amount(r)
         discount_date = r.get("discount_date")
-        # `discount_date >= today` — an elapsed window is no longer capturable,
-        # so the row is NOT an early-pay candidate at all (see the docstring).
-        if scenario == "early" and discount_date is not None and discount_date >= today:
+        # An elapsed window is no longer capturable, so the row is NOT an
+        # early-pay candidate at all (see the docstring). `discount_window_open`
+        # is the one owner of that rule — see its own docstring for why.
+        if scenario == "early" and discount_window_open(discount_date, today):
             pay_date = discount_date
             net, captured = _discount_net(amount, r.get("discount_percent"))
         elif scenario == "late":

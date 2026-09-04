@@ -17,7 +17,11 @@ from app.models.payment import Payment
 from app.models.user import User
 from app.models.virtual_card import CardRebate, VirtualCard
 from app.schemas.dashboard import DashboardResponse
-from app.services.analytics import OPEN_AP_STATUSES
+from app.services.analytics import (
+    OPEN_AP_STATUSES,
+    compute_touchless_rate,
+    discount_window_open,
+)
 from app.services.currency_conversion import (
     payment_reporting_amount_sql,
     reporting_amount_for_row,
@@ -53,7 +57,16 @@ class SimpleNamespaceStep:
 class SimpleNamespaceDiscount:
     discount_eligible: bool
     discount_amount: Decimal
+    # Same discount expressed in the org's reporting currency — the bare
+    # `discount_amount` is a share of the invoice's FACE amount and mixes
+    # currencies the moment one eligible invoice is foreign.
+    discount_amount_reporting: Decimal
+    unconverted: bool
     paid_before_discount_date: bool
+    # The window definitively closed without the discount being taken. A row
+    # that is neither captured nor elapsed is still capturable — it has not
+    # missed anything yet. See `analytics.discount_window_open`.
+    discount_window_elapsed: bool
 
 
 @router.get("", response_model=DashboardResponse)
@@ -247,11 +260,21 @@ async def get_dashboard(
     aging = aging_dec
     aging_reporting = aging_reporting_dec
 
-    # Monthly trend (last 6 months) — bucket by calendar month in SQL rather
-    # than streaming every recent invoice into Python. Summing amounts in the
-    # DB (Numeric) also avoids the float-accumulation drift the old per-row
-    # `+= float(...)` fold could introduce.
-    six_months_ago = today - timedelta(days=180)
+    # Monthly trend (last 6 calendar months) — bucket by calendar month in SQL
+    # rather than streaming every recent invoice into Python. Summing amounts
+    # in the DB (Numeric) also avoids the float-accumulation drift the old
+    # per-row `+= float(...)` fold could introduce.
+    #
+    # The window is anchored to a MONTH BOUNDARY, not `today - 180 days`. A
+    # rolling day window against a calendar-month GROUP BY is a mismatch: 180
+    # days reaches back into a SEVENTH month on most dates, so the chart drew
+    # seven bars whose oldest was a partial slice of a month — a stub that
+    # reads as a collapse in spend and shifts every day as the window slides.
+    # Anchoring gives exactly six buckets of like-for-like whole months (the
+    # newest is the month in progress, which is inherent to a to-date trend).
+    _months_back = 5
+    _anchor = today.year * 12 + (today.month - 1) - _months_back
+    trend_start = today.replace(year=_anchor // 12, month=_anchor % 12 + 1, day=1)
     _month_key = func.to_char(func.date_trunc("month", Invoice.invoice_date), "YYYY-MM")
     trend_rows = await db.execute(
         _inv(
@@ -263,7 +286,7 @@ async def get_dashboard(
                 # aging buckets / whole-book rollup above.
                 func.coalesce(func.sum(_rep_expr), 0),
             )
-            .where(Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None))
+            .where(Invoice.invoice_date >= trend_start, Invoice.invoice_date.isnot(None))
             .group_by(_month_key)
             .order_by(_month_key)
         )
@@ -345,24 +368,30 @@ async def get_dashboard(
             upcoming_unconverted_count += 1
 
     # Touchless rate — share of invoices that cleared review straight through
-    # (reached approved-or-beyond) out of every invoice that has finished the
-    # review stage (the same approved-or-beyond states PLUS the ones bounced to
-    # `rejected`). Numerator is a strict subset of the denominator, so the rate
-    # is always in [0, 100] — it can never go negative.
-    auto_processed_statuses = (
-        "approved",
-        "sent_to_erp",
-        "posted_in_erp",
-        "payment_scheduled",
-        "paid",
-        "done",
+    # out of every invoice that has FINISHED the review stage. Both legs are
+    # defined once, in `services/analytics` (`TOUCHLESS_CLEARED_STATUSES` /
+    # `TOUCHLESS_BOUNCED_STATUSES`), because the hand-written copy that used to
+    # live here had drifted: `sending_to_erp` is reachable ONLY from `approved`
+    # yet appeared in neither leg, so an invoice in the ERP export hop dropped
+    # out of a board metric it had already earned a place in — understating the
+    # rate on exactly the tenants whose ERP export is slow.
+    #
+    # `failed` is the one status the pipeline map can't classify: it is
+    # reachable from `pending` (extraction failed, never reviewed) AND from
+    # `sending_to_erp` (approved, then the export failed). The durable
+    # `Invoice.approval_date` stamp separates them — see `compute_touchless_rate`.
+    failed_cleared_q = await db.execute(
+        _inv(
+            select(func.count()).where(
+                Invoice.status == "failed",
+                Invoice.approval_date.isnot(None),
+            )
+        )
     )
-    auto_processed = sum(pipeline.get(s, 0) for s in auto_processed_statuses)
-    rejected_count = pipeline.get("rejected", 0)
-    reviewed_total = auto_processed + rejected_count
-    touchless_rate = round(
-        (auto_processed / reviewed_total * 100) if reviewed_total > 0 else 0,
-        1,
+    touchless_rate = compute_touchless_rate(
+        pipeline,
+        failed_cleared_count=int(failed_cleared_q.scalar() or 0),
+        failed_total_count=pipeline.get("failed"),
     )
 
     # Payment totals — separate queries to avoid complex CASE expressions
@@ -564,6 +593,9 @@ async def get_dashboard(
             _inv(
                 select(
                     Invoice.amount,
+                    Invoice.currency,
+                    Invoice.reporting_amount,
+                    Invoice.reporting_currency,
                     PaymentSchedule.discount_percent,
                     PaymentSchedule.discount_date,
                     func.min(Payment.completed_at).label("paid_at"),
@@ -577,24 +609,50 @@ async def get_dashboard(
                 .group_by(
                     Invoice.id,
                     Invoice.amount,
+                    Invoice.currency,
+                    Invoice.reporting_amount,
+                    Invoice.reporting_currency,
                     PaymentSchedule.discount_percent,
                     PaymentSchedule.discount_date,
                 )
             )
         )
         discount_input = []
-        for amount, pct, ddate, paid_at in sched_rows.all():
-            discount_amt = (Decimal(str(amount)) * Decimal(str(pct)) / Decimal("100")).quantize(
-                Decimal("0.01")
+        for amount, currency, rep_amt, rep_cur, pct, ddate, paid_at in sched_rows.all():
+            pct_frac = Decimal(str(pct)) / Decimal("100")
+            discount_amt = (Decimal(str(amount)) * pct_frac).quantize(Decimal("0.01"))
+            # The discount is a percentage of the invoice, so the reporting
+            # figure is the same percentage of the invoice's REPORTING amount —
+            # the rate-locked one when it exists, face value (flagged) when it
+            # does not, exactly as every other money rollup on this page.
+            base_reporting, unconverted = reporting_amount_for_row(
+                amount=amount,
+                currency=currency,
+                reporting_currency=reporting_currency,
+                persisted_reporting_currency=rep_cur,
+                persisted_reporting_amount=rep_amt,
             )
+            discount_amt_reporting = (base_reporting * pct_frac).quantize(Decimal("0.01"))
             paid_before = bool(
                 paid_at is not None and ddate is not None and paid_at.date() <= ddate
             )
+            # An invoice whose discount deadline has NOT passed has missed
+            # nothing yet — it is still capturable, and the four other
+            # consumers of these economics all gate on that. This surface was
+            # the one that didn't, so the dashboard reported a growing pile of
+            # "missed" savings that were in fact still on the table (and every
+            # newly-scheduled discount landed straight in it). A row with no
+            # `discount_date` has no window that can be shown to have elapsed,
+            # so it is undecided too, never a miss.
+            window_elapsed = ddate is not None and not discount_window_open(ddate, today)
             discount_input.append(
                 SimpleNamespaceDiscount(
                     discount_eligible=True,
                     discount_amount=discount_amt,
+                    discount_amount_reporting=discount_amt_reporting,
+                    unconverted=unconverted,
                     paid_before_discount_date=paid_before,
+                    discount_window_elapsed=window_elapsed,
                 )
             )
     except Exception:  # noqa: BLE001
@@ -670,8 +728,23 @@ async def get_dashboard(
             "eligible_count": discount.eligible_count,
             "captured_count": discount.captured_count,
             "missed_count": discount.missed_count,
+            # Still-capturable windows — NOT missed. See
+            # `analytics.DiscountCaptureMetrics`.
+            "pending_count": discount.pending_count,
             "captured_amount": discount.captured_amount,
             "missed_amount": discount.missed_amount,
-            "capture_rate_pct": float(discount.capture_rate_pct),
+            "pending_amount": discount.pending_amount,
+            # Reporting-currency counterparts of the three lines above.
+            "reporting_currency": reporting_currency,
+            "captured_amount_reporting": discount.captured_amount_reporting,
+            "missed_amount_reporting": discount.missed_amount_reporting,
+            "pending_amount_reporting": discount.pending_amount_reporting,
+            "unconverted_count": discount.unconverted_count,
+            # `None`, never 0.0, when nothing has been decided yet — 0% reads
+            # as "we captured none of them", the opposite of the truth.
+            "capture_rate_pct": (
+                float(discount.capture_rate_pct) if discount.capture_rate_pct is not None else None
+            ),
+            "insufficient_data": discount.insufficient_data,
         },
     }
