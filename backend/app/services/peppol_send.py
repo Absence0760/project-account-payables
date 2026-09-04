@@ -23,6 +23,7 @@ carry PII-free codes only.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -46,8 +47,11 @@ from app.services.peppol_adapters import (
     ParticipantId,
     PeppolSendError,
     TransmissionRequest,
+    UnknownPeppolProviderError,
     get_peppol_adapter,
 )
+
+logger = logging.getLogger(__name__)
 
 _LIVE_STATUSES = ("sending", "sent", "delivered")
 _DIRECTION_OUTBOUND = "outbound"
@@ -121,7 +125,24 @@ async def send_invoice_over_peppol(
 
     # 5-6. Resolve the receiver via SMP/SML (mockable, no DNS). Unknown → refuse
     # before persisting a row.
-    adapter = get_peppol_adapter(peppol_config)
+    #
+    # The ADAPTER is resolved here too, above the slot claim in step 7, and a
+    # provider we have no adapter for is refused rather than resolved to `mock`
+    # (`decisions.md` §29). The mock's `send` reports success with a synthetic
+    # message id and no network involved, which step 9 would write onto the row
+    # as `sent` + a `message_id` and step 10 would record as `invoice.peppol_sent`
+    # — a legally-significant document reported as transmitted to a supplier that
+    # never received it, with the live-transmission slot occupied so the honest
+    # resend came back `already_sent`. Refusing HERE means no row exists at all.
+    # The reason code names the condition, never the admin's raw settings value.
+    try:
+        adapter = get_peppol_adapter(peppol_config)
+    except UnknownPeppolProviderError as exc:
+        logger.warning(
+            "[peppol] provider %r has no registered adapter — refusing to transmit",
+            exc.provider,
+        )
+        raise PeppolSendError("peppol_provider_not_configured") from None
     capability = await adapter.resolve_participant(receiver_id)
     if not capability.registered:
         raise PeppolSendError(capability.unregistered_reason or "receiver_not_registered")
