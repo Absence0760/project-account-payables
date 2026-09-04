@@ -78,7 +78,18 @@ entity rather than the caller's `X-Entity-ID`, because the panel describes one
 PO whichever view the reader has selected. The sync-erp upsert matched the same
 way and is likewise scoped to the entity being synced into — unscoped, a sync
 run under subsidiary B found A's PO by number and overwrote its `total`, which
-silently re-prices the very amount control described above. Covered by
+silently re-prices the very amount control described above.
+
+The PO **itself** is now resolved through `_get_scoped_po`, too. The by-id route
+matched on the primary key alone while the list and counts beside it had been
+entity-scoped since multi-entity Phase 2, so the selector was advisory on
+exactly the route that hands over a subsidiary's order and its line items —
+the shape `api/payments.py::_get_scoped_payment` and
+`api/positive_pay.py::_get_scoped_file` already close. An out-of-scope id gets
+the **same opaque 404** a missing one does, so it can't enumerate another
+subsidiary's POs; the consolidated view (`X-Entity-ID` absent) still reaches
+every PO, and `linked_invoices` stays keyed on the PO's own entity precisely so
+that view still shows each PO only its own subsidiary's invoices. Covered by
 `backend/tests/test_purchase_order_entity_scope.py`.
 
 A PO may have **several** goods receipts (a PO filled by multiple shipments);
@@ -127,7 +138,21 @@ decides whether the invoice is payable; an over-receipt with an in-tolerance
 amount is a receiving discrepancy, not a billing one, and folding it into
 `mismatch` would emit a message about an amount variance that isn't there.
 
-Covered by `backend/tests/test_po_matching_cancelled_receipts.py`.
+`invoice_warnings._refresh_po_match` raises it **independently of `status`**,
+the way the 4-way inspection block already does — so it lands on a perfectly
+`matched` invoice, which is exactly the case that would otherwise disappear. It
+becomes a `po_mismatch` warning at **`warning`** severity (not the `info` a
+partial receipt gets: a short delivery is routinely benign — goods in transit —
+whereas quantities nobody ordered cannot be explained by timing) plus a
+`po_mismatch` exception. When the amount leg has already opened one,
+`_ensure_exception` de-dupes per `(invoice, type, open)` and the exception call
+is a no-op — the warning still lands, and the amount branch's own message is
+left untouched.
+
+Covered by `backend/tests/test_po_matching_cancelled_receipts.py` (matcher +
+end-to-end through `refresh_warnings` to the exception row) and
+`backend/tests/test_po_matching_wiring.py` (the routing, with the matcher
+patched out).
 
 The 4-way leg runs **after** the 3-way GR block. It looks up the most recent
 `QualityInspection` in two steps: the matched receipt's own (`gr_id == gr.id`),
