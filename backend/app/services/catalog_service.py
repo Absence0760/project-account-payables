@@ -51,6 +51,7 @@ from app.services.punchout_adapters import (
     get_punchout_adapter,
 )
 from app.tenant import apply_entity_scope
+from app.utils.search import ilike_contains
 
 # Cap each list so the suggestion stays a focused steer, not a full export.
 _MAX_VENDORS = 25
@@ -203,12 +204,12 @@ async def _matching_items(
     if vendor_id is not None:
         base = base.where(or_(CatalogItem.vendor_id == vendor_id, Catalog.vendor_id == vendor_id))
     if q:
-        like = f"%{q.strip()}%"
+        term = q.strip()
         base = base.where(
             or_(
-                CatalogItem.name.ilike(like),
-                CatalogItem.sku.ilike(like),
-                CatalogItem.description.ilike(like),
+                ilike_contains(CatalogItem.name, term),
+                ilike_contains(CatalogItem.sku, term),
+                ilike_contains(CatalogItem.description, term),
             )
         )
     # Preferred catalogs first, then by item name for a stable order.

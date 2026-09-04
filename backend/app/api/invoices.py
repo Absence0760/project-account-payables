@@ -112,6 +112,7 @@ from app.tenant import (
 )
 from app.utils.dates import resolve_day_first_preference
 from app.utils.http import content_disposition_attachment
+from app.utils.search import ilike_contains
 
 IMMUTABLE_STATUSES = {
     DBInvoiceStatus.sending_to_erp,
@@ -217,13 +218,13 @@ def _invoice_list_filters(
         excluded = [s.strip() for s in exclude_status.split(",")]
         query = query.where(Invoice.status.notin_(excluded))
     if vendor:
-        query = query.where(Invoice.vendor_name.ilike(f"%{vendor}%"))
+        query = query.where(ilike_contains(Invoice.vendor_name, vendor))
     if invoice_number:
-        query = query.where(Invoice.invoice_number.ilike(f"%{invoice_number}%"))
+        query = query.where(ilike_contains(Invoice.invoice_number, invoice_number))
     if po_number:
-        query = query.where(Invoice.po_number.ilike(f"%{po_number}%"))
+        query = query.where(ilike_contains(Invoice.po_number, po_number))
     if description:
-        query = query.where(Invoice.description.ilike(f"%{description}%"))
+        query = query.where(ilike_contains(Invoice.description, description))
     if amount_min is not None:
         query = query.where(Invoice.amount >= Decimal(str(amount_min)))
     if amount_max is not None:
@@ -233,12 +234,11 @@ def _invoice_list_filters(
     if due_date_to:
         query = query.where(Invoice.due_date <= due_date_to)
     if search:
-        pattern = f"%{search}%"
         query = query.where(
-            Invoice.vendor_name.ilike(pattern)
-            | Invoice.invoice_number.ilike(pattern)
-            | Invoice.po_number.ilike(pattern)
-            | Invoice.description.ilike(pattern)
+            ilike_contains(Invoice.vendor_name, search)
+            | ilike_contains(Invoice.invoice_number, search)
+            | ilike_contains(Invoice.po_number, search)
+            | ilike_contains(Invoice.description, search)
         )
     if assigned_to_id:
         query = query.where(Invoice.assigned_to_id == assigned_to_id)

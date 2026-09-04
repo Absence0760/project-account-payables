@@ -33,6 +33,7 @@ from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.identity_provisioning import (
     DeactivatedAccount,
     EmailDomainNotAllowed,
+    UnsafeEmailAddress,
     extract_and_check_email,
     jit_provision,
 )
@@ -242,6 +243,20 @@ async def sso_callback(
 
     try:
         email = extract_and_check_email(email, config.allowed_email_domains)
+    except UnsafeEmailAddress as exc:
+        # A control character in an asserted address — never legitimate. The
+        # audit records the reason, not the value: an address carrying a CR/LF
+        # is exactly what should not be echoed into another log line.
+        await dispatch_auth_audit(
+            organization_id=org.id,
+            actor_id=None,
+            action="auth.sso.login.failure",
+            details={"tenant": tenant_slug, "ip": ip, "reason": "unsafe_email"},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="The identity provider supplied an unusable email address.",
+        ) from exc
     except EmailDomainNotAllowed as exc:
         await dispatch_auth_audit(
             organization_id=org.id,

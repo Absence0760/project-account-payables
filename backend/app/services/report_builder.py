@@ -35,6 +35,7 @@ from app.models.payment import Payment
 from app.models.vendor import Vendor
 from app.schemas.report import ReportSpec
 from app.tenant import apply_entity_scope
+from app.utils.search import ilike_contains
 
 # --------------------------------------------------------------------------- #
 # Vocabulary — the ONLY aggregations / operators / grains that can ever run.
@@ -454,8 +455,10 @@ def _build_where(fdef: FilterDef, op: str, value: Any) -> Any:
             return and_(col >= _day_start(low), col < _day_start(high) + timedelta(days=1))
         return col.between(low, high)
     if op == "contains":
-        # String substring match — the value is escaped/parameterised by ilike.
-        return col.ilike(f"%{_coerce_scalar(fdef, value)}%")
+        # String substring match. Parameterised by ilike, and LIKE
+        # metacharacters in the caller's value are escaped so `contains "50%"`
+        # means the literal text rather than "contains anything".
+        return ilike_contains(col, str(_coerce_scalar(fdef, value)))
     # scalar comparison
     coerced = _coerce_scalar(fdef, value)
     if day_scoped:

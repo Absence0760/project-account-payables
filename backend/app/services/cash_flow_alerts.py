@@ -63,7 +63,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -89,6 +89,7 @@ from app.services.currency_conversion import resolve_reporting_currency
 from app.services.notification_dispatch import notify_event, resolve_role_user_ids
 from app.services.notification_templates import render_cash_shortfall
 from app.services.sweep_health import SWEEP_CASHFLOW_SHORTFALL, run_sweep_loop
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,7 @@ async def _store_marker(org_id: uuid.UUID, *, period: str | None, sent_on: str |
 async def run_shortfall_alerts_once(*, today: date | None = None) -> ShortfallAlertResult:
     """One sweep across every org. Safe to call directly (CLI / tests)."""
     result = ShortfallAlertResult()
-    ref_today = today or datetime.now(UTC).date()
+    ref_today = today or utc_today()
 
     async with control_session_factory() as ctrl:
         rows = await ctrl.execute(

@@ -13,7 +13,6 @@ never computes a number. See ``docs/cash-flow-copilot.md``.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +51,7 @@ from app.services.cashflow import (
     resolve_cash_thresholds,
     resolve_opening_balance,
 )
+from app.utils.dates import utc_today
 
 _ZERO = Decimal("0")
 
@@ -102,7 +102,7 @@ async def get_cashflow_forecast(
     params: CashflowForecastParams,
     control_db: AsyncSession | None = None,
 ) -> CashflowForecastResult:
-    today = datetime.now(UTC).date()
+    today = utc_today()
     horizon_days = _horizon(params.horizon_days)
     rows = await _commitment_rows(
         db,
@@ -160,7 +160,7 @@ async def get_cash_position(
     params: CashPositionParams,
     control_db: AsyncSession | None = None,
 ) -> CashPositionResult:
-    today = datetime.now(UTC).date()
+    today = utc_today()
     horizon_days = _horizon(params.horizon_days)
     rows = await _commitment_rows(
         db,
@@ -231,7 +231,7 @@ async def run_payment_whatif(
     params: PaymentWhatifParams,
     control_db: AsyncSession | None = None,
 ) -> PaymentWhatifResult:
-    today = datetime.now(UTC).date()
+    today = utc_today()
     horizon_days = _horizon(params.horizon_days)
     rows = await _commitment_rows(
         db,
@@ -291,7 +291,7 @@ async def propose_payment_plan(
     /api/discounts/optimize`` run (``run_discount_optimization``), so the
     plan can never recommend a different capture than the discounts
     dashboard would for equivalent inputs."""
-    today = datetime.now(UTC).date()
+    today = utc_today()
     horizon_days = _horizon(params.horizon_days)
     rows = await _commitment_rows(
         db,

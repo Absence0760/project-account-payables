@@ -53,6 +53,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/intake", tags=["intake"])
 
@@ -138,12 +139,12 @@ def _intake_list_filters(
     if request_type:
         query = query.where(IntakeRequest.request_type == request_type)
     if search and search.strip():
-        term = f"%{search.strip()}%"
+        term = search.strip()
         query = query.where(
             or_(
-                IntakeRequest.request_number.ilike(term),
-                IntakeRequest.title.ilike(term),
-                IntakeRequest.vendor_name.ilike(term),
+                ilike_contains(IntakeRequest.request_number, term),
+                ilike_contains(IntakeRequest.title, term),
+                ilike_contains(IntakeRequest.vendor_name, term),
             )
         )
     return query

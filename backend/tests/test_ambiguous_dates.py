@@ -22,7 +22,7 @@ This file also drift-guards the four call sites — `services/extraction.py`,
 `services/vendor_statement_recon.py` — so none of them can quietly grow a
 second, hand-rolled `"%m/%d/%Y"` / `"%d/%m/%Y"` try/except pair that
 reintroduces the divergence the shared helper exists to prevent. Shape
-borrowed from `tests/test_utc_today.py`'s `UTC_TODAY_MODULES` guard.
+borrowed from `tests/test_utc_today.py`'s convergence guard.
 """
 
 from __future__ import annotations

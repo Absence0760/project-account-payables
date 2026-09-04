@@ -81,7 +81,7 @@ from app.services.bank_reconciliation import (
 )
 from app.services.csv_import import MAX_CSV_IMPORT_SIZE
 from app.tenant import get_tenant, get_tenant_db
-from app.utils.dates import resolve_day_first_preference
+from app.utils.dates import resolve_day_first_preference, utc_today
 
 router = APIRouter(prefix="/bank-reconciliation", tags=["bank-reconciliation"])
 
@@ -550,7 +550,7 @@ async def outstanding_items(
     only and nothing unbounded is ever loaded into memory — a month-end close
     on a large backlog is the exact shape this endpoint has to survive.
     """
-    today = datetime.now(UTC).date()
+    today = utc_today()
     cutoff = today - timedelta(days=older_than_days)
 
     claimed_subq = select(BankTransaction.matched_payment_id).where(

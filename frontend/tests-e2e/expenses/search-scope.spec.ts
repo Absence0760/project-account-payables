@@ -15,11 +15,10 @@ import { expect, test } from '../fixtures/helpers';
  *   1. the term rides the query string, and
  *   2. a row that is NOT on the loaded page comes back.
  *
- * Plus the asymmetry that survives: `GET /api/expenses/export` declares no
- * `search` leg, so the CSV button deliberately sends only `status` — passing a
- * param FastAPI drops would read as a narrowed export while the file still
- * covered the whole status-filtered set. And a keystroke must not cost a
- * request.
+ * Plus the export, which now shares the list's filter builder on both sides of
+ * the wire: the CSV button sends the same `status` + `search` the table is
+ * showing, and `GET /api/expenses/export` runs them through the backend's own
+ * `_expense_list_filters`. And a keystroke must not cost a request.
  * The keystroke test asserts a NEGATIVE over a time window — "no request fired
  * yet" is the one thing that cannot be awaited on a signal — so it uses the
  * same waits (and the same 300ms debounce) as the canonical
@@ -152,11 +151,14 @@ test.describe('/expenses — server-side search', () => {
 		await expect(page.getByTestId('table-empty')).toHaveText('No expenses match your filters.');
 	});
 
-	test('the CSV export does not pretend the search term narrowed it', async ({ page }) => {
-		// `GET /api/expenses/export` has no `search` leg and FastAPI drops an
-		// undeclared param silently, so sending the term would make the code read
-		// as a filtered CSV that isn't one. Until the backend grows the leg the
-		// export stays status-scoped — and says so by not sending it.
+	test('the CSV export carries the search term the table is filtered by', async ({ page }) => {
+		// `GET /api/expenses/export` now runs `status` / `report_id` / `search`
+		// through the same `_expense_list_filters` the list and the KPI rollup
+		// use, so "export what I'm looking at" means the rows on screen. Before
+		// that leg existed the button deliberately withheld the term (FastAPI
+		// drops an undeclared param silently, which would have read as a
+		// narrowed CSV that wasn't one) — this asserts the other half of that
+		// trade: once the backend can honour it, the term must actually be sent.
 		const { exportUrls } = await stubExpenseEndpoints(page);
 		await page.goto('/expenses');
 		await expect(page.locator(ROWS)).toHaveCount(PAGE_ONE.length);
@@ -176,7 +178,7 @@ test.describe('/expenses — server-side search', () => {
 		await exported;
 
 		expect(exportUrls).toHaveLength(1);
-		expect(new URL(exportUrls[0]).searchParams.get('search')).toBeNull();
+		expect(new URL(exportUrls[0]).searchParams.get('search')).toBe('Skyline');
 	});
 
 	test('rapid typing fires one coalesced request, not one per keystroke', async ({ page }) => {

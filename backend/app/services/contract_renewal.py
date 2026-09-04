@@ -52,6 +52,7 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.notification_dispatch import notify_event, resolve_role_user_ids
 from app.services.notification_templates import render_contract_renewal
 from app.services.sweep_health import SWEEP_CONTRACT_RENEWAL, run_sweep_loop
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class RenewalResult:
 async def notify_renewals_once(*, today: date | None = None) -> RenewalResult:
     """One sweep across every tenant. Safe to call directly (CLI / tests)."""
     result = RenewalResult()
-    ref_today = today or datetime.now(UTC).date()
+    ref_today = today or utc_today()
 
     async with control_session_factory() as ctrl:
         rows = await ctrl.execute(select(Organization.id, Organization.db_name))

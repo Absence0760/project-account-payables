@@ -100,6 +100,7 @@ from app.services.workflow_engine import (
 from app.tenant import get_tenant, get_tenant_db
 from app.utils.dates import utc_today
 from app.utils.http import content_disposition_attachment
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -255,13 +256,13 @@ async def _latest_rejection_reasons(
 def _invoice_number_ilike(term: str):
     """A case-insensitive `Invoice.invoice_number` substring filter that treats
     the vendor's search term as a literal — LIKE metacharacters (`% _ \\`) are
-    escaped so a number that contains one still matches. Returns `None` for an
-    empty term so the caller can skip the clause."""
+    escaped by `app.utils.search.ilike_contains` so a number that contains one
+    still matches. Returns `None` for an empty term so the caller can skip the
+    clause."""
     cleaned = (term or "").strip()
     if not cleaned:
         return None
-    escaped = cleaned.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return Invoice.invoice_number.ilike(f"%{escaped}%", escape="\\")
+    return ilike_contains(Invoice.invoice_number, cleaned)
 
 
 def _date_range_clauses(column, date_from: date | None, date_to: date | None) -> list:

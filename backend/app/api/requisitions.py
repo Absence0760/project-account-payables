@@ -67,6 +67,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/requisitions", tags=["requisitions"])
 
@@ -175,12 +176,12 @@ def _requisition_list_filters(query, *, status_filter: str | None, search: str |
     if status_filter:
         query = query.where(PurchaseRequisition.status == status_filter)
     if search and search.strip():
-        pattern = f"%{search.strip()}%"
+        term = search.strip()
         query = query.where(
             or_(
-                PurchaseRequisition.requisition_number.ilike(pattern),
-                PurchaseRequisition.title.ilike(pattern),
-                PurchaseRequisition.department.ilike(pattern),
+                ilike_contains(PurchaseRequisition.requisition_number, term),
+                ilike_contains(PurchaseRequisition.title, term),
+                ilike_contains(PurchaseRequisition.department, term),
             )
         )
     return query

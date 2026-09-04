@@ -223,13 +223,25 @@
 		return untrack(() => search).trim();
 	}
 
-	// List params. `search` is a SERVER filter now — `GET /api/expenses` ILIKEs
-	// merchant / description / category, the columns this table renders — so the
-	// whole filtered set is searched instead of the page already loaded.
-	function buildParams(): ExpenseListParams {
-		const params: ExpenseListParams = { ...buildExportParams() };
+	// The filters a user sets on this page: status + the free-text term. Both
+	// are SERVER filters — `GET /api/expenses` ILIKEs merchant / description /
+	// category, the columns this table renders — so the whole filtered set is
+	// searched instead of the page already loaded, and `/export` runs the same
+	// three through the same backend filter builder. One object feeds the list,
+	// the KPI rollup, the select-all resolver AND the CSV, so the file can only
+	// ever be the rows on screen.
+	function buildFilterParams(): ExpenseListParams {
+		const params: ExpenseListParams = {};
+		if (statusFilter !== 'all') params.status = statusFilter;
 		const term = currentSearchTerm();
 		if (term) params.search = term;
+		return params;
+	}
+
+	// …plus the sort, which only the list declares (`/export`, `/summary` and
+	// `/ids` would silently drop it).
+	function buildParams(): ExpenseListParams {
+		const params: ExpenseListParams = buildFilterParams();
 		// Same `untrack` reasoning as `currentSearchTerm()` — this is called
 		// synchronously from effects that must not depend on the sort state.
 		const currentSort = untrack(() => sortField);
@@ -237,19 +249,6 @@
 			params.sort = currentSort;
 			params.order = untrack(() => sortOrder);
 		}
-		return params;
-	}
-
-	// Export params, deliberately NOT `buildParams()`. `GET /api/expenses/export`
-	// declares no `search` leg and FastAPI drops an undeclared query param
-	// silently, so sending the term would make the code read as though the CSV
-	// were narrowed by it while the file still covered the whole status-filtered
-	// set. Until the export grows the leg, the CSV is status-scoped and only
-	// status is sent — the same set it exported before search reached the
-	// server. (tracked in docs/followups.md)
-	function buildExportParams(): ExpenseListParams {
-		const params: ExpenseListParams = {};
-		if (statusFilter !== 'all') params.status = statusFilter;
 		return params;
 	}
 
@@ -1102,7 +1101,7 @@
 <PageHeader title={m('expenses.title')}>
 	{#snippet actions()}
 		{#if tab === 'expenses'}
-			<button class="btn-secondary" onclick={() => exportExpensesCsv(buildExportParams())}>{m('expenses.action.exportCsv')}</button>
+			<button class="btn-secondary" onclick={() => exportExpensesCsv(buildFilterParams())}>{m('expenses.action.exportCsv')}</button>
 			{#if canCreate}
 				<button class="btn-primary" onclick={() => (showCreate = true)}>{m('expenses.action.newExpense')}</button>
 			{/if}

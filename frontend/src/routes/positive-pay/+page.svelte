@@ -78,21 +78,28 @@
 			: m('positivePay.fileLabel', { type: POSITIVE_PAY_FILE_TYPE_LABELS[f.file_type], id: f.id.slice(0, 8) });
 	}
 
-	// Client-side search filter (list endpoint filters by file_type/status).
-	const visibleFiles = $derived.by(() => {
-		const q = search.trim().toLowerCase();
-		if (!q) return files;
-		return files.filter(
-			(f) =>
-				fileLabel(f).toLowerCase().includes(q) ||
-				f.id.toLowerCase().includes(q) ||
-				(f.payment_run_id ?? '').toLowerCase().includes(q)
-		);
-	});
-
+	// `search` is a SERVER filter — `GET /api/positive-pay` matches the bank
+	// format, the file type, and both ids as text (the row label renders an
+	// 8-character id prefix, so pasting what is on screen finds the row), and
+	// `/summary` shares the same backend filter builder. It used to narrow the
+	// LOADED rows in the browser, so a file on page 2 read as "nothing matched"
+	// while the footer's "Showing all N" (the server's whole-set total) sat
+	// above a client-narrowed table.
+	//
+	// The rendered label itself deliberately stays out of the server filter: it
+	// is built from a LOCALISED string, so matching it in SQL would make the
+	// result set depend on the caller's browser language. `file_type` is on the
+	// server filter instead, which covers the same intent.
+	//
+	// `untrack` on the read: buildParams() is called synchronously from load(),
+	// which the type-filter `$effect` calls — and Svelte tracks reads
+	// transitively — so a plain read would make that effect depend on `search`
+	// and fire an immediate, un-debounced request per keystroke (issue #168).
 	function buildParams() {
-		const params: { file_type?: string } = {};
+		const params: { file_type?: string; search?: string } = {};
 		if (typeFilter !== 'all') params.file_type = typeFilter;
+		const term = untrack(() => search).trim();
+		if (term) params.search = term;
 		return params;
 	}
 
@@ -126,9 +133,20 @@
 	// `frontend/CLAUDE.md` § Sequencing list fetches.
 	const fetchSequence = createRequestSequencer();
 
+	// The term the newest issued list request carried — see the debounce effect.
+	// Seeded from the URL the same way `search` is (rather than from `search`
+	// itself, which reads as capturing a reactive value at init), so a
+	// bookmarked `?search=` doesn't fire a second load behind the first.
+	let appliedSearch = $state(($page.url.searchParams.get('search') ?? '').trim());
+
 	async function load(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? pageNum + 1 : 1;
 		const token = fetchSequence.start();
+		// Record the term this request carries, so the debounce below can tell a
+		// term already on screen from one that still needs a fetch — which is
+		// what stops its first run (mount, including a bookmarked ?search=)
+		// firing a duplicate load behind the type effect's.
+		if (!opts.append) appliedSearch = untrack(() => search).trim();
 		// KPI rollup tracks the same filter state — refresh it on a fresh load.
 		if (!opts.append) void loadSummary();
 		if (opts.append) loadingMore = true;
@@ -160,9 +178,13 @@
 
 	let searchTimer: ReturnType<typeof setTimeout>;
 	$effect(() => {
-		search;
+		const term = search.trim();
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(syncUrl, 300);
+		if (term === appliedSearch) return;
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			void load();
+		}, 300);
 		// Cancel a pending debounce on teardown: without it the timer fires
 		// after the page is gone, running syncUrl()/a list fetch against a route
 		// the user already left.
@@ -311,12 +333,12 @@
 
 	<DataTable
 		columns={COLUMNS}
-		isEmpty={!loading && visibleFiles.length === 0}
+		isEmpty={!loading && files.length === 0}
 		empty={loading ? m('common.loading') : m('positivePay.empty')}
 		colspan={9}
 	>
 		{#snippet body()}
-			{#each visibleFiles as file (file.id)}
+			{#each files as file (file.id)}
 				<tr
 					class="clickable"
 					onclick={(e) => {

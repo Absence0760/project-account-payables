@@ -40,13 +40,35 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["EMAIL_SHAPE_PATTERN", "looks_like_email"]
+__all__ = ["EMAIL_SHAPE_PATTERN", "is_header_safe", "looks_like_email"]
 
 #: Permissive shape check. Local part: any run of non-space, non-``@``. Domain:
 #: one or more dot-delimited labels of non-space, non-``@``, non-dot characters
 #: — so ``a@b`` (no dot) and ``a@b.`` (trailing dot) are both refused. Anchored
 #: with ``\Z``, not ``$``: see the module docstring.
 EMAIL_SHAPE_PATTERN = re.compile(r"^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+\Z")
+
+
+#: Characters that can never legitimately appear in an email address and must
+#: never reach a mail header: C0 controls (CR and LF above all) plus DEL. CR/LF
+#: are the header-injection primitive — a value carrying one can continue the
+#: header it lands in, e.g. with an attacker-chosen ``Bcc:``.
+_HEADER_UNSAFE_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def is_header_safe(value: str) -> bool:
+    r"""True when ``value`` carries nothing that could break out of a mail header.
+
+    Weaker than :func:`looks_like_email` and deliberately so. It exists for the
+    one caller that must NOT impose the full shape rule: an SSO-supplied address
+    (`services/identity_provisioning.extract_and_check_email`). A corporate IdP
+    can legitimately assert an internal-only address like ``user@intranet`` with
+    no dot in the domain, and refusing that would lock a whole tenant out of its
+    own workspace over a cosmetic rule. A control character is a different
+    matter — no IdP has a legitimate reason to emit one, and the value becomes
+    both a login and a mail destination.
+    """
+    return _HEADER_UNSAFE_PATTERN.search(value) is None
 
 
 def looks_like_email(value: str) -> bool:

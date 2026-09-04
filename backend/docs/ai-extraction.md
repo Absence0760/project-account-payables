@@ -235,7 +235,7 @@ CSV and PDF-statement intake paths, via `parse_date`).
 - Guarded by `tests/test_ambiguous_dates.py`, which both unit-tests the
   disambiguation logic and AST-scans the four call sites so none of them can
   quietly regrow a hardcoded `"%m/%d/%Y"` / `"%d/%m/%Y"` pair — mirrors the
-  `UTC_TODAY_MODULES` convergence guard in `tests/test_utc_today.py`.
+  UTC-today convergence guard in `tests/test_utc_today.py`.
 
 ### Self-Correction Pass
 

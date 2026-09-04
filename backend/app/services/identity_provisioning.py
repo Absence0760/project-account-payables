@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
+from app.utils.emails import is_header_safe
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,25 @@ class DeactivatedAccount(ValueError):
         super().__init__("This account has been deactivated.")
 
 
+class UnsafeEmailAddress(ValueError):
+    """Raised when an IdP-supplied email carries a character that can never
+    reach a mail header — a CR/LF above all.
+
+    The address becomes a login AND a notification destination, so a newline in
+    it is the SMTP header-injection primitive (an attacker-chosen `Bcc:` on
+    every mail that tenant's app sends the user). Refused rather than silently
+    stripped: rewriting an identity the IdP asserted is worse than declining to
+    provision it.
+
+    Deliberately narrower than `utils/emails.looks_like_email` — see
+    `is_header_safe` for why the full shape rule is not imposed here.
+    """
+
+    def __init__(self, email: str) -> None:
+        self.email = email
+        super().__init__("The identity provider supplied an unusable email address.")
+
+
 class EmailDomainNotAllowed(ValueError):
     """Raised when a verified IdP email falls outside the tenant's allowlist.
 
@@ -69,8 +89,16 @@ def extract_and_check_email(email_raw: str, allowed_email_domains: list[str]) ->
     Returns the lower-cased, stripped email. Raises `EmailDomainNotAllowed`
     (carrying the normalized email) when an allowlist is configured and the
     email's domain isn't on it. An empty allowlist means "any domain".
+
+    Raises `UnsafeEmailAddress` when the value carries a control character. The
+    strip() below removes a trailing newline, but an INTERIOR one survives it,
+    and this address is stored as `User.email` — a login and the destination of
+    every notification the app sends that user. A tenant's own IdP is trusted
+    to assert identities, not to inject mail headers.
     """
     email = email_raw.lower().strip()
+    if not is_header_safe(email):
+        raise UnsafeEmailAddress(email)
     if allowed_email_domains:
         domain = email.rsplit("@", 1)[-1]
         if domain not in allowed_email_domains:

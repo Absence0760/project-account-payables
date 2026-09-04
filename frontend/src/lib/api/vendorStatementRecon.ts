@@ -14,6 +14,10 @@ import type {
 export interface ReconListParams {
 	vendor_id?: string;
 	status?: string;
+	/** Free-text over supplier + statement reference — the two columns the row
+	 *  renders. A SERVER filter: the page used to narrow the loaded rows in the
+	 *  browser, so a statement on page 2 read as "nothing matched". */
+	search?: string;
 	page?: number;
 	page_size?: number;
 }
@@ -24,20 +28,22 @@ export function listReconciliations(
 	const qs = new URLSearchParams();
 	if (params.vendor_id) qs.set('vendor_id', params.vendor_id);
 	if (params.status) qs.set('status', params.status);
+	if (params.search) qs.set('search', params.search);
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<ReconciliationListResponse>(`/api/vendor-statements?${qs}`);
 }
 
 // Whole-set KPI rollup — status counts + total open discrepancies over the
-// SAME vendor_id / status filters as `listReconciliations`, so `openCount` /
-// `totalDiscrepancies` stop describing only the loaded page.
+// SAME vendor_id / status / search filters as `listReconciliations`, so
+// `openCount` / `totalDiscrepancies` stop describing only the loaded page.
 export function getReconciliationSummary(
-	params: Pick<ReconListParams, 'vendor_id' | 'status'> = {}
+	params: Pick<ReconListParams, 'vendor_id' | 'status' | 'search'> = {}
 ): Promise<ReconciliationSummary> {
 	const qs = new URLSearchParams();
 	if (params.vendor_id) qs.set('vendor_id', params.vendor_id);
 	if (params.status) qs.set('status', params.status);
+	if (params.search) qs.set('search', params.search);
 	const suffix = qs.toString() ? `?${qs}` : '';
 	return api.get<ReconciliationSummary>(`/api/vendor-statements/summary${suffix}`);
 }

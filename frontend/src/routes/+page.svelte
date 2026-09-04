@@ -4,6 +4,7 @@
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
@@ -294,7 +295,7 @@
 								<span class="upcoming-date" class:overdue-text={inv.is_overdue}>
 									{fmtDue(inv.due_date)}
 									{#if inv.is_overdue}
-										<span class="overdue-badge">{m('dashboard.overdue')}</span>
+										<Badge tone="danger" variant="overdue-badge">{m('dashboard.overdue')}</Badge>
 									{/if}
 								</span>
 							</div>
@@ -609,14 +610,12 @@
 		color: #f06464;
 	}
 
-	.overdue-badge {
-		display: inline-block;
-		font-size: 0.62rem;
-		font-weight: 600;
-		padding: 1px 5px;
-		border-radius: 6px;
-		background: rgba(224, 64, 64, 0.12);
-		color: #f06464;
+	/* Colour + metrics come from `ui/Badge.svelte`; this keeps only the spacing
+	   that is the CALLER's business — the gap between the due date and the flag.
+	   `/payments` already renders this same flag through the primitive, so the
+	   dashboard's own copy (0.62rem, alpha .12, a literal #f06464 where the
+	   palette says --danger-on-tint) was the same badge at a second size. */
+	:global(.overdue-badge) {
 		margin-left: 4px;
 	}
 

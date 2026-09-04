@@ -49,6 +49,7 @@ from app.utils.passwords import (
     hash_password,
     validate_password_complexity,
 )
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +95,8 @@ async def list_users(
 ):
     base = select(User).where(User.organization_id == org_id)
     if search and search.strip():
-        like = f"%{search.strip().lower()}%"
-        base = base.where((User.full_name.ilike(like)) | (User.email.ilike(like)))
+        term = search.strip()
+        base = base.where(ilike_contains(User.full_name, term) | ilike_contains(User.email, term))
 
     total_q = await db.execute(select(func.count()).select_from(base.subquery()))
     total = int(total_q.scalar() or 0)

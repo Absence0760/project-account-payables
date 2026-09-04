@@ -83,6 +83,7 @@ from app.models.recurring_invoice import (
 from app.services.audit_dispatch import dispatch_audit
 from app.services.sweep_health import SWEEP_RECURRING_INVOICES, run_sweep_loop
 from app.services.workflow_engine import create_workflow_instance
+from app.utils.dates import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -602,7 +603,7 @@ class TenantSweepOutcome:
 async def generate_recurring_invoices_once(*, today: date | None = None) -> SweepResult:
     """One generation sweep across every tenant. Safe to call directly."""
     result = SweepResult()
-    ref_today = today or datetime.now(UTC).date()
+    ref_today = today or utc_today()
 
     async with control_session_factory() as ctrl:
         rows = await ctrl.execute(select(Organization.id, Organization.db_name))

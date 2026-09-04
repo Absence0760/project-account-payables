@@ -29,6 +29,7 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+from app.utils.search import ilike_contains
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +58,7 @@ async def list_purchase_orders(
 ):
     base = apply_entity_scope(select(PurchaseOrder), PurchaseOrder, entity_id)
     if search:
-        pattern = f"%{search}%"
-        base = base.where(PurchaseOrder.po_number.ilike(pattern))
+        base = base.where(ilike_contains(PurchaseOrder.po_number, search))
     if status_filter:
         base = base.where(PurchaseOrder.status == status_filter)
     if vendor_id:
@@ -140,7 +140,7 @@ async def purchase_order_status_counts(
         entity_id,
     )
     if search:
-        query = query.where(PurchaseOrder.po_number.ilike(f"%{search}%"))
+        query = query.where(ilike_contains(PurchaseOrder.po_number, search))
     if vendor_id:
         try:
             query = query.where(PurchaseOrder.vendor_id == uuid.UUID(vendor_id))

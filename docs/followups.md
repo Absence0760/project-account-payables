@@ -34,14 +34,30 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-08-20 against round 14 — a five-agent parallel bug
+**Last reconciled:** 2026-09-03 — a coverage pass over the work issue
+[#321](https://github.com/Absence0760/project-account-payables/issues/321) said
+was complete, which closed three entries and opened none. `GET
+/api/expenses/export` now shares the list's filter builder (it had no `search`
+leg); the six correct-but-unguarded `datetime.now(UTC).date()` sites converged
+on `utc_today`, and that guard became a whole-`app/` scan instead of an opt-in
+allowlist; the badge conversion gained a ratchet (`badgeAudit.test.ts`) so its
+remaining count lives in a test rather than in prose that goes stale, and the
+duplicate `.overdue-badge` closed with it. Writing the call-site tests for the
+round-13 email hoist surfaced one new defect, fixed in the same pass rather than
+parked: `identity_provisioning.extract_and_check_email` stored an IdP-supplied
+address containing a control character as `User.email` — a login and a mail
+destination ([decisions.md](decisions.md) §60). **The GitHub mirror (#321) was
+four rounds stale and has been re-synced** — it read 21 items against this
+file's ~74.
+
+**Previously reconciled:** 2026-08-20 against round 14 — a five-agent parallel bug
 hunt across the money path, auth/tenant isolation, the SvelteKit frontend, the
 background sweeps and adapter registries, and procurement/analytics. Twenty-nine
 defects were fixed and committed with regression tests. The findings each agent
 verified in the source but correctly did not fold in are recorded below, one
 subsection per area, immediately above § (a).
 
-**Previously reconciled:** 2026-08-19 against round 13 — a four-agent sweep of the
+**Before that:** 2026-08-19 against round 13 — a four-agent sweep of the
 **codeable** half of this file (the `(a)` credential-blocked and `(b)` operator
 items have no code to write, and four `(c)` items are gated on a product call or
 a third-party artifact). It closed both consistency-debt items, both transitional
@@ -409,15 +425,16 @@ invisible, which is exactly what both Positive Pay modules used; either could ha
 sat on the "converged" allowlist while still reading local time
 ([decisions.md](decisions.md) §51). What is left is cosmetic:
 
-- [ ] **Six `datetime.now(UTC).date()` sites are correct but unguarded.**
-      `api/api_keys.py`, `api/bank_reconciliation.py`,
-      `services/discount_auto_trigger.py`, `services/contract_renewal.py`,
-      `services/recurring_invoices.py` and
-      `services/financing_adapters/mock_adapter.py` still inline the expression
-      instead of importing `utc_today`, so they cannot join `UTC_TODAY_MODULES`
-      and sit one careless edit from regressing silently.
-      **Durable fix:** swap the expression, add each to the allowlist.
-      **Trigger:** the next change to any of them.
+The last of it is **closed** too. The six modules that inlined
+`datetime.now(UTC).date()` — `api/api_keys`, `api/bank_reconciliation`, the
+recurring / contract-renewal / discount-auto-capture sweeps and the mock
+financing adapter, plus `api/cash_flow` and the four copilot tools that
+predated the helper — now import `utc_today`, and the guard stopped being an
+opt-in allowlist: it AST-scans **the whole of `app/`** for a local-timezone
+"today", and separately fails on an inlined `datetime.now(UTC).date()` outside
+`utils/dates.py`. The allowlist was the right shape while the tree was mixed
+and the wrong one once it wasn't — a list cannot see a module nobody added to
+it, and a new module is where the next `date.today()` arrives.
 
 ### Tinted badges — the shared primitive exists, half the call sites still hand-roll
 
@@ -430,36 +447,44 @@ hook only** (the e2e suite reads `.badge.approved`), never as colour. Rationale,
 including why sizing is fixed rather than a prop and why `neutral` / `erp` stay
 non-tinted: [decisions.md](decisions.md) §47.
 
-- [ ] **30 badge-shaped CSS rules still hand-roll the recipe.** Down from 62.
-      This tranche converted `/payments` (14 → 2), `/admin/webhooks` (5 → 0),
-      `RequisitionModal` (8 → 0) and `ExpenseModal` (6 → 0) in four attributable
-      commits; the remainder is `/expenses` (13), `/requisitions` (8) and
-      `InvoiceModal` (7).
-      **No distinction was lost.** `pending_compliance`'s ring — the thing that
-      says "a human must clear this", where the tone alone says only "waiting" —
-      was preserved as a caller-owned wrapper rather than flattened or turned into
-      a one-caller prop ([decisions.md](decisions.md) §52). Every other
-      consolidation (`cancelled`/`voided`, runs `submitted`/`executing`, six of
-      eight card statuses) merged partners that had **no rule at all** and rendered
-      untinted — the conversion's real payoff on `/payments` was the exhaustiveness
-      check, not fewer lines. Two chips stay off the primitive by design
+- [ ] **The badge conversion has a ratchet now; the remainder is the tranches.**
+      `frontend/src/lib/a11y/badgeAudit.test.ts` scans every stylesheet for a
+      badge-shaped selector (`badge` / `chip` / `pill` / `tag`) that sets both a
+      tinted background and a colour, holds each file to a recorded baseline and
+      holds the converted files (`/payments`, `/admin/webhooks`,
+      `RequisitionModal`, `ExpenseModal`, and now the dashboard) at zero. **The
+      baseline map is the live count** — no number is restated here or in
+      `frontend/CLAUDE.md`, both of which went stale within one round last time.
+      The audit deliberately counts more than the seven files this entry used to
+      name: `chip` / `pill` / `tag` are the same capsule under other names, and
+      the recipe is respelled in components (`RunDetailModal`, `ScreeningBadge`,
+      `SupplierChatThread`) as readily as in routes.
+      **Why still staged:** the tokens standardise on alpha `.15`, so converting
+      a `.1` or `.12` rule *visibly* strengthens that badge. Landing them all at
+      once would make any visual complaint unattributable.
+      **No distinction was lost** in the tranches so far. `pending_compliance`'s
+      ring — the thing that says "a human must clear this", where the tone alone
+      says only "waiting" — was preserved as a caller-owned wrapper rather than
+      flattened or turned into a one-caller prop ([decisions.md](decisions.md)
+      §52). Every other consolidation merged partners that had **no rule at all**
+      and rendered untinted. Two chips stay off the primitive by design
       (`.discount-chip` is two stacked lines; `.blocked-chip` wraps a localised
       sentence where `nowrap` would break 320px reflow); both took the tokens.
-      **The count is scoped to the seven files this entry names, and that
-      undercounts:** `RunDetailModal.svelte` hand-rolls 7 more, and
-      `routes/+page.svelte` carries a second spelling of the `.overdue-badge` this
-      tranche retired — so that flag now renders at two sizes on two pages until it
-      converts. Both should join the next tranche.
+      The dashboard's duplicate `.overdue-badge` — the same flag rendering at two
+      sizes on two pages — is **closed**.
       **Durable fix:** convert the rest in attributable tranches, checking
-      collapsed distinctions as you go, and hoist the two tone maps out of the
-      modals into `types/{requisition,expense}.ts` in the same change.
-      **Trigger:** the next slice touching `/expenses`, `/requisitions` or
-      `InvoiceModal`.
+      collapsed distinctions as you go, editing the baseline down in the same
+      commit, and hoisting the two tone maps out of the modals into
+      `types/{requisition,expense}.ts` when their files convert.
+      **Trigger:** the next slice touching any file the baseline names.
 
 ### Surfaced by the round-13 sweep
 
-Four items the round-13 agents confirmed but correctly did not fold into their
-own tranches.
+Three items the round-13 agents confirmed but correctly did not fold into their
+own tranches. (The fourth — `GET /api/expenses/export` having no `search` leg —
+is **closed**: the export now runs `status` / `report_id` / `search` through the
+same `_expense_list_filters` as the list and the KPI rollup, and the CSV button
+sends the term it is filtered by.)
 
 - [ ] **`opacity` used to de-emphasise text drops it below 4.5:1.**
       `tr.inactive td:not(.actions) { opacity: 0.6 }` on `/admin/webhooks` renders
@@ -476,17 +501,6 @@ own tranches.
       make the badge conversion unattributable, which is the entire reason that
       work is tranched.
       **Trigger:** the next a11y sweep, or any change to that row treatment.
-
-- [ ] **`GET /api/expenses/export` has no `search` leg.** The list searches
-      merchant / description / category; the export does not, so a CSV taken
-      during a search covers the whole status-filtered set. Nothing is misleading
-      today — the frontend refuses to pretend, keeping a separate
-      `buildExportParams()` pinned by an e2e — but the two surfaces disagree about
-      what "filtered" means.
-      **Durable fix:** add `search` to `export_expenses`, reusing `list_expenses`'
-      own `or_(...)` predicate rather than restating it, then point the button back
-      at `buildParams()`.
-      **Trigger:** the next slice touching the expense export.
 
 - [ ] **`InvoiceModal`'s supplier-chat @mention autocomplete has no member source
       on `/invoices`.** It reads `adminStore.users`, which only `/admin` or
@@ -1035,32 +1049,21 @@ rather than patched. None is a diagnosed defect (those go to
 
 ### Surfaced by the persona-panel round-2 parallel fix batch (issue #328)
 
-- **`pnpm i` silently drops the frontend's security-pin overrides on pnpm 11.**
-  `frontend/package.json`'s `"pnpm": { "overrides": {...} }` pins
-  `cookie@<0.7.0 → >=0.7.0 <0.8.0` and `undici@<7.28.0 → >=7.28.0` (both CVE
-  fixes). The installed toolchain is pnpm 11.9.0, which no longer reads
-  overrides from that legacy `package.json` location — pnpm 11 moved override
-  config to a `pnpm-workspace.yaml` `overrides:` block, and `frontend/` has no
-  such file. Running a plain `pnpm i` regenerates `pnpm-lock.yaml` with the pins
-  silently gone, downgrading `cookie` back to 0.6.0 — the exact CVE the override
-  exists to block. Caught incidentally by a parallel worker doing unrelated
-  frontend edits in this round (each `pnpm i` it ran reverted the lockfile via
-  `git checkout --` before committing, so no landed commit carries the
-  downgrade), not by any dependency-audit tooling — `frontend/CLAUDE.md` /
-  `docs/environment.md` don't currently call out pnpm-version pinning the way
-  `backend/CLAUDE.md`'s dependency-lock section does for Python.
-  **Durable fix:** add `frontend/pnpm-workspace.yaml` with the two overrides
-  moved into its `overrides:` block (pnpm 11's documented location), confirm a
-  clean `pnpm i` keeps `cookie` at `>=0.7.0 <0.8.0` and `undici` at `>=7.28.0` in
-  the regenerated lockfile, and consider pinning `packageManager` in
-  `frontend/package.json` (or root `package.json`) so a contributor on an older
-  pnpm doesn't hit the inverse problem. **Trigger:** the next time
-  `frontend/pnpm-lock.yaml` is regenerated for any reason (a dependency bump, a
-  Dependabot PR) — verify the overrides survived before committing the lock.
-
-  _(The MFA-enforcement-inactive UI bullet that stood here is **closed** — PR
-  #341 wired the `settings.mfa.enforcement_active` signal into the Security
-  card's inline warning.)_
+- **`pnpm i` dropping the frontend's security-pin overrides — SUPERSEDED.**
+  This entry described pnpm 11 no longer reading `pnpm.overrides` from
+  `frontend/package.json` (where `cookie@<0.7.0` and `undici@<7.28.0` are
+  pinned), so a plain `pnpm i` regenerated the lockfile with the CVE pins
+  silently gone. Its proposed fix was a `frontend/pnpm-workspace.yaml`.
+  **A different fix landed** in #353: both `package.json` files now pin
+  `packageManager: pnpm@10.12.4` and every `pnpm/action-setup` site reads it
+  instead of passing `version:`, so one pnpm — a 10.x that does read that
+  location — writes the lockfile everywhere. The pin is the thing to preserve;
+  moving the overrides is only needed if the project later moves to pnpm 11+.
+  What remains open is the *verification*, tracked below as
+  § Surfaced while clearing the open-PR backlog → "Confirm the `packageManager`
+  pin stopped Dependabot dropping the pnpm overrides", which is where the recipe
+  and the recurrence instructions live. Kept as a pointer rather than deleted:
+  the diagnosis (which pnpm versions read which location) is the expensive half.
 
 ### Surfaced by the issue #328 checklist reconciliation (2026-08-27)
 

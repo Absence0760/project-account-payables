@@ -60,6 +60,7 @@ from app.services.contract_spend import compute_spend_summary
 from app.services.report_export import csv_safe_cell
 from app.services.storage import get_file, upload_contract_file
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
@@ -188,8 +189,10 @@ def _contract_list_filters(
     if vendor_id:
         base = base.where(Contract.vendor_id == vendor_id)
     if search and search.strip():
-        like = f"%{search.strip()}%"
-        base = base.where(Contract.contract_number.ilike(like) | Contract.title.ilike(like))
+        term = search.strip()
+        base = base.where(
+            ilike_contains(Contract.contract_number, term) | ilike_contains(Contract.title, term)
+        )
     return base
 
 
