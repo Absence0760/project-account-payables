@@ -8,9 +8,15 @@ totals built from many small line items.
 
 These annotations keep the in-Python value as ``Decimal`` (the
 ``money is exact`` project invariant) while serialising to a JSON
-number — that's what the frontend types expect (``amount: number``)
-and what current Storybook / API consumers parse. The conversion
-happens once, at JSON-write time.
+number. The conversion happens once, at JSON-write time.
+
+**The frontend does not type these ``number``**, despite the wire
+shape — `frontend/CLAUDE.md` forbids it, because a ``number``-typed
+money field invites ``a - b`` / ``Math.max()`` on currency. It types
+them ``MoneyAmount`` (``string | number | null``), which is honest
+about this serialisation *and* makes raw arithmetic a type error. So
+adding a field here does not license a numeric type over there; an
+earlier version of this docstring said it did.
 
 For JavaScript clients that need *exact* arithmetic on these values,
 switch to ``Decimal | None`` with Pydantic's default string

@@ -82,8 +82,8 @@ stored row's currency through `resolve_reporting_currency`, and its two
 `invoice_defaults.currency` reads are the FormatterContext for the rendered
 file, not a rollup — no cross-currency sum exists there to fix.
 
-This file now carries **56** open checkbox entries (plus the 8 narrative
-round-15 findings) — **64** items. The money-path pass took the checkbox count
+This file now carries **57** open checkbox entries (plus the 8 narrative
+round-15 findings) — **65** items. The money-path pass took the checkbox count
 64 → 56; the coverage pass that followed it added one back (the `float` money
 filter bounds, below), which is the file working as intended: a sweep that
 closes nothing and opens nothing has usually not looked hard enough.
@@ -1018,6 +1018,39 @@ would make the codebase less consistent rather than more.
       a money bound.
       **Trigger:** the next change touching a money filter bound on any list
       endpoint, or the next money-exactness audit pass.
+
+### Surfaced by the currency-denomination round (2026-09-04)
+
+- [ ] **Frontend money fields typed `number` outside the dashboard.**
+      `/api/dashboard`'s page has been converted (money fields now `MoneyAmount`,
+      the two `Math.max` chart scales and two bar-width divisions routed through
+      `parseMoneyForLayout`, the `> 0` check through `isPositiveAmount`), and a
+      planted `data.total_paid + data.total_pending` is now a **type error**
+      rather than a convention violation. Other type modules still carry
+      `number`-typed money — `frontend/src/lib/types/budget.ts` is the clearest
+      example (`amount` / `total` on several interfaces).
+      **Why it is not one sweep:** a grep for money-shaped names returns ~55
+      fields and most are NOT money — pagination `total`, `total_requests`,
+      `total_tokens`, `exception_count`. Each needs a per-field judgment, and
+      each *genuine* money field then needs its call sites checked, because
+      retyping it to `MoneyAmount` correctly turns any existing arithmetic into
+      a compile error that has to be resolved with the right helper
+      (`parseMoneyForLayout` for geometry, `isPositiveAmount` for a predicate)
+      rather than a cast.
+      **Durable fix:** convert per type module, smallest first, each with its
+      route's `pnpm check` green and its arithmetic moved onto the named
+      helpers; then add a ratchet in the shape of `a11y/badgeAudit.test.ts` (a
+      per-file baseline that only ever decreases) so the remainder can't grow.
+      A blanket scan can't land first — it would fail on the ~40 non-money
+      fields and there is no way to distinguish them by name alone.
+      **Trigger:** the next slice touching a type module that carries a money
+      field, or the next money-exactness audit pass.
+      **Note:** the two docs on this contradicted each other until this round —
+      `frontend/CLAUDE.md` said the backend "serialises money as an exact
+      decimal string" while `backend/app/schemas/money.py` serialises `Decimal`
+      to a JSON **number** and its docstring cited the frontend's `amount:
+      number` as justification. Both now state the split and point at each
+      other; read them before converting anything.
 
 ### Surfaced by the round-15 bug hunt
 
