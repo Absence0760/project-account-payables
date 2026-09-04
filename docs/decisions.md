@@ -2317,3 +2317,49 @@ are exempt with reasons: `api/enrichment.py` extracts a host, and
 `api/auth_saml.py` decides whether a NameID *is* an email before falling back to
 the attribute statement — where the shape rule would send exactly the internal
 domains above down the fallback path.
+
+## 61. An unrecognised sanctions `result` is a hold, not an allow — the verdict is never reached by omission
+
+`ScreeningResult.result` is a three-value contract — `clear` | `match` |
+`review_required` — and `check_payment_compliance` branched on two of them:
+
+```python
+if screening.result == "match":       # → refuse
+if screening.result == "review_required":  # → reason → hold
+# anything else falls through
+verdict = "hold" if reasons else "allow"
+```
+
+Any fourth value therefore matched neither test and fell through to `allow`,
+which is the one verdict that must never be reachable by *omission*. A
+sanctions gate that clears a name because it could not read the answer is worse
+than one that never ran: the payment goes out carrying the audit row of a check
+that reported nothing.
+
+The fix is an explicit `elif screening.result != "clear"` — `clear` is the only
+value that proceeds silently, and everything else adds a reason.
+
+**Why `hold` and not `refuse`.** Identical reasoning to the unknown-PROVIDER
+path (§36) and deliberately the same verdict: the payment waits in
+`pending_compliance`, the caller opens the `payment_compliance_hold` exception,
+and the misconfiguration reaches the AP queue rather than the payment rail. A
+`refuse` would be a dead end — `/compliance/release` re-runs the same gate, so a
+refusal on an unreadable value could never be cleared by a human.
+
+**Why fix a latent bug.** No shipped adapter emits a fourth value today, so this
+was unreachable in practice. It is fixed anyway because the three live provider
+adapters (ComplyAdvantage, Dow Jones, Refinitiv) are fail-closed skeletons
+awaiting credentials: the first real provider response shape we have never seen
+would arrive precisely here, and it would arrive as a silent allow. The
+comparisons are exact, so a provider differing only in case (`Clear`,
+`REVIEW_REQUIRED`) is exactly as unreadable as one inventing a new word — the
+guard covers those too rather than case-folding, because guessing at an
+unreadable answer is the failure being removed.
+
+`vendor_screening.screen_vendor_record` was already fail-closed for the same
+input (`_STATUS_MAP.get(result, "review")`), so this aligns the payment gate
+with the vendor gate rather than introducing a new posture.
+
+Confirmed one of the eight "unverified leads" recorded in `docs/followups.md`
+from the round-14 money-path hunt, which the tracker (#321) carried as a
+hypothesis rather than a finding.

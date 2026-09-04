@@ -876,3 +876,156 @@ async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
     issue_mock.assert_not_called()
     # Invoice did NOT flip to payment_scheduled.
     assert inv.status == InvoiceStatus.approved
+
+
+# ---------------------------------------------------------------------------
+# Unrecognised screening result — the verdict must never be reached by omission
+#
+# `ScreeningResult.result` is a three-value contract ('clear' | 'match' |
+# 'review_required'). The branch structure tested `match` and `review_required`
+# and let anything else fall through to `allow`, so a provider emitting a
+# fourth value cleared the payment. Latent while every shipped adapter is
+# well-behaved, and worth closing anyway: the three live provider adapters are
+# fail-closed skeletons awaiting keys, so the first response shape we have
+# never seen would arrive here as a silent allow.
+# ---------------------------------------------------------------------------
+
+
+class _FixedResultAdapter:
+    """A sanctions adapter that returns exactly the `result` it was built with.
+
+    Deliberately not a subclass of the mock: the point is to emit a value
+    OUTSIDE the declared vocabulary, which the mock will never produce.
+    """
+
+    provider_name = "fixture"
+
+    def __init__(self, result: str):
+        self._result = result
+
+    async def screen_vendor(self, **_kwargs):
+        return SimpleNamespace(
+            result=self._result,
+            provider="fixture",
+            risk_score=0,
+            matched_list=None,
+            raw_response={},
+            categories=[],
+            adverse_media=False,
+        )
+
+
+async def _verdict_for_result(result: str, **overrides):
+    db = _mock_db_with_zero_trailing_spend()
+    kwargs = {
+        "vendor": _vendor(),
+        "payment_amount": Decimal("100.00"),
+        "payment_currency": "USD",
+        "payment_method": "sepa",
+        "org_settings": {},
+        "organization_id": uuid.uuid4(),
+        **overrides,
+    }
+    with patch(
+        "app.services.compliance.get_sanctions_adapter",
+        return_value=_FixedResultAdapter(result),
+    ):
+        return await check_payment_compliance(db, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "unknown",
+    ["error", "pending", "blocked", "unknown", "REVIEW_REQUIRED", "Clear", "", "timeout"],
+)
+@pytest.mark.asyncio
+async def test_unrecognised_screening_result_holds_rather_than_allows(unknown):
+    """Anything outside the three-value contract is a hold.
+
+    Includes the case-variant spellings ('Clear', 'REVIEW_REQUIRED') on
+    purpose: the comparisons are exact, so a provider that differs only in
+    case is exactly as unreadable as one that invents a new word, and must
+    not be guessed at.
+    """
+    decision = await _verdict_for_result(unknown)
+    assert decision.verdict == "hold", (
+        f"screening result {unknown!r} produced {decision.verdict!r}; an "
+        "unreadable sanctions answer must never resolve to allow"
+    )
+    assert any("unrecognised result" in r for r in decision.reasons)
+
+
+@pytest.mark.asyncio
+async def test_clear_is_still_the_only_value_that_allows():
+    """The guard must not have turned the ordinary clear path into a hold."""
+    decision = await _verdict_for_result("clear")
+    assert decision.verdict == "allow"
+    assert decision.reasons == []
+
+
+@pytest.mark.asyncio
+async def test_match_still_refuses_and_review_required_still_holds():
+    """The two recognised non-clear values keep their distinct verdicts — the
+    new branch is an `elif`, so it must not have swallowed either."""
+    assert (await _verdict_for_result("match")).verdict == "refuse"
+
+    review = await _verdict_for_result("review_required")
+    assert review.verdict == "hold"
+    # The review_required reason, not the unrecognised-result one.
+    assert any("review_required" in r for r in review.reasons)
+    assert not any("unrecognised result" in r for r in review.reasons)
+
+
+@pytest.mark.asyncio
+async def test_unrecognised_result_is_a_hold_not_a_refuse():
+    """`hold` and not `refuse` on purpose, matching the unknown-PROVIDER path
+    (`docs/decisions.md` §36): the payment waits in `pending_compliance` and
+    an operator can release it once the adapter is understood. A `refuse`
+    would be a dead end no human could clear."""
+    decision = await _verdict_for_result("something_new")
+    assert decision.verdict == "hold"
+    assert decision.verdict != "refuse"
+
+
+@pytest.mark.asyncio
+async def test_unrecognised_result_still_writes_the_sanctions_row():
+    """The screen happened and the auditor must see it — the new branch sits
+    after `db.add(sanctions_row)`, so the evidence lands either way."""
+    db = _mock_db_with_zero_trailing_spend()
+    with patch(
+        "app.services.compliance.get_sanctions_adapter",
+        return_value=_FixedResultAdapter("error"),
+    ):
+        await check_payment_compliance(
+            db,
+            vendor=_vendor(),
+            payment_amount=Decimal("100.00"),
+            payment_currency="USD",
+            payment_method="sepa",
+            org_settings={},
+            organization_id=uuid.uuid4(),
+        )
+    db.add.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_unrecognised_result_reason_is_bounded_and_pii_free():
+    """The result value is bounded provider vocabulary rather than PII, but it
+    reaches an operator-facing reason string, so it is truncated. A provider
+    echoing an unbounded blob must not paste it into the payment record."""
+    decision = await _verdict_for_result("x" * 500)
+    reason = next(r for r in decision.reasons if "unrecognised result" in r)
+    assert len(reason) < 200
+    assert "x" * 33 not in reason
+
+
+@pytest.mark.asyncio
+async def test_unrecognised_result_composes_with_the_other_gates():
+    """The hold is additive: an unrecognised screen on a corridor that ALSO
+    fails KYC still refuses, because the KYC gap is the stronger verdict."""
+    decision = await _verdict_for_result(
+        "error",
+        vendor=_vendor(kyc_status="pending", country="RU"),
+        payment_method="international_wire",
+        payment_amount=Decimal("50000.00"),
+    )
+    assert decision.verdict == "refuse"

@@ -321,6 +321,21 @@
 			</p>
 		{/if}
 
+		<!-- The same honesty for the two REALISED figures. `captured_amount` and
+		     `missed_amount` count only offers denominated in the reporting
+		     currency — amounts in different currencies are not added together —
+		     so a non-zero count means the green and red KPIs above describe part
+		     of the set. Without this the page shows a partial figure as if it
+		     were the whole one, which is the defect the backend fix removed. -->
+		{#if dashboard && dashboard.excluded_captured_count + dashboard.excluded_missed_count > 0}
+			<p class="disc-skipped" role="alert" data-testid="excluded-realised">
+				{m('discounts.excludedRealised', {
+					n: dashboard.excluded_captured_count + dashboard.excluded_missed_count,
+					currency: dashboard.currency
+				})}
+			</p>
+		{/if}
+
 		<!-- Optimize panel -->
 		<div class="opt-panel">
 			<div class="opt-head">

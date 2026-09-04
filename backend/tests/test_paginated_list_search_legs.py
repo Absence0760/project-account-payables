@@ -320,55 +320,15 @@ async def test_positive_pay_search_is_tenant_scoped(realdb):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("label", "module", "list_fn", "summary_fn"),
-    [
-        (
-            "/api/vendor-statements",
-            "app.api.vendor_statement_recon",
-            "list_reconciliations",
-            "reconciliation_summary",
-        ),
-        ("/api/positive-pay", "app.api.positive_pay", "list_files", "positive_pay_summary"),
-        ("/api/expenses", "app.api.expenses", "list_expenses", "expense_summary"),
-        (
-            "/api/requisitions",
-            "app.api.requisitions",
-            "list_requisitions",
-            "requisition_summary",
-        ),
-    ],
-)
-def test_a_list_and_its_rollup_declare_the_same_search_leg(label, module, list_fn, summary_fn):
-    """A whole-set KPI rollup that can't take the list's search term describes a
-    different set than the table under it — the same class of divergence as a
-    list that can't search past its own page.
-
-    Signature-level rather than behavioural on purpose: it holds for every
-    filter combination, including the ones nobody wrote a case for. Read off the
-    endpoint functions rather than the mounted routes, so a router that moves
-    prefix doesn't quietly turn this green.
-    """
-    import importlib
-    import inspect
-
-    from fastapi.params import Query as QueryParam
-
-    mod = importlib.import_module(module)
-
-    def query_params(name: str) -> set[str]:
-        fn = getattr(mod, name)
-        return {
-            (getattr(param.default, "alias", None) or param_name)
-            for param_name, param in inspect.signature(fn).parameters.items()
-            if isinstance(param.default, QueryParam)
-        }
-
-    assert "search" in query_params(list_fn), f"{label} has no search leg"
-    assert "search" in query_params(summary_fn), (
-        f"{label}/summary cannot take the list's search term, so the KPI row it "
-        "feeds would describe a wider set than the table beneath it."
-    )
+# The list/rollup filter-parity guard that used to live here now lives in
+# `test_whole_set_kpi_rollups.py`, which supersedes it on every axis: it
+# discovers the surfaces instead of hardcoding four, checks the FULL filter set
+# rather than `search` alone, reads the mounted OpenAPI schema (a parameter
+# declared as a plain default is a real query param but not a
+# `fastapi.params.Query` instance, so the signature check here passed
+# vacuously), and additionally asserts both endpoints route through the shared
+# filter builder. Keeping a weaker second copy would be the duplicated-guard
+# debt `docs/followups.md` already tracks elsewhere.
 
 
 def test_no_route_page_filters_loaded_rows_with_a_search_term():

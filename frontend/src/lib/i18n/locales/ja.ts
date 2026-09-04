@@ -3352,6 +3352,8 @@ export const messages = {
 	'discounts.toast.declineFailed': '提示を辞退できませんでした',
 	'discounts.toast.declined': '割引の提示を辞退しました',
 	'discounts.toast.optimizeFailed': '最適化に失敗しました',
+	'discounts.excludedRealised':
+		'実績合計は {currency} のみが対象です。他通貨の {n, plural, other {# 件のオファー}}は「獲得」にも「逸失」にも含まれていません。異なる通貨の金額は合算しないため、上記の 2 つの数値は全体の一部を示しています。',
 	'discounts.unconvertibleOffers':
 		'除外: {n, plural, other {# 件のオファー}}に {currency} への為替レートがなく、節約額の合計から除外されています。そのため表示されている数値は実際の可能性を過小評価しています。これらの数値をもとに判断する前に、不足しているレートを登録してください。',
 	'experiments.chip.concluded': '完了',

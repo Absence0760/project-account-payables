@@ -85,6 +85,18 @@ class CardDashboardResponse(BaseModel):
     projected_annual_rebates: MoneyAmount = Decimal("0")
     rebates_this_month_by_status: RebateStatusBreakdown
     rebates_ytd_by_status: RebateStatusBreakdown
+    # The single currency every money field above is denominated in. The
+    # rollups were bare cross-currency SUMs over `VirtualCard.amount_limit` /
+    # `.amount_charged` and `CardRebate.amount`, presented as one figure with no
+    # code at all — and `CardRebate` has no currency column of its own, so a
+    # rebate's currency is only knowable through its card. A multi-currency card
+    # programme therefore produced a headline number that was not a quantity in
+    # any currency.
+    currency: str = "USD"
+    # Rows each figure left out because they are denominated differently.
+    # Counts only — a cross-currency remainder has no single total.
+    excluded_card_count: int = 0
+    excluded_rebate_count: int = 0
 
 
 class RebateResponse(BaseModel):

@@ -3382,6 +3382,8 @@ export const messages = {
 	'discounts.toast.declineFailed': 'No se pudo rechazar la oferta',
 	'discounts.toast.declined': 'Oferta de descuento rechazada',
 	'discounts.toast.optimizeFailed': 'Error en la optimización',
+	'discounts.excludedRealised':
+		'Los totales realizados solo cubren {currency}: {n, plural, one {# oferta} other {# ofertas}} en otra moneda no se cuentan en capturado ni en perdido. Los importes en monedas distintas no se suman, por lo que las dos cifras anteriores describen solo una parte del panorama.',
 	'discounts.unconvertibleOffers':
 		'Sin convertir: {n, plural, one {# oferta} other {# ofertas}} sin tipo de cambio a {currency}, fuera de los totales de ahorro: las cifras mostradas subestiman el ahorro disponible. Registre el tipo de cambio que falta antes de actuar sobre ellas.',
 	'experiments.chip.concluded': 'Concluido',

@@ -145,7 +145,7 @@ async def live_card_invoice_ids(db: AsyncSession, invoice_ids) -> set:
     return {i for i in rows.scalars().all() if i is not None}
 
 
-def card_settlement_block(card: VirtualCard, amount) -> str | None:
+def card_settlement_block(card: VirtualCard, amount, *, now: datetime | None = None) -> str | None:
     """Why ``card`` cannot settle a payment of ``amount`` — ``None`` if it can.
 
     Only asked of a card this payment did NOT mint. Converging a payment onto a
@@ -158,14 +158,37 @@ def card_settlement_block(card: VirtualCard, amount) -> str | None:
       moved under a *different* payment. That is reachable without any race:
       mint → vendor redeems → AP voids that payment → the invoice returns to the
       payable pool → the next run rediscovers the same spent card.
+    - **Expired.** An expired card cannot be charged at the network, so nothing
+      can move against it and the ``completed`` assertion would be false. This
+      is reached the same way as the spent case — a card minted for an earlier
+      run, the payment voided, the invoice back in the pool weeks later — except
+      the card aged out rather than being redeemed, so the status check above
+      cannot see it. Without this, the run marked the payment `completed`, the
+      invoice advanced to `paid`, and the vendor was never paid at all: worse
+      than the double-spend the status check exists to prevent, because there is
+      no charge anywhere to reconcile against.
     - **Limit too small.** A live, unspent card that cannot cover this payable is
       not what settles it.
+
+    ``now`` is injectable so the expiry boundary is testable without freezing the
+    clock; it defaults to the current UTC time. A card with no ``expires_at`` is
+    treated as non-expiring — the column is nullable and several providers do not
+    return one, and refusing on a missing value would block every such card.
 
     Returned strings are ``Payment.failure_reason`` values — operator-facing,
     PII-free (no PAN, no last four).
     """
     if card.status in CARD_SPENT_STATUSES:
         return "card_already_charged"
+    if card.expires_at is not None:
+        # Both sides normalised to aware UTC: `expires_at` is a timezone-aware
+        # column, but a row built in a test or by an adapter that dropped the
+        # tzinfo would otherwise raise on comparison inside the money path.
+        expires_at = card.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at <= (now or datetime.now(UTC)):
+            return "card_expired"
     if card.amount_limit is None or card.amount_limit < amount:
         return "card_already_issued_insufficient_limit"
     return None

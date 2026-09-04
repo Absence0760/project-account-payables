@@ -811,3 +811,69 @@ year-to-date, and `projected_annual` divides that figure by months elapsed, so
 it inflated the projection as well.
 
 **Tests:** `backend/tests/test_card_charge_normalization.py`.
+
+## Rebate base — settled, never authorized, never the limit
+
+A rebate is earned on what actually **settled**. `resolve_rebate_base` in
+`api/cards` returns that figure plus its provenance:
+
+| Settlement amount | Authorized amount | Base | `rebate_base_source` |
+|---|---|---|---|
+| present | any | the settled figure | `settled` |
+| absent | present | the authorized figure | `authorized` |
+| absent | absent | `0` | `unknown` |
+
+The settlement branch previously read `card.amount_charged or
+card.amount_limit`, which was wrong twice over:
+
+- `amount_charged` is stamped by the **authorization** event and was never
+  updated at settlement, so the rebate was computed on the authorized figure
+  while the settlement event's own `amount` sat unused in scope. Card
+  settlements routinely differ from the auth they clear (partial capture, tips,
+  fuel adjustments), and the processor pays rebate on what settled.
+- The `or` fallback reached for `amount_limit` — the card's authorization
+  **ceiling**, not spend. A settlement without a usable amount on a card whose
+  auth was also missing rebated on the full limit: a $10,000 card that settled
+  $100 earned a rebate on $10,000.
+
+The settled figure is now also **persisted** to `amount_charged`, since that is
+what the card detail, the spend rollups and the corporate-card feed all read,
+and after settlement the settled figure is the true one. `rebate_base` and
+`rebate_base_source` ride the append-only `card.settled` audit row so a
+reconciliation against the processor's own statement can tell the cases apart
+without re-deriving them.
+
+## An expired card cannot settle a payment
+
+`card_settlement_block` refuses a card whose `expires_at` has passed. Converging
+a payment onto a pre-existing card marks the payment `completed` and advances
+the invoice to `paid` — an assertion the money moved — so the card has to be one
+that could actually have moved it.
+
+The guard previously checked only spent-status and limit. An expired card is
+reached exactly like the spent case (mint → payment voided → invoice back in the
+payable pool → a later run rediscovers the card), except it aged out rather than
+being redeemed, so the status check cannot see it. The payment went `completed`,
+the invoice went `paid`, and the vendor was never paid at all — worse than the
+double-spend the status check exists to prevent, because there is no charge
+anywhere to reconcile against.
+
+Ordering is deliberate: a spent card that also expired reports
+`card_already_charged` (the money *did* move, and knowing against which payment
+is the more actionable fact), and expiry is checked before the limit (raising a
+limit would not make an expired card settleable). A card with no `expires_at` is
+non-expiring — the column is nullable and several providers do not return one.
+
+## Dashboard figures are single-currency
+
+`GET /api/cards/dashboard` reports one `currency` code, and every money field in
+it counts only rows denominated in that code, with `excluded_card_count` /
+`excluded_rebate_count` disclosing what was left out. The rollups were
+previously bare cross-currency `SUM`s over `amount_limit` / `amount_charged` /
+`CardRebate.amount` presented as a single headline with no code at all.
+
+`CardRebate` has **no currency column of its own** — a rebate's currency is only
+knowable through the card that earned it — so the rebate rollups join
+`VirtualCard` rather than guessing. Figures are filtered rather than converted:
+they are historical realised amounts, and an FX fetch during a dashboard read
+would make them non-deterministic.

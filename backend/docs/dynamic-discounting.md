@@ -389,3 +389,66 @@ scope filter an operator with subsidiary A selected could raise an offer under
 A against subsidiary B's invoice — visible in A's queue while pricing B's
 payable. Advisory data, never money, but the sibling money path was fixed for
 exactly this shape. An out-of-scope id is the same opaque 404 as a missing one.
+
+## Currency integrity
+
+Every money figure on the discounting surfaces is denominated in the org's
+**reporting currency**, resolved by the one canonical
+`currency_conversion.resolve_reporting_currency` (explicit
+`settings.reporting_currency` → `payments.home_currency` →
+`invoice_defaults.currency` → `FEOH_REPORTING_CURRENCY_DEFAULT`).
+`api/discounts._org_currency` is a thin named wrapper over it. It previously
+read the first key alone and fell back to a hardcoded `"USD"`, so an org that
+set a home currency but no explicit reporting currency had every discount
+figure stamped USD, and a non-USD deployment's platform default was ignored.
+
+`GET /api/discounts/dashboard` reports **one** currency code, so every money
+field in it aggregates only rows denominated in that code:
+
+| Field | Population |
+|---|---|
+| `captured_amount` / `captured_count` | captured offers in the reporting currency |
+| `missed_amount` / `missed_count` | declined + expired offers in the reporting currency |
+| `projected_savings` | open offers in the reporting currency (via the optimizer) |
+| `excluded_captured_count` / `excluded_missed_count` / `unconvertible_offer_count` | how many rows each figure left out |
+
+`captured_amount` and `missed_amount` were previously bare cross-currency
+`SUM`s stamped with the reporting currency, while `projected_savings` in the
+same response was already filtered — one response carried one currency-correct
+figure and two that were not. A cross-currency sum under a single code is not
+an approximation of the truth but a different quantity, and it moves silently
+whenever the currency mix does.
+
+The figures are **filtered rather than converted** on purpose: these are
+historical realised amounts, and fetching an FX rate during a dashboard read
+would make the number non-deterministic (`services/cashflow` refuses the same
+trade for the same reason, see `docs/cash-flow-copilot.md` §12). The excluded
+counts ride along so a partial figure is visibly partial rather than quietly
+short. `capture_rate_pct` is computed over the same reporting-currency
+population as the counts beside it, so every field in the response describes
+one set.
+
+### The auto-capture sweep never overwrites a human decision
+
+`discount_auto_trigger` selects its candidates **unlocked**, then does per-row
+async work (cost-of-capital resolution, due-date lookup, ROI) before deciding.
+A supplier or an AP user can decline or accept an offer inside that window.
+
+The sweep previously mutated the stale ORM object and issued an unconditional
+`UPDATE ... SET status` at its single end-of-loop commit, so a *committed*
+decline was silently overwritten: the offer came back `accepted`, and an
+append-only `discount_offer.auto_accepted` audit row asserted the sweep had
+found it open. Because the trail is append-only, that false entry could not be
+corrected afterwards.
+
+Each status write now re-reads its row under `FOR UPDATE` with a
+`status = 'offered'` predicate (`_claim_if_still_offered`) immediately before
+mutating; a row someone else has moved returns `None` and is skipped, with no
+audit row. `populate_existing` is required — without it the second SELECT
+returns the stale identity-mapped object and re-checks nothing.
+
+The lock is taken at the point of mutation rather than on the candidate scan on
+purpose: holding `FOR UPDATE` across the whole loop would keep a growing lock
+set open across unrelated awaits, the pattern `payment_reconciler` is already
+flagged for in `docs/followups.md`. Expiry (`expire_if_past`) takes the same
+claim — it is a status write too.
