@@ -20,6 +20,7 @@ from app.services.punchout_adapters.base import (
     PunchoutStartResult,
 )
 from app.services.punchout_adapters.dispatcher import (
+    UnknownPunchoutProviderError,
     get_punchout_adapter,
     list_available_providers,
     register_punchout_adapter,
@@ -32,6 +33,7 @@ __all__ = [
     "PunchoutError",
     "PunchoutSetupContext",
     "PunchoutStartResult",
+    "UnknownPunchoutProviderError",
     "get_punchout_adapter",
     "list_available_providers",
     "register_punchout_adapter",

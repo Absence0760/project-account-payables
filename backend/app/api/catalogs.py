@@ -849,7 +849,19 @@ async def punchout_cart_return(
 
     # 4. Parse the cart via the tenant's configured adapter. None = unparseable
     #    or missing BuyerCookie → can't correlate → refuse silently.
-    adapter = resolve_punchout_adapter(org.settings)
+    #    A provider we have no adapter for is refused rather than resolved to
+    #    `mock`, whose `parse_order_message` reads a permissive dev envelope
+    #    (`decisions.md` §29). Drop the cart the way every other rejection here
+    #    does — silently, 204, PII-free reason code only. Unlike the PEPPOL
+    #    inbound webhook there is no retrying Access Point to ask again: the
+    #    supplier posts this once from the buyer's browser, so a 5xx would only
+    #    surface a stack trace to a probing supplier without recovering the cart.
+    try:
+        adapter = resolve_punchout_adapter(org.settings)
+    except PunchoutError as exc:
+        logger.warning("Punch-out return rejected: %s", exc.code)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     cart = adapter.parse_order_message(headers, body)
     if cart is None or not cart.buyer_cookie:
         logger.warning("Punch-out return: unparseable cart or missing buyer cookie")

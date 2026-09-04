@@ -27,6 +27,21 @@ guard that stops a fifth appearing.
   REQUESTED format on the row and the audit trail with the
   `(run, bank_format)` slot burned. The bank cannot parse it, so the
   cheque-fraud control is simply not in force and nothing says so.
+* **`peppol_adapters`** — `send` returns `success=True` with a synthetic
+  message id and no network involved, which `peppol_send` writes onto a
+  `PeppolTransmission` as `status="sent"` + a `message_id` and records as
+  `invoice.peppol_sent`. A legally-significant e-invoice was reported as
+  transmitted to a supplier that never received it, and the row occupied the
+  live-transmission slot so the honest resend came back `already_sent`.
+* **`tax_rate_adapters`** — answers every country from the in-repo
+  country-rules fixture, so `/api/international-tax/{vat,gst,rate}` computed a
+  jurisdiction figure off a hardcoded rate while the response's `provider`
+  field named the provider that was asked for.
+* **`punchout_adapters`** — `build_setup_request` returns a synthetic
+  in-process start URL (persisted as a `PunchoutSession` and navigated to), and
+  `parse_order_message` reads a permissive dev envelope on the PUBLIC
+  cart-return route, whose fixture cart converts into a real
+  `PurchaseRequisition`.
 
 **The caller decides what the refusal means** (§29's per-caller table). This
 file pins the callers for the two registries it converts, plus the positive-pay
@@ -37,6 +52,15 @@ route (which had the refusal but no route-level coverage of it):
   | `POST /api/tax/1099/file` | 409 — no filing row, no confirmation, slot free |
   | `POST /api/tax/vendors/{id}/tin-verify` | 409 — `tin_verified_at` untouched |
   | `POST /api/positive-pay/ach-authorization` | 422 — no file, no row |
+  | `POST /api/invoices/{id}/peppol-send` | 422 — resolved above the slot |
+  |   | claim, so no `PeppolTransmission` row at all |
+  | `POST /api/peppol/inbound/{slug}` | bodyless **503** — our failure, not |
+  |   | a decision (§37): ask the AP to redeliver rather than ack a drop |
+  | `POST /api/international-tax/{rate,vat,gst}` | 409 — pure compute, |
+  |   | nothing to unwind |
+  | `POST /api/catalogs/{id}/punchout/start` | 422 — no `PunchoutSession` row |
+  | `POST /api/catalogs/punchout/return/{slug}` | silent 204 — the supplier |
+  |   | posts once from a browser, so there is no retry to ask for |
 
 The card call sites (all six of them) are pinned in
 `tests/test_card_provider_resolution.py`; they are not duplicated here.
@@ -48,28 +72,48 @@ one of the four — guard rail 7. That is a normal state, not a misconfiguration
 from __future__ import annotations
 
 import ast
+import hashlib
+import hmac
+import json
 import pathlib
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 
+from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.organization import Organization
+from app.models.peppol_transmission import PeppolTransmission
 from app.models.positive_pay import PositivePayFile
+from app.models.procurement import PunchoutSession
 from app.models.tax_filing import Tax1099Filing
 from app.models.vendor import Vendor
 from app.services.card_adapters import UnknownCardProviderError, get_card_adapter
 from app.services.card_adapters.lithic import LithicAdapter
+from app.services.peppol_adapters import UnknownPeppolProviderError, get_peppol_adapter
+from app.services.peppol_adapters.mock_adapter import MockPeppolAdapter
 from app.services.positive_pay_adapters import (
     UnknownPositivePayFormatError,
     get_positive_pay_formatter,
 )
 from app.services.positive_pay_adapters.csv_formatter import CsvPositivePayFormatter
+from app.services.punchout_adapters import (
+    UnknownPunchoutProviderError,
+    get_punchout_adapter,
+)
+from app.services.punchout_adapters.mock_adapter import MockPunchoutAdapter
 from app.services.tax_filing_adapters import (
     UnknownTaxFilingProviderError,
     get_tax_filing_adapter,
 )
 from app.services.tax_filing_adapters.mock_adapter import MockTaxFilingAdapter
+from app.services.tax_rate_adapters import (
+    UnknownTaxRateProviderError,
+    get_tax_rate_adapter,
+)
+from app.services.tax_rate_adapters.mock_adapter import MockTaxRateAdapter
 from app.services.tin_validation_adapters import (
     UnknownTinValidationProviderError,
     get_tin_validation_adapter,
@@ -120,6 +164,30 @@ REGISTRY_CASES = [
         UnknownPositivePayFormatError,
         id="positive_pay_adapters",
     ),
+    pytest.param(
+        get_peppol_adapter,
+        None,
+        MockPeppolAdapter,
+        {"provider": "storecove_xyz"},
+        UnknownPeppolProviderError,
+        id="peppol_adapters",
+    ),
+    pytest.param(
+        get_tax_rate_adapter,
+        None,
+        MockTaxRateAdapter,
+        {"rate_provider": "vertex_xyz"},
+        UnknownTaxRateProviderError,
+        id="tax_rate_adapters",
+    ),
+    pytest.param(
+        get_punchout_adapter,
+        None,
+        MockPunchoutAdapter,
+        {"provider": "ariba_xyz"},
+        UnknownPunchoutProviderError,
+        id="punchout_adapters",
+    ),
 ]
 
 
@@ -153,7 +221,9 @@ def test_the_bad_name_is_bounded_in_the_error(
     line and an HTTP body, so an absurd value must not bloat either."""
     absurd = "z" * 500
     if isinstance(unknown_config, dict):
-        oversized = {**unknown_config, "provider": absurd}
+        # Each family names its own key (`provider` / `rate_provider`); replace
+        # whichever one this case carries rather than adding a second.
+        oversized = {k: absurd for k in unknown_config}
     else:
         oversized = absurd
     with pytest.raises(error_cls) as exc:
@@ -185,9 +255,12 @@ FAIL_CLOSED_DISPATCHERS = {
     "financing_adapters",
     "fx_adapters",
     "payment_adapters",
+    "peppol_adapters",
     "positive_pay_adapters",
+    "punchout_adapters",
     "sanctions_adapters",
     "tax_filing_adapters",
+    "tax_rate_adapters",
     "tin_validation_adapters",
 }
 
@@ -212,10 +285,11 @@ FAIL_OPEN_DISPATCHERS = {
     ),
     "email_adapters": "falls back to `console`, which logs instead of sending.",
     "embedding_adapters": "falls back to mock vectors — RAG / duplicate-similarity quality only.",
-    "peppol_adapters": "UNREVIEWED — a mock Access Point 'transmits' an e-invoice nowhere.",
-    "punchout_adapters": "UNREVIEWED — a mock supplier returns a fixture cart.",
-    "qms_adapters": "UNREVIEWED — mock inspection fixtures feed the 4-way match quality gate.",
-    "tax_rate_adapters": "UNREVIEWED — a mock rate table drives VAT / GST computation.",
+    "qms_adapters": (
+        "UNREVIEWED — mock inspection fixtures feed the 4-way match quality "
+        "gate. Deferred: another agent holds `qms_adapters/` + `qms_sync.py` "
+        "this round, so converting it here would collide."
+    ),
 }
 
 
@@ -414,3 +488,183 @@ async def test_positive_pay_route_still_renders_the_default_layout(realdb):
         resp = await c.post("/api/positive-pay/ach-authorization", json={})
     assert resp.status_code == 201, resp.text
     assert resp.json()["bank_format"] == "csv"
+
+
+# --------------------------------------------------------------------------- #
+# (c) — the callers, round 2: PEPPOL, tax rates, punch-out
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_bis3_invoice(realdb) -> uuid.UUID:
+    """A BIS Billing 3.0-conformant approved invoice + the tenant company
+    profile the buyer party needs. The send path validates conformance BEFORE
+    it resolves the adapter, so a thinner fixture would be refused for the
+    wrong reason and never reach the case under test."""
+    org_id = realdb.info(TENANT).org_id
+    async with realdb.control_sessionmaker()() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        cfg = dict(org.settings or {})
+        cfg["company"] = {"name": "Buyer Co", "country_code": "DE"}
+        org.settings = cfg
+        await s.commit()
+
+    inv_id = uuid.uuid4()
+    async with realdb.sessionmaker(TENANT)() as s:
+        s.add(
+            Invoice(
+                id=inv_id,
+                organization_id=org_id,
+                correlation_id=uuid.uuid4(),
+                invoice_number=f"INV-{uuid.uuid4().hex[:8]}",
+                vendor_name="Acme GmbH",
+                vendor_tax_id="DE123456789",
+                amount=Decimal("119.00"),
+                currency="EUR",
+                invoice_date=date(2026, 1, 1),
+                subtotal=Decimal("100.00"),
+                tax_amount=Decimal("19.00"),
+                tax_rate=Decimal("19.00"),
+                status=InvoiceStatus.approved,
+            )
+        )
+        s.add(
+            InvoiceLineItem(
+                invoice_id=inv_id,
+                line_number=1,
+                description="Widget",
+                quantity=Decimal("1"),
+                unit_price=Decimal("100.00"),
+                total=Decimal("100.00"),
+                tax=Decimal("19.00"),
+            )
+        )
+        await s.commit()
+    return inv_id
+
+
+_PEPPOL_SEND_BODY = {
+    "receiver_scheme": "9930",
+    "receiver_value": "SUPPLIER123",
+    "sender_scheme": "9930",
+    "sender_value": "DE000000000",
+}
+
+
+async def test_peppol_send_422s_and_persists_no_transmission(realdb):
+    """A transmission row is the record that a legally-significant document
+    reached the network. An Access Point we have no adapter for must leave
+    none — and must leave the live-transmission slot free, or the honest resend
+    comes back `already_sent`."""
+    inv_id = await _seed_bis3_invoice(realdb)
+    await _set_provider(realdb, ["peppol"], "storecove_xyz")
+
+    async with realdb.client(key=TENANT, role="ap_manager") as c:
+        resp = await c.post(f"/api/invoices/{inv_id}/peppol-send", json=_PEPPOL_SEND_BODY)
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "peppol_provider_not_configured"
+    # The PII-free code only — never the admin's raw settings value.
+    assert "storecove_xyz" not in resp.text
+
+    async with realdb.sessionmaker(TENANT)() as s:
+        rows = (await s.execute(select(PeppolTransmission))).scalars().all()
+    assert rows == [], "a transmission row was persisted for a network never reached"
+
+
+async def test_peppol_inbound_asks_for_redelivery_rather_than_acking(realdb, monkeypatch):
+    """§37: an unresolvable provider is OUR failure, not a decision about this
+    document. Acking 204 drops a supplier's invoice permanently behind a log
+    line; a bodyless 503 leaves it as unprocessed work the AP will retry."""
+    from unittest.mock import AsyncMock
+
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "peppol_inbound_enabled", True)
+    monkeypatch.setattr(app_settings, "peppol_inbound_signing_secret", "dev-inbound-secret")
+    monkeypatch.setattr("app.services.extraction_dispatch.dispatch_extraction", AsyncMock())
+    await _set_provider(realdb, ["peppol"], "storecove_xyz")
+
+    body = json.dumps({"message_id": f"as4-{uuid.uuid4().hex}"}).encode()
+    signature = hmac.new(b"dev-inbound-secret", body, hashlib.sha256).hexdigest()
+
+    async with realdb.client(key=TENANT, role=None) as c:
+        resp = await c.post(
+            f"/api/peppol/inbound/{realdb.info(TENANT).slug}",
+            content=body,
+            headers={"X-Peppol-Signature": signature},
+        )
+
+    assert resp.status_code == 503, resp.text
+    assert resp.content == b"", "the redelivery ask must carry no detail and no tenant"
+
+    async with realdb.sessionmaker(TENANT)() as s:
+        assert (await s.execute(select(Invoice))).scalars().all() == []
+        assert (await s.execute(select(PeppolTransmission))).scalars().all() == []
+
+
+async def test_vat_route_409s_rather_than_quoting_a_fixture_rate(realdb):
+    """`/international-tax/vat` is pure compute and persists nothing, so the
+    refusal costs no unwinding — what it buys is that the returned rate is
+    never sourced from a provider nobody chose."""
+    await _set_provider(realdb, ["tax"], None)
+    org_id = realdb.info(TENANT).org_id
+    async with realdb.control_sessionmaker()() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        cfg = dict(org.settings or {})
+        cfg["tax"] = {**(cfg.get("tax") or {}), "rate_provider": "vertex_xyz"}
+        org.settings = cfg
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="ap_manager") as c:
+        resp = await c.post(
+            "/api/international-tax/vat",
+            json={"net_amount": "100.00", "supplier_country": "DE"},
+        )
+
+    assert resp.status_code == 409, resp.text
+    assert "vertex_xyz" in resp.text
+    assert "mock" in resp.text  # names the registered alternatives
+
+
+async def test_vat_route_still_computes_with_no_provider_configured(realdb):
+    """The refusal must not cost the local-first default."""
+    await _set_provider(realdb, ["tax"], None)
+
+    async with realdb.client(key=TENANT, role="ap_manager") as c:
+        resp = await c.post(
+            "/api/international-tax/vat",
+            json={"net_amount": "100.00", "supplier_country": "DE"},
+        )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_punchout_start_422s_and_persists_no_session(realdb):
+    """A `PunchoutSession` row records that a supplier round-trip was started
+    and carries the URL the buyer is sent to. A provider we have no adapter for
+    must leave neither."""
+    async with realdb.client(key=TENANT, role="ap_manager") as c:
+        created = await c.post(
+            "/api/catalogs",
+            json={
+                "name": f"PunchVendor-{uuid.uuid4().hex[:8]}",
+                "catalog_type": "punchout",
+                "punchout_url": "https://supplier.example/punchout",
+            },
+        )
+    assert created.status_code == 201, created.text
+    catalog_id = created.json()["id"]
+
+    await _set_provider(realdb, ["punchout"], "ariba_xyz")
+
+    async with realdb.client(key=TENANT, role="ap_clerk") as c:
+        resp = await c.post(f"/api/catalogs/{catalog_id}/punchout/start")
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "punchout_provider_not_configured"
+    # The PII-free code only — distinct from `punchout_not_configured`, which
+    # means the cXML adapter resolved but has no shared secret.
+    assert "ariba_xyz" not in resp.text
+
+    async with realdb.sessionmaker(TENANT)() as s:
+        rows = (await s.execute(select(PunchoutSession))).scalars().all()
+    assert rows == [], "a punch-out session was persisted for a supplier never contacted"

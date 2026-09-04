@@ -149,7 +149,31 @@ and scrubbed from the URL).
 
 Registry decorator `@register_punchout_adapter`; selection via
 `Organization.settings.punchout.provider` → `FEOH_PUNCHOUT_PROVIDER` (default
-`mock`). Interface (`base.py`):
+`mock`).
+
+**A NAMED provider we have no adapter for is refused, never `mock`.**
+`get_punchout_adapter` resolves an absent/empty provider to `mock` (the
+local-first default — a fresh clone runs a whole round-trip with no supplier
+credential) but raises `UnknownPunchoutProviderError` for an unregistered name.
+The mock is not an inert stub: `build_setup_request` returns a synthetic
+in-process start URL with no supplier contacted — which `start_punchout_session`
+persists as a `PunchoutSession` stamped `provider="mock"` and then navigates the
+buyer to — and `parse_order_message` reads a permissive dev envelope, so the
+PUBLIC cart-return endpoint accepted a different payload shape than the tenant's
+configured protocol, and the fixture cart it produced converts into a real
+`PurchaseRequisition`. `decisions.md` §29 / §36 applied to this family.
+
+`resolve_punchout_adapter` re-codes the raise as a `PunchoutError`
+(`punchout_provider_not_configured` — deliberately distinct from
+`punchout_not_configured`, which means the cXML adapter *resolved* but has no
+shared secret) so both callers keep the single PII-free vocabulary they already
+handle: `POST /catalogs/{id}/punchout/start` **422s before any `PunchoutSession`
+row exists**, and the public cart-return endpoint drops the cart with its usual
+silent 204 — unlike the PEPPOL inbound webhook there is no retrying Access Point
+to ask again, since the supplier posts once from the buyer's browser. Guard:
+`tests/test_adapter_registry_fail_closed.py`.
+
+Interface (`base.py`):
 
 - `build_setup_request(ctx: PunchoutSetupContext) -> PunchoutStartResult` — build
   the outbound PunchOutSetupRequest and return the supplier **start URL**.

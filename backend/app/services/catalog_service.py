@@ -21,6 +21,7 @@ selects in via the model + entity_id), so a suggestion never leaks rows from a
 sibling subsidiary.
 """
 
+import logging
 import secrets
 import uuid
 from decimal import Decimal
@@ -48,10 +49,13 @@ from app.services.punchout_adapters import (
     PunchoutCart,
     PunchoutError,
     PunchoutSetupContext,
+    UnknownPunchoutProviderError,
     get_punchout_adapter,
 )
 from app.tenant import apply_entity_scope
 from app.utils.search import ilike_contains
+
+logger = logging.getLogger(__name__)
 
 # Cap each list so the suggestion stays a focused steer, not a full export.
 _MAX_VENDORS = 25
@@ -245,8 +249,22 @@ async def _matching_items(
 
 
 def resolve_punchout_adapter(org_settings: dict | None):
-    """Select the punch-out adapter for the org (per-org → process default)."""
-    return get_punchout_adapter((org_settings or {}).get("punchout"))
+    """Select the punch-out adapter for the org (per-org → process default).
+
+    A NAMED provider we have no adapter for is refused rather than resolved to
+    ``mock`` (`decisions.md` §29) — see ``punchout_adapters.dispatcher``. The
+    raise is re-coded as a :class:`PunchoutError` so both call sites keep the
+    single PII-free error vocabulary they already handle: the start route 422s
+    on it before any ``PunchoutSession`` row exists, and the public cart-return
+    endpoint drops the cart the way it drops every other unusable one. The code
+    is distinct from ``punchout_not_configured`` (which means the cXML adapter
+    resolved but has no shared secret) so an operator can tell the two apart.
+    """
+    try:
+        return get_punchout_adapter((org_settings or {}).get("punchout"))
+    except UnknownPunchoutProviderError as exc:
+        logger.warning("[punchout] provider %r has no registered adapter", exc.provider)
+        raise PunchoutError("punchout_provider_not_configured") from None
 
 
 def generate_buyer_cookie() -> str:
