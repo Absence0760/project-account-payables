@@ -34,7 +34,45 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-04 (second pass) — a five-agent coverage pass over
+**Last reconciled:** 2026-09-04 (round 16) — a ten-agent parallel sweep whose
+brief was this file itself: take the open entries that are code-fixable, fix them
+at the root, and close them. **Twenty entries closed, four opened**, 57 → 41.
+
+Four things are worth carrying forward, because they are about how the entries
+themselves were written rather than about the code:
+
+| What happened | Why it matters here |
+|---|---|
+| **Three entries were stale.** `card_adapters` and `positive_pay_adapters` had already been converted in round 15; `total_paid`'s cross-currency SUM had already been fixed by `d92e0bef`. Each agent verified before rewriting, and folded the existing fix into its own test coverage instead | An entry is a claim about the code at the time it was written. Re-read the source before acting on one — and add a regression test for the already-fixed half, so a silent revert fails loudly rather than quietly re-opening the entry |
+| **Two entries under-described their own defect.** The money-filter entry named the `float` parameter; the *second* rounding was SQL-side, where asyncpg renders `$1::NUMERIC(15,2)` and Postgres rounds an over-precise bound back onto the boundary row ([decisions.md](decisions.md) §65). The PO entry named a cross-entity *read*; one route away the same unscoped `po_number` match was a cross-entity **write** that re-priced another subsidiary's PO | Retyping alone left the behavioural tests still failing, which is how the second rounding was found. Treat an entry's diagnosis as the starting point, not the specification |
+| **One entry's stated reason was wrong.** The `recurring_invoices` entry said `uq_invoice_recurring_period` "does not cover" the failure mode without saying why. It doesn't because the unguarded bug writes a *first* invoice for a period that is not due yet, on a key the index accepts ([decisions.md](decisions.md) §66) | The reason is the load-bearing part. An entry that asserts a conclusion without it invites the next reader to re-derive it — or to accept it and get the fix wrong |
+| **One brief was wrong and the agent said so.** Adding `failed` to both legs of `touchless_rate`, as the entry implied, would have inflated the metric off invoices nobody ever approved; `failed` is reachable from `pending` *and* `sending_to_erp`, so it is split on `Invoice.approval_date` | The entries are not specifications. Where one conflicts with the code, the code wins and the entry gets corrected |
+
+Nine defects were found that no entry had named, each fixed with the slice that
+surfaced it: a rolled-back payment transition still queuing the ERP sync that
+marks an invoice **paid**; `contract_renewal`'s two passes able to roll back each
+other's already-emailed alerts; a partial `ORDER BY` that lets two replicas
+deadlock; a budget-currency 422 firing before the entity check and confirming a
+hidden row's denomination; `POST /api/discounts/optimize` running **unconstrained**
+on a misspelled key; a TIN-validation fallback that would have *un-verified* a
+correctly verified vendor; the punch-out cart-return endpoint accepting a payload
+shape the tenant's protocol never configured; `qms_sync` fabricating `completed`
+inspections against real POs and advancing its cursor past the window it never
+pulled; and three existing tests that were **pinning defective behaviour**
+(`test_analytics.py`) or asserting a fallback this round removed.
+
+Guard rail 6 was applied to the round's own output: every deferral an agent
+raised mid-round was re-dispatched and closed rather than filed, except the four
+below — which are forward work or a population question, not diagnosed defects.
+The fail-open adapter-registry class is now **closed entirely**: 16 of 21
+dispatchers fail closed, the remaining five carry a re-verified reason, and a
+classification guard means a new registry cannot fail open silently
+([decisions.md](decisions.md) §63).
+
+New this round: [decisions.md](decisions.md) §63–§69. `docs/known-issues.md`
+stays empty — nothing was diagnosed and left unfixed.
+
+**Previously reconciled:** 2026-09-04 (second pass) — a five-agent coverage pass over
 the work #321 records as complete, run after PR #356 merged (`71231ee3`). It
 added ~630 tests across nine files, and **found four real defects that the
 shipped code's own tests had not**, each fixed at the root here with a
@@ -82,9 +120,9 @@ stored row's currency through `resolve_reporting_currency`, and its two
 `invoice_defaults.currency` reads are the FormatterContext for the rendered
 file, not a rollup — no cross-currency sum exists there to fix.
 
-This file now carries **57** open checkbox entries (plus the 8 narrative
-round-15 findings) — **65** items. The money-path pass took the checkbox count
-64 → 56; the coverage pass that followed it added one back (the `float` money
+At the time of that pass this file carried **57** open checkbox entries (plus the
+8 narrative round-15 findings); round 16 took it to **41**. The money-path pass
+took the checkbox count 64 → 56; the coverage pass that followed it added one back (the `float` money
 filter bounds, below), which is the file working as intended: a sweep that
 closes nothing and opens nothing has usually not looked hard enough.
 
@@ -630,159 +668,6 @@ sends the term it is filtered by.)
       branch pays for it, then keep the two branches structurally identical.
       **Trigger:** the next change to the login handler or to
       `dispatch_auth_audit`'s call discipline.
-### Surfaced by the round-14 sweep of the background sweeps and adapter registries
-
-Verified in the source and left unfixed: each is a distinct area with its own
-blast radius, and folding them into the six landed fixes would make none of them
-attributable. Every one is a confirmed reading of the code, not a hypothesis.
-
-- [ ] **`payment_reconciler` holds a `FOR UPDATE` across a processor HTTP call,
-      and never releases it on its two skip paths.**
-      `payment_reconciler.py` takes `db.refresh(payment, with_for_update=True)`
-      and then calls `_settle_from_poll` → `record_settlement` →
-      `await adapter.fetch_settlement(...)` — a live rail round trip — before the
-      commit that releases the lock. `payment_webhook` takes the same row lock, so
-      a real webhook for that payment blocks for the whole fetch. Separately, both
-      re-check branches `continue` **without** `await db.rollback()`, so the lock
-      survives into every subsequent `await adapter.get_payment_status(...)` in
-      that tenant; `approval_escalation` and `extraction_reaper` both roll back on
-      the identical skip path and say why in a comment.
-      **Durable fix:** `await db.rollback()` on both skip paths, and move the
-      settlement fetch outside the lock (resolve the figure, then re-lock to write
-      it) — the shape `payment_erp_sync` uses when it resolves the ERP adapter
-      *before* taking the invoice lock.
-      **Also:** `ReconcileResult` has only `failures` ("tenants we couldn't
-      reach"), incremented for a whole-tenant abort. A per-payment
-      `adapter.get_payment_status` raise is caught, logged at INFO, and counted
-      nowhere — a processor API that is 100% down yields `polled=N, resolved=0,
-      failures=0`, which `sweep_health` reports as a healthy tick. Add a
-      `payment_failures` counter (the `*_failures` suffix is what
-      `sweep_health.failure_count` sums) and raise that log to WARNING.
-      **Trigger:** the next slice touching the reconciler or the settlement path.
-
-- [ ] **`discount_auto_trigger` and `contract_renewal` still run one transaction
-      per tenant.** Both load candidates unbounded, mutate in a loop, and commit
-      once at the end, so a single bad row discards the whole tick's work — in
-      `contract_renewal`'s case across two independent passes (a failure in the
-      expiry pass rolls back every `renewal_alert_sent_at` the alert pass just
-      stamped, and vice versa). If the failure is deterministic that tenant never
-      makes progress again.
-      **Durable fix:** commit-per-item with a per-item `try` / `rollback` and a
-      `*_failures` counter — the shape `vendor_rescreen`, `recurring_invoices`,
-      `scheduled_reports` and (as of round 14) `extraction_reaper` /
-      `approval_escalation` all use, now written up in
-      `backend/docs/background-sweeps.md` § Locking.
-      **Trigger:** the next slice touching either sweep.
-
-- [ ] **`vendor_rescreen` and `recurring_invoices` skip step 2 of the documented
-      two-phase shape.** Both call `db.get(Model, id)` with **no**
-      `with_for_update=True` and never re-check the predicate the id query used.
-      `background-sweeps.md` § Locking calls that re-check "correctness, not an
-      optimisation". With replicas, two `vendor_rescreen` sweeps both bill a
-      third-party sanctions call and write two append-only `SanctionsCheck` rows
-      for one screening event; and `uq_invoice_recurring_period` does not cover
-      `recurring_invoices`' failure mode — replica A can advance `next_run_on` to
-      P+1 and commit while replica B, reading fresh, generates an invoice for a
-      period that is not due yet.
-      **Durable fix:** `with_for_update=True` plus the predicate re-check
-      (`status == active`, `next_run_on <= today`, the staleness cutoff) under the
-      lock.
-      **Trigger:** the next slice touching either sweep, or the first deploy that
-      runs more than one replica.
-
-- [ ] **`qms_sync` accepts a `since` cursor and drops it, then writes an audit row
-      per record unconditionally.** `run_qms_sync_once(*, since=None)` never
-      references `since`, `_sweep_tenant` takes no cursor, and
-      `adapter.fetch_inspections()` is called with no argument even though the
-      adapter contract is `fetch_inspections(*, since=None)`. So every tick
-      re-fetches the tenant's whole inspection history — and because the
-      `quality_inspection.synced` audit write is unconditional (`change` is
-      `"updated"` even when nothing changed), each hourly tick appends
-      `len(records)` rows to the append-only, WORM-shipped `audit_log`. That table
-      cannot be deleted from (migration 0022's BEFORE-DELETE trigger), so it is
-      unbounded growth in exactly the table the audit shipper drains.
-      **Durable fix:** thread `since` through `run_qms_sync_once` →
-      `_sweep_tenant` → `sync_tenant_inspections` → `fetch_inspections`, persist
-      the high-water mark per org, and write the audit row only on a real
-      create/update. Also surface the computed-then-discarded `skipped` count on
-      `QMSSyncResult` (as `templates_skipped` is on `recurring_invoices`).
-      **Trigger:** before `FEOH_QMS_SYNC_ENABLED` is turned on anywhere.
-
-- [ ] **`retention_sweep`'s no-op-manifest guard cannot hold.** It writes the
-      `retention.archived` manifest when `archived or overdue_total`, but
-      `overdue_total` counts `audit_log` rows past the window and the sweep never
-      deletes audit rows — so once a tenant crosses its window the condition is
-      permanently true and a manifest row is written every tick with
-      `invoices_archived: 0`. Each manifest is itself an `audit_log` row that
-      becomes overdue later and inflates the next tick's count.
-      **Durable fix:** gate on the actionable signal (`archived or
-      overdue_unshipped`) or on a change against the previously recorded counts.
-      **Trigger:** before `FEOH_RETENTION_ENABLED` is turned on anywhere.
-
-- [ ] **`billing/dunning_sweep` has no per-row guard and no failure counter.** A
-      raise on `control_db.commit()` aborts the remaining `past_due` rows for the
-      tick (the module docstring claims the opposite), and `_dunning_tick` returns
-      a bare `int`, which `sweep_health.extract_counts` maps to `{"count": n}` —
-      no `failures` key, so this sweep can never report anything but `ok` short of
-      the tick raising outright. The cancellation itself also commits whether or
-      not `dispatch_auth_audit` (fail-soft by design) actually wrote the
-      `billing.subscription_canceled` row.
-      **Durable fix:** per-row `try` / `rollback`, a result dataclass with
-      `failures`, and treat a swallowed audit write as a failure rather than a
-      silent success.
-      **Trigger:** before `FEOH_BILLING_DUNNING_ENABLED` is turned on anywhere.
-
-- [ ] **`audit_log_shipper` head-of-line-blocks a tenant on one unshippable row.**
-      Batches are all-or-nothing and ordered `created_at ASC`, so a row whose
-      `details` JSONB the sink refuses makes `adapter.ship` raise on every tick and
-      no newer audit row for that tenant ever ships — the WORM evidence trail stops
-      there. Ranked below the others only because `ShipResult.failures` does
-      increment, so `sweep_health` correctly goes `degraded` and the
-      `NOT MAKING PROGRESS` line fires; the defect is that the remedy is manual.
-      **Durable fix:** quarantine the poison row (ship it with a PII-free
-      truncation marker, the way `cloudwatch_adapter` already handles an oversized
-      single event) so the trail keeps moving.
-      **Trigger:** the first time the alert fires in a deployed env, or the next
-      slice touching the shipper.
-
-- [ ] **Four more adapter registries fail OPEN on an unregistered provider name.**
-      `docs/decisions.md` §29 fixed this for payments / ERP / FX / extraction and
-      §36 for sanctions; round 14 fixed `billing_adapters` because its fallback
-      reached a PUBLIC webhook route. These remain, each verified in the source:
-      `card_adapters` (`get_card_adapter` → `mock`, whose `create_card` returns
-      `success=True` with a fabricated PAN that `card_issuance` then persists as
-      an issued `VirtualCard` — a money path §29 did not reach);
-      `tax_filing_adapters` (→ `mock`, which returns `BATCH_ACCEPTED` with a
-      `MOCK-…` confirmation that `api/tax.py` persists, so an org is told its
-      1099s were e-filed when nothing reached the IRS);
-      `tin_validation_adapters` (→ `mock`, format+checksum only, yet
-      `vendor.tin_verified_at` is stamped from it — driving B-notice / 24%
-      backup-withholding decisions off a regex);
-      `positive_pay_adapters` (`bank_format` is a free-form `str(max_length=30)`
-      with no allowlist and an unknown value silently renders `csv` while the row
-      is labelled with the requested format — the operator believes the bank got
-      its layout and the cheque-fraud control never applies).
-      **Durable fix:** §29's rule — absent/empty still resolves `mock` (local-first
-      default), a NAMED provider with no adapter raises, and each caller decides
-      what the refusal means. For `positive_pay` the cheaper half is an allowlist
-      on the `bank_format` field itself, validated against the registry rather
-      than a restated literal.
-      **Trigger:** take them one registry at a time, cards first (it is the money
-      path), each with the caller-by-caller refusal table §29 established.
-
-- [ ] **`aws_textract` is the one adapter that blocks the event loop.**
-      `boto3.client("textract", ...)` + `textract.analyze_expense(...)` run
-      synchronously inside `async def extract`, and again inside
-      `async def test_connection` — which `POST /api/organization/test-extraction`
-      awaits directly on the request path. Every other adapter in all 21
-      registries uses `httpx.AsyncClient`, and the audit-shipping / SES / storage
-      boto3 call sites all wrap in `asyncio.to_thread`. The `extract` call is
-      partly covered (local-mode extraction runs on `extraction_dispatch`'s own
-      worker thread); `test_connection` has no such cover.
-      **Durable fix:** `await asyncio.to_thread(...)` around both, matching
-      `services/storage`'s `_put_object` and round 14's SQS dispatch fix; extend
-      `tests/test_sqs_dispatch_nonblocking.py`'s AST scan to cover it.
-      **Trigger:** the next slice touching the extraction adapters.
 ### Surfaced by the round-14 frontend hunt
 
 Six items the round-14 frontend agent traced to a file and line but did not fold
@@ -817,25 +702,6 @@ none is a hypothesis.
       rule already stated on `purchase_orders.py::purchase_order_status_counts`
       and `/vendors/counts`.
 
-- [ ] **Three surfaces still label money with `orgCurrency` while the response
-      states its own currency two lines away.** Now that `orgCurrency` resolves
-      the *reporting* currency (this round), these read correctly far more often
-      — but they are still reading the wrong source, and one is wrong outright:
-      `/cfo`'s cash-position table (`:281-283`) renders `opening`/`outflow`/
-      `closing` through `fmt()` while `position.opening_balance_currency` — typed
-      as "the reporting currency the whole curve is denominated in" — is used only
-      in the two warning banners, so the page can print "3 outflows could not be
-      converted to GBP" directly above a table of `$`; `/discounts`' `aggMoney()`
-      (`:93`) ignores `dashboard.currency` / `optimization.currency`, both of which
-      it already renders in its guard text; and `/discounts`' per-recommendation
-      card (`:379`) stamps `orgCurrency` on `rec.roi.savings`, which is computed in
-      the OFFER's currency and flagged `rec.unconvertible` precisely when they
-      differ (`services/discount_optimizer.py:170-172`) — the card never reads
-      that flag, so "Save $412.00" can be €412.
-      **Durable fix:** pass the response's own currency at each site, and render
-      `rec.unconvertible` on the card rather than only in the page banner.
-      **Trigger:** the next slice touching `/cfo` or `/discounts`.
-
 - [ ] **Two backend rollups are bare cross-currency `SUM`s presented as one
       figure.** `GET /api/payments/summary`'s `total_rebates`
       (`app/api/payments.py:562-564`) is `func.sum(CardRebate.amount)` with no
@@ -852,45 +718,10 @@ none is a hypothesis.
       `formatCurrencyTotals` does elsewhere.
       **Trigger:** the next slice touching the payments summary or billing usage.
 
-- [ ] **`/vendors/screening`'s "Payments blocked" KPI structurally cannot see a
-      manually blocked vendor.** `blockedCount` (`:90`) filters `items`, which is
-      the review queue — `where(Vendor.screening_status.in_(("match","review")))`
-      (`app/api/vendors.py:471`). `POST /api/vendors/{id}/block` sets
-      `payments_blocked = True` and never touches `screening_status`
-      (`:898-900`), so a vendor AP blocked while screening-clear is invisible to a
-      tally that claims to count blocked payments. (`matchCount`/`reviewCount` are
-      fine — the queue is unpaginated and is exactly those two statuses.)
-      **Durable fix:** count blocked vendors from a query that asks for blocked
-      vendors — a `payments_blocked` tally on the counts endpoint — rather than
-      from a queue selected on a different column.
-      **Trigger:** the next slice touching vendor screening.
-
-- [ ] **Four surfaces collapse loading / failed / empty into one message, and two
-      error states are dead ends.** `/payments`' Runs tab (`:1234-1239`) has no
-      `runsLoading` state at all, so it asserts "No payment runs yet." during the
-      first fetch and forever after a failed one — while the Queue and History
-      tabs in the same file do it correctly. `/catalogs` (`:285`) gates `isEmpty`
-      on `!loading`, so the table renders a header with nothing under it during
-      the load — no rows, no spinner, no message — and `/reports` (`:437-438`)
-      has the same inversion. `/reports`' catalog failure (`:350-352`) replaces
-      the entire builder with one paragraph, from a single-shot dep-free
-      `$effect`, so nothing left on screen can retry it; `/experiments`
-      (`:284-286`) is the same shape and renders its banner *and* "No experiments
-      yet." simultaneously.
-      **Durable fix:** the shape the rest of the app uses —
-      `isEmpty={arr.length === 0}` with the three states composed in `empty=`
-      (`routes/exceptions/+page.svelte:418` is the reference), and the
-      error-with-Retry block from `routes/admin/api-keys/+page.svelte:169-172`.
-      The store-side half of this landed this round for `adminStore` /
-      `workflowStore`, with a guard that any store a swallowing call site cites
-      must expose the flag.
-      **Trigger:** the next slice touching any of those four routes.
-
 ### Surfaced by the round-14 procurement / analytics hunt
 
-Eight items the round-14 procurement and analytics agent traced to a file and
-line but did not fold into its own tranche (it landed seven fixes first). Each
-is a confirmed reading of the code, not a hypothesis.
+Seven of the eight items this section opened landed in round 16. The one below
+is the remainder — a confirmed reading of the code, not a hypothesis.
 
 - [ ] **Adaptive approval stats mix currencies.**
       `api/adaptive_workflows._decision_rows` pulls raw `Invoice.amount` and
@@ -908,101 +739,90 @@ is a confirmed reading of the code, not a hypothesis.
       through `currency_conversion.reporting_amount_at_locked_rate`.
       **Trigger:** the next slice touching adaptive thresholds or auto-approve.
 
-- [ ] **`GET /api/purchase-orders/{id}` leaks cross-entity invoices.**
-      `api/purchase_orders.py:176` builds `linked_invoices` by joining on
-      `po_number` with no `apply_entity_scope` and no vendor check —
-      and `po_matching` explicitly designs around `po_number` NOT being unique
-      across subsidiaries. A US-scoped viewer sees UK invoices on the PO detail.
-      **Durable fix:** scope the join to the PO's own `entity_id` (shared-NULL
-      union, the `vendor_matching._candidate_query` pattern).
-      **Trigger:** the next slice touching purchase-order detail or 3-way match.
+### Surfaced by the round-16 follow-up sweep (2026-09-04)
 
-- [ ] **`DELETE` on intake / requisition has no status guard.**
-      Deleting a converted requisition hits a RESTRICT FK → 500 rather than a
-      clean 409; deleting a converted requisition that produced a PO orphans the
-      PO. The intake convert route's dangling-link rebuild branch is currently
-      unreachable *only because* the FK restricts — a future
-      `ON DELETE SET NULL` would turn delete-then-reconvert into a double-spend.
-      **Durable fix:** refuse a delete once the record has been converted (409),
-      the way `DELETE /api/recurring/{id}` 409s once invoices are generated.
-      **Trigger:** the next slice touching either delete route, or any migration
-      changing those FK delete rules.
+Four items the round-16 agents traced to a file and line but correctly did not
+fold into their own slice. None is a defect that can bite today; each is either
+forward work or a population question with its own consequences.
 
-- [ ] **`po_matching`'s 3-way leg counts cancelled goods receipts as delivered.**
-      The quantity sum ignores `GoodsReceipt.status`, so a cancelled receipt's
-      quantities still satisfy the match and over-receipt is never flagged.
-      **Durable fix:** filter the receipt join to non-cancelled statuses and add
-      an over-receipt warning.
-      **Trigger:** the next slice touching 3-way / 4-way matching.
+- [ ] **(c) Bound the candidate query in `discount_auto_trigger` and
+      `contract_renewal`.** Both now commit per item, so one bad row no longer
+      discards a tick's work — but both still load their whole candidate set for
+      a tenant in one unbounded `SELECT`. `discount_auto_trigger` selects every
+      `offered` `DiscountOffer` id; `contract_renewal`'s alert pass pre-filters
+      on `end_date <= today + 3650 days`, i.e. effectively every active contract
+      with an end date, and discards the out-of-window ones in Python. This is
+      now a memory/latency ceiling rather than a starvation hole.
+      **Why not folded in:** `background-sweeps.md` § Locking's rule is *page,
+      don't cap, unless the work removes itself from the candidate set* — and
+      neither qualifies. An offer skipped for a below-threshold ROI stays
+      `offered`, a contract outside its lead window stays un-alerted, so a
+      `LIMIT` would re-serve the same lowest-id rows every tick and never reach
+      the rest (the exact starvation `approval_escalation` was rewritten to
+      avoid). Doing it right needs a keyset cursor **plus** a page-size env var
+      per sweep — a config-surface change bundled onto a correctness diff.
+      **Durable fix:** two independent pieces, either shippable alone. (1)
+      Keyset-paginate both candidate queries as `approval_escalation._escalate_tenant`
+      does — the id ordering is already in place, so it is a `while True:`
+      wrapper plus `FEOH_DISCOUNT_OPTIMIZATION_BATCH_SIZE` /
+      `FEOH_CONTRACT_RENEWAL_BATCH_SIZE`; both sweeps already re-check their
+      predicate inside the leg, which is what makes a page boundary safe. (2)
+      Push `contract_renewal`'s alert pre-filter into SQL
+      (`end_date - today <= renewal_notice_days`), keeping the Python check as
+      the under-lock re-check — deliberately separate because it needs a per-row
+      interval expression whose type coercion wants its own test.
+      **Trigger:** either sweep's tick latency becoming visible on a real
+      tenant, or the next change touching these candidate queries. Neither moves
+      money, so neither is urgent.
 
-- [ ] **Intake `vendor_id` is the only cross-object link with no existence
-      validation.** An unknown UUID reaches an FK violation at flush (500
-      instead of 404), and a valid *cross-entity* vendor id rides into the
-      requisition and then the PO.
-      **Durable fix:** resolve the vendor through the same entity-scoped lookup
-      the sibling routes use before the insert.
-      **Trigger:** the next slice touching intake create/update.
+- [ ] **(c) `GET /api/vendors/screening/review-queue` is unpaginated, and two
+      KPIs depend on that.** The "Payments blocked" KPI was fixed this round by
+      counting from a query that asks its own question
+      ([decisions.md](decisions.md) §68), but `matchCount` and `reviewCount` on
+      the same page are still derived by filtering the loaded queue. They are
+      correct **only because** that endpoint returns every row and is selected on
+      exactly those two statuses — a construction accident, not a property the
+      code states.
+      **Durable fix:** if that endpoint ever gains pagination, both must move to
+      the `by_status` buckets on `GET /api/vendors/counts` in the same change;
+      they are already there and go unread. Cheaper alternative: move them now
+      and delete the client-side derivation, which removes the trap entirely.
+      **Trigger:** the first change that paginates the review queue — or any
+      slice touching those two KPIs.
 
-- [ ] **Four dashboard aggregates are each wrong in their own way.**
-      `total_paid` sums `Payment.amount` across currencies where its siblings
-      convert; `discount_capture` counts still-open discount windows as
-      "missed" (the only one of five consumers lacking the elapsed-window gate);
-      `touchless_rate` omits `sending_to_erp` / `failed` from both numerator and
-      denominator; `monthly_trend` uses a 180-day window against a
-      calendar-month `GROUP BY`, producing 7 buckets with a partial oldest one.
-      **Durable fix:** route the money ones through
-      `currency_conversion.payment_reporting_amount_sql` (as round 14 did for
-      the AML trailing-spend sum), reuse the elapsed-window predicate, and
-      anchor the trend window to calendar-month boundaries.
-      **Trigger:** the next slice touching the dashboard KPIs.
+- [ ] **(c) Two analytics disclosures have no surface to render them.** Round 16
+      gave `discount_capture` a three-way captured / missed / **pending** fold
+      with `*_amount_reporting` + `unconverted_count`, and gave
+      `POST /api/analytics/forecast_variance` a per-row `unconverted_count` +
+      `reporting_currency`. Neither has a frontend consumer: the dashboard page
+      never rendered `discount_capture` at all, and the per-metric drill-through
+      endpoints are a documented pre-existing UI gap. So the honesty those
+      figures now carry is API-only.
+      **Why it matters:** the disclosure exists so a partial figure cannot read
+      as a complete one. A future slice that wires either surface up and renders
+      the bare number would reintroduce exactly the defect the backend fix
+      removed.
+      **Durable fix:** whoever surfaces either KPI renders `unconverted_count` /
+      `insufficient_data` alongside it, the way `/cfo`'s cash-position banners
+      already do.
+      **Trigger:** the slice that wires the analytics drill-throughs into the UI,
+      or that adds a discount-capture KPI to the dashboard.
 
-- [ ] **`compute_fraud_rate_trend` reports "not computable" as the most
-      reassuring value.** A month with zero invoices and non-zero exceptions
-      returns `0.0` — a clean fraud rate — where `compute_cash_conversion_cycle`
-      returns `None` for the same shape. Same class as
-      [decisions §34](decisions.md)'s "cannot attest must never read as yes".
-      **Durable fix:** return `None` for an empty denominator and render the
-      insufficient-data state the adaptive feedback surface already has.
-      **Trigger:** the next slice touching analytics trends.
-
-- [ ] **`POST /analytics/forecast_variance` sums raw `Payment.amount` and 500s
-      on a malformed month.** No `payment_reporting_amount_sql`, so the variance
-      mixes currencies; and `month="2026-13"` escapes the guarded parse as a
-      bare `date()` `ValueError` → 500 on user input.
-      **Durable fix:** convert through the reporting-currency SQL helper and
-      return 422 on an unparseable month.
-      **Trigger:** the next slice touching forecast variance.
-
-### Surfaced by the #321 coverage pass (2026-09-04)
-
-The pass fixed four defects at the root (recorded in the reconciliation header
-above) and its review round closed six more quality findings in the same
-branch. One item is left open, because fixing it only where it was noticed
-would make the codebase less consistent rather than more.
-
-- [ ] **Money filter bounds on list endpoints are typed `float`, not `Decimal`.**
-      `amount_min` / `amount_max` are declared `float | None` and then converted
-      with `Decimal(str(value))` — in `api/payments.py` (`_payment_list_filters`,
-      the list, and now `/counts`) and `api/invoices.py`
-      (`_invoice_list_filters`), i.e. it is the house pattern rather than one
-      site's slip. `Decimal(str(f))` recovers the shortest repr, so ordinary
-      inputs round-trip, but a bound given to more precision than a float holds
-      is silently re-rounded before it reaches a `Numeric` column — so a payment
-      sitting exactly on the boundary can fall the wrong side of the filter.
-      These are query bounds rather than stored amounts, which is why it has not
-      bitten, but root `CLAUDE.md` § Project invariants states the money rule
-      without that carve-out.
-      **Durable fix:** type the params `Decimal | None` (pydantic/FastAPI parse
-      it natively) and drop the `Decimal(str(...))` hop, on **both** sides of
-      each shared filter builder at once.
-      **Why not folded into the coverage pass:** the two sides of a builder must
-      move together or the list and its rollup filter differently — and doing it
-      for payments alone would leave invoices (and any sibling that follows the
-      same pattern) on the old shape, which is the drift the shared builders
-      exist to prevent. It wants one sweep across every list surface that takes
-      a money bound.
-      **Trigger:** the next change touching a money filter bound on any list
-      endpoint, or the next money-exactness audit pass.
+- [ ] **(c) `done` counts as "cleared review" in the touchless numerator.** It
+      always has, and round 16 left it alone while fixing the other three legs of
+      that metric. But `new → done` is a legal transition that skips approval
+      entirely, so an invoice that never went through review can be counted as
+      having cleared it — inflating a board-reported automation figure.
+      **Why not folded in:** it is a population question, not a bug in the
+      arithmetic, and it has consequences for a metric leadership already tracks
+      — changing it silently inside a correctness fix would move a reported
+      number with no one deciding to.
+      **Durable fix:** decide whether the numerator means "reached a terminal
+      state without human touch" or "passed review without human touch", then
+      state it in `backend/docs/analytics.md` and make the status sets say so.
+      `TOUCHLESS_CLEARED_STATUSES` is now a single named owner, so the change is
+      one edit plus its tests.
+      **Trigger:** the next review of the touchless / automation-rate metric.
 
 ### Surfaced by the round-15 bug hunt
 

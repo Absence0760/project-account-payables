@@ -237,6 +237,45 @@ invoice that had reached `approved` (`pending → approved` is legal too). The
 predicate the id query used is exactly the thing that can have changed under
 you, so re-testing it under the lock is the whole point of the shape.
 
+`vendor_rescreen` and `recurring_invoices` had step 1 and the per-item commit
+but not step 2 — a plain `db.get(Model, id)`, no lock and no re-check — and each
+paid for it differently.
+
+**`vendor_rescreen`: a duplicate that cannot be un-written.** The id query is
+unlocked, so between reading an id and touching the row another replica's sweep,
+or a manual `POST /api/vendors/{id}/screen`, can screen the same vendor and
+commit. Acting on the stale snapshot bills the third-party sanctions provider a
+second time for one screening event and appends a second `SanctionsCheck` row
+*and* a second `vendor.screened` audit row for it. Both trails are append-only,
+so the duplicate cannot be tidied away afterwards — the compliance evidence
+permanently overstates how many times the vendor was screened. The
+`status == "active"` clause is re-checked too: re-screening a vendor an admin
+just retired is work nobody asked for, and a `match` verdict applies a payment
+block to a retired supplier.
+
+**`recurring_invoices`: the case a unique index cannot catch.**
+`uq_invoice_recurring_period` makes a *duplicate* invoice for one
+`(template, period_key)` impossible, which reads like it already covers this
+sweep. It does not. The failure without the re-check produces an invoice for a
+period that is **not due yet**, on a distinct period key the index is happy to
+accept: replica A generates period P, advances `next_run_on` to P+1 and commits;
+replica B then locks the row, reads the *fresh* P+1 cursor and — taking whatever
+`next_run_on` says, with no re-check — generates P+1 early. A subscription
+invoice lands in the approval queue for a month that has not started, and the
+cursor jumps to P+2, so the real P+1 tick raises nothing at all. An idempotency
+index constrains *what* you may write; only the re-check constrains *whether you
+should be writing at all*.
+
+Each sweep spells its re-check as a `_still_due(...)` helper carrying the same
+clauses as its own SELECT, so the two cannot drift.
+
+**The id ordering has to be a _total_ order.** `recurring_invoices` sorted by
+`next_run_on` alone, which is only a partial order — templates sharing a due date
+come back in whatever order the plan produces, so two replicas can take the same
+two locks in opposite orders and deadlock. It now sorts `(next_run_on, id)`.
+"Ordering by id gives every replica the same lock order" only holds while the
+sort key is unique.
+
 **Page, don't cap, unless the work removes itself from the candidate set.**
 Escalation doesn't change `state`, so a per-tick cap would re-serve the same
 lowest-id rows forever and never reach the rest; it keyset-paginates
@@ -244,6 +283,14 @@ lowest-id rows forever and never reach the rest; it keyset-paginates
 `FEOH_APPROVAL_ESCALATION_BATCH_SIZE` as the page size. `retention_sweep` and
 `recurring_invoices` *can* cap, because an archived invoice / a generated period
 leaves the candidate set and the next tick resumes past it.
+
+`discount_auto_trigger` and `contract_renewal` are the two that still load their
+whole candidate set per tenant in one unbounded `SELECT`. Neither can cap — an
+offer skipped for a below-threshold ROI stays `offered`, and a contract outside
+its own lead window stays un-alerted — so bounding them means a keyset cursor and
+a page-size setting each, not a `LIMIT`. Since round 16 they commit per item, so
+this is a memory/latency ceiling rather than a starvation hole; it is tracked in
+[followups.md](../../docs/followups.md).
 
 **And isolate per item, or the pagination is decorative.** A raise from inside
 the loop is the second way to starve a tail, and it does not look like a
@@ -254,7 +301,9 @@ permanently, because nothing about that row changes. Both `extraction_reaper`
 and `approval_escalation` had adopted the per-row **commit** from
 `vendor_rescreen` / `recurring_invoices` but not their per-row
 `try` / `rollback`, and both docstrings claimed the property the commit alone
-does not give. The shape is:
+does not give. Round 16 brought the last holdouts onto the same shape —
+`discount_auto_trigger`, `contract_renewal`, `payment_reconciler` and
+`billing/dunning_sweep`. The shape is:
 
 ```python
 for row_id in candidate_ids:
@@ -272,10 +321,49 @@ for row_id in candidate_ids:
 The counter is not optional either, and its **name** carries meaning: the
 per-item total is surfaced as a `*_failures` field on the sweep's result
 dataclass (`invoice_failures`, `instance_failures`, `vendor_failures`,
-`template_failures`) because `sweep_health.failure_count` sums exactly those.
-Swallow the item without counting it and the tick reports `ok` while making no
-progress — the blind spot this whole registry exists to close. Keep it separate
-from `failures`, which means "the tenant sweep aborted outright".
+`template_failures`, `offer_failures`, `contract_failures`, `payment_failures`)
+because `sweep_health.failure_count` sums exactly those. Swallow the item without
+counting it and the tick reports `ok` while making no progress — the blind spot
+this whole registry exists to close. Keep it separate from `failures`, which
+means "the tenant sweep aborted outright".
+
+**The suffix is a claim, so some counts deliberately don't carry it.**
+`qms_sync`'s `skipped` and `unchanged`, and `recurring_invoices`'
+`templates_skipped`, are provider or configuration facts — an unmapped
+disposition, a record re-fetched identical, a template that isn't due. Naming any
+of them `*_failures` would pin a working sweep at `degraded` and drown the streak
+alert. The test is whether the item failing means the *platform* is failing.
+
+**Two independent passes in one transaction can undo each other.**
+`contract_renewal` ran its renewal-alert pass and its end-of-term expiry pass back
+to back and committed once, so a raise while expiring a contract rolled back every
+`renewal_alert_sent_at` the alert pass had just stamped — the notification emails
+had already been dispatched, the markers had not, and the next tick re-sent them
+all, until it hit the same poison row again. The reverse held too. Per-item
+commits make the passes genuinely independent.
+
+**`payment_reconciler` is the two-phase shape with a third party in the middle.**
+It resolves the settled figure from the processor (`fetch_settlement`) — a live
+rail round trip — deliberately *before* any lock, then locks, re-checks that the
+row is still `submitted`/`processing`, writes, and commits. Running the fetch
+inside the lock is the version that shipped: `payment_webhook` takes the same row
+lock, so the sweep blocked a real webhook for the whole duration of the HTTP call,
+on precisely the row a webhook was most likely arriving for. Resolving first and
+locking second is the shape `payment_erp_sync` uses when it resolves the ERP
+adapter ahead of the invoice lock, and the re-check under the lock is what makes
+it safe — a webhook that settled the row during the fetch is caught there and the
+sweep skips rather than double-writing a terminal status.
+
+Two consequences of that loop worth knowing before editing it. It iterates
+**loaded ORM rows**, not ids, and `Session.rollback()` expires every object in the
+identity map — so the pre-lock decision inputs are snapshotted into locals, and a
+bare attribute read after a skip-path rollback would trigger a lazy refresh that
+an async session raises on rather than transparently reloading. And its counters
+and the `dispatch_payment_sync` hand-off are taken **after** the per-payment
+commit, never off the in-memory mutation: `dispatch_payment_sync` is what flips
+the invoice `payment_scheduled → paid`, so handing it a run whose payment
+transition was rolled back would mark an invoice paid for a payment still sitting
+`submitted`.
 
 `webhooks/delivery.deliver_due` is the same shape with one addition: the claim
 is `FOR UPDATE SKIP LOCKED`, because a delivery already in flight elsewhere
