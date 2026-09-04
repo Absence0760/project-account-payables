@@ -57,6 +57,8 @@ stored row's currency through `resolve_reporting_currency`, and its two
 `invoice_defaults.currency` reads are the FormatterContext for the rendered
 file, not a rollup — no cross-currency sum exists there to fix.
 
+This file now carries **56** open checkbox entries (plus the 8 narrative round-15 findings), down from 64.
+
 The same pass replaced the list/rollup filter-parity guard with
 `test_whole_set_kpi_rollups.py`. The old one covered four surfaces and only
 `search`, through an `isinstance(default, fastapi.params.Query)` check that a
