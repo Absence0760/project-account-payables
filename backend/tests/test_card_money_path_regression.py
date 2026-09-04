@@ -1163,3 +1163,225 @@ async def test_the_dashboard_never_double_counts_a_rebate_across_the_join(realdb
     assert n_rebates == 4
     assert res.rebates_ytd == Decimal("10.00")
     assert res.rebates_ytd_by_status.paid_out_total == Decimal("10.00")
+
+
+# --------------------------------------------------------------------------- #
+# The rebate rollups describe the SELECTED entity, not the whole org
+# --------------------------------------------------------------------------- #
+
+
+async def _other_entity(mk, org_id):
+    """A second (non-default) entity in the same tenant."""
+    from app.models.entity import Entity
+
+    async with mk() as s:
+        ent = Entity(
+            organization_id=org_id, name="Subsidiary B", slug=f"sub-{uuid.uuid4().hex[:6]}"
+        )
+        s.add(ent)
+        await s.commit()
+        return ent.id
+
+
+async def _default_entity(mk):
+    async with mk() as s:
+        return await _default_entity_id(s)
+
+
+async def test_the_rebate_rollups_are_scoped_to_the_selected_entity(realdb):
+    """A subsidiary's rebate must not appear in the parent entity's figures.
+
+    `CardRebate` carries no `entity_id`, so its entity is only knowable through
+    its card — the same indirection the currency fix needed. `GET /rebates`
+    already scoped its LIST that way; the dashboard's rollups did not, so a
+    multi-entity tenant read entity-scoped card figures beside org-wide rebate
+    figures and the headline could not be reconciled against the list an
+    operator drills into. Pre-fix this reported 7.00 under the default entity.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    other = await _other_entity(mk, org_id)
+    period = datetime.now(UTC).strftime("%Y-%m")
+
+    await _add_card(
+        mk,
+        org_id,
+        currency="USD",
+        limit="500.00",
+        rebate=("7.00", "confirmed"),
+        period=period,
+        entity_id=other,
+    )
+    await _add_card(
+        mk,
+        org_id,
+        currency="USD",
+        limit="400.00",
+        rebate=("3.00", "confirmed"),
+        period=period,
+    )
+
+    res = await _dashboard(realdb, org_id, entity_id=await _default_entity(mk))
+    assert res.rebates_ytd == Decimal("3.00")
+    assert res.rebates_this_month == Decimal("3.00")
+
+
+async def test_the_rebate_status_breakdown_is_scoped_too(realdb):
+    """The pending/confirmed/paid_out split must not widen where the total narrowed.
+
+    A breakdown that disagrees with the total beside it is the same defect in a
+    subtler place — the reader reconciles the three against the headline.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    other = await _other_entity(mk, org_id)
+    period = datetime.now(UTC).strftime("%Y-%m")
+
+    await _add_card(
+        mk,
+        org_id,
+        currency="USD",
+        limit="500.00",
+        rebate=("9.00", "pending"),
+        period=period,
+        entity_id=other,
+    )
+    await _add_card(
+        mk,
+        org_id,
+        currency="USD",
+        limit="500.00",
+        rebate=("8.00", "paid_out"),
+        period=period,
+        entity_id=other,
+    )
+    await _add_card(
+        mk,
+        org_id,
+        currency="USD",
+        limit="400.00",
+        rebate=("2.00", "pending"),
+        period=period,
+    )
+
+    res = await _dashboard(realdb, org_id, entity_id=await _default_entity(mk))
+    assert res.rebates_ytd_by_status.pending_total == Decimal("2.00")
+    assert res.rebates_ytd_by_status.paid_out_total == Decimal("0.00")
+    assert res.rebates_this_month_by_status.pending_total == Decimal("2.00")
+    # And the realized total still equals confirmed + paid_out of the same set.
+    assert res.rebates_ytd == (
+        res.rebates_ytd_by_status.confirmed_total + res.rebates_ytd_by_status.paid_out_total
+    )
+
+
+async def test_the_rebate_exclusion_count_describes_the_same_entity_it_discloses(realdb):
+    """`excluded_rebate_count` explains a figure — so it must share its scope.
+
+    An org-wide count against an entity-scoped figure over-discloses: the page
+    says "N rebates left out" naming rows that were never in scope to begin
+    with, which is as misleading as under-disclosing.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    other = await _other_entity(mk, org_id)
+    period = datetime.now(UTC).strftime("%Y-%m")
+
+    # Foreign-currency rebate in ANOTHER entity: out of scope twice over, and
+    # must not be counted as this entity's currency exclusion.
+    await _add_card(
+        mk,
+        org_id,
+        currency="EUR",
+        limit="500.00",
+        rebate=("5.00", "confirmed"),
+        period=period,
+        entity_id=other,
+    )
+    # Foreign-currency rebate in THIS entity: the one genuine exclusion.
+    await _add_card(
+        mk,
+        org_id,
+        currency="GBP",
+        limit="500.00",
+        rebate=("4.00", "confirmed"),
+        period=period,
+    )
+
+    res = await _dashboard(realdb, org_id, entity_id=await _default_entity(mk))
+    assert res.excluded_rebate_count == 1
+    assert res.rebates_ytd == Decimal("0.00")
+
+
+async def test_the_consolidated_view_still_sees_every_entity(realdb):
+    """No selected entity = the whole tenant, so the fix must not narrow that.
+
+    `apply_entity_scope` is a no-op on `entity_id=None`, which is the header-less
+    consolidated read; a scope that always narrowed would silently delete the
+    subsidiaries from the group view.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    other = await _other_entity(mk, org_id)
+    period = datetime.now(UTC).strftime("%Y-%m")
+
+    await _add_card(
+        mk,
+        org_id,
+        currency="USD",
+        limit="500.00",
+        rebate=("7.00", "confirmed"),
+        period=period,
+        entity_id=other,
+    )
+    await _add_card(
+        mk,
+        org_id,
+        currency="USD",
+        limit="400.00",
+        rebate=("3.00", "confirmed"),
+        period=period,
+    )
+
+    res = await _dashboard(realdb, org_id, entity_id=None)
+    assert res.rebates_ytd == Decimal("10.00")
+
+
+async def test_every_rebate_aggregate_carries_the_entity_scope(realdb):
+    """Structural: a new rebate aggregate must not be added unscoped.
+
+    The three rollups were introduced at different times and only the currency
+    predicate was applied uniformly; this asserts the scope is uniform too, so
+    a fourth figure cannot reintroduce the org-wide read.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from app.api import cards as cards_mod
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(cards_mod.card_dashboard)))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef))
+
+    # Statement-granular, not Call-granular: `apply_entity_scope(select(...))`
+    # means the inner `select` legitimately carries no scope of its own, so the
+    # unit that must show one is the whole statement building the aggregate.
+    rebate_aggregates = 0
+    for stmt in ast.walk(fn):
+        if not isinstance(stmt, ast.stmt):
+            continue
+        if any(isinstance(child, ast.stmt) for child in ast.iter_child_nodes(stmt)):
+            continue  # a compound statement; its leaves are checked instead
+        rendered = ast.dump(stmt)
+        if "CardRebate" not in rendered:
+            continue
+        if not any(f in rendered for f in ("'sum'", "'count'")):
+            continue
+        rebate_aggregates += 1
+        assert "apply_entity_scope" in rendered, (
+            "a CardRebate aggregate in card_dashboard is not entity-scoped; "
+            "CardRebate has no entity_id of its own, so scope it through the "
+            "VirtualCard join the currency predicate already requires"
+        )
+    assert rebate_aggregates >= 3, (
+        f"expected the month, YTD and exclusion-count aggregates; found {rebate_aggregates}"
+    )
