@@ -508,3 +508,111 @@ def test_a_counts_endpoint_is_gated_exactly_like_its_list(pair):
         "set they cannot see, and one reachable by fewer leaves the page showing "
         "rows above chips that cannot explain them."
     )
+
+
+# ---------------------------------------------------------------------------
+# Wiring, for `/counts` — accepting the same filters is not the same as
+# applying them through the same code
+# ---------------------------------------------------------------------------
+
+#: `(builder, list_fn, counts_fn)` per module owning a list + `/counts` pair.
+#: Hand-maintained like `_SHARED_BUILDER_MODULES`, and held in step with
+#: discovery by `test_every_discovered_counts_surface_is_wired_or_exempt`.
+_COUNTS_BUILDER_MODULES = {
+    "app/api/invoices.py": ("_invoice_list_filters", "list_invoices", "invoice_counts"),
+    "app/api/payments.py": (
+        "_payment_list_filters",
+        "list_payments",
+        "payment_status_counts",
+    ),
+    "app/api/purchase_orders.py": (
+        "_purchase_order_list_filters",
+        "list_purchase_orders",
+        "purchase_order_status_counts",
+    ),
+    "app/api/vendors.py": ("_vendor_list_filters", "list_vendors", "vendor_status_counts"),
+}
+
+#: Counts surfaces with no shared builder, and why that is correct rather than
+#: an omission. A builder exists to stop two copies of a predicate SET drifting;
+#: where the list offers no narrowing filter at all there is no set to share.
+_NO_FILTERS_TO_SHARE = {
+    "/api/vendors/change-requests/counts": (
+        "`GET /api/vendors/change-requests` takes only `status` — the dimension "
+        "the tally groups by, which §48 requires the tally NOT to accept. With "
+        "no narrowing filter on either side there is no predicate set for the "
+        "two to disagree about. If the queue ever gains one (a vendor filter, a "
+        "search), it needs a shared builder and an entry above."
+    ),
+}
+
+
+@pytest.mark.parametrize("module_path", sorted(_COUNTS_BUILDER_MODULES))
+def test_the_list_and_its_counts_share_one_filter_builder(module_path):
+    """Both endpoints must apply the filters through the SAME code.
+
+    Accepting the same parameter names only proves the surface matches. The
+    purchase-order pair accepted identical filters while running two separate
+    copies of the predicates, and had already drifted on what a malformed
+    `vendor_id` does — a 400 from the tally's hand-rolled guard, an unhandled
+    500 from the list.
+    """
+    builder, list_fn, counts_fn = _COUNTS_BUILDER_MODULES[module_path]
+    source = (pathlib.Path(__file__).resolve().parents[1] / module_path).read_text()
+
+    assert f"def {builder}(" in source, f"{module_path} no longer defines {builder}"
+
+    callers = _functions_calling(source, builder)
+    for fn in (list_fn, counts_fn):
+        assert fn in callers, (
+            f"{module_path}::{fn} does not call {builder}. A list and its chip "
+            "tally must apply filters through the one shared builder so they "
+            "cannot drift on what a filter means."
+        )
+
+
+def test_every_discovered_counts_surface_is_wired_or_exempt():
+    """A NEW `/counts` endpoint cannot skip the wiring axis unnoticed.
+
+    Discovery makes the contract and RBAC axes automatic; this one is driven by
+    the map above, so the map is checked against discovery rather than trusted
+    to have been updated.
+    """
+    _, pairs = _counts_pairs()
+    wired = {
+        f"/api{prefix}/counts"
+        for module_path in _COUNTS_BUILDER_MODULES
+        for prefix in _router_prefixes(module_path)
+    }
+    for _, counts_path in pairs:
+        if counts_path in _NO_FILTERS_TO_SHARE:
+            continue
+        assert counts_path in wired, (
+            f"{counts_path} is discovered but has no entry in "
+            "_COUNTS_BUILDER_MODULES and no justified entry in "
+            "_NO_FILTERS_TO_SHARE. Add the shared filter builder, or record why "
+            "there is no predicate set to share."
+        )
+
+
+def test_no_filters_to_share_exemptions_are_still_true():
+    """An exemption claiming 'no narrowing filters' must stay true.
+
+    If the exempted list gains a real filter, the pair needs a shared builder —
+    and a stale exemption would silently cover exactly that case.
+    """
+    spec, pairs = _counts_pairs()
+    by_counts = {counts: lst for lst, counts in pairs}
+    for counts_path in _NO_FILTERS_TO_SHARE:
+        assert counts_path in by_counts, f"{counts_path} is exempt but not discovered"
+        list_params = (
+            _openapi_query_params(spec, by_counts[counts_path])
+            - _VIEW_ONLY_PARAMS
+            - {_TALLIED_DIMENSION}
+        )
+        assert not list_params, (
+            f"{counts_path} is exempted as having no narrowing filters to share, "
+            f"but {by_counts[counts_path]} now offers {sorted(list_params)}. The "
+            "pair needs a shared filter builder and an entry in "
+            "_COUNTS_BUILDER_MODULES."
+        )

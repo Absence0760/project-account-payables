@@ -46,23 +46,53 @@ def _line_item_dict(li: POLineItem) -> dict:
     }
 
 
+def _purchase_order_list_filters(
+    query,
+    *,
+    search: str | None,
+    status_filter: str | None,
+    vendor_id: uuid.UUID | None,
+):
+    """Apply the purchase-order list filters to ``query``.
+
+    Shared by ``GET /api/purchase-orders`` and ``GET /api/purchase-orders/counts``
+    so the filter-chip tallies describe exactly the rows the list would return
+    (decisions §48). The two used to hand-roll the same predicates separately
+    and had already drifted: a malformed ``vendor_id`` was a 400 on the tally
+    and an unhandled ``ValueError`` — a 500 — on the list. ``vendor_id`` is a
+    ``uuid.UUID`` here because both endpoints now declare it as one, so FastAPI
+    rejects a malformed value at the boundary with its own 422 and neither
+    handler validates by hand.
+
+    ``status_filter`` is ``None`` from the counts caller: status is the
+    dimension being tallied, so applying it would return the selected status'
+    count and zero for every other chip.
+    """
+    if search:
+        query = query.where(ilike_contains(PurchaseOrder.po_number, search))
+    if status_filter:
+        query = query.where(PurchaseOrder.status == status_filter)
+    if vendor_id:
+        query = query.where(PurchaseOrder.vendor_id == vendor_id)
+    return query
+
+
 @router.get("")
 async def list_purchase_orders(
     search: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
-    vendor_id: str | None = None,
+    vendor_id: uuid.UUID | None = None,
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = apply_entity_scope(select(PurchaseOrder), PurchaseOrder, entity_id)
-    if search:
-        base = base.where(ilike_contains(PurchaseOrder.po_number, search))
-    if status_filter:
-        base = base.where(PurchaseOrder.status == status_filter)
-    if vendor_id:
-        base = base.where(PurchaseOrder.vendor_id == uuid.UUID(vendor_id))
+    base = _purchase_order_list_filters(
+        apply_entity_scope(select(PurchaseOrder), PurchaseOrder, entity_id),
+        search=search,
+        status_filter=status_filter,
+        vendor_id=vendor_id,
+    )
 
     total_q = await db.execute(select(func.count()).select_from(base.subquery()))
     total = int(total_q.scalar() or 0)
@@ -110,7 +140,7 @@ async def list_purchase_orders(
 @router.get("/counts")
 async def purchase_order_status_counts(
     search: str | None = None,
-    vendor_id: str | None = None,
+    vendor_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
@@ -128,25 +158,26 @@ async def purchase_order_status_counts(
     describe exactly the rows the list would return — but deliberately NOT
     `status`: status is the dimension being tallied, so applying it would zero
     every other chip. (An unknown query param is dropped by FastAPI, so a
-    client that passes one is unaffected.)
+    client that passes one is unaffected.) Both endpoints apply the filters
+    through the shared `_purchase_order_list_filters`, so neither can drift on
+    what one means — they previously hand-rolled the same predicates and had
+    already diverged on a malformed `vendor_id`.
 
     RBAC matches the list itself (`get_current_user` — auth-gated, role-open):
     a caller who may read the rows may read their counts, and one who may not
     gets neither.
     """
-    query = apply_entity_scope(
-        select(PurchaseOrder.status, func.count()).select_from(PurchaseOrder),
-        PurchaseOrder,
-        entity_id,
-    )
-    if search:
-        query = query.where(ilike_contains(PurchaseOrder.po_number, search))
-    if vendor_id:
-        try:
-            query = query.where(PurchaseOrder.vendor_id == uuid.UUID(vendor_id))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid vendor_id") from None
-    query = query.group_by(PurchaseOrder.status)
+    query = _purchase_order_list_filters(
+        apply_entity_scope(
+            select(PurchaseOrder.status, func.count()).select_from(PurchaseOrder),
+            PurchaseOrder,
+            entity_id,
+        ),
+        search=search,
+        # Status is the dimension being tallied — see the builder's docstring.
+        status_filter=None,
+        vendor_id=vendor_id,
+    ).group_by(PurchaseOrder.status)
     rows = (await db.execute(query)).all()
     by_status = {str(po_status): int(n) for po_status, n in rows}
     return {"total": sum(by_status.values()), "by_status": by_status}

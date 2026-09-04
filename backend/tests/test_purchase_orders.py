@@ -248,12 +248,40 @@ async def test_counts_honours_the_vendor_filter(realdb):
     assert resp.json() == {"total": 2, "by_status": {"open": 2}}
 
 
-async def test_counts_rejects_a_malformed_vendor_id(realdb):
-    """A garbage filter value is a 400, not the 500 an unguarded
-    `uuid.UUID(...)` would raise out of the handler."""
+async def test_a_malformed_vendor_id_is_a_client_error_on_both_endpoints(realdb):
+    """A garbage filter value must never be the 500 an unguarded
+    `uuid.UUID(...)` raises out of a handler.
+
+    This previously asserted a hand-rolled 400 on `/counts` alone — and the
+    LIST endpoint, running the same predicate from its own copy, still raised
+    that 500. Both now declare `vendor_id: uuid.UUID`, so FastAPI refuses a
+    malformed value at the boundary with its own 422 before either handler
+    runs. The assertion's intent is unchanged (a client error, not a crash) and
+    now covers the endpoint that was actually broken; only the mechanism moved,
+    from hand-rolled validation in one handler to the boundary for both.
+    """
     async with realdb.client(key="a", role="ap_manager") as c:
-        resp = await c.get("/api/purchase-orders/counts", params={"vendor_id": "not-a-uuid"})
-    assert resp.status_code == 400
+        for path in ("/api/purchase-orders", "/api/purchase-orders/counts"):
+            resp = await c.get(path, params={"vendor_id": "not-a-uuid"})
+            assert resp.status_code == 422, f"{path} returned {resp.status_code}"
+            assert resp.status_code < 500, f"{path} crashed instead of refusing"
+
+
+async def test_the_list_and_its_counts_share_one_filter_builder():
+    """Structural: two independently-maintained copies of the same predicates
+    is what let the pair drift on a malformed `vendor_id` in the first place."""
+    import inspect
+
+    from app.api import purchase_orders as po_mod
+
+    for handler in (po_mod.list_purchase_orders, po_mod.purchase_order_status_counts):
+        src = inspect.getsource(handler)
+        assert "_purchase_order_list_filters(" in src, (
+            f"{handler.__name__} does not route through the shared filter builder"
+        )
+        assert "ilike_contains(PurchaseOrder.po_number" not in src, (
+            f"{handler.__name__} restates the search predicate instead of sharing it"
+        )
 
 
 async def test_counts_empty_set_is_zero_not_an_error(realdb):
