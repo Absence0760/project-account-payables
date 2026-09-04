@@ -90,6 +90,28 @@ export interface ScreeningReviewItem {
 	adverse_media: boolean;
 }
 
+/**
+ * `GET /api/vendors/counts` — whole-set tallies over the entity-scoped,
+ * search/source-filtered vendor population. PII-free (counts only).
+ *
+ * `payments_blocked` is a SECOND tally over the same population, not a slice
+ * of `by_status`: a payment block is an orthogonal axis
+ * (`POST /api/vendors/{id}/block` sets `payments_blocked` and never touches
+ * `status` or `screening_status`), so it may overlap any bucket and must never
+ * be added to `total`.
+ *
+ * It exists because `/vendors/screening`'s "Payments blocked" KPI used to be
+ * counted off the screening REVIEW QUEUE — `screening_status IN
+ * ('match','review')` — which structurally cannot see a vendor AP blocked
+ * while screening-clear. A tally has to come from a query that asks the
+ * tally's own question.
+ */
+export interface VendorStatusCounts {
+	total: number;
+	by_status: Record<string, number>;
+	payments_blocked: number;
+}
+
 // Vendor risk detail (GET /risk, POST /risk/recompute).
 export interface VendorRisk {
 	vendor_id: string;

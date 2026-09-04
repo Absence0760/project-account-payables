@@ -73,6 +73,7 @@ from app.schemas.vendor import (
     VendorChangeReviewRequest,
     VendorCreate,
     VendorResponse,
+    VendorStatusCounts,
     VendorUpdate,
 )
 from app.services.audit_access import build_field_diff, log_access
@@ -623,7 +624,7 @@ async def bulk_export_vendors(
     )
 
 
-@router.get("/counts")
+@router.get("/counts", response_model=VendorStatusCounts)
 async def vendor_status_counts(
     search: str | None = None,
     source: str | None = None,
@@ -631,7 +632,7 @@ async def vendor_status_counts(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Status tallies for the vendor filter chips.
+    """Status tallies for the vendor filter chips, plus the payment-block tally.
 
     Computed over the WHOLE entity-scoped (and optionally searched) vendor set,
     not the loaded page — so the chip counts, and in particular the red
@@ -646,10 +647,30 @@ async def vendor_status_counts(
     on screen, but a duplicate predicate maintained in two places is exactly
     the drift the shared builder exists to prevent (and `source` would have
     been a live undercount the moment the vendors page gained that control).
+
+    `payments_blocked` is a SECOND tally over the same population, not a slice
+    of `by_status`: `POST /{vendor_id}/block` sets `Vendor.payments_blocked`
+    and deliberately never touches `screening_status`, so a vendor AP blocked
+    while screening-clear belongs to no screening bucket at all. The
+    `/vendors/screening` "Payments blocked" KPI used to count it off the
+    screening review queue — `screening_status IN ('match','review')` — which
+    structurally cannot see such a vendor. A tally has to be computed from a
+    query that asks the tally's OWN question (`docs/decisions.md` §48); it
+    rides the same aggregate as the status buckets so the two can never be
+    filtered differently.
     """
     query = _vendor_list_filters(
         apply_entity_scope(
-            select(Vendor.status, func.count()).select_from(Vendor), Vendor, entity_id
+            select(
+                Vendor.status,
+                func.count(),
+                # `count(*) FILTER (WHERE payments_blocked)` — one pass over the
+                # same filtered population, so the blocked tally cannot describe
+                # a different set from the status buckets beside it.
+                func.count().filter(Vendor.payments_blocked.is_(True)),
+            ).select_from(Vendor),
+            Vendor,
+            entity_id,
         ),
         search=search,
         # `status` is the dimension being tallied — applying it would zero every
@@ -658,8 +679,12 @@ async def vendor_status_counts(
         source=source,
     ).group_by(Vendor.status)
     rows = (await db.execute(query)).all()
-    by_status = {str(status): int(n) for status, n in rows}
-    return {"total": sum(by_status.values()), "by_status": by_status}
+    by_status = {str(status): int(n) for status, n, _blocked in rows}
+    return VendorStatusCounts(
+        total=sum(by_status.values()),
+        by_status=by_status,
+        payments_blocked=sum(int(blocked) for _s, _n, blocked in rows),
+    )
 
 
 async def _vendor_name(db: AsyncSession, vendor_id: uuid.UUID) -> str | None:

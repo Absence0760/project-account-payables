@@ -11,6 +11,7 @@
 	import {
 		getScreeningReviewQueue,
 		getScreeningHistory,
+		getVendorCounts,
 		blockVendor,
 		unblockVendor,
 		screenVendor
@@ -47,6 +48,13 @@
 	let loadError = $state(false);
 	let search = $state('');
 
+	// Whole-set payment-block tally from `GET /api/vendors/counts`. `null` means
+	// "not available" (the call failed, or the caller is an ap_clerk — the
+	// screening queue admits that role, the vendor list and therefore its tally
+	// do not). We render an em-dash rather than falling back to a
+	// queue-derived number, because that number is the bug this replaced.
+	let blockedTotal = $state<number | null>(null);
+
 	// Detail modal — the selected vendor + its screening history.
 	let selected = $state<ScreeningReviewItem | null>(null);
 	let history = $state<SanctionsCheck[]>([]);
@@ -66,6 +74,7 @@
 
 	$effect(() => {
 		loadQueue();
+		loadBlockedCount();
 	});
 
 	// Client-side search over the loaded queue (vendor name + matched list +
@@ -85,9 +94,10 @@
 			: items
 	);
 
+	// The queue is fetched whole (unpaginated) and holds exactly the `match` +
+	// `review` vendors, so these two ARE whole-set figures.
 	let matchCount = $derived(items.filter((it) => it.screening_status === 'match').length);
 	let reviewCount = $derived(items.filter((it) => it.screening_status === 'review').length);
-	let blockedCount = $derived(items.filter((it) => it.payments_blocked).length);
 
 	// Sequences `loadQueue`. The mount `$effect` is not its only trigger — the
 	// header Refresh button fires it too, so two can be in flight at once and
@@ -97,6 +107,37 @@
 	// and puts the lifted payment block — or the stale screening verdict — back
 	// on the row. See `frontend/CLAUDE.md` § Sequencing list fetches.
 	const fetchSequence = createRequestSequencer();
+
+	// The blocked tally is its own request with its own sequence: it is refetched
+	// after every block / unblock / re-screen, so two can be in flight and
+	// resolve out of order exactly like the queue fetch can.
+	const countsSequence = createRequestSequencer();
+
+	/**
+	 * The "Payments blocked" KPI, from a query that asks the KPI's own question.
+	 *
+	 * It used to be `items.filter((it) => it.payments_blocked).length` over the
+	 * review queue — and the queue is selected on `screening_status IN
+	 * ('match','review')`, while `POST /api/vendors/{id}/block` sets
+	 * `payments_blocked` and never touches `screening_status`. A vendor AP
+	 * blocked while screening-clear was therefore invisible to a headline
+	 * claiming to count blocked payments, at any queue size. See
+	 * `docs/decisions.md` §48 and `backend/docs/vendor-risk-screening.md`.
+	 */
+	async function loadBlockedCount() {
+		const token = countsSequence.start();
+		try {
+			const counts = await getVendorCounts();
+			if (!countsSequence.canCommit(token)) return;
+			blockedTotal = counts.payments_blocked;
+		} catch {
+			// Non-fatal, and deliberately NOT latched back to a queue-derived
+			// tally: an em-dash says "we don't know", the old number said
+			// something false.
+			if (!countsSequence.isCurrentRequest(token)) return;
+			blockedTotal = null;
+		}
+	}
 
 	async function loadQueue() {
 		const token = fetchSequence.start();
@@ -181,6 +222,9 @@
 				? await unblockVendor(selected.vendor_id)
 				: await blockVendor(selected.vendor_id, blockReason.trim() || undefined);
 			applyVendorUpdate(updated);
+			// The tally is whole-set, so it can't be adjusted locally — a vendor
+			// outside this queue may have been blocked meanwhile. Re-ask.
+			loadBlockedCount();
 			toast(updated.payments_blocked ? 'Payments blocked' : 'Payments unblocked', 'success');
 			blockReason = '';
 		} catch (err) {
@@ -197,6 +241,8 @@
 		try {
 			const updated = await screenVendor(selected.vendor_id);
 			applyVendorUpdate(updated);
+			// A `match` verdict auto-blocks the vendor, so the tally can move.
+			loadBlockedCount();
 			toast('Vendor re-screened', 'success');
 			// Refresh the history so the new screen appears at the top.
 			historyLoading = true;
@@ -216,7 +262,14 @@
 
 <PageHeader title="Screening Review Queue">
 	{#snippet actions()}
-		<button class="btn-outline" onclick={loadQueue} disabled={loading}>
+		<button
+			class="btn-outline"
+			onclick={() => {
+				loadQueue();
+				loadBlockedCount();
+			}}
+			disabled={loading}
+		>
 			{loading ? 'Refreshing…' : 'Refresh'}
 		</button>
 	{/snippet}
@@ -224,7 +277,11 @@
 	<div class="kpi-row">
 		<KpiCard value={matchCount} label="Sanctions matches" highlight={matchCount > 0 ? 'red' : null} />
 		<KpiCard value={reviewCount} label="Needs review" highlight={reviewCount > 0 ? 'red' : null} />
-		<KpiCard value={blockedCount} label="Payments blocked" />
+		<KpiCard
+			value={blockedTotal ?? '—'}
+			label="Payments blocked"
+			sub={blockedTotal === null ? 'Count unavailable' : 'All vendors, not just this queue'}
+		/>
 	</div>
 
 	<div class="filter-row">

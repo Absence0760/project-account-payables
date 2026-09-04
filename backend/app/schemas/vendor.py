@@ -353,3 +353,23 @@ class VendorBulkScreenResponse(BaseModel):
 
 class VendorBulkExportRequest(BaseModel):
     ids: list[str] = Field(..., min_length=1)
+
+
+class VendorStatusCounts(BaseModel):
+    """`GET /api/vendors/counts` — whole-set tallies over the entity-scoped,
+    search/source-filtered vendor population.
+
+    `by_status` drives the vendor list's status chips; `payments_blocked` is a
+    SECOND tally over the SAME population rather than a slice of `by_status`,
+    because a payment block is an orthogonal axis: `POST /vendors/{id}/block`
+    sets `Vendor.payments_blocked` and never touches `status` or
+    `screening_status`. `total` is the sum of `by_status`, so
+    `payments_blocked` may legitimately overlap any of the buckets and must
+    never be added to `total`.
+
+    PII-free — counts only, never a vendor name or a block reason.
+    """
+
+    total: int
+    by_status: dict[str, int] = Field(default_factory=dict)
+    payments_blocked: int = 0
