@@ -128,7 +128,15 @@ async def sync_inspections(
     ``quality_inspections``. Idempotent (upsert keyed on
     ``(organization_id, inspection_number)``). Reads the QMS config from
     ``Organization.settings.qms`` on the control plane. Returns
-    ``{fetched, created, updated, skipped}``.
+    ``{fetched, created, updated, unchanged, skipped}``.
+
+    **A full re-pull, deliberately.** The background sweep is incremental — it
+    passes each org's persisted ``settings.qms.last_synced_at`` high-water mark
+    and advances it. This route passes no cursor and advances none: a human
+    asking to sync now is asking for everything, usually *because* they suspect
+    the incremental window missed something, and answering that with an empty
+    result would be useless. Re-fetched records that match what is stored come
+    back as ``unchanged`` and write neither a row nor an audit entry.
 
     **409 when the org has no QMS configured.** Opting in is the same rule the
     background sweep applies (`qms_sync.resolve_opted_in_qms_config`, shared so
