@@ -39,14 +39,60 @@ export interface BillingSubscription {
 	externally_managed: boolean;
 }
 
-/** Usage-to-date for the current period. All values are exact strings. */
+/** Usage-to-date for the current period. All values are exact strings.
+ *
+ * The rebate meter arrives as one key PER CURRENCY
+ * (`card_rebate_total.USD`), never a bare `card_rebate_total` — it used to be
+ * a single cross-currency sum, which is a quantity in no currency at all, and
+ * this is a meter a later billing slice prices. Read it through
+ * {@link rebateMeterGroups} rather than indexing a key by hand.
+ */
 export interface BillingUsage {
 	/** Total extraction events in the period. */
 	extractions: string;
 	/** The billable (platform-program) subset of extractions. */
 	extractions_platform: string;
-	/** Card rebate total (informational this slice) as a decimal string. */
-	card_rebate_total: string;
+	/** Per-currency rebate meters + any meter a later slice adds. */
+	[meter: string]: string;
+}
+
+/** One currency's rebate total, as it arrives on the meter map.
+ *
+ * `{currency, total}` deliberately matches the house per-currency shape every
+ * backend `*CurrencyTotal` schema emits and `utils/currencyGroups.ts` renders,
+ * so this can feed the shared display primitive rather than needing its own.
+ */
+export interface RebateMeterGroup {
+	/** ISO 4217 code, from the meter key. */
+	currency: string;
+	/** Exact decimal string — never parsed to a number for display. */
+	total: string;
+}
+
+/** The prefix every per-currency rebate meter carries. */
+const REBATE_METER_PREFIX = 'card_rebate_total.';
+
+/** Per-currency rebate totals from a usage meter map, sorted by currency code.
+ *
+ * Returns `[]` when the org accrued no rebates — the backend emits no rebate
+ * key at all in that case, deliberately, because zero rebates in an unstated
+ * currency is not a fact. A caller renders nothing rather than a `$0.00` whose
+ * currency it invented.
+ *
+ * Pure, so it is unit-tested; a malformed key (no 3-letter code) is skipped
+ * rather than rendered under a fabricated code.
+ */
+export function rebateMeterGroups(usage: BillingUsage | null | undefined): RebateMeterGroup[] {
+	if (!usage) return [];
+	const groups: RebateMeterGroup[] = [];
+	for (const [key, amount] of Object.entries(usage)) {
+		if (!key.startsWith(REBATE_METER_PREFIX)) continue;
+		const currency = key.slice(REBATE_METER_PREFIX.length).trim().toUpperCase();
+		if (currency.length !== 3) continue;
+		groups.push({ currency, total: String(amount ?? '0') });
+	}
+	groups.sort((a, b) => a.currency.localeCompare(b.currency));
+	return groups;
 }
 
 export interface BillingSubscriptionResponse {

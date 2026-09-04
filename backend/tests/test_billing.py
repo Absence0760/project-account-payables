@@ -28,7 +28,7 @@ from app.models.billing import Plan, Subscription
 from app.models.usage import ExtractionUsage
 from app.models.virtual_card import CardRebate
 from app.services.billing.entitlements import has_entitlement
-from app.services.billing.usage_rollup import UsageRollup, rollup_usage
+from app.services.billing.usage_rollup import CurrencyTotal, UsageRollup, rollup_usage
 from app.services.billing_adapters import get_billing_adapter
 from app.services.billing_adapters.base import (
     CreateSubscriptionRequest,
@@ -155,13 +155,42 @@ def test_usage_rollup_as_meters_serialises_decimal_as_string():
         period=PERIOD,
         extractions=3,
         extractions_platform=2,
-        card_rebate_total=Decimal("12.34"),
+        card_rebate_totals=(CurrencyTotal(currency="USD", amount=Decimal("12.34")),),
     )
     meters = r.as_meters()
     assert meters["extractions"] == "3"
     assert meters["extractions_platform"] == "2"
-    assert meters["card_rebate_total"] == "12.34"
+    assert meters["card_rebate_total.USD"] == "12.34"
     assert all(isinstance(v, str) for v in meters.values())
+
+
+def test_the_rebate_meter_names_the_currency_it_is_denominated_in():
+    """It was one cross-currency `sum(card_rebates.amount)` — a quantity in no
+    currency at all, on a meter a later slice prices. There is no rate to turn
+    a mixed scalar into a charge with, so the currency is in the meter NAME.
+    """
+    r = UsageRollup(
+        organization_id="o",
+        period=PERIOD,
+        card_rebate_totals=(
+            CurrencyTotal(currency="EUR", amount=Decimal("7.00")),
+            CurrencyTotal(currency="USD", amount=Decimal("10.00")),
+        ),
+    )
+    meters = r.as_meters()
+    assert meters["card_rebate_total.EUR"] == "7.00"
+    assert meters["card_rebate_total.USD"] == "10.00"
+    # Never a bare, mixed key — 17.00 is the figure this fix removes.
+    assert "card_rebate_total" not in meters
+    assert "17.00" not in meters.values()
+
+
+def test_no_rebates_emits_no_rebate_meter_rather_than_an_unstated_zero():
+    """Zero rebates in an unstated currency is not a fact. One shape either
+    way: a consumer reads every `card_rebate_total.` key and finds none."""
+    meters = UsageRollup(organization_id="o", period=PERIOD, extractions=1).as_meters()
+    assert [k for k in meters if k.startswith("card_rebate_total")] == []
+    assert meters["extractions"] == "1"
 
 
 def test_usage_meters_are_tenant_tables_not_control_plane():
@@ -501,8 +530,9 @@ async def test_rollup_usage_is_decimal_exact(realdb):
             rollup = await rollup_usage(s, organization_id=org_id, period=PERIOD)
         assert rollup.extractions == 3
         assert rollup.extractions_platform == 2
-        assert isinstance(rollup.card_rebate_total, Decimal)
-        assert rollup.card_rebate_total == Decimal("0.00")  # no rebates
+        # No rebates at all → no currency group, rather than a zero in an
+        # unstated currency.
+        assert rollup.card_rebate_totals == ()
         # A period with no activity returns a zero-filled rollup, never None.
         async with realdb.sessionmaker("a")() as s:
             empty = await rollup_usage(s, organization_id=org_id, period="1999-01")
@@ -886,5 +916,75 @@ async def test_payment_methods_endpoint_admin_or_cfo_only(realdb):
         async with realdb.client(key="a", role="cfo") as c:
             resp = await c.get("/api/billing/payment-methods")
         assert resp.status_code == 200
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_rollup_groups_rebates_by_the_currency_of_their_card(realdb):
+    """The join is the point: `card_rebates` has no currency column, so a
+    rebate's denomination is only knowable through the card it accrued on.
+
+    Pre-fix this was one `sum(card_rebates.amount)` = 22.00, a figure in no
+    currency, on a meter a later slice prices.
+    """
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.virtual_card import VirtualCard
+
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.sessionmaker("a")() as s:
+            for currency, amount in (("USD", "10.00"), ("EUR", "7.00"), ("USD", "5.00")):
+                inv = Invoice(
+                    id=uuid.uuid4(),
+                    invoice_number=f"BILL-{uuid.uuid4().hex[:8]}",
+                    vendor_name="V",
+                    amount=Decimal(amount),
+                    currency=currency,
+                    status=InvoiceStatus.paid,
+                    organization_id=org_id,
+                    correlation_id=uuid.uuid4(),
+                )
+                s.add(inv)
+                await s.flush()
+                card = VirtualCard(
+                    id=uuid.uuid4(),
+                    invoice_id=inv.id,
+                    organization_id=org_id,
+                    card_provider="mock",
+                    provider_card_id=f"card_{uuid.uuid4().hex[:10]}",
+                    amount_limit=Decimal(amount),
+                    status="active",
+                    currency=currency,
+                )
+                s.add(card)
+                await s.flush()
+                s.add(
+                    CardRebate(
+                        virtual_card_id=card.id,
+                        organization_id=org_id,
+                        amount=Decimal(amount),
+                        rate=Decimal("0.0100"),
+                        status="confirmed",
+                        period=PERIOD,
+                    )
+                )
+            await s.commit()
+
+        async with realdb.sessionmaker("a")() as s:
+            rollup = await rollup_usage(s, organization_id=org_id, period=PERIOD)
+
+        # Sorted by code, exact, and per-currency — the two USD rebates summed
+        # together, the EUR one kept apart.
+        assert rollup.card_rebate_totals == (
+            CurrencyTotal(currency="EUR", amount=Decimal("7.00")),
+            CurrencyTotal(currency="USD", amount=Decimal("15.00")),
+        )
+        assert all(isinstance(t.amount, Decimal) for t in rollup.card_rebate_totals)
+
+        meters = rollup.as_meters()
+        assert meters["card_rebate_total.USD"] == "15.00"
+        assert meters["card_rebate_total.EUR"] == "7.00"
+        assert "card_rebate_total" not in meters
     finally:
         await _cleanup_billing(realdb, org_id)

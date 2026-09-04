@@ -40,6 +40,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import ColumnElement, and_, case, func, or_
 
 from app.config import settings
+from app.models.virtual_card import VirtualCard
 from app.services.fx_adapters import FXAdapter, FXRate
 
 _MONEY_QUANT = Decimal("0.01")
@@ -363,6 +364,38 @@ class PaymentReportingAmountSql:
 
     amount: ColumnElement
     is_expressible: ColumnElement[bool]
+
+
+def card_currency_sql(reporting_currency: str) -> ColumnElement[str]:
+    """The currency a ``virtual_cards`` row is denominated in, as SQL.
+
+    It denominates two different things. Card figures (``amount_limit`` /
+    ``amount_charged``) read it directly; **rebate** figures reach it through
+    the join, because ``card_rebates`` carries no currency column of its own —
+    a rebate's denomination is only knowable through the card it accrued on.
+
+    It exists because six rollups need it and were spelling it themselves — the
+    dashboard KPI, ``GET /api/payments/summary``, ``GET /api/cards/dashboard``,
+    ``GET /api/cards/rebates``, the analytics rebate-yield numerator, and the
+    billing usage meter. Five of those were bare cross-currency ``SUM``s: a
+    quantity in no currency at all, several shipped under a response that
+    declared one.
+
+    ``UPPER`` is load-bearing: the column is a free-form ``varchar(3)`` while
+    ``resolve_reporting_currency`` always returns uppercase, so an
+    un-normalised comparison would exclude every row rather than fail loudly.
+    The ``COALESCE`` is **not** — ``virtual_cards.currency`` is ``NOT NULL``
+    with a Python-side ``default="USD"``, so there is no unstamped row for it to
+    catch. It is kept as defensive symmetry with the money columns beside it
+    (and would be the right behaviour if the column were ever made nullable),
+    but nothing asserts it, because a test of an unreachable branch passes with
+    the branch deleted.
+
+    Callers filter with ``== reporting_currency`` and, where the response can
+    carry it, count the ``!=`` rows so a single-currency figure says what it
+    left out instead of looking complete.
+    """
+    return func.upper(func.coalesce(VirtualCard.currency, reporting_currency))
 
 
 def payment_reporting_amount_sql(

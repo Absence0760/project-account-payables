@@ -61,6 +61,7 @@ from app.services.cashflow import (
     store_cash_thresholds,
 )
 from app.services.currency_conversion import (
+    card_currency_sql,
     compute_unrealized_fx_gain_loss,
     payment_reporting_amount_sql,
     reporting_amount_for_row,
@@ -999,10 +1000,26 @@ async def get_cfo_analytics(
     # months reported a 36% yield and a $432k annual run-rate off a 30-day
     # window, against a truth of ~1% and ~$12k. `created_at` is when the rebate
     # was booked; the `period` column is a display label, not a filter key.
-    try:
-        rebate_q = await db.execute(
+    # Denominated, because it is DIVIDED BY a reporting-currency `total_spend`.
+    # A cross-currency numerator over a single-currency denominator is not a
+    # yield at all — it is a ratio between two different units, and the result
+    # is then annualised. `card_rebates` has no currency column, so the join
+    # that scopes the entity also supplies it (`card_currency_sql` owns the
+    # expression). The bare `except Exception` is gone with it: reporting a 0%
+    # rebate yield is a confident claim, not a safe default, and every sibling
+    # figure on this dashboard fails loudly instead.
+    _rebate_ccy = card_currency_sql(reporting_currency)
+    rebate_row = (
+        await db.execute(
             apply_entity_scope(
-                select(func.coalesce(func.sum(CardRebate.amount), 0))
+                select(
+                    func.coalesce(
+                        func.sum(case((_rebate_ccy == reporting_currency, CardRebate.amount))),
+                        0,
+                    ),
+                    func.count(case((_rebate_ccy != reporting_currency, CardRebate.id))),
+                )
+                .select_from(CardRebate)
                 .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
                 .where(
                     CardRebate.created_at
@@ -1012,9 +1029,14 @@ async def get_cfo_analytics(
                 entity_id,
             )
         )
-        rebates_total = Decimal(str(rebate_q.scalar() or 0))
-    except Exception:  # noqa: BLE001
-        rebates_total = Decimal("0")
+    ).one()
+    rebates_total = Decimal(str(rebate_row[0] or 0))
+    # Disclosed like every other single-figure rebate rollup (decisions §62).
+    # It matters most here: a numerator missing 90% of the rebates yields a
+    # silently 10x-understated `yield_pct` that is then ANNUALISED, and the
+    # `unconverted_count` on the leg immediately beside it in this same
+    # response does exactly this for the same reason.
+    excluded_rebate_count = int(rebate_row[1] or 0)
     rebate = compute_rebate_yield(
         rebates_total=rebates_total,
         total_spend=total_spend,
@@ -1187,6 +1209,7 @@ async def get_cfo_analytics(
             "total_spend": _money(rebate["total_spend"]),
             "yield_pct": float(rebate["yield_pct"]),
             "annualised_rebates": _money(rebate["annualised_rebates"]),
+            "excluded_rebate_count": excluded_rebate_count,
         },
     }
 

@@ -5,17 +5,26 @@ Key contracts tested:
 - The CardRebate query is issued against the TENANT db (card_rebates is a
   per-tenant table, NOT control-plane — querying control_db silently caught
   the missing-table error and always reported $0 rebates).
-- When CardRebate raises (table not yet provisioned), total_rebates falls
-  back to "0" and db.rollback() is called.
+- `total_rebates` is denominated in the org's reporting currency (joined
+  through `VirtualCard`, which is the only place a rebate's currency lives)
+  and entity-scoped like every other figure in the response, reporting what
+  it excluded rather than adding across currencies.
+- A DB failure on the rebate query is NOT masked into `total_rebates: "0"`.
+  It used to be, as scaffolding for a since-fixed bug where the query ran
+  against the control plane (where `card_rebates` does not exist). The table
+  is absent from `CONTROL_TABLES`, so it exists in every tenant DB and that
+  scenario is unreachable — leaving a swallow that turned any other error
+  into a confidently wrong money figure, under a response that declares the
+  currency it is denominated in.
 - Money fields serialise as exact Decimal STRINGS (never float) — the
   "Money is exact" invariant; the frontend summary bar parses the string.
 - The two money aggregates are resolved into the ORG's reporting currency and
   report what they had to exclude (see `test_payment_summary_currency.py`).
 
 The endpoint issues exactly five tenant-db queries, in order:
-paid, pending, payment_count, rebates, queue_count. The first two select a
-(sum, excluded_count) PAIR and read it with `.one()`; the last three are
-scalars.
+paid, pending, payment_count, rebates, queue_count. Three of them select a
+(sum, excluded_count) PAIR and read it with `.one()` — paid, pending and
+rebates; `payment_count` and `queue_count` are scalars.
 """
 
 from __future__ import annotations
@@ -34,9 +43,10 @@ def _make_db_session(*scalar_sequence):
     """Build an AsyncSession mock whose sequential execute() calls each
     return successive values from scalar_sequence.
 
-    The first two calls (paid, pending) select a `(sum, excluded_count)` pair
-    and read it with `.one()`; the rest are `.scalar()`. A bare value in the
-    sequence is treated as the sum with zero excluded.
+    The paid / pending / rebate calls select a `(sum, excluded_count)` pair and
+    read it with `.one()`; the two counts are `.scalar()`. A bare value in the
+    sequence is treated as the sum with zero excluded, so a caller only spells
+    the pair out when it cares about the excluded half.
     """
     session = AsyncMock()
     results = []
@@ -95,6 +105,7 @@ async def test_payment_summary_returns_expected_shape():
         "queue_count",
         "currency",
         "unconverted_payment_count",
+        "excluded_rebate_count",
     }
     # Money serialises as an exact Decimal STRING (never float) — invariant.
     assert result["total_paid"] == "500.00"
@@ -149,9 +160,19 @@ async def test_payment_summary_rebate_query_targets_tenant_db():
 
 
 @pytest.mark.asyncio
-async def test_payment_summary_rebates_fallback_when_table_missing():
-    """When the rebate query raises, total_rebates=0.0, db.rollback() is
-    called, and the other four fields still come back correctly."""
+async def test_a_failed_rebate_query_is_not_reported_as_zero_rebates():
+    """A DB error must not become `total_rebates: "0"`.
+
+    The endpoint used to wrap this one query in a bare `except Exception` that
+    returned "0" — scaffolding for a bug where it ran against the control
+    plane, where `card_rebates` does not exist. `card_rebates` is absent from
+    `CONTROL_TABLES` (guarded by `test_billing.py`), so it exists in every
+    tenant DB and that scenario is unreachable; what the swallow still did was
+    turn any OTHER failure into a confidently wrong money figure under a
+    response that declares the currency it is denominated in. Zero rebates and
+    "we could not read the rebates" are different claims, and none of the four
+    sibling figures in this handler swallow either.
+    """
     from app.api.payments import payment_summary
 
     # paid, pending, count, [rebate RAISES], queue
@@ -159,18 +180,12 @@ async def test_payment_summary_rebates_fallback_when_table_missing():
         Decimal("300.00"),
         Decimal("75.00"),
         7,
-        Exception("relation card_rebates does not exist"),
+        RuntimeError("connection reset"),
         1,
     )
 
-    result = await payment_summary(db=db, org=_make_org(), user=_make_user())
-
-    assert result["total_rebates"] == "0"
-    assert result["total_paid"] == "300.00"
-    assert result["total_pending"] == "75.00"
-    assert result["payment_count"] == 7
-    assert result["queue_count"] == 1
-    db.rollback.assert_awaited_once()
+    with pytest.raises(RuntimeError, match="connection reset"):
+        await payment_summary(db=db, org=_make_org(), user=_make_user())
 
 
 # ---------------------------------------------------------------------------

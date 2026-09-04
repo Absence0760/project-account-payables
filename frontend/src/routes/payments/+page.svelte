@@ -165,6 +165,11 @@
 		currency?: string;
 		// Payments it could not convert, excluded from the totals above.
 		unconverted_payment_count?: number;
+		// Rebates left out of `total_rebates` for being denominated in another
+		// currency. A DIFFERENT question from the count above: that one is a
+		// payment whose reporting figure could not be established, this one is a
+		// rebate whose currency is known and simply is not this one.
+		excluded_rebate_count?: number;
 	}
 	let summary = $state<Summary | null>(null);
 
@@ -1189,6 +1194,19 @@
 			<p class="fx-skipped" role="alert" data-testid="unconverted-payments">
 				{m('payments.summary.unconvertedPayments', {
 					n: summary.unconverted_payment_count ?? 0,
+					currency: summary.currency ?? ''
+				})}
+			</p>
+		{/if}
+		<!-- Its own notice, not folded into the one above: a rebate excluded for
+		     being in another currency is a different fact from a payment whose
+		     reporting figure could not be established, and the rebate KPI is a
+		     different figure from the two money totals. Without this the rebate
+		     card went from wrong-but-complete to right-but-silently-partial. -->
+		{#if (summary.excluded_rebate_count ?? 0) > 0}
+			<p class="fx-skipped" role="alert" data-testid="excluded-rebates">
+				{m('payments.summary.excludedRebates', {
+					n: summary.excluded_rebate_count ?? 0,
 					currency: summary.currency ?? ''
 				})}
 			</p>

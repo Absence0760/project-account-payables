@@ -26,6 +26,7 @@
 		BillingPlanChangeResponse,
 		BillingSubscriptionResponse
 	} from '$lib/types/billing';
+	import { rebateMeterGroups } from '$lib/types/billing';
 	import { formatDate } from '$lib/utils/time';
 
 	// RBAC: the backend gates `GET /api/billing/subscription` to admin / cfo and
@@ -41,6 +42,10 @@
 	});
 
 	let data = $state<BillingSubscriptionResponse | null>(null);
+	// Rebate meters arrive one key per currency (`card_rebate_total.USD`), so the
+	// figures are rendered per currency rather than added into one number that
+	// would be denominated in nothing. Empty when the org accrued none.
+	let rebateGroups = $derived(rebateMeterGroups(data?.usage));
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
@@ -321,11 +326,20 @@
 						value={asCount(data?.usage.extractions_platform)}
 						label={m('billing.usage.billableExtractions')}
 					/>
-					<KpiCard
-						value={formatMoney(data?.usage.card_rebate_total)}
-						label={m('billing.usage.cardRebates')}
-						highlight="green"
-					/>
+					<!-- One card PER CURRENCY. The meter used to be a single
+					     cross-currency sum rendered with no currency at all, so a
+					     tenant accruing EUR rebates read them as dollars. No
+					     rebates → no card, rather than a $0.00 in a currency the
+					     page picked. -->
+					{#each rebateGroups as group (group.currency)}
+						<KpiCard
+							value={formatMoney(group.total, { currency: group.currency })}
+							label={rebateGroups.length > 1
+								? `${m('billing.usage.cardRebates')} (${group.currency})`
+								: m('billing.usage.cardRebates')}
+							highlight="green"
+						/>
+					{/each}
 				</div>
 			</section>
 		</div>
@@ -399,11 +413,15 @@
 					label={m('billing.usage.billableExtractions')}
 				/>
 			</div>
-			<p class="note">
-				{m('billing.usage.cardRebatesNote')}
-				<Money amount={data?.usage.card_rebate_total} />
-				{m('billing.usage.informational')}
-			</p>
+			{#if rebateGroups.length > 0}
+				<p class="note">
+					{m('billing.usage.cardRebatesNote')}
+					{#each rebateGroups as group, i (group.currency)}{i > 0
+							? ', '
+							: ''}<Money amount={group.total} currency={group.currency} />{/each}
+					{m('billing.usage.informational')}
+				</p>
+			{/if}
 		</section>
 	{/if}
 

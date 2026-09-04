@@ -23,6 +23,7 @@ from app.services.analytics import (
     discount_window_open,
 )
 from app.services.currency_conversion import (
+    card_currency_sql,
     payment_reporting_amount_sql,
     reporting_amount_for_row,
     resolve_reporting_currency,
@@ -461,21 +462,31 @@ async def get_dashboard(
     # Rebates. CardRebate carries no entity_id of its own — join to
     # VirtualCard (which does, via EntityMixin) so switching the entity
     # selector scopes this KPI like every other one on the page instead of
-    # silently staying a whole-org total.
-    try:
-        rebate_q = await db.execute(
+    # silently staying a whole-org total. The join also carries the CURRENCY:
+    # `card_rebates` has no currency column either, so this was a bare
+    # cross-currency SUM rendered on the dashboard as one "Rebates Earned"
+    # figure — a quantity in no currency at all. `card_currency_sql` is the
+    # one owner of that expression (see `services/currency_conversion`), and
+    # the `!=` count is what stops a single-currency figure looking complete.
+    _rebate_ccy = card_currency_sql(reporting_currency)
+    rebate_row = (
+        await db.execute(
             apply_entity_scope(
-                select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
-                    VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
-                ),
+                select(
+                    func.coalesce(
+                        func.sum(case((_rebate_ccy == reporting_currency, CardRebate.amount))), 0
+                    ),
+                    func.count(case((_rebate_ccy != reporting_currency, CardRebate.id))),
+                )
+                .select_from(CardRebate)
+                .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id),
                 VirtualCard,
                 entity_id,
             )
         )
-        total_rebates = Decimal(str(rebate_q.scalar() or 0))
-    except Exception:
-        total_rebates = Decimal("0")
-        await db.rollback()
+    ).one()
+    total_rebates = Decimal(str(rebate_row[0] or 0))
+    excluded_rebate_count = int(rebate_row[1] or 0)
 
     # Stale approvals (waiting > 3 days)
     stale_date = today - timedelta(days=3)
@@ -690,6 +701,11 @@ async def get_dashboard(
         "total_paid_unconverted_count": total_paid_unconverted_count,
         "total_pending_unconverted_count": total_pending_unconverted_count,
         "total_rebates": total_rebates,
+        # Rebates left out of `total_rebates` for being denominated in another
+        # currency, so the KPI can say it describes part of the set rather than
+        # looking complete — the same disclosure the two payment counts above
+        # provide for their own figures.
+        "excluded_rebate_count": excluded_rebate_count,
         "open_exceptions": open_exceptions,
         "touchless_rate": touchless_rate,
         "stale_approvals": stale_approvals,

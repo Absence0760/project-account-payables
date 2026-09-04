@@ -37,6 +37,10 @@ for the tracker view. Keep the two reconciled when either moves.
 **Last reconciled:** 2026-09-04 (round 16) — a ten-agent parallel sweep whose
 brief was this file itself: take the open entries that are code-fixable, fix them
 at the root, and close them. **Twenty entries closed, four opened**, 57 → 41.
+The count survives the merge with #359 by coincidence rather than accident: that
+PR closed the rebate-denomination entry this branch still carried open
+([decisions.md](decisions.md) §62) and opened one of its own (the `number`-typed
+frontend money fields, below), so the file lands at 41 either way.
 
 Four things are worth carrying forward, because they are about how the entries
 themselves were written rather than about the code:
@@ -702,21 +706,6 @@ none is a hypothesis.
       rule already stated on `purchase_orders.py::purchase_order_status_counts`
       and `/vendors/counts`.
 
-- [ ] **Two backend rollups are bare cross-currency `SUM`s presented as one
-      figure.** `GET /api/payments/summary`'s `total_rebates`
-      (`app/api/payments.py:562-564`) is `func.sum(CardRebate.amount)` with no
-      currency grouping, yet ships under the response's `"currency":
-      reporting_currency` which documents itself as "what the money figures above
-      are denominated in". The billing usage rollup does the same for
-      `card_rebate_total` (`services/billing/usage_rollup.py:93-100`), and
-      `/billing` renders it with no currency at all — `DEFAULT_CURRENCY`, so a
-      GBP tenant reads `$` on that one card and `£` on every other. Distinct from
-      the frontend labelling above: the *number* is wrong, not just its label.
-      **Durable fix:** group by currency and convert through
-      `currency_conversion` like `total_paid`/`total_pending` already do, or
-      return per-currency buckets and render them side by side the way
-      `formatCurrencyTotals` does elsewhere.
-      **Trigger:** the next slice touching the payments summary or billing usage.
 
 ### Surfaced by the round-14 procurement / analytics hunt
 
@@ -823,6 +812,39 @@ forward work or a population question with its own consequences.
       `TOUCHLESS_CLEARED_STATUSES` is now a single named owner, so the change is
       one edit plus its tests.
       **Trigger:** the next review of the touchless / automation-rate metric.
+
+### Surfaced by the currency-denomination round (2026-09-04)
+
+- [ ] **Frontend money fields typed `number` outside the dashboard.**
+      `/api/dashboard`'s page has been converted (money fields now `MoneyAmount`,
+      the two `Math.max` chart scales and two bar-width divisions routed through
+      `parseMoneyForLayout`, the `> 0` check through `isPositiveAmount`), and a
+      planted `data.total_paid + data.total_pending` is now a **type error**
+      rather than a convention violation. Other type modules still carry
+      `number`-typed money — `frontend/src/lib/types/budget.ts` is the clearest
+      example (`amount` / `total` on several interfaces).
+      **Why it is not one sweep:** a grep for money-shaped names returns ~55
+      fields and most are NOT money — pagination `total`, `total_requests`,
+      `total_tokens`, `exception_count`. Each needs a per-field judgment, and
+      each *genuine* money field then needs its call sites checked, because
+      retyping it to `MoneyAmount` correctly turns any existing arithmetic into
+      a compile error that has to be resolved with the right helper
+      (`parseMoneyForLayout` for geometry, `isPositiveAmount` for a predicate)
+      rather than a cast.
+      **Durable fix:** convert per type module, smallest first, each with its
+      route's `pnpm check` green and its arithmetic moved onto the named
+      helpers; then add a ratchet in the shape of `a11y/badgeAudit.test.ts` (a
+      per-file baseline that only ever decreases) so the remainder can't grow.
+      A blanket scan can't land first — it would fail on the ~40 non-money
+      fields and there is no way to distinguish them by name alone.
+      **Trigger:** the next slice touching a type module that carries a money
+      field, or the next money-exactness audit pass.
+      **Note:** the two docs on this contradicted each other until this round —
+      `frontend/CLAUDE.md` said the backend "serialises money as an exact
+      decimal string" while `backend/app/schemas/money.py` serialises `Decimal`
+      to a JSON **number** and its docstring cited the frontend's `amount:
+      number` as justification. Both now state the split and point at each
+      other; read them before converting anything.
 
 ### Surfaced by the round-15 bug hunt
 

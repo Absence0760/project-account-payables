@@ -88,7 +88,7 @@ def _mk_db(*results):
 #   9.  total pending                     → .scalar()
 #  10.  reporting total paid              → .one() → (amount, unconverted_count)
 #  11.  reporting total pending           → .one() → (amount, unconverted_count)
-#  12.  total rebates                     → .scalar()
+#  12.  rebates                           → .one() → (amount, excluded_count)
 #  13.  stale approvals                   → .scalar()
 #  14.  open exceptions                   → .scalar()
 
@@ -107,7 +107,7 @@ def _full_results(
     pending=Decimal("0"),
     reporting_paid=(Decimal("0"), 0),
     reporting_pending=(Decimal("0"), 0),
-    rebates=Decimal("0"),
+    rebates=(Decimal("0"), 0),
     stale=0,
     open_exc=0,
 ):
@@ -124,7 +124,7 @@ def _full_results(
         _r(scalar=pending),
         _r(one=reporting_paid),
         _r(one=reporting_pending),
-        _r(scalar=rebates),
+        _r(one=rebates),
         _r(scalar=stale),
         _r(scalar=open_exc),
     ]
@@ -326,7 +326,7 @@ async def test_payment_totals_stay_decimal():
             pending=Decimal("8900.50"),
             reporting_paid=(Decimal("12345.67"), 0),
             reporting_pending=(Decimal("8900.50"), 0),
-            rebates=Decimal("123.45"),
+            rebates=(Decimal("123.45"), 0),
         )
     )
     result = await get_dashboard(db=db, org=_org(), user=_user())
