@@ -326,16 +326,11 @@ def _handler_name(spec, path: str) -> str | None:
     op_id = operation.get("operationId")
     if not op_id:
         return None
-    suffix = (
-        "_"
-        + path.strip("/")
-        .replace("/", "_")
-        .replace("-", "_")
-        .replace("{", "")
-        .replace("}", "")
-        .replace("__", "_")
-        + "_get"
-    )
+    # `generate_unique_id` is `re.sub(r"\W", "_", name + path)`, so every
+    # non-word character in the path becomes one underscore. Parametrised paths
+    # are excluded by `_counts_pairs` before they reach here, so this only has
+    # to handle literal segments.
+    suffix = "_" + re.sub(r"\W", "_", path.strip("/")) + "_get"
     return op_id[: -len(suffix)] if op_id.endswith(suffix) else None
 
 
@@ -349,6 +344,11 @@ def _counts_pairs():
         parent = path[: -len("/counts")]
         if _openapi_query_params(spec, parent) is None:
             continue  # no GET list parent — not a list's chip tally
+        assert _openapi_query_params(spec, path) is not None, (
+            f"{path} was discovered as a chip tally but has no GET operation. The "
+            "contract axes below read its query parameters, so this has to be a "
+            "named failure rather than a TypeError from `set() - None`."
+        )
         pairs.append((parent, path))
     return spec, pairs
 
@@ -426,12 +426,33 @@ def test_a_counts_endpoint_does_not_take_the_dimension_it_tallies(pair):
     )
 
 
-def _auth_dependency(module_source: str, fn_name: str) -> str | None:
-    """The `Depends(...)` expression gating `fn_name`, normalised to source text.
+#: Dependency callables that gate a request. Every one on a handler counts
+#: towards its gate, so a second gate added beside `get_current_user` cannot
+#: hide behind the first.
+_GATE_CALLABLES = (
+    "require_roles",
+    "require_permission",
+    "require_entitlement",
+    "require_api_scope",
+    "get_current_user",
+)
 
-    Compared as text on purpose: two gates that are spelled differently ARE
-    different gates as far as a caller is concerned, and the failure this
-    catches is exactly a spelling drift between two endpoints that must agree.
+
+def _auth_gates(module_source: str, fn_name: str) -> tuple[str, ...] | None:
+    """EVERY gating `Depends(...)` on `fn_name`, as sorted source text.
+
+    All of them, not the first: a counts endpoint carrying an extra
+    `require_roles(...)` alongside the same `get_current_user` its list uses is
+    a DIFFERENT gate, and returning on the first match compared the two as
+    equal — the false-pass mode of the axis that found the live leak.
+
+    Compared as text on purpose. Two gates spelled differently ARE different
+    gates as far as a caller is concerned, and the drift this catches is a
+    spelling difference between endpoints that must agree. Sorted so parameter
+    ORDER is not mistaken for a difference.
+
+    Returns `None` when the function is not found at all, which the caller
+    distinguishes from an ungated `()`.
     """
     tree = ast.parse(module_source)
     for node in ast.walk(tree):
@@ -442,12 +463,12 @@ def _auth_dependency(module_source: str, fn_name: str) -> str | None:
         defaults = list(node.args.defaults or []) + [
             d for d in (node.args.kw_defaults or []) if d is not None
         ]
-        for default in defaults:
-            expr = ast.unparse(default)
-            if "Depends(" in expr and any(
-                gate in expr for gate in ("require_roles", "require_permission", "get_current_user")
-            ):
-                return expr
+        gates = [
+            expr
+            for expr in (ast.unparse(d) for d in defaults)
+            if "Depends(" in expr and any(gate in expr for gate in _GATE_CALLABLES)
+        ]
+        return tuple(sorted(gates))
     return None
 
 
@@ -496,14 +517,14 @@ def test_a_counts_endpoint_is_gated_exactly_like_its_list(pair):
     )
     source = module.read_text()
 
-    list_gate = _auth_dependency(source, list_fn)
-    counts_gate = _auth_dependency(source, counts_fn)
+    list_gates = _auth_gates(source, list_fn)
+    counts_gates = _auth_gates(source, counts_fn)
 
-    assert list_gate, f"{module.name}::{list_fn} has no recognisable auth dependency"
-    assert counts_gate, f"{module.name}::{counts_fn} has no recognisable auth dependency"
-    assert counts_gate == list_gate, (
-        f"{counts_path} is gated `{counts_gate}` while {list_path} is gated "
-        f"`{list_gate}`. decisions §48 requires them to match exactly: a tally "
+    assert list_gates, f"{module.name}::{list_fn} has no recognisable auth dependency"
+    assert counts_gates, f"{module.name}::{counts_fn} has no recognisable auth dependency"
+    assert counts_gates == list_gates, (
+        f"{counts_path} is gated {list(counts_gates)} while {list_path} is gated "
+        f"{list(list_gates)}. decisions §48 requires them to match exactly: a tally "
         "reachable by more callers than the rows it counts leaks the size of a "
         "set they cannot see, and one reachable by fewer leaves the page showing "
         "rows above chips that cannot explain them."
@@ -518,6 +539,11 @@ def test_a_counts_endpoint_is_gated_exactly_like_its_list(pair):
 #: `(builder, list_fn, counts_fn)` per module owning a list + `/counts` pair.
 #: Hand-maintained like `_SHARED_BUILDER_MODULES`, and held in step with
 #: discovery by `test_every_discovered_counts_surface_is_wired_or_exempt`.
+#:
+#: One pair per module, because no module has two today. It fails SAFE if that
+#: changes: `/api/vendors/change-requests` gaining a narrowing filter breaks
+#: its exemption test first, and the value here would need to become a list of
+#: tuples before a second vendors entry could be added.
 _COUNTS_BUILDER_MODULES = {
     "app/api/invoices.py": ("_invoice_list_filters", "list_invoices", "invoice_counts"),
     "app/api/payments.py": (
@@ -568,6 +594,22 @@ def test_the_list_and_its_counts_share_one_filter_builder(module_path):
             f"{module_path}::{fn} does not call {builder}. A list and its chip "
             "tally must apply filters through the one shared builder so they "
             "cannot drift on what a filter means."
+        )
+
+    # Calling the builder is not sufficient on its own: a handler can call it
+    # and still add its own copy of a predicate alongside, which is how a
+    # shared builder quietly stops being the only owner. Checked centrally so
+    # every module gets it instead of each surface re-asserting it locally.
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name not in (list_fn, counts_fn):
+            continue
+        assert "ilike_contains(" not in ast.unparse(node), (
+            f"{module_path}::{node.name} builds a search predicate inline. The "
+            f"search leg belongs in {builder}, or the list and its tally can "
+            "differ on which columns a search covers."
         )
 
 

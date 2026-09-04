@@ -264,24 +264,6 @@ async def test_a_malformed_vendor_id_is_a_client_error_on_both_endpoints(realdb)
         for path in ("/api/purchase-orders", "/api/purchase-orders/counts"):
             resp = await c.get(path, params={"vendor_id": "not-a-uuid"})
             assert resp.status_code == 422, f"{path} returned {resp.status_code}"
-            assert resp.status_code < 500, f"{path} crashed instead of refusing"
-
-
-async def test_the_list_and_its_counts_share_one_filter_builder():
-    """Structural: two independently-maintained copies of the same predicates
-    is what let the pair drift on a malformed `vendor_id` in the first place."""
-    import inspect
-
-    from app.api import purchase_orders as po_mod
-
-    for handler in (po_mod.list_purchase_orders, po_mod.purchase_order_status_counts):
-        src = inspect.getsource(handler)
-        assert "_purchase_order_list_filters(" in src, (
-            f"{handler.__name__} does not route through the shared filter builder"
-        )
-        assert "ilike_contains(PurchaseOrder.po_number" not in src, (
-            f"{handler.__name__} restates the search predicate instead of sharing it"
-        )
 
 
 async def test_counts_empty_set_is_zero_not_an_error(realdb):
