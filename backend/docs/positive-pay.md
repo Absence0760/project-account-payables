@@ -141,7 +141,7 @@ Registered formatters:
 | Key | Class | Shape |
 |---|---|---|
 | `csv` (default) | `CsvFormatter` | RFC-4180 CSV. check_issue header `check_number,payee,amount,issue_date,account_number`; ach header `vendor_name,routing_number,account_number,status`. Amounts are plain `str(Decimal)`; dates ISO. |
-| `fixed_width` | `FixedWidthFormatter` | Headerless, column-aligned, deterministic. Fixed widths documented as a contract in the module docstring (check_issue 80-char record: check#=10, payee=40, amount=14 zero-padded cents, issue_date=8 `YYYYMMDD`, account=8; ach 80-char record: vendor=40, routing=9, account=17, status=14). |
+| `fixed_width` | `FixedWidthFormatter` | Headerless, column-aligned, deterministic. Fixed widths documented as a contract in the module docstring (check_issue 89-char record: check#=10, payee=40, amount=14 zero-padded cents, issue_date=8 `YYYYMMDD`, account=17; ach 80-char record: vendor=40, routing=9, account=17, status=14). **Identifiers and money never truncate** — an over-long check / account / routing number or an amount too large for its column raises `PositivePayFieldOverflow`, surfaced as a 422 naming the column (never the value: these are full account numbers). Descriptive text (payee, vendor name, status) still truncates, which is the intended layout behaviour. See § Field overflow. |
 
 ### Adding a per-bank format
 
@@ -156,6 +156,39 @@ Registered formatters:
 
 Amounts are always derived from the `Decimal` on the item (zero-padded cents in
 fixed-width, plain decimal string in CSV) — never a float.
+
+### Field overflow — why identifiers fail loudly
+
+A Positive Pay file is a fraud control: the bank refuses any item that does not
+match what we told it we issued. That makes a *silently wrong* record worse
+than no record at all — a truncated check number matches nothing, so the bank
+rejects a cheque we genuinely wrote, and a truncated account number points the
+row at an account that does not exist.
+
+The fixed-width renderer therefore splits its fields in two:
+
+| Kind | Fields | Overrun behaviour |
+|---|---|---|
+| Identifier / money | `check_number`, `account_number`, `routing_number`, `amount` | `PositivePayFieldOverflow` → **422**, no file written |
+| Descriptive text | `payee`, `vendor_name`, `status` | Truncated to the column (intended) |
+
+The amount case is the sharpest: the previous renderer padded then sliced
+(`str(cents).rjust(w, "0")[:w]`), which keeps the **high-order** digits and
+drops the low-order ones. An overrunning figure was not merely imprecise — it
+was divided by ten per dropped digit, so `123456` cents rendered into a 4-char
+column read as `1234`, i.e. $12.34 instead of $1,234.56, and the bank would
+clear a cheque for the wrong amount.
+
+The drawee `account_number` column was also widened from 8 to 17. It carries a
+FULL account number from `settings.payments.check_account_number`, and a US
+account alone runs 8-12 digits, so an 8-char column could not hold one: every
+rendered check-issue file silently carried a truncated account. 17 matches the
+`ach_authorization` account column in the same layout, which holds the same
+kind of value. The check-issue record is consequently 89 chars, not 80.
+
+The error names the column and its width only — never the offending value,
+which is a full account or routing number and would otherwise reach an HTTP
+body (see `PositivePayFieldOverflow`).
 
 Positive Pay files are **deliberately excluded** from the platform-wide CSV
 formula-injection guard (`report_export.csv_safe_cell`, CWE-1236): they are
