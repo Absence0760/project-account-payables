@@ -186,6 +186,16 @@ rendered check-issue file silently carried a truncated account. 17 matches the
 `ach_authorization` account column in the same layout, which holds the same
 kind of value. The check-issue record is consequently 89 chars, not 80.
 
+Two details of the amount column that the tests pin:
+
+- The width check runs on the **quantized** cents, not the raw `Decimal`. A
+  figure that only overruns once rounded to 2 places is refused rather than
+  sliced, so rounding can't be the thing that smuggles a rescale back in.
+- The column is **unsigned** — `_amount_cents` renders `abs(cents)`. A negative
+  amount therefore renders its magnitude, and overflows on its magnitude. The
+  layout has nowhere to put a sign, so a credit belongs in a return file, not a
+  check-issue row.
+
 The error names the column and its width only — never the offending value,
 which is a full account or routing number and would otherwise reach an HTTP
 body (see `PositivePayFieldOverflow`).
