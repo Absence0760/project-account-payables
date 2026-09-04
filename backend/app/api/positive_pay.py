@@ -71,6 +71,7 @@ from app.services.positive_pay import (
 )
 from app.services.positive_pay_adapters import (
     FormatterContext,
+    PositivePayFieldOverflow,
     UnknownPositivePayFormatError,
     get_positive_pay_formatter,
     list_available_formats,
@@ -181,6 +182,23 @@ async def _get_scoped_file(
 # --------------------------------------------------------------------------- #
 
 
+def _render_or_422(render):
+    """Run a formatter and turn a field overflow into an actionable 422.
+
+    A `PositivePayFieldOverflow` means an identifier or amount cannot occupy
+    its column without being changed into a different value. That is a
+    configuration mismatch between the tenant's data and the bank layout
+    (wrong `bank_format` for these account numbers, say) — recoverable by the
+    operator, so it is a 422 naming the column rather than a 500. The message
+    carries the field and width only; the offending value is a full account or
+    routing number and never leaves the file.
+    """
+    try:
+        return render()
+    except PositivePayFieldOverflow as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post(
     "/payment-runs/{run_id}/check-issue",
     response_model=PositivePayFileResponse,
@@ -265,7 +283,7 @@ async def generate_check_issue(
         file_date=utc_today(),
         currency=(org.settings or {}).get("invoice_defaults", {}).get("currency", "USD"),
     )
-    content = formatter.format_check_issue(items, ctx).encode("utf-8")
+    content = _render_or_422(lambda: formatter.format_check_issue(items, ctx)).encode("utf-8")
     content_hash = hashlib.sha256(content).hexdigest()
     file_id = uuid.uuid4()
     filename = f"positive-pay-check-issue-{run_id}.{formatter.file_extension}"
@@ -375,7 +393,7 @@ async def generate_ach_authorization(
         file_date=utc_today(),
         currency=(org.settings or {}).get("invoice_defaults", {}).get("currency", "USD"),
     )
-    content = formatter.format_ach_authorization(items, ctx).encode("utf-8")
+    content = _render_or_422(lambda: formatter.format_ach_authorization(items, ctx)).encode("utf-8")
     content_hash = hashlib.sha256(content).hexdigest()
     file_id = uuid.uuid4()
     filename = f"positive-pay-ach-authorization-{file_id}.{formatter.file_extension}"

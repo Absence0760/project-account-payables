@@ -35,6 +35,7 @@ from app.services.positive_pay_adapters import (
     AchAuthorizationItem,
     CheckIssueItem,
     FormatterContext,
+    PositivePayFieldOverflow,
     UnknownPositivePayFormatError,
     get_positive_pay_formatter,
 )
@@ -212,14 +213,14 @@ def test_fixed_width_check_issue_widths():
     item = _check("1001", "Globex Inc", "1234.56", account="12345678")
     out = fmt.format_check_issue([item], _CTX)
     line = out.rstrip("\r\n")
-    # 10 + 40 + 14 + 8 + 8 = 80
-    assert len(line) == 80
+    # 10 + 40 + 14 + 8 + 17 = 89
+    assert len(line) == 89
     assert line[0:10] == "1001".ljust(10)
     assert line[10:50] == "Globex Inc".ljust(40)
     # amount as zero-padded cents: 1234.56 -> 123456
     assert line[50:64] == "123456".rjust(14, "0")
     assert line[64:72] == "20260615"
-    assert line[72:80] == "12345678".ljust(8)
+    assert line[72:89] == "12345678".ljust(17)
 
 
 def test_fixed_width_amount_cents_exact():
@@ -260,6 +261,120 @@ def test_fixed_width_deterministic():
     fmt = FixedWidthPositivePayFormatter()
     items = [_check("1", "A", "1.00"), _check("2", "B", "2.00")]
     assert fmt.format_check_issue(items, _CTX) == fmt.format_check_issue(items, _CTX)
+
+
+# ---------------------------------------------------------------------------
+# fixed-width overflow: identifiers and money must never truncate
+#
+# A Positive Pay file is a fraud control: the bank refuses anything that does
+# not match what we told it we issued. A silently-truncated identifier or a
+# rescaled amount inverts that control — the bank refuses a cheque we really
+# wrote, or clears one for the wrong figure — so an overrun is a hard failure.
+# Descriptive text (payee, vendor name, status) still truncates: that is the
+# documented fixed-width contract and the bank matches on the identifiers.
+# ---------------------------------------------------------------------------
+
+
+def test_overflowing_check_number_is_refused_not_truncated():
+    """The old renderer cut an 11-char check number to its first 10, so the
+    bank matched the record against nothing and rejected a cheque we issued."""
+    fmt = FixedWidthPositivePayFormatter()
+    with pytest.raises(PositivePayFieldOverflow) as exc:
+        fmt.format_check_issue([_check("12345678901", "V", "1.00")], _CTX)
+    assert exc.value.field == "check_number"
+    assert exc.value.width == 10
+
+
+def test_check_number_exactly_at_the_column_width_still_renders():
+    """The guard is an overflow check, not an off-by-one that rejects a value
+    which fits exactly."""
+    fmt = FixedWidthPositivePayFormatter()
+    line = fmt.format_check_issue([_check("1234567890", "V", "1.00")], _CTX).rstrip("\r\n")
+    assert line[0:10] == "1234567890"
+    assert len(line) == 89
+
+
+def test_ordinary_us_drawee_account_fits_the_column():
+    """The column was 8 chars while the value is a FULL account number, so a
+    perfectly ordinary 10-digit account was silently truncated in every file.
+    It must now render whole."""
+    fmt = FixedWidthPositivePayFormatter()
+    line = fmt.format_check_issue([_check("1", "V", "1.00", account="0001234567")], _CTX).rstrip(
+        "\r\n"
+    )
+    assert line[72:89] == "0001234567".ljust(17)
+
+
+def test_overflowing_drawee_account_is_refused():
+    fmt = FixedWidthPositivePayFormatter()
+    with pytest.raises(PositivePayFieldOverflow) as exc:
+        fmt.format_check_issue([_check("1", "V", "1.00", account="1" * 18)], _CTX)
+    assert exc.value.field == "account_number"
+    assert exc.value.width == 17
+
+
+def test_overflowing_amount_is_refused_rather_than_rescaled():
+    """The old slice kept HIGH-order digits and dropped the low-order ones, so
+    an overrunning amount was not merely imprecise — it was divided by ten per
+    dropped digit. Refusing is the only safe answer."""
+    fmt = FixedWidthPositivePayFormatter()
+    # 14 cent-digits hold up to 999_999_999_999.99; one cent more overruns.
+    with pytest.raises(PositivePayFieldOverflow) as exc:
+        fmt.format_check_issue([_check("1", "V", "1000000000000.00")], _CTX)
+    assert exc.value.field == "amount"
+    assert exc.value.width == 14
+
+
+def test_largest_amount_that_fits_still_renders_exactly():
+    fmt = FixedWidthPositivePayFormatter()
+    line = fmt.format_check_issue([_check("1", "V", "999999999999.99")], _CTX).rstrip("\r\n")
+    assert line[50:64] == "99999999999999"
+    assert len(line) == 89
+
+
+def test_overflowing_ach_routing_and_account_are_refused():
+    fmt = FixedWidthPositivePayFormatter()
+    with pytest.raises(PositivePayFieldOverflow) as exc:
+        fmt.format_ach_authorization([_ach("V", "0210000210", "123")], _CTX)
+    assert exc.value.field == "routing_number"
+
+    with pytest.raises(PositivePayFieldOverflow) as exc:
+        fmt.format_ach_authorization([_ach("V", "021000021", "1" * 18)], _CTX)
+    assert exc.value.field == "account_number"
+    assert exc.value.width == 17
+
+
+def test_descriptive_text_still_truncates():
+    """Payee / vendor name / status are cosmetic — truncation there is the
+    documented layout contract and must NOT have become an error."""
+    fmt = FixedWidthPositivePayFormatter()
+    line = fmt.format_check_issue([_check("1", "X" * 60, "1.00")], _CTX).rstrip("\r\n")
+    assert line[10:50] == "X" * 40
+
+    ach = fmt.format_ach_authorization(
+        [_ach("V" * 60, "021000021", "123", status="S" * 20)], _CTX
+    ).rstrip("\r\n")
+    assert ach[0:40] == "V" * 40
+    assert ach[66:80] == "S" * 14
+
+
+def test_overflow_message_never_carries_the_offending_value():
+    """The values that can overrun are full account / routing / cheque numbers.
+    The error names the column and width only — it reaches an HTTP body."""
+    fmt = FixedWidthPositivePayFormatter()
+    secret_account = "9876543210987654321"
+    with pytest.raises(PositivePayFieldOverflow) as exc:
+        fmt.format_check_issue([_check("1", "V", "1.00", account=secret_account)], _CTX)
+    assert secret_account not in str(exc.value)
+    assert "account_number" in str(exc.value)
+
+
+def test_csv_formatter_is_unaffected_by_the_width_guard():
+    """CSV has no fixed columns, so nothing there can overflow — a long check
+    number and a huge amount must still render rather than raise."""
+    fmt = CsvPositivePayFormatter()
+    out = fmt.format_check_issue([_check("12345678901234", "V", "1000000000000.00")], _CTX)
+    assert "12345678901234" in out
 
 
 # ---------------------------------------------------------------------------

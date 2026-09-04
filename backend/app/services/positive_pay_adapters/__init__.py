@@ -13,6 +13,7 @@ from app.services.positive_pay_adapters.base import (
     AchAuthorizationItem,
     CheckIssueItem,
     FormatterContext,
+    PositivePayFieldOverflow,
     PositivePayFormatter,
 )
 from app.services.positive_pay_adapters.dispatcher import (
@@ -26,6 +27,7 @@ __all__ = [
     "AchAuthorizationItem",
     "CheckIssueItem",
     "FormatterContext",
+    "PositivePayFieldOverflow",
     "PositivePayFormatter",
     "UnknownPositivePayFormatError",
     "get_positive_pay_formatter",

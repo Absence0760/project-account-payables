@@ -27,6 +27,33 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 
+class PositivePayFieldOverflow(ValueError):
+    """A value cannot be rendered into its fixed-width column without changing
+    what it means.
+
+    Raised only for *identifiers and money* — a check number, an account or
+    routing number, an amount. A Positive Pay file exists so the bank can
+    refuse anything that doesn't match what we issued; a silently-truncated
+    check number or a mis-scaled amount inverts that control, making the bank
+    refuse a cheque we really wrote (or match one we didn't). Failing the
+    export is recoverable, a confidently-wrong fraud-control file is not.
+
+    Descriptive text (payee, vendor name, status) is NOT covered: truncating a
+    long name is the documented, intended behaviour of a fixed-width layout,
+    and the bank matches on the identifiers rather than the name.
+    """
+
+    def __init__(self, field: str, width: int) -> None:
+        # PII-free by construction: names the column and its width, never the
+        # offending value — these carry full account / routing numbers.
+        super().__init__(
+            f"{field} does not fit its {width}-character column; "
+            "refusing to emit a truncated Positive Pay record"
+        )
+        self.field = field
+        self.width = width
+
+
 @dataclass
 class CheckIssueItem:
     """One issued cheque, the unit of a ``check_issue`` Positive Pay file.
