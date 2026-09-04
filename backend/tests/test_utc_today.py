@@ -38,6 +38,14 @@ never flag it — but it is one careless edit (dropping the `UTC` argument) from
 being silently wrong, and the edited line still reads as deliberate. One owner
 removes the class rather than policing it.
 
+Every scan in this file reports its result as "no offenders found", which is
+also what a scan that looks at nothing reports. Three guards make that
+distinguishable — the tree walk must visit at least `MIN_APP_MODULES` files,
+the AST matcher must still flag a violation PLANTED in real app source (not
+just in a one-line snippet), and the `datetime.now(UTC).date()` text needle
+must still occur in the one module allowed to spell it. Without them, a moved
+`APP_DIR` or a rewritten helper turns this whole file green and inert.
+
 Shape borrowed from `tests/test_payment_methods.py`'s source scan.
 """
 
@@ -83,14 +91,22 @@ UTC_TODAY_OWNER = "utils/dates.py"
 #:     TZ=Pacific/Kiritimati pytest -q
 #:
 #: That is the way to check a new date-sensitive test, and the way this list was
-#: derived: 36 test modules read the local date, but only these five compared it
-#: against an app-computed UTC value. The other 31 use it self-consistently
+#: seeded: 36 test modules read the local date, but only five compared it
+#: against an app-computed UTC value. The rest use it self-consistently
 #: (fixture and assertion from the same sample), so they are deliberately NOT
 #: listed — converting them would be churn, and this allowlist is opt-in by
-#: design, exactly like the app-module list above.
+#: design, exactly like the app-module list above. Widening it is how a module
+#: converts; the two cash-flow plan modules joined on exactly that basis, since
+#: `compute_plan_id` hashes the UTC date they build their fixtures around.
 UTC_TODAY_TEST_MODULES = (
     # `services/invoice_warnings` past-due + future-invoice-date fraud flags.
     "test_exception_flow.py",
+    # The cash-flow copilot's saved plans + plan-vs-actual: `compute_plan_id`
+    # hashes the UTC date and the variance labels its buckets from it, so a
+    # local-date fixture here 409s its own plan (or mislabels a period) for
+    # hours of every day off a UTC host.
+    "test_cash_flow_saved_plans.py",
+    "test_cash_flow_plan_lifecycle.py",
     # `api/tax` / `services/tax_1099` W-9 received-date stamp.
     "test_tax.py",
     # `api/portal` W-9 self-service stamp — the same column, other surface.
@@ -258,6 +274,97 @@ def test_no_module_under_app_reads_the_servers_local_today():
         "`datetime.now().date()`) resolve in the SERVER's timezone, which "
         "matches UTC only by accident of where the container runs."
     )
+
+
+#: Floor on how many modules the whole-`app/` scan must actually walk. The
+#: tree holds ~520 and only grows; the number exists so a scan that silently
+#: stops finding files (a moved `APP_DIR`, a glob typo, a refactor that nests
+#: the package one level deeper) fails as a broken guard instead of passing as
+#: a clean tree. A source scan that visits nothing reports no offenders.
+MIN_APP_MODULES = 400
+
+
+def test_the_whole_tree_scan_actually_walks_the_tree():
+    """First half of the vacuous-pass guard: the scan must SEE the code.
+
+    Every assertion in this file below the behavioural tests is of the form
+    "no offenders found", which is exactly what an empty file list produces.
+    """
+    files = sorted(APP_DIR.rglob("*.py"))
+    assert APP_DIR.is_dir(), f"{APP_DIR} is not a directory — the scans below scan nothing"
+    assert len(files) >= MIN_APP_MODULES, (
+        f"only {len(files)} modules found under {APP_DIR} (expected >= "
+        f"{MIN_APP_MODULES}) — the scans in this file are reporting a clean "
+        "tree because they are looking at almost none of it"
+    )
+    assert (APP_DIR / "utils" / "dates.py").is_file()
+
+
+def test_the_whole_tree_scan_can_still_see_a_violation_in_real_app_source():
+    """Second half: the scan must still RECOGNISE one when it is there.
+
+    The synthetic-snippet tests above prove the AST matcher works on one-line
+    strings. This proves it works where it runs — over a real, several-hundred
+    line module, parsed the same way, with one local-`today` line planted at a
+    known position. Nothing is written to disk; the planted source exists only
+    in memory.
+    """
+    target = APP_DIR / "api" / "cash_flow.py"
+    source = target.read_text(encoding="utf-8")
+    assert local_today_call_lines(source, filename=str(target)) == [], (
+        f"{target.name} already reads the local date — the plant below cannot prove anything"
+    )
+
+    planted = source + "\n\n_planted_local_date = date.today()\n"
+    found = local_today_call_lines(planted, filename=str(target))
+    assert found == [len(planted.splitlines())], (
+        "the scanner did not flag a planted `date.today()` in real app source "
+        f"(reported {found}) — the whole-tree scan's clean result is not evidence"
+    )
+
+
+def test_the_inline_expression_scan_still_matches_its_owner():
+    """The `datetime.now(UTC).date()` scan is a TEXT needle, so it goes
+    vacuous the moment its own spelling stops occurring anywhere.
+
+    `utils/dates.py` is the one module allowed to spell it — and therefore the
+    proof that the needle still matches something. Were the helper rewritten
+    as `datetime.now(tz=UTC).date()`, the scan would report a clean tree while
+    every module was free to inline the other spelling.
+    """
+    needle = "now(UTC).date()"
+    owner = (APP_DIR / UTC_TODAY_OWNER).read_text(encoding="utf-8")
+    assert needle in owner, (
+        f"{UTC_TODAY_OWNER} no longer spells `{needle}` — "
+        "test_no_module_inlines_the_utc_today_expression is now scanning for a "
+        "string that occurs nowhere, so it can never fail. Re-point the needle "
+        "at whatever `utc_today()` now inlines."
+    )
+
+
+def test_the_local_today_exemption_list_is_honest():
+    """An exemption must name a file that exists AND actually reads the local
+    date.
+
+    The list is empty and meant to stay that way. A stale entry — a module
+    that has since been converted, or renamed — would sit there silently
+    re-authorising the next `date.today()` to land in that file.
+    """
+    for relative in LOCAL_TODAY_EXEMPT:
+        path = APP_DIR / relative
+        assert path.is_file(), f"LOCAL_TODAY_EXEMPT names {relative}, which does not exist"
+        assert local_today_call_lines(path.read_text(encoding="utf-8"), filename=str(path)), (
+            f"LOCAL_TODAY_EXEMPT still names {relative}, which no longer reads the "
+            "local date. Remove the entry — an exemption for a converted module "
+            "is a standing permit for the next one."
+        )
+
+
+def test_the_converted_test_module_list_is_not_empty():
+    """`UTC_TODAY_TEST_MODULES` drives a parametrised guard, and pytest runs a
+    parametrisation over an empty sequence zero times — so an emptied list
+    would remove the guard without removing a test."""
+    assert len(UTC_TODAY_TEST_MODULES) >= 5
 
 
 def test_no_module_inlines_the_utc_today_expression():
