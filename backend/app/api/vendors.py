@@ -625,6 +625,7 @@ async def bulk_export_vendors(
 @router.get("/counts")
 async def vendor_status_counts(
     search: str | None = None,
+    source: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
@@ -636,17 +637,25 @@ async def vendor_status_counts(
     "Unverified" attention badge, can't undercount when the list paginates past
     one page. Mirrors GET /api/invoices/counts. Registered before the
     `/{vendor_id}` route so the literal path isn't swallowed by the UUID param.
+
+    Takes the population filters through the SAME `_vendor_list_filters`
+    builder as `GET /api/vendors` and `/ids`. It used to restate the three
+    `ilike_contains` clauses inline and took no `source` at all, though the
+    list accepts one — the columns happened to coincide, so nothing was wrong
+    on screen, but a duplicate predicate maintained in two places is exactly
+    the drift the shared builder exists to prevent (and `source` would have
+    been a live undercount the moment the vendors page gained that control).
     """
-    query = apply_entity_scope(
-        select(Vendor.status, func.count()).select_from(Vendor), Vendor, entity_id
-    )
-    if search:
-        query = query.where(
-            ilike_contains(Vendor.name, search)
-            | ilike_contains(Vendor.code, search)
-            | ilike_contains(Vendor.email, search)
-        )
-    query = query.group_by(Vendor.status)
+    query = _vendor_list_filters(
+        apply_entity_scope(
+            select(Vendor.status, func.count()).select_from(Vendor), Vendor, entity_id
+        ),
+        search=search,
+        # `status` is the dimension being tallied — applying it would zero every
+        # other chip (`invoices.py::invoice_counts` states the same rule).
+        status_filter=None,
+        source=source,
+    ).group_by(Vendor.status)
     rows = (await db.execute(query)).all()
     by_status = {str(status): int(n) for status, n in rows}
     return {"total": sum(by_status.values()), "by_status": by_status}

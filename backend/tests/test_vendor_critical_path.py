@@ -821,3 +821,87 @@ async def test_match_and_link_vendor_uses_the_invoices_entity(realdb, mk):
         assert vendor.id != a_vendor_id
         assert vendor.entity_id == entity_b
         assert invoice.vendor_id == vendor.id
+
+
+@pytest.mark.asyncio
+async def test_vendor_counts_honour_the_source_filter(realdb, mk):
+    """`source` is a list filter, so the chips must narrow by it too.
+
+    `vendor_status_counts` restated the three `ilike_contains` search clauses
+    inline instead of calling `_vendor_list_filters`, and took no `source`
+    parameter at all although `GET /api/vendors` does. The search columns
+    coincided, so nothing was wrong on screen — but the duplicate predicate is
+    exactly the drift the shared builder exists to prevent, and `source` was a
+    live undercount waiting for the vendors page to gain that control.
+    """
+    async with mk() as s:
+        entity_id = await _default_entity_id(s)
+        org_id = realdb.info(TENANT).org_id
+        for i, source in enumerate(("manual", "manual", "erp_sync", "ai_extracted")):
+            s.add(
+                Vendor(
+                    name=f"Sourced Co {i:03d}",
+                    code=f"SRC{i:03d}",
+                    status="unverified",
+                    source=source,
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                )
+            )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        listed = await client.get("/api/vendors?search=Sourced Co&source=manual")
+        counted = await client.get("/api/vendors/counts?search=Sourced Co&source=manual")
+        assert listed.status_code == 200, listed.text
+        assert counted.status_code == 200, counted.text
+        # The chips' "All" is the list's own total — pre-fix `source` was
+        # dropped here, so this came back 4 against a 2-row table.
+        assert counted.json()["total"] == listed.json()["total"] == 2
+
+        # And the other two sources are each reachable on their own.
+        for source, expected in (("erp_sync", 1), ("ai_extracted", 1)):
+            got = await client.get(f"/api/vendors/counts?search=Sourced Co&source={source}")
+            assert got.json()["total"] == expected, source
+
+
+@pytest.mark.asyncio
+async def test_vendor_counts_ignore_a_status_param(realdb, mk):
+    """`status` is the dimension being tallied, so the chips must not apply it."""
+    async with mk() as s:
+        entity_id = await _default_entity_id(s)
+        org_id = realdb.info(TENANT).org_id
+        for name, status in (("Statusy A", "active"), ("Statusy B", "unverified")):
+            s.add(
+                Vendor(
+                    name=name,
+                    code=name.replace(" ", "-"),
+                    status=status,
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                )
+            )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        plain = (await client.get("/api/vendors/counts?search=Statusy")).json()
+        narrowed = (await client.get("/api/vendors/counts?search=Statusy&status=active")).json()
+    assert plain["by_status"] == {"active": 1, "unverified": 1}
+    assert narrowed == plain, "a status param must not narrow the tally it produces"
+
+
+@pytest.mark.asyncio
+async def test_vendor_counts_and_the_list_share_one_filter_builder():
+    """Structural: one predicate set, not a hand-rolled copy per handler."""
+    import inspect
+
+    from app.api import vendors as vendors_mod
+
+    for handler in (vendors_mod.list_vendors, vendors_mod.vendor_status_counts):
+        src = inspect.getsource(handler)
+        assert "_vendor_list_filters(" in src, (
+            f"{handler.__name__} does not route through the shared filter builder"
+        )
+        assert "ilike_contains(Vendor.name" not in src, (
+            f"{handler.__name__} restates the search predicate instead of sharing it"
+        )
