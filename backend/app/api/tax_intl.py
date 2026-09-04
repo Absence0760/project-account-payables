@@ -20,6 +20,7 @@ the data layer. The rate adapter is selected from `Organization.settings.tax`
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -55,8 +56,14 @@ from app.services.international_tax.gst import compute_gst
 from app.services.international_tax.report import generate_tax_report
 from app.services.international_tax.vat import compute_vat
 from app.services.international_tax.withholding import compute_withholding
-from app.services.tax_rate_adapters import get_tax_rate_adapter
+from app.services.tax_rate_adapters import (
+    UnknownTaxRateProviderError,
+    get_tax_rate_adapter,
+    list_available_providers,
+)
 from app.tenant import get_tenant, get_tenant_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/international-tax", tags=["tax"])
 
@@ -107,6 +114,43 @@ async def get_country_rules(
 # ---------------------------------------------------------------------------
 # Rate lookup (pluggable adapter)
 # ---------------------------------------------------------------------------
+
+
+def _require_rate_adapter(org: Organization):
+    """Resolve the org's tax-rate provider or 409 naming the bad value.
+
+    ``get_tax_rate_adapter`` refuses a NAMED provider it has no adapter for
+    rather than resolving to ``mock`` (`decisions.md` §29). The mock answers
+    every country from the in-repo country-rules table — a plausible fixture,
+    not a maintained rate feed — so a typo'd provider name computed VAT / GST
+    off a hardcoded rate while the response's ``provider`` field named the
+    provider that was asked for. These three routes are pure compute and persist
+    nothing, so the refusal costs no unwinding; what it buys is that a
+    jurisdiction figure is never quoted from a source nobody chose.
+
+    409, matching the card / 1099 dispatchers: the request is well-formed; the
+    org's tax configuration is in a state that cannot service it. The provider
+    name is admin-supplied config, not PII, and the exception bounds it.
+    """
+    tax_config = (org.settings or {}).get("tax") if org.settings else None
+    try:
+        return get_tax_rate_adapter(tax_config)
+    except UnknownTaxRateProviderError as exc:
+        logger.warning(
+            "[intl-tax] rate provider %r has no registered adapter for org %s",
+            exc.provider,
+            org.id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{exc.provider}' is not a supported tax-rate provider "
+                f"(one of: {', '.join(list_available_providers())}). "
+                "Fix it in Organization Settings and retry."
+            ),
+        ) from None
+
+
 @router.get("/rate/{country}", response_model=TaxRateResponse)
 async def lookup_tax_rate(
     country: str = Path(..., min_length=2, max_length=2),
@@ -115,8 +159,7 @@ async def lookup_tax_rate(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
-    tax_config = (org.settings or {}).get("tax") if org.settings else None
-    adapter = get_tax_rate_adapter(tax_config)
+    adapter = _require_rate_adapter(org)
     try:
         result = await adapter.get_rate(country, region=region, rate_category=rate_category)
     except UnknownCountry as exc:
@@ -142,8 +185,7 @@ async def compute_vat_endpoint(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
-    tax_config = (org.settings or {}).get("tax") if org.settings else None
-    adapter = get_tax_rate_adapter(tax_config)
+    adapter = _require_rate_adapter(org)
     try:
         rate_result = await adapter.get_rate(
             body.supplier_country, rate_category=body.rate_category
@@ -180,8 +222,7 @@ async def compute_gst_endpoint(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
-    tax_config = (org.settings or {}).get("tax") if org.settings else None
-    adapter = get_tax_rate_adapter(tax_config)
+    adapter = _require_rate_adapter(org)
     try:
         rate_result = await adapter.get_rate(body.country, rate_category=body.rate_category)
         result = compute_gst(

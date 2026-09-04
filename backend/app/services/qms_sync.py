@@ -7,9 +7,10 @@ Two entry points:
     ``gr_number`` to local ``PurchaseOrder`` / ``GoodsReceipt`` ids, then
     UPSERTS a :class:`~app.models.quality_inspection.QualityInspection`
     idempotently keyed on ``(organization_id, inspection_number)``. Writes an
-    append-only ``quality_inspection.synced`` audit row per landed record. The
-    caller owns the transaction (commits) — same contract as the inspections
-    router, which runs inside ``get_tenant_db``'s commit/rollback wrapper.
+    append-only ``quality_inspection.synced`` audit row per record that
+    genuinely landed or changed. The caller owns the transaction (commits) —
+    same contract as the inspections router, which runs inside
+    ``get_tenant_db``'s commit/rollback wrapper.
 
   * :func:`run_qms_sync_loop` — the background sweep. Enumerates every tenant
     DB from the control plane and runs :func:`sync_tenant_inspections` for each
@@ -24,6 +25,23 @@ rather than inserting a duplicate — exactly the ``status``-guard role the othe
 sweeps rely on, but here it's a natural-key lookup. ``inspector`` and the QMS
 record carry no PII we log (the audit ``details`` records the inspection number
 and resolution outcome only).
+
+Two properties keep that idempotent re-run from being unboundedly expensive:
+
+  * **The pull is incremental.** ``since`` — declared by the adapter contract
+    from the start, and previously accepted by
+    :func:`run_qms_sync_once` and then dropped on the floor — is threaded all
+    the way to ``adapter.fetch_inspections``. The per-org high-water mark lives
+    in the settings JSON (:func:`resolve_qms_sync_cursor` /
+    :func:`store_qms_sync_cursor`), the house pattern for per-org platform
+    state. Without it every hourly tick re-fetched each tenant's entire
+    inspection history.
+  * **An audit row marks a real change.** The ``quality_inspection.synced``
+    write is gated on an actual create-or-update (:func:`_apply_record`). It was
+    unconditional, with ``change`` reading ``"updated"`` even when nothing had
+    moved, so each tick appended ``len(records)`` rows to ``audit_log`` — a
+    table migration 0022's BEFORE-DELETE trigger makes undeletable and the audit
+    shipper has to drain to a WORM store. Unbounded growth, describing nothing.
 """
 
 from __future__ import annotations
@@ -31,7 +49,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -43,7 +61,7 @@ from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.quality_inspection import QualityInspection
 from app.schemas.inspection import VALID_RESULTS
 from app.services.audit_dispatch import dispatch_audit
-from app.services.qms_adapters import get_qms_adapter
+from app.services.qms_adapters import UnknownQmsProviderError, get_qms_adapter
 from app.services.qms_adapters.base import QMSInspectionRecord
 from app.services.sweep_health import SWEEP_QMS_SYNC, run_sweep_loop
 from app.tenant import resolve_default_entity_id
@@ -73,13 +91,137 @@ def normalize_disposition(raw: str | None) -> str | None:
 
 @dataclass
 class QMSSyncResult:
-    """Per-tenant sweep outcome for logging + tests."""
+    """Per-tenant sweep outcome for logging + tests.
+
+    ``sweep_health.failure_count`` sums every field named ``failures`` or ending
+    in ``_failures``; ``unchanged`` and ``skipped`` deliberately carry neither
+    suffix. A record that arrived identical to the one already stored, or one
+    whose disposition the provider never mapped, is a provider/config fact, not
+    a broken sweep — counting either into the health signal would pin an
+    otherwise-healthy sync at ``degraded``.
+    """
 
     tenants_scanned: int = 0
     fetched: int = 0
     created: int = 0
     updated: int = 0
+    #: Records that arrived byte-identical to the stored row. No write, no
+    #: audit row. Surfaced because it is the difference between "the sync is
+    #: doing nothing" and "the sync has nothing to do".
+    unchanged: int = 0
+    #: Records whose disposition did not map onto pass/fail/partial. Computed
+    #: per tenant since the fail-closed skip landed, but discarded at this
+    #: level — so a provider emitting its own vocabulary for every record made
+    #: the sweep report a clean, entirely empty run.
+    skipped: int = 0
     failures: int = 0
+
+
+# --------------------------------------------------------------------------- #
+# Incremental-pull cursor (Organization.settings.qms.last_synced_at)
+# --------------------------------------------------------------------------- #
+#
+# Per-org config in the settings JSON, not a column: the mark is control-plane
+# platform state keyed by org, and the house pattern for exactly that is a
+# settings-JSON marker (`cash_flow_alerts`' alerted-period marker is the same
+# shape). No migration, nothing to fan out to every tenant DB.
+
+
+def resolve_qms_sync_cursor(settings_blob: dict | None) -> datetime | None:
+    """The high-water mark the last successful sweep of this org reached.
+
+    ``None`` = never synced (or a malformed marker — a corrupt settings blob
+    must degrade to a full pull, never stop the sweep), which pulls the
+    provider's whole history exactly once.
+    """
+    qms = (settings_blob or {}).get("qms")
+    if not isinstance(qms, dict):
+        return None
+    raw = qms.get("last_synced_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def store_qms_sync_cursor(settings_blob: dict | None, *, at: datetime | None) -> dict:
+    """Return a NEW settings dict recording ``qms.last_synced_at``.
+
+    ``at=None`` clears the mark, so the next tick pulls the provider's full
+    history again — the recovery path if a cursor is ever suspected wrong.
+    Every other key under ``qms`` (``provider``, ``base_url``, credentials) is
+    preserved: this marker shares a block with real configuration.
+
+    A naive ``at`` is read as UTC, never as the server's local time — the same
+    reading :func:`resolve_qms_sync_cursor` gives a naive stored value, so the
+    pair round-trips. Deferring to ``astimezone``'s local-time assumption would
+    shift the mark by the host's offset and silently skip (or re-pull) that many
+    hours of records depending on which machine ran the tick.
+    """
+    new_settings = dict(settings_blob or {})
+    qms = dict(new_settings.get("qms") or {})
+    if at is None:
+        qms.pop("last_synced_at", None)
+    else:
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        qms["last_synced_at"] = at.astimezone(UTC).isoformat()
+    if qms:
+        new_settings["qms"] = qms
+    else:
+        # Never leave a bare `{"qms": {}}` behind. The PRESENCE of the block is
+        # what `resolve_opted_in_qms_config` reads as the org's opt-in, so an
+        # empty one would opt a tenant that never configured a QMS into
+        # `get_qms_adapter(None)`'s `mock` fixtures — three fabricated
+        # inspections resolved against its real purchase orders, a synthetic
+        # `pass` clearing the 4-way quality gate on a real invoice.
+        new_settings.pop("qms", None)
+    return new_settings
+
+
+def _apply_record(
+    row: QualityInspection,
+    rec: QMSInspectionRecord,
+    *,
+    result: str,
+    po_id: uuid.UUID | None,
+    gr_id: uuid.UUID | None,
+) -> bool:
+    """Copy a fetched record onto an existing row; ``True`` if anything moved.
+
+    The return value is what gates the audit write. ``quality_inspection.synced``
+    lands in the append-only, WORM-shipped ``audit_log``, which migration 0022's
+    BEFORE-DELETE trigger makes undeletable — so a row written per fetched
+    record per tick is unbounded growth in exactly the table the audit shipper
+    drains, and it says nothing an auditor can use ("this record was identical
+    again" repeated hourly). An audit row now marks a real state change.
+    """
+    changed = False
+    updates: list[tuple[str, object]] = [
+        ("result", result),
+        ("inspected_date", rec.inspected_date),
+        ("inspector", rec.inspector),
+        ("accepted_quantity", rec.accepted_quantity),
+        ("rejected_quantity", rec.rejected_quantity),
+        ("deviation_notes", rec.deviation_notes),
+    ]
+    # Backfill document links if the QMS now references docs that exist locally
+    # (e.g. the PO/GR was imported after the first sync). Only ever set, never
+    # cleared — an unresolvable number this tick is not evidence the earlier
+    # resolution was wrong.
+    if po_id is not None:
+        updates.append(("po_id", po_id))
+    if gr_id is not None:
+        updates.append(("gr_id", gr_id))
+
+    for field_name, value in updates:
+        if getattr(row, field_name) != value:
+            setattr(row, field_name, value)
+            changed = True
+    return changed
 
 
 async def _resolve_po_id(
@@ -131,22 +273,39 @@ async def sync_tenant_inspections(
     qms_config: dict | None,
     entity_id: uuid.UUID | None = None,
     actor_id: uuid.UUID | None = None,
+    since: datetime | None = None,
 ) -> dict:
     """Pull inspections from the configured QMS and upsert them for one tenant.
 
-    Returns ``{"fetched": int, "created": int, "updated": int}``. The caller
-    owns the transaction — this flushes but does not commit (so a request-path
-    call commits via the dependency wrapper and the background sweep commits
-    explicitly).
+    Returns ``{"fetched", "created", "updated", "unchanged", "skipped"}``. The
+    caller owns the transaction — this flushes but does not commit (so a
+    request-path call commits via the dependency wrapper and the background
+    sweep commits explicitly).
+
+    Raises :class:`~app.services.qms_adapters.UnknownQmsProviderError` when the
+    org named a provider we have no adapter for. It is the FIRST thing this
+    function does, before any query or write, so a refusal leaves nothing
+    behind — no inspection row, no audit row, no rematch. The two callers
+    decide what it means (the sweep counts a failure and holds the cursor; the
+    manual route 409s).
+
+    ``since`` is the adapter contract's incremental-pull hint: ask the provider
+    only for records changed after that instant. It is a hint, not a guarantee —
+    an adapter that can't filter server-side (the ``mock``) returns the full set
+    and the upsert stays idempotent either way. The background sweep passes the
+    per-org high-water mark (:func:`resolve_qms_sync_cursor`); the manual
+    ``POST /api/inspections/sync`` route deliberately passes ``None``, so a
+    human asking for a re-sync gets a full re-pull.
     """
     adapter = get_qms_adapter(qms_config)
-    records: list[QMSInspectionRecord] = await adapter.fetch_inspections()
+    records: list[QMSInspectionRecord] = await adapter.fetch_inspections(since=since)
 
     if entity_id is None:
         entity_id = await resolve_default_entity_id(db)
 
     created = 0
     updated = 0
+    unchanged = 0
     skipped = 0
     for rec in records:
         result = normalize_disposition(rec.result)
@@ -202,18 +361,12 @@ async def sync_tenant_inspections(
             change = "created"
         else:
             row = existing
-            row.result = result
-            row.inspected_date = rec.inspected_date
-            row.inspector = rec.inspector
-            row.accepted_quantity = rec.accepted_quantity
-            row.rejected_quantity = rec.rejected_quantity
-            row.deviation_notes = rec.deviation_notes
-            # Backfill document links if the QMS now references docs that
-            # exist locally (e.g. the PO/GR was imported after the first sync).
-            if po_id is not None:
-                row.po_id = po_id
-            if gr_id is not None:
-                row.gr_id = gr_id
+            if not _apply_record(row, rec, result=result, po_id=po_id, gr_id=gr_id):
+                # Byte-identical to what is already stored. Writing an audit row
+                # here appended `len(records)` undeletable rows to `audit_log`
+                # every tick, forever, for a state change that did not happen.
+                unchanged += 1
+                continue
             updated += 1
             change = "updated"
 
@@ -251,6 +404,7 @@ async def sync_tenant_inspections(
         "fetched": len(records),
         "created": created,
         "updated": updated,
+        "unchanged": unchanged,
         "skipped": skipped,
     }
 
@@ -333,6 +487,18 @@ async def run_qms_sync_once(*, since: datetime | None = None) -> QMSSyncResult:
     provider being ``mock`` would otherwise pull the mock fixtures into every
     tenant, so the sweep skips orgs that have not opted in unless the platform
     provider has been set to something other than ``mock``.
+
+    **The pull is incremental.** Each org carries its own high-water mark
+    (``settings.qms.last_synced_at``); the sweep asks the provider only for
+    records changed since then and advances the mark after a successful tick.
+    ``since`` overrides every org's mark for this call — a one-shot operator
+    backfill, not the normal path.
+
+    The mark is captured BEFORE the fetch and stored only on success, so the
+    window is closed-on-the-left and never skips a record written while a tick
+    was in flight; a boundary record simply arrives twice and the upsert
+    absorbs it. A tenant whose sweep raised keeps its old mark and retries the
+    same window next tick.
     """
     result = QMSSyncResult()
 
@@ -349,34 +515,95 @@ async def run_qms_sync_once(*, since: datetime | None = None) -> QMSSyncResult:
             continue
 
         result.tenants_scanned += 1
+        org_since = since if since is not None else resolve_qms_sync_cursor(settings_blob)
+        started_at = datetime.now(UTC)
         try:
-            summary = await _sweep_tenant(db_name, org_id, qms_config)
+            summary = await _sweep_tenant(db_name, org_id, qms_config, since=org_since)
             result.fetched += summary["fetched"]
             result.created += summary["created"]
             result.updated += summary["updated"]
+            result.unchanged += summary["unchanged"]
+            result.skipped += summary["skipped"]
+        except UnknownQmsProviderError as exc:
+            # The org opted in with a provider we have no adapter for. A
+            # counted FAILURE, not a skip: a skip is indistinguishable from
+            # "this tenant had nothing to sync", and this control has silently
+            # stopped working — three consecutive ticks put the sweep at
+            # `degraded` on `GET /api/health/sweeps` (§24), which is the only
+            # signal anyone gets. Named explicitly rather than left to the
+            # generic handler below so the log line carries the bad VALUE, not
+            # just an exception class name an operator cannot act on.
+            #
+            # It must also leave `last_synced_at` alone — `_store_cursor` is
+            # deliberately below the `try`, on the success path only. Advancing
+            # it here would close a window that was never actually pulled, so
+            # every inspection written during the outage would be skipped
+            # forever once the config was corrected: a silent hole in the 4-way
+            # match's quality leg, which is exactly the failure the refusal
+            # exists to prevent.
+            logger.warning(
+                "[qms-sync] provider %r has no registered adapter for org=%s — "
+                "tenant not synced, cursor not advanced",
+                exc.provider,
+                org_id,
+            )
+            result.failures += 1
+            continue
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
             logger.warning("[qms-sync] failed sweeping %s: %s", db_name, exc.__class__.__name__)
             result.failures += 1
+            continue
+        await _store_cursor(org_id, at=started_at)
 
-    if result.created or result.updated or result.failures:
+    if result.created or result.updated or result.skipped or result.failures:
         logger.info(
-            "[qms-sync] swept %d tenant(s); fetched=%d created=%d updated=%d failed_sweeps=%d",
+            "[qms-sync] swept %d tenant(s); fetched=%d created=%d updated=%d "
+            "unchanged=%d skipped=%d failed_sweeps=%d",
             result.tenants_scanned,
             result.fetched,
             result.created,
             result.updated,
+            result.unchanged,
+            result.skipped,
             result.failures,
         )
     return result
 
 
-async def _sweep_tenant(db_name: str, org_id: uuid.UUID, qms_config: dict) -> dict:
+async def _store_cursor(org_id: uuid.UUID, *, at: datetime | None) -> None:
+    """Persist the org's incremental-pull high-water mark on the control plane.
+
+    Best-effort: a mark that fails to store leaves the org re-pulling the same
+    window next tick, which the idempotent upsert absorbs. Losing inspections
+    to a failed marker write would not be absorbable, so the order is
+    sync-then-mark, never the reverse.
+    """
+    try:
+        async with control_session_factory() as ctrl:
+            org = await ctrl.get(Organization, org_id)
+            if org is None:
+                return
+            org.settings = store_qms_sync_cursor(org.settings, at=at)
+            await ctrl.commit()
+    except Exception as exc:  # noqa: BLE001 — a marker write must not fail the sweep
+        logger.warning(
+            "[qms-sync] could not persist sync cursor for org=%s: %s",
+            org_id,
+            exc.__class__.__name__,
+        )
+
+
+async def _sweep_tenant(
+    db_name: str, org_id: uuid.UUID, qms_config: dict, *, since: datetime | None = None
+) -> dict:
     """Sync one tenant on its own short-lived engine; commits on success."""
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
-            summary = await sync_tenant_inspections(db, org_id=org_id, qms_config=qms_config)
+            summary = await sync_tenant_inspections(
+                db, org_id=org_id, qms_config=qms_config, since=since
+            )
             await db.commit()
             return summary
     finally:

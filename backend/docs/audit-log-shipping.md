@@ -30,12 +30,56 @@ rows out of every tenant DB and writes them to one or more WORM
 4. The batch is converted to `AuditLogRow` dataclasses and handed to every
    adapter listed in `FEOH_AUDIT_SHIPPING_PROVIDERS`.
 5. **All** adapters must succeed before the tenant's rows get marked
-   `shipped_at = now()`. If any one raises, the shipper logs a WARNING,
-   leaves `shipped_at` NULL, and the next tick retries the entire batch.
-   CloudWatch Logs and S3 both have at-least-once semantics, so a replay
-   may produce duplicate events downstream — that's documented and
-   acceptable.
+   `shipped_at = now()`. If any one raises, the shipper logs a WARNING and
+   runs the isolation pass below; whatever is still unshipped keeps
+   `shipped_at` NULL and the next tick retries it. CloudWatch Logs and S3
+   both have at-least-once semantics, so a replay may produce duplicate
+   events downstream — that's documented and acceptable.
 6. On shutdown the task is cancelled cleanly via `main.lifespan`.
+
+### A poison row must not stop the tenant's trail
+
+The batch is all-or-nothing and ordered `created_at ASC`, so ONE row a sink
+refuses used to make `adapter.ship` raise on every tick, re-select the identical
+oldest-first batch, and block every **newer** row for that tenant forever — the
+WORM evidence trail simply ended there. `ShipResult.failures` climbed and
+`GET /api/health/sweeps` went `degraded`, which is correct; the defect was that
+the only remedy was an operator finding and hand-editing the offending row.
+
+A failed batch is now followed by a **bounded isolation pass**:
+
+- the rows are re-shipped one at a time, in order;
+- a row an adapter refuses is re-offered to **that adapter** with its `details`
+  replaced by a PII-free quarantine marker —
+  `{"_details_quarantined": true, "reason": "sink_rejected_row", "error_class":
+  …, "original_bytes": …}`. The row's identity (id, org, actor, action, entity,
+  timestamp) is untouched, so the WORM copy stays an ordered, tamper-evident
+  trail, and the complete row is still in the tenant `audit_log` table;
+- the substitution is **per-adapter** — a row CloudWatch refuses may be fine for
+  the S3 Object Lock copy, and the full-detail copy there is worth keeping;
+- if an adapter refuses the marker version too, the sink is unhealthy rather
+  than the row poisoned: the pass stops at that row, everything from it on stays
+  unshipped, and the tick fails exactly as before. That is what bounds an outage
+  to two extra calls per adapter instead of one per row, and what stops a
+  transient outage from stripping the details off a whole batch;
+- rows shipped before that stop **are** stamped, so the pass's progress is not
+  re-shipped forever.
+
+Quarantined rows are counted on `ShipResult.rows_quarantined` (surfaced in the
+sweep-health payload) and logged one PII-free WARNING each — the row id and the
+refusing exception's **class**, never the refused payload and never `str(exc)`.
+They are deliberately **not** counted as sweep failures: the trail moved and
+nothing was dropped, so the tick genuinely succeeded; the count plus the WARNING
+is the operator signal, and a quarantined row is stamped shipped so it cannot
+recur every tick.
+
+Rows the isolation pass re-ships were already offered inside the failed batch,
+so a sink may see them twice. Same at-least-once seam as everything else here: a
+duplicate is identifiable by the row's own `id` and recoverable on read, a
+missing row is not. This is the shipper-level sibling of the `cloudwatch`
+adapter's `_details_truncated` marker (which handles the per-event 256 KiB cap
+inside that one sink); the two keys are distinct so an operator can tell them
+apart in the WORM store.
 
 ### Why one batch at a time per tenant
 
@@ -238,6 +282,18 @@ Then:
 2. Add the provider name to `FEOH_AUDIT_SHIPPING_PROVIDERS`
    (comma-separated with existing ones).
 3. Add a test to `tests/test_audit_shipping.py`.
+
+## Tests
+
+- `tests/test_audit_log_shipper.py` — sweep orchestration (tenant iteration,
+  partial-failure tolerance, the no-adapters short-circuit, the loop) plus the
+  realdb WORM invariant (rows stamped only when every sink ACKed).
+- `tests/test_audit_shipper_poison_row.py` — the isolation pass: a row a sink
+  refuses is quarantined with the PII-free marker and the **newer** rows for
+  that tenant ship on the same tick; a sink outage is never quarantined (nothing
+  stamped, nothing stripped, probing bounded); progress before a fatal row is
+  still stamped; the substitution is per-adapter.
+- `tests/test_audit_shipping.py` — adapter-level behaviour + the registry.
 
 ## Schema
 

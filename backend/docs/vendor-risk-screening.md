@@ -142,7 +142,8 @@ override.
 
 **Frontend surface.** The dedicated review-queue page lives at
 `frontend/src/routes/vendors/screening/+page.svelte` (sidebar link
-**Screening**, gated to admin / ap_manager / cfo). It lists the flagged
+**Screening**, admin / ap_manager / ap_clerk / cfo — the same four roles
+`screening_review_queue` accepts). It lists the flagged
 vendors with their screening pill (`ui/ScreeningBadge.svelte`), risk score, and
 last-screened date over `getScreeningReviewQueue()`, and a detail modal opens
 the per-vendor screening-history timeline plus **block / unblock** and
@@ -157,6 +158,55 @@ the control is hidden for a non-holder; re-screen is gated on
 `auth.isManager`. The backend enforces both regardless. (The vendor LIST page
 `/vendors` also surfaces the same screening/risk actions per-vendor via
 `VendorModal`.)
+
+### The "Payments blocked" KPI is not derived from the queue
+
+The page's KPI row carries three whole-set figures. Two of them — *Sanctions
+matches* and *Needs review* — are counted off `items`, which is legitimate:
+the review queue is unpaginated and is **exactly** `screening_status IN
+('match','review')`, so the array IS the population those two describe. (If
+that endpoint ever paginates, both become the same defect described below.)
+
+*Payments blocked* is not, and cannot be. `POST /api/vendors/{id}/block` sets
+`Vendor.payments_blocked` and deliberately never touches `screening_status`, so
+a vendor AP blocks while it is screening-`clear` belongs to no bucket the queue
+selects on. Counting `items.filter((it) => it.payments_blocked)` therefore could
+not see it — not past a page boundary, but *ever*, at any queue size. A headline
+claiming to count blocked payments read `0` while payments were blocked.
+
+The tally now comes from a query that asks the tally's own question:
+`GET /api/vendors/counts` returns `payments_blocked` alongside `by_status`,
+computed as `count(*) FILTER (WHERE payments_blocked)` **inside the same
+aggregate** as the status buckets. That is what makes it un-driftable — it
+shares the one `_vendor_list_filters` call and the one `apply_entity_scope`
+call with the buckets, so a filter can never apply to one and not the other,
+and a subsidiary's blocks can never leak into a sibling's figure
+(`docs/decisions.md` §48).
+
+Three consequences worth knowing:
+
+* `payments_blocked` is an **orthogonal axis, not a slice of `by_status`**. A
+  blocked vendor is still `active` (or `unverified`, …) and is already counted
+  in its own bucket, so `total` stays `sum(by_status)` and the blocked figure
+  must never be added to it.
+* The figure spans **all vendors, not the queue**, and the card says so in its
+  sub-label. The page's search box is a client-side filter over the queue rows
+  and matches different columns (matched list, hit categories) than the API's
+  `search` does (name / code / email), so wiring one to the other would make the
+  KPI claim to describe a search it does not.
+* `GET /api/vendors/counts` is gated exactly like `GET /api/vendors`
+  (admin / ap_manager / cfo) because §48 requires a tally's RBAC to match its
+  list's in both directions. The screening queue admits `ap_clerk` as well, so
+  for a clerk the call 403s and the card renders an em-dash plus *Count
+  unavailable*. It deliberately does **not** latch back to the queue-derived
+  number — that number is the bug, and showing it to exactly one role would
+  reinstate the defect where it is hardest to notice.
+
+Guards: `backend/tests/test_vendor_blocked_counts.py` (the tally, its filters,
+its entity scope and its RBAC) and
+`frontend/tests-e2e/vendors/screening-blocked-kpi.spec.ts` (the KPI renders the
+endpoint's figure over a queue in which nothing is blocked, and renders the
+unavailable state rather than a wrong number on a 403).
 
 ## Bulk operations and list sort (issue #328)
 

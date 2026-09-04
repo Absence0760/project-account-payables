@@ -17,6 +17,7 @@ from app.services.peppol_adapters import (
     PEPPOL_BIS_BILLING_PROCESSID,
     ParticipantId,
     TransmissionRequest,
+    UnknownPeppolProviderError,
     get_peppol_adapter,
     list_available_providers,
 )
@@ -165,8 +166,15 @@ def test_get_adapter_defaults_to_mock():
     assert get_peppol_adapter({}).provider_name == "mock"
 
 
-def test_get_adapter_unknown_provider_falls_back_to_mock():
-    assert get_peppol_adapter({"provider": "does_not_exist"}).provider_name == "mock"
+def test_get_adapter_refuses_a_named_unknown_provider():
+    """It used to fall back to `mock`, whose `send` reports success with a
+    synthetic message id and no network — so `peppol_send` recorded a
+    legally-significant e-invoice as transmitted to a supplier that never got
+    it. `decisions.md` §29; the caller-level cases live in
+    `tests/test_adapter_registry_fail_closed.py`."""
+    with pytest.raises(UnknownPeppolProviderError) as exc:
+        get_peppol_adapter({"provider": "does_not_exist"})
+    assert "does_not_exist" in str(exc.value)
 
 
 def test_get_adapter_selects_gateway():

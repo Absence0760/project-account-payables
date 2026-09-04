@@ -1417,8 +1417,21 @@ Matching payments against bank statement entries:
 | `method` | string | Filter by payment method |
 | `invoice_id` | string | Filter by invoice ID |
 | `search` | string | Search vendor, invoice number, or reference |
-| `amount_min` | float | Minimum amount |
-| `amount_max` | float | Maximum amount |
+| `amount_min` | decimal | Minimum amount (inclusive) |
+| `amount_max` | decimal | Maximum amount (inclusive) |
+
+Both amount bounds are parsed as `Decimal`, never `float` — money is exact
+(root `CLAUDE.md` § Project invariants), and a bound routed through a double is
+re-rounded before it ever reaches the `Numeric(15, 2)` column it is compared
+against. They are then snapped onto that column's own two-decimal grid in the
+direction of the comparison (`amount_min` rounds up, `amount_max` rounds down,
+via `app/api/money_filters.py`), because SQLAlchemy casts the bind parameter to
+the column's scale — so an over-precise bound would otherwise be rounded to
+nearest, straight back onto the boundary row it was written to exclude. Both
+`GET /api/payments` and `GET /api/payments/counts` take them through the shared
+`_payment_list_filters` builder, so the History chips and the table can never
+resolve different sets for the same bound. The invoice list, its `/counts` and
+its `/ids` resolver share `_invoice_list_filters` the same way.
 
 **`POST /api/payments/runs` request body:**
 ```json

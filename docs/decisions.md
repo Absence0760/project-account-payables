@@ -2463,3 +2463,313 @@ rebates" are different claims, and no sibling figure on either surface swallows.
 six instances: an AST scan fails any statement summing `CardRebate.amount` that
 neither filters nor groups by currency, and a source scan fails any module that
 re-derives the expression inline instead of calling the shared helper.
+
+---
+
+## 63. Every adapter registry is classified, and the fixture fallback is gone from the ones that could answer wrongly
+
+**Decided:** 2026-09-04 · `backend/app/services/*/dispatcher.py`, `backend/tests/test_adapter_registry_fail_closed.py`
+
+§29 removed `_REGISTRY.get(x) or _REGISTRY["mock"]` from payments / ERP / FX, §36
+from sanctions, §56 from cards / positive-pay / enrichment. Six families still had
+it, and every one of them was written **after** the rule existed — which is the
+finding. The rule was a habit, reapplied by whoever remembered it, not a property
+of the codebase.
+
+A `mock` adapter is not an inert stub. It is the thing that makes `pnpm dev` work
+with no cloud account, so it answers **yes** to everything:
+
+| Family | What a typo'd provider name produced |
+|---|---|
+| 1099 e-filing | a `Tax1099Filing` row + a `tax_1099.filed` audit row + a 200 telling the org its 1099s were e-filed when nothing reached the IRS — and the `(org, idempotency_key)` slot burned, so the corrected retry returned `already_filed` and never filed either |
+| TIN validation | `Vendor.tin_verified_at` stamped from a regex — the flag B-notice and 24% backup-withholding decisions key off |
+| PEPPOL | a legally-significant e-invoice reported `sent` with a synthetic message id to a supplier that never received it, the row occupying `uq_peppol_one_live_per_invoice_direction` so the honest resend came back `already_sent` |
+| tax rates | a jurisdiction VAT/GST figure computed off the in-repo fixture table while the response's `provider` field named the provider that was asked for |
+| punch-out | a `PunchoutSession` the buyer is navigated to, and a PUBLIC cart-return endpoint accepting a different payload shape than the tenant's configured protocol — whose fixture cart converts into a real `PurchaseRequisition` |
+| QMS | three fixture inspections resolved against the tenant's **real** POs and persisted as `completed` `QualityInspection` rows — the 4-way match's quality leg, so a fabricated `pass` clears the gate for whatever invoice references that PO |
+
+The rule is unchanged: absent or empty still resolves the local-first default
+(guard rail 7 — an org that has configured nothing is a normal state); a **named**
+provider we have no adapter for raises; and each caller decides what the refusal
+means. Across eight conversions the callers' answers fell into four kinds, which
+is the useful generalisation: **refuse before a claim is recorded** (1099 filing,
+above the idempotency-slot insert); **refuse before state moves** (TIN verify,
+above the write that would otherwise *clear* a correct verification); **report it**
+(the manual QMS route, the tax-rate routes); and **count it and hold what you
+have** (the QMS sweep).
+
+Three call-site details generalise past their own surface:
+
+- **A refusal must not advance a cursor.** The QMS sweep's `last_synced_at` sits
+  on the success path only. Advancing it on a refusal closes a window that was
+  never pulled, so every inspection written during the outage is skipped *forever*
+  once the config is corrected — worse than the fabrication the refusal prevents.
+  Both the old fallback and a naive unguarded raise would have advanced it.
+- **The inbound PEPPOL webhook returns a bodyless 503, not the route's usual
+  opaque 204.** An unresolvable provider is *our* failure, not a decision about
+  the document — §37's rule, not §29's. Acking would drop a supplier's invoice
+  permanently; a 503 leaves it as work the Access Point redelivers.
+- **The punch-out cart return drops silently (204) instead.** There is no
+  retrying Access Point on that path — a supplier posts once from a browser — so a
+  5xx surfaces a stack trace to a prober without recovering the cart.
+
+**The durable part is the classification, not the conversions.**
+`test_adapter_registry_fail_closed.py` now requires *every*
+`app/services/*/dispatcher.py` to be classified — fail-closed, or fail-open with
+what its fallback actually does written down — and AST-scans the fail-closed set
+for the `.get(x) or <default>` / `.get(x, <default>)` shape. Sixteen of twenty-one
+are fail-closed. The five that remain are a reviewed decision rather than a
+backlog (`assistant`, `billing_adapters` — refused at boot by `main.py` for the
+one dangerous path, `chat_notification_adapters`, `email_adapters`,
+`embedding_adapters`), each re-checked against its current resolver *and* its
+consumer. The admission rule is now written into the test: **a fallback belongs on
+that list only if it cannot produce a confident wrong answer about money, a
+document, or a control.** It must degrade to a no-op, a log line, or a
+lower-quality suggestion.
+
+**Not adopted, again: validating the provider name on write.** §29 rejected it for
+`PATCH /api/organization` and the reasoning holds — settings predate any
+validator, arrive from seeds and migrations, and an adapter can be *removed* from
+the registry after a name was stored. The same argument disposes of allowlisting
+`bank_format` at the schema: the route already funnels through `_require_formatter`,
+which 422s naming the bad value and the registered alternatives, so a field-level
+check would be a strictly narrower duplicate of the chokepoint every caller passes
+through. The gap there was route-level *coverage*, and that test now exists.
+
+---
+
+## 64. `aws_textract` was the one adapter with no async client
+
+**Decided:** 2026-09-04 · `backend/app/services/extraction_adapters/aws_textract.py`
+
+Every adapter across the 21 registries reaches its provider over
+`httpx.AsyncClient` except this one, because AWS ships no async boto3.
+`boto3.client("textract", …)` resolves the credential chain (which can reach the
+instance-metadata endpoint) and `analyze_expense` is a full HTTPS round trip
+against a multi-second OCR service — both ran inline inside `async def`, holding
+the event loop for that whole window while every other in-flight request on the
+worker queued behind it.
+
+Both call sites are exposed: `extract` is reached from the invoice upload route
+**and the public email-intake webhook**, and `test_connection` is awaited directly
+on the request path by `POST /api/organization/test-extraction`. The project
+invariant grades a blocking call on a public webhook or auth path `Critical`.
+
+Both now go through `await asyncio.to_thread(...)`, matching `services/storage`'s
+`_put_object` and the three `*_dispatch` SQS sends. Client construction is factored
+into its own `_client()` helper so the credential-chain resolution is offloaded
+too, not just the round trip. `tests/test_sqs_dispatch_nonblocking.py` — already
+the home of the boto3 loop rule — grew a thread-identity assertion per entry point
+plus two AST scans (a blocking helper called inline from a coroutine, and an
+inlined `boto3.client(...)` under any name).
+
+---
+
+## 65. A money filter bound is exact *and* snapped onto the column's own grid
+
+**Decided:** 2026-09-04 · `backend/app/api/money_filters.py`
+
+Typing the parameter `Decimal` was necessary but **not sufficient**, and that is
+the part worth recording. Two separate roundings were in play:
+
+1. **Python side.** `amount_min: float | None` followed by `Decimal(str(value))`.
+   `Decimal(str(f))` recovers the shortest repr, so an ordinary two-decimal bound
+   round-trips — which is why this never produced a visible bug — but the value had
+   already been rounded to the nearest double before any application code ran.
+   Declaring the parameter `Decimal | None` fixes this outright: FastAPI hands
+   pydantic the raw query string, which parses exactly.
+2. **SQL side, the non-obvious one.** SQLAlchemy types a comparison's bind
+   parameter from the *column*, and the asyncpg dialect renders a bind cast:
+   `invoices.amount >= $1::NUMERIC(15, 2)`. Postgres therefore rounds an
+   over-precise bound **to nearest** at the column's scale — straight back onto the
+   boundary row the bound was written to exclude. Retyping alone left the
+   behavioural regression tests still failing; that is how this was found.
+
+Rounding a bound to nearest is never right, because the comparison's *direction*
+decides which way is safe. A money column is a fixed grid — `Numeric(15, 2)`, every
+stored amount a whole number of cents — so the exact answer is to snap the bound
+onto that grid in the direction of the comparison: a lower bound rounds **up** (the
+smallest representable amount that still satisfies `>=`), an upper bound rounds
+**down**. Exact for a bound of any precision. `money_filters.py` derives the scale
+from the column itself rather than restating `2` at each call site.
+
+Rejected: binding against a deliberately wide `Numeric(30, 10)` literal (still
+truncates a bound with more than ten decimals — trades an exact rule for a wider
+threshold), and 422-ing an over-precise bound (a filter refusing to filter).
+
+**Both sides of a shared filter builder move together or not at all** — the list
+and its `/counts` rollup filtering differently is precisely the drift the shared
+`_*_list_filters` builders exist to prevent, and there is a test that fails when
+only one side is converted.
+
+The guard is two independent scans, each with a negative control: an OpenAPI scan
+over the mounted app (a `Decimal` parameter renders `anyOf[number, string]` and the
+string branch is what parses exactly; a `float` renders `number` alone) **and** an
+AST source scan over `app/api/`, because the shared *private* builders appear in no
+OpenAPI schema at all — and those are where the bound actually meets the column.
+Both assert discovery non-emptiness, per the `_KNOWN_ROLLUP_COUNT` lesson.
+
+The same rounding reaches a JSON **body** differently, and needs a different fix:
+pydantic parses a JSON number into `Decimal('100')` from `100.00000000000000001`,
+so only the string form round-trips. The shared parse lives on
+`backend/app/schemas/money.py` (`ExactMoneyInput` / `OptionalExactMoneyInput`) —
+it accepts an exact decimal string or a JSON integer and refuses a float — and
+backs `POST /api/discounts/optimize` (with the frontend caller moved in the same
+change, a wire-contract change rather than a retype) and the cash-flow copilot's
+plan tools and plan bodies.
+
+The copilot case adds one rung the endpoint case does not have. Its budget arrives
+as an **LLM-produced tool argument**, and `ToolSpec.anthropic_spec` derives each
+tool's `input_schema` from `model_json_schema()` — so a bare `Decimal` advertised
+`number`, instructing the model to send the exact shape the validator refuses. The
+annotation now carries a `WithJsonSchema` declaring `string`: the refusal is the
+backstop, the advertised schema is the fix. It matters beyond tidiness because
+`propose_payment_plan` hashes `str(cash_budget)` into `plan_id` and
+`POST /plans/{plan_id}/draft-run` stages a real `PaymentRun` from the plan that id
+certifies — so a rounded budget is two wrongs: a different selection, and an id
+asserting the rounded figure is what was approved. For the same reason the parse
+covers `min_balance_threshold` (also in the `plan_id` preimage) and
+`opening_balance` (persisted money), not the budget alone — hardening one leg
+leaves the hash half-exact. Neither side normalises the value, because the
+preimage is `str()` and rescaling `"8.00"` to `"8"` anywhere would fail a plan's
+own stale-plan check without its parameters having changed.
+
+---
+
+## 66. A unique index is not a substitute for the two-phase re-check
+
+**Decided:** 2026-09-04 · `backend/app/services/recurring_invoices.py`
+
+`recurring_invoices` was left without step 2 of the sweep locking shape on the
+reading that `uq_invoice_recurring_period` already made the sweep idempotent. It
+does not. The index forbids a *second* invoice for a period; the unguarded failure
+mode is a *first* invoice for a period that is not due yet, on a distinct period key
+the index accepts — replica A generates P and advances the cursor to P+1, replica B
+locks, reads the fresh P+1 and generates it early, and the cursor jumps to P+2 so
+the real P+1 tick raises nothing at all.
+
+The general rule the two facts add up to: **a uniqueness constraint bounds what a
+write may contain; only re-reading the predicate under the lock bounds whether the
+write should happen.**
+
+Rejected: widening the index (there is no key that expresses "not due yet"), and a
+tenant-level advisory lock (it reintroduces exactly the whole-tenant hold
+`background-sweeps.md` § Locking exists to remove).
+
+A related correction in the same change: `ORDER BY next_run_on` is a **partial**
+order, so templates sharing a due date can be locked in opposite orders by two
+replicas and deadlock. "Ordering by id gives every replica the same lock order"
+only holds while the sort key is unique.
+
+---
+
+## 67. An over-receipt is flagged beside `MatchResult.status`, never through it
+
+**Decided:** 2026-09-04 · `backend/app/services/po_matching.py`, `backend/app/services/invoice_warnings.py`
+
+The 3-way leg now excludes cancelled goods receipts (a **denylist** — `status` is a
+free-form `String(30)`, so an allowlist would have silently stopped counting
+`partially_received`) and flags `received > ordered`. That flag is an additive field
+plus an `issues` line; `status` keeps its four existing values.
+
+`mismatch` is owned by the AMOUNT control — `invoice_warnings._refresh_po_match`
+composes its message purely from `amount_variance` / `amount_variance_pct` — so
+routing a quantity over-receipt through it would emit a message about an amount
+variance that isn't there, and `partial` means the opposite thing. An over-receipt
+with an in-tolerance amount is a receiving discrepancy, not a billing one.
+
+It reaches the exception queue by a different route: `_refresh_po_match` raises it
+**independently of `status`**, the way the 4-way inspection block already does. That
+independence is the whole point — `status` belongs to the amount control, so an
+over-receipt on an otherwise-`matched` invoice was the case that disappeared
+entirely. Severity is `warning`, not the `info` a partial receipt gets: a short
+delivery is routinely benign, quantities nobody ordered are not.
+
+Rejected: a fifth `status` value (breaks the persisted `invoice.po_match` contract
+every downstream reader and the frontend `PoMatch` type read); reusing `mismatch`
+(wrong message, and it would block payment on a receiving-side clerical error); and
+a new exception TYPE (`EXCEPTION_TYPES` is a fixed vocabulary with a label-coverage
+AST guard, and an over-receipt genuinely *is* an invoice-vs-PO discrepancy).
+
+---
+
+## 68. A tally may need a column its list is not selected on — §48 extended
+
+**Decided:** 2026-09-04 · `backend/app/api/vendors.py`
+
+§48 covers a tally that describes a *narrower or wider* population than its list.
+The `/vendors/screening` "Payments blocked" KPI was a different shape. It was
+counted off the screening review queue, whose predicate is
+`screening_status IN ('match','review')`, but `POST /api/vendors/{id}/block` sets
+`payments_blocked` and never touches `screening_status`. So the figure was not
+merely narrowed — it was **structurally incapable of counting the thing it named**,
+at every page size, forever.
+
+The rule §48 states for filters extends to columns: a tally is computed from a query
+that asks the tally's own question. Where the tally's axis is orthogonal to the
+buckets beside it (`payments_blocked` vs `status`), it rides the **same aggregate**
+rather than becoming a second endpoint or a second query — that is what makes "same
+filters, same entity scope" true by construction instead of by convention — and it
+is reported as its own field, never folded into `total`.
+
+Two consequences worth stating, because both are places the fix could have gone
+wrong:
+
+- **The RBAC asymmetry is left visible rather than papered over.**
+  `GET /api/vendors/counts` is gated admin / ap_manager / cfo to match its list
+  exactly, as §48 requires in both directions; the screening queue also admits
+  `ap_clerk`. A clerk therefore gets a 403 and the card renders "Count unavailable"
+  rather than falling back to the queue-derived number — that number is the bug, and
+  a fallback would reinstate the defect for exactly one role, which is the hardest
+  place to notice it.
+- **A KPI that cannot honour a filter says so.** The page's search is a client-side
+  filter over different columns than the API's `search`, so the card is labelled
+  "All vendors, not just this queue" instead of being wired to a search it does not
+  describe. Silently ignoring the search was the original sin here; saying which
+  population the number covers is the fix.
+
+---
+
+## 69. The WORM trail quarantines a poison row, never an outage
+
+**Decided:** 2026-09-04 · `backend/app/services/audit_log_shipper.py`, `backend/app/services/retention_sweep.py`
+
+Two SOC 2 evidence paths were failing in opposite directions.
+
+**The shipper stopped.** Batches are all-or-nothing and ordered `created_at ASC`, so
+one row a sink refused made `adapter.ship` raise on every tick, re-select the
+identical oldest-first batch, and block every newer row for that tenant forever. The
+sweep-health streak fired correctly; the defect was that the only remedy was manual.
+A failed batch is now followed by a **bounded isolation pass**: rows re-ship one at a
+time in order, and a row an adapter refuses is re-offered *to that adapter* with its
+`details` replaced by a PII-free marker. Row identity is untouched, so the WORM copy
+stays an ordered trail, and the complete row remains in the tenant `audit_log`.
+
+The bound is what makes it safe. **If an adapter refuses the marker version too, the
+sink is unhealthy rather than the row poisoned** — the pass stops there, everything
+from that row on stays unshipped, and the tick fails as before. That caps an outage
+at two extra calls per adapter and stops a transient outage stripping the details off
+a whole batch. Substitution is per-adapter, since a row CloudWatch refuses may be fine
+for the S3 Object Lock copy. A quarantined row is *not* counted as a sweep failure —
+the trail moved and nothing was dropped — but the count and one PII-free WARNING per
+row (id + exception class, never the payload) are the operator signal.
+
+**The retention sweep would not stop.** Its `retention.archived` manifest was gated on
+`archived or overdue_total`, where `overdue_total` counts `audit_log` rows past the
+window — and the sweep never deletes an audit row (migration 0022's BEFORE-DELETE
+trigger forbids it, and WORM evidence must not be destroyed anyway). So once a
+tenant's oldest audit row crossed its window the condition was permanently true, and
+a manifest reading `invoices_archived: 0` was appended on every tick forever — each
+one itself an `audit_log` row that later ages past the window and inflates the next
+tick's count. Unbounded growth in an append-only, undeletable table.
+
+The gate is now `archived or overdue_unshipped`. Rejected: change-detection against
+the previously recorded counts, which needs an extra per-tenant read of `audit_log`
+every tick to reproduce a property this gate has for free — `overdue_unshipped` is the
+actionable half of the same observation, it cannot inflate itself (a manifest written
+now is far younger than the window), and it returns to zero once the shipper catches
+up, at which point the manifest stops on its own. `audit_rows_overdue` is still
+*reported* in every manifest; it just no longer *causes* one.
+
+The pair is the general rule: **an evidence trail must keep moving past one bad row,
+and must stop writing when it has nothing to say.**

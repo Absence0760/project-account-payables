@@ -39,7 +39,31 @@ Registered:
 | `as4_gateway` | Real adapter — `httpx` to a hosted Access Point's REST API. Base URL + key from config; **no hardcoded key fallback** (returns `peppol_not_configured` when unkeyed). |
 
 Selection: `Organization.settings.peppol.provider` → falls back to
-`FEOH_PEPPOL_PROVIDER` (default `mock`). Unknown provider → `mock` fallback.
+`FEOH_PEPPOL_PROVIDER` (default `mock`).
+
+**A NAMED provider we have no adapter for is refused, never `mock`.**
+`get_peppol_adapter` resolves an absent/empty provider to `mock` (the local-first
+default — a fresh clone runs the whole four-corner flow with no PEPPOL
+credential) but raises `UnknownPeppolProviderError` for an unregistered name. It
+used to fall back to `mock` there too, and `mock` is not an inert stub: its
+`send` returns `success=True` with a synthetic message id and no network
+involved. `peppol_send` wrote that outcome onto the `PeppolTransmission` row as
+`status="sent"` with a `message_id`, emitted an `invoice.peppol_sent` audit row
+and answered 200 — so one typo in an admin-entered provider name reported a
+legally-significant e-invoice as transmitted to a supplier that never received
+it, and the row occupied `uq_peppol_one_live_per_invoice_direction`, so the
+honest resend came back `already_sent`. Same call `decisions.md` §29 made for the
+payment / ERP / FX dispatchers and §36 for sanctions.
+
+Each caller decides what the refusal means:
+
+| Call site | On refusal |
+|---|---|
+| `POST /api/invoices/{id}/peppol-send` | The adapter is resolved in step 5-6, **above** the step-7 slot claim, so a `PeppolSendError("peppol_provider_not_configured")` → **422** with no `PeppolTransmission` row at all and the live slot still free. The body carries the PII-free code, never the admin's raw settings value. |
+| `POST /api/peppol/inbound/{tenant_slug}` | **Bodyless 503**, not the route's usual 204. This is OUR failure, not a decision about the document (`decisions.md` §37): the message is still unprocessed work and a redelivery after the setting is fixed would succeed, so acking it drops a supplier's invoice permanently behind a log line. Bodyless keeps the detail and the tenant out of the response, and it narrows the enumeration surface to "while this tenant is already misconfigured" — the trade §37 accepted for email intake. |
+| `peppol_receive.receive_peppol_message` | Defence in depth (the route resolved the same adapter to parse): a soft `ReceiveResult(reason="peppol_provider_not_configured")` before the tenant engine opens, so no invoice, no transmission row, no S3 object — and never a 500 on a public webhook. |
+
+Guard: `tests/test_adapter_registry_fail_closed.py`.
 
 ## ParticipantId value object
 

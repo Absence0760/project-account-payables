@@ -282,12 +282,19 @@
 	<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 
 	{#if loadError}
-		<p class="error-banner">{loadError}</p>
-	{/if}
-
+		<!-- Not rendered ALONGSIDE the table: the banner and "No experiments yet."
+		     used to appear together, telling the reader two different things at
+		     once — and neither offered a way to try again, since the toast-less
+		     banner came from a dependency-free `$effect`. Same error-with-retry
+		     block `/admin/api-keys` uses. -->
+		<div class="state error" data-testid="experiments-error" role="alert">
+			<p>{loadError}</p>
+			<button type="button" class="btn-cancel" onclick={load}>{m('experiments.retry')}</button>
+		</div>
+	{:else}
 	<DataTable
 		columns={COLUMNS}
-		isEmpty={!loading && filtered.length === 0}
+		isEmpty={filtered.length === 0}
 		empty={loading ? m('common.loading') : m('experiments.table.empty')}
 	>
 		{#snippet body()}
@@ -326,6 +333,7 @@
 			{/each}
 		{/snippet}
 	</DataTable>
+	{/if}
 </PageHeader>
 
 <!-- Create experiment -->
@@ -472,6 +480,18 @@
 	/* The status pill is `<Badge>` now — it had re-typed the shared recipe by
 	   hand, under classes that named the paint (green/amber/grey) rather than
 	   the status. The tone per status lives in `types/experiments`. */
+	/* Error-with-retry block — same shape as `/admin/api-keys`. */
+	.state {
+		color: var(--text-muted);
+		padding: 0.75rem 0;
+	}
+	.state.error {
+		color: var(--danger);
+	}
+	.state.error p {
+		margin: 0 0 8px;
+	}
+
 	.error-banner {
 		color: var(--danger);
 		margin: 8px 0;

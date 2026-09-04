@@ -81,13 +81,32 @@ and recording a manifest:
 
 ### Audited manifest
 
-When a sweep archives anything or observes overdue audit rows, it writes a
-`retention.archived` audit row (system actor, PII-free `details`): the resolved
-window months per class, the **count** of archived invoices, the batch size and
-whether the batch was capped (`invoices_archive_batch_size` /
-`invoices_archive_batch_capped` — a capped tick means more remain), and the
-audit overdue/unshipped counts, plus a note that audit rows are immutable and
-never deleted. An idle tenant writes no manifest (no no-op spam).
+When a sweep archives anything **or observes overdue audit rows the WORM sink
+has not taken**, it writes a `retention.archived` audit row (system actor,
+PII-free `details`): the resolved window months per class, the **count** of
+archived invoices, the batch size and whether the batch was capped
+(`invoices_archive_batch_size` / `invoices_archive_batch_capped` — a capped tick
+means more remain), and the audit overdue/unshipped counts, plus a note that
+audit rows are immutable and never deleted. An idle tenant writes no manifest
+(no no-op spam).
+
+**The gate is `archived or audit_rows_overdue_unshipped` — deliberately not
+`audit_rows_overdue`.** That counter is monotonic and self-inflating: it counts
+every `audit_log` row past the window, and this sweep never deletes an audit row
+(the trigger forbids it, and WORM evidence must not be destroyed anyway). So
+once a tenant's oldest audit row crossed its window the old condition was
+permanently true — a manifest reading `invoices_archived: 0` was appended on
+every tick, forever, and each of those manifests is itself an `audit_log` row
+that ages past the window and inflates the next tick's count. Unbounded growth
+in an append-only, undeletable table.
+
+`audit_rows_overdue_unshipped` is the actionable half of the same observation:
+it is what an operator must act on (the sink is behind), it cannot inflate
+itself (a manifest written now is far younger than the window, so it is never
+counted), and it returns to zero once the shipper catches up — at which point
+the manifest stops being written. `audit_rows_overdue` is still *reported* in
+every manifest; it just no longer *causes* one. Guarded by
+`backend/tests/test_retention_manifest_guard.py`.
 
 **Counts, never the ids.** The manifest used to inline every archived invoice
 id, so one JSONB row grew with the archive; past ~1 MB that single row
@@ -114,6 +133,11 @@ change**. A future slice that wants a first-class `Invoice.archived_at` column
 (for indexed exclusion of archived rows from list endpoints) would add it then.
 
 ## Tests
+
+`backend/tests/test_retention_manifest_guard.py`: the manifest-write gate — a
+tenant past its window with nothing archivable and nothing unshipped writes NO
+manifest on any tick, while an unshipped overdue row (and real archival work)
+still does.
 
 `backend/tests/test_retention.py`: resolver (override → default, malformed →
 default); per-tenant failure isolation; sweep archives only overdue terminal

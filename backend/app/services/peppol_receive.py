@@ -54,7 +54,7 @@ from app.services.e_invoice import (
     EInvoiceValidationError,
     parse_e_invoice,
 )
-from app.services.peppol_adapters import get_peppol_adapter
+from app.services.peppol_adapters import UnknownPeppolProviderError, get_peppol_adapter
 from app.services.webhook_security import verify_hmac_sha256
 from app.services.workflow_engine import create_workflow_instance
 
@@ -133,6 +133,19 @@ async def receive_peppol_message(
     ).scalar_one_or_none()
     if org is None:
         result.reason = "unknown_tenant"
+        return result
+
+    # Resolve the adapter BEFORE the tenant session opens. It is only needed for
+    # `provider_name` on the transmission row, but a provider we have no adapter
+    # for must not become `mock` there either — the row would name a network
+    # this document never crossed. Refusing here means no engine, no invoice, no
+    # S3 object. The route resolves the same adapter to parse, so in practice
+    # this is unreachable; it is the defence-in-depth that keeps a settings
+    # change mid-request from 500-ing a PUBLIC webhook (`decisions.md` §29).
+    try:
+        resolved_adapter = get_peppol_adapter((org.settings or {}).get("peppol"))
+    except UnknownPeppolProviderError:
+        result.reason = "peppol_provider_not_configured"
         return result
 
     # Short-lived tenant session — identical shape to email-intake. pool_size=1
@@ -223,7 +236,7 @@ async def receive_peppol_message(
             #    already claimed the slot raises IntegrityError → rollback the
             #    whole transaction (invoice included) → return duplicate, no S3
             #    write performed by the loser.
-            adapter = get_peppol_adapter((org.settings or {}).get("peppol"))
+            adapter = resolved_adapter
             peppol_cfg = (org.settings or {}).get("peppol") or {}
             transmission = PeppolTransmission(
                 invoice_id=invoice_id,

@@ -11,8 +11,8 @@ Pins:
   - approval_bottleneck rolls up by approver_id, sorts by
     pending_count desc, surfaces an `"unassigned"` synthetic key
     when assigned_to is null
-  - discount_capture handles empty input (no eligible rows → 0%
-    rate, NOT a ZeroDivisionError)
+  - discount_capture handles empty input (no eligible rows → no rate
+    at all, NOT a reassuring 0% and NOT a ZeroDivisionError)
   - DPO formula AP/COGS×days; zero COGS → 0 (defensive)
   - cash_conversion_cycle returns None when DSO/DIO unavailable
   - working_capital_impact is monotone in days_extended
@@ -158,11 +158,14 @@ def test_approval_bottleneck_empty_input_returns_empty_list():
 # ---------------------------------------------------------------------------
 
 
-def _disc(eligible, amount, paid_before):
+def _disc(eligible, amount, paid_before, *, elapsed=True):
+    """`elapsed` defaults True — an un-captured row is only a MISS once its
+    window has closed. See `analytics.DiscountCaptureMetrics`."""
     return SimpleNamespace(
         discount_eligible=eligible,
         discount_amount=amount,
         paid_before_discount_date=paid_before,
+        discount_window_elapsed=elapsed,
     )
 
 
@@ -176,16 +179,40 @@ def test_discount_capture_counts_eligible_and_captured():
     assert d.eligible_count == 2
     assert d.captured_count == 1
     assert d.missed_count == 1
+    assert d.pending_count == 0
     assert d.captured_amount == Decimal("100.00")
     assert d.missed_amount == Decimal("50.00")
     assert d.capture_rate_pct == Decimal("50.0")
+    assert d.insufficient_data is False
 
 
-def test_discount_capture_empty_returns_zero_rate_not_zero_division():
-    """Zero eligible → 0% rate, not a 500."""
+def test_discount_capture_open_window_is_pending_not_missed():
+    """An un-captured row whose discount deadline has NOT passed has missed
+    nothing yet — counting it as missed reported forgone savings that were
+    still on the table, and dragged the capture rate down with them."""
+    rows = [
+        _disc(True, Decimal("100"), True),
+        _disc(True, Decimal("50"), False, elapsed=False),
+    ]
+    d = compute_discount_capture(rows)
+    assert d.eligible_count == 2
+    assert d.captured_count == 1
+    assert d.missed_count == 0
+    assert d.pending_count == 1
+    assert d.missed_amount == Decimal("0.00")
+    assert d.pending_amount == Decimal("50.00")
+    # Rate is over the DECIDED population only.
+    assert d.capture_rate_pct == Decimal("100.0")
+
+
+def test_discount_capture_empty_reports_no_rate_not_a_reassuring_zero():
+    """Zero eligible → no rate at all (and no divide-by-zero). `0%` would
+    read as "we captured none of the discounts we could have", the opposite
+    of "nothing has been decided yet" (`docs/decisions.md` §34)."""
     d = compute_discount_capture([])
     assert d.eligible_count == 0
-    assert d.capture_rate_pct == Decimal("0")
+    assert d.capture_rate_pct is None
+    assert d.insufficient_data is True
 
 
 # ---------------------------------------------------------------------------
@@ -378,11 +405,14 @@ def test_supplier_concentration_zero_total_safe():
 # ---------------------------------------------------------------------------
 
 
-def test_fraud_rate_trend_zero_invoices_safe():
-    """One month had zero invoices — rate is 0, not divide-by-zero."""
+def test_fraud_rate_trend_zero_invoices_is_not_computable():
+    """One month had zero invoices — the rate is UNKNOWN, not zero, and not a
+    divide-by-zero. `0.0` is the most reassuring value on the chart and it was
+    being reported for the one shape that carries no information at all."""
     rows = [{"month": "2026-05", "invoice_count": 0, "exception_count": 0}]
     out = compute_fraud_rate_trend(rows)
-    assert out[0]["rate_pct"] == Decimal("0")
+    assert out[0]["rate_pct"] is None
+    assert out[0]["insufficient_data"] is True
 
 
 def test_fraud_rate_trend_computes_rate_per_month():

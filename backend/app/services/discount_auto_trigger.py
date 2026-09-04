@@ -33,7 +33,11 @@ Only ``offered`` offers are touched, and accepting one moves it out of
 
 Mirrors the ``contract_renewal`` pattern: long-lived asyncio task started in
 ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
-never halts the sweep. Disabled by default (``FEOH_DISCOUNT_OPTIMIZATION_ENABLED``).
+never halts the sweep. Within a tenant it mirrors ``vendor_rescreen``: each
+offer is re-read by id, guarded, and committed **on its own**, so one offer that
+raises can't abort the tick and discard the acceptances already made on it — see
+:func:`_sweep_tenant` and ``backend/docs/background-sweeps.md`` § Locking.
+Disabled by default (``FEOH_DISCOUNT_OPTIMIZATION_ENABLED``).
 See ``backend/docs/dynamic-discounting.md``.
 """
 
@@ -81,7 +85,26 @@ class AutoTriggerResult:
 
     tenants_scanned: int = 0
     offers_captured: int = 0
+    #: Tenants whose sweep aborted outright (engine/connect/candidate-query
+    #: failure).
     failures: int = 0
+    #: Individual offers whose decision or write raised. Counted apart from
+    #: ``failures`` because one bad offer no longer takes its tenant's
+    #: remaining offers down with it — mirrors ``vendor_rescreen``'s
+    #: ``vendor_failures``. The ``*_failures`` suffix is load-bearing:
+    #: ``sweep_health.failure_count`` sums exactly ``failures`` and any
+    #: ``*_failures`` field, so a tick that keeps completing while every offer
+    #: inside it raises reports ``partial`` (and past the streak, ``degraded``)
+    #: instead of ``ok``.
+    offer_failures: int = 0
+
+
+@dataclass
+class TenantSweepOutcome:
+    """One tenant's auto-capture outcome — accepted count + per-offer failures."""
+
+    captured: int = 0
+    offer_failures: int = 0
 
 
 def _tier_deadline(offer: DiscountOffer, tier: dict, ref_today: date) -> date:
@@ -167,21 +190,23 @@ async def run_auto_trigger_once(*, today: date | None = None) -> AutoTriggerResu
     for _org_id, db_name in tenants:
         result.tenants_scanned += 1
         try:
-            result.offers_captured += await _sweep_tenant(
-                db_name, ref_today, _resolve_cost_of_capital
-            )
+            outcome = await _sweep_tenant(db_name, ref_today, _resolve_cost_of_capital)
+            result.offers_captured += outcome.captured
+            result.offer_failures += outcome.offer_failures
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
             logger.warning(
                 "[discount-auto-trigger] failed sweeping %s: %s", db_name, exc.__class__.__name__
             )
             result.failures += 1
 
-    if result.offers_captured or result.failures:
+    if result.offers_captured or result.failures or result.offer_failures:
         logger.info(
-            "[discount-auto-trigger] swept %d tenant(s); accepted=%d failed_sweeps=%d",
+            "[discount-auto-trigger] swept %d tenant(s); accepted=%d failed_sweeps=%d "
+            "failed_offers=%d",
             result.tenants_scanned,
             result.offers_captured,
             result.failures,
+            result.offer_failures,
         )
     return result
 
@@ -223,21 +248,44 @@ async def _sweep_tenant(
     db_name: str,
     ref_today: date,
     org_settings_resolver: OrgSettingsResolver,
-) -> int:
-    """Auto-accept worthwhile open offers for one tenant. Returns the count.
+) -> TenantSweepOutcome:
+    """Auto-accept worthwhile open offers for one tenant.
 
     Does NOT move money — only transitions ``offered`` → ``accepted`` (see the
     module docstring's money-path boundary).
+
+    **Per offer, not per tenant.** Candidate ids are selected unlocked and
+    ordered by id; each is then re-read inside its own guarded leg, claimed
+    under a row lock at the point of mutation, and committed on its own. The
+    loop used to mutate a pre-loaded snapshot and commit once at the end, so a
+    single offer that raised — a malformed ``tiers`` blob, the control-plane
+    cost-of-capital lookup failing, an audit write that will not land — aborted
+    the tenant's whole tick AND discarded every acceptance already made on it.
+    Deterministic causes (a malformed row does not heal itself) meant that
+    tenant then made zero progress on every subsequent tick, forever, while the
+    discarded ``failures`` counter reported nothing. Same shape as
+    ``vendor_rescreen`` / ``recurring_invoices`` / ``approval_escalation``; see
+    ``backend/docs/background-sweeps.md`` § Locking.
+
+    Re-reading by id inside the leg is not cosmetic: a rollback expires the ORM
+    objects a pre-loaded list would still hold, and touching one of those from
+    async SQLAlchemy is a ``MissingGreenlet``, not a clean failure. A leg with
+    nothing to write ends in ``rollback()`` so the read transaction (and, on
+    the claim paths, its row lock) is released immediately rather than at the
+    end of the tick.
     """
     threshold = Decimal(str(settings.discount_auto_capture_roi_threshold))
+    outcome = TenantSweepOutcome()
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
-            candidates = (
+            offer_ids = (
                 (
                     await db.execute(
-                        select(DiscountOffer).where(DiscountOffer.status == OFFER_STATUS_OFFERED)
+                        select(DiscountOffer.id)
+                        .where(DiscountOffer.status == OFFER_STATUS_OFFERED)
+                        .order_by(DiscountOffer.id.asc())
                     )
                 )
                 .scalars()
@@ -252,88 +300,112 @@ async def _sweep_tenant(
             # Resolve cost of capital once per distinct org (a tenant DB is one
             # org today, but the resolver contract is per-org).
             coc_cache: dict[uuid.UUID, Decimal] = {}
-            accepted = 0
-            for offer in candidates:
-                # An offer whose valid_until has passed never auto-expired
-                # anywhere else — expire_if_past was never invoked by any
-                # sweep. Piggyback on this one (already running periodically)
-                # rather than standing up a separate background loop.
-                # Expiry is a status write too, so it takes the same claim.
-                if offer.valid_until and offer.valid_until < ref_today:
-                    claimed = await _claim_if_still_offered(db, offer.id)
-                    if claimed is None:
+            for offer_id in offer_ids:
+                try:
+                    offer = await db.get(DiscountOffer, offer_id)
+                    if offer is None or offer.status != OFFER_STATUS_OFFERED:
+                        # Deleted or decided between the id read and this leg.
+                        await db.rollback()
                         continue
-                    expire_if_past(claimed, as_of=ref_today)
-                    continue
 
-                # Date-window-enforced pick — the SAME rule the acceptance
-                # endpoints use, measured from when the offer was actually
-                # extended (`offer_reference_date`: `valid_from`, else the
-                # offer's creation date), not from today. Without this, every
-                # tier's deadline looked like "N days from now" and the sweep
-                # always auto-accepted the highest-percent tier regardless of
-                # how long the offer had been open.
-                tier = best_tier_for_date(
-                    offer.tiers or [],
-                    ref_today,
-                    offer.valid_until,
-                    reference_date=offer_reference_date(offer),
-                )
-                if tier is None:
-                    continue
+                    # An offer whose valid_until has passed never auto-expired
+                    # anywhere else — expire_if_past was never invoked by any
+                    # sweep. Piggyback on this one (already running
+                    # periodically) rather than standing up a separate
+                    # background loop. Expiry is a status write too, so it takes
+                    # the same claim.
+                    if offer.valid_until and offer.valid_until < ref_today:
+                        claimed = await _claim_if_still_offered(db, offer_id)
+                        if claimed is None:
+                            await db.rollback()
+                            continue
+                        expire_if_past(claimed, as_of=ref_today)
+                        await db.commit()
+                        continue
 
-                if offer.organization_id not in coc_cache:
-                    coc_cache[offer.organization_id] = await org_settings_resolver(
-                        offer.organization_id
+                    # Date-window-enforced pick — the SAME rule the acceptance
+                    # endpoints use, measured from when the offer was actually
+                    # extended (`offer_reference_date`: `valid_from`, else the
+                    # offer's creation date), not from today. Without this, every
+                    # tier's deadline looked like "N days from now" and the sweep
+                    # always auto-accepted the highest-percent tier regardless of
+                    # how long the offer had been open.
+                    tier = best_tier_for_date(
+                        offer.tiers or [],
+                        ref_today,
+                        offer.valid_until,
+                        reference_date=offer_reference_date(offer),
                     )
-                cost_of_capital = coc_cache[offer.organization_id]
+                    if tier is None:
+                        await db.rollback()
+                        continue
 
-                # Acceleration is the textbook horizon: pay on the discount
-                # deadline instead of at the invoice's net due date
-                # (days_between(pay_by, due_date)), NOT the discount period.
-                pay_by = _tier_deadline(offer, tier, ref_today)
-                due_date = await _resolve_due_date(db, offer) or offer.valid_until or pay_by
-                roi = compute_roi(
-                    base_amount=offer.base_amount,
-                    discount_percent=Decimal(str(tier["percent"])),
-                    days_accelerated=days_between(pay_by, due_date),
-                    cost_of_capital_pct=cost_of_capital,
-                )
+                    if offer.organization_id not in coc_cache:
+                        coc_cache[offer.organization_id] = await org_settings_resolver(
+                            offer.organization_id
+                        )
+                    cost_of_capital = coc_cache[offer.organization_id]
 
-                if not (roi.worthwhile and roi.annualized_return_pct >= threshold):
+                    # Acceleration is the textbook horizon: pay on the discount
+                    # deadline instead of at the invoice's net due date
+                    # (days_between(pay_by, due_date)), NOT the discount period.
+                    pay_by = _tier_deadline(offer, tier, ref_today)
+                    due_date = await _resolve_due_date(db, offer) or offer.valid_until or pay_by
+                    roi = compute_roi(
+                        base_amount=offer.base_amount,
+                        discount_percent=Decimal(str(tier["percent"])),
+                        days_accelerated=days_between(pay_by, due_date),
+                        cost_of_capital_pct=cost_of_capital,
+                    )
+
+                    if not (roi.worthwhile and roi.annualized_return_pct >= threshold):
+                        await db.rollback()
+                        continue
+
+                    # Auto-accept: flag for capture. Money still moves via the
+                    # CFO-gated payment run — never here.
+                    #
+                    # Re-claim under a row lock: everything above ran against the
+                    # unlocked candidate read, and a decline committed in that
+                    # window must win over a sweep that never saw it.
+                    claimed = await _claim_if_still_offered(db, offer_id)
+                    if claimed is None:
+                        await db.rollback()
+                        continue
+                    claimed.accepted_tier = tier
+                    claimed.accepted_at = datetime.now(UTC)
+                    claimed.status = OFFER_STATUS_ACCEPTED
+
+                    await dispatch_audit(
+                        db,
+                        correlation_id=uuid.uuid4(),
+                        organization_id=claimed.organization_id,
+                        actor_id=None,  # system actor
+                        action="discount_offer.auto_accepted",
+                        entity_type="discount_offer",
+                        entity_id=claimed.id,
+                        details={
+                            "tier": tier,
+                            "threshold_pct": str(threshold),
+                            "roi": roi.as_dict(),  # Decimal-strings, no PII
+                        },
+                    )
+                    await db.commit()
+                    outcome.captured += 1
+                except Exception as exc:  # noqa: BLE001 — one offer must not halt the tenant
+                    # Class only — a DB/asyncpg error message can echo a vendor
+                    # name or a denormalised amount (PII-out-of-logs).
+                    logger.warning(
+                        "[discount-auto-trigger] offer=%s auto-capture failed in %s: %s",
+                        offer_id,
+                        db_name,
+                        exc.__class__.__name__,
+                    )
+                    await db.rollback()
+                    outcome.offer_failures += 1
                     continue
 
-                # Auto-accept: flag for capture. Money still moves via the
-                # CFO-gated payment run — never here.
-                #
-                # Re-claim under a row lock: everything above ran against the
-                # unlocked candidate snapshot, and a decline committed in that
-                # window must win over a sweep that never saw it.
-                claimed = await _claim_if_still_offered(db, offer.id)
-                if claimed is None:
-                    continue
-                claimed.accepted_tier = tier
-                claimed.accepted_at = datetime.now(UTC)
-                claimed.status = OFFER_STATUS_ACCEPTED
-
-                await dispatch_audit(
-                    db,
-                    correlation_id=uuid.uuid4(),
-                    organization_id=claimed.organization_id,
-                    actor_id=None,  # system actor
-                    action="discount_offer.auto_accepted",
-                    entity_type="discount_offer",
-                    entity_id=claimed.id,
-                    details={
-                        "tier": tier,
-                        "threshold_pct": str(threshold),
-                        "roi": roi.as_dict(),  # Decimal-strings, no PII
-                    },
-                )
-                accepted += 1
-
-            await db.commit()
-            return accepted
+            return outcome
     finally:
         await engine.dispose()
 

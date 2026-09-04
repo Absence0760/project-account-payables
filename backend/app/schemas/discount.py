@@ -13,9 +13,9 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, Field, PlainSerializer
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
-from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+from app.schemas.money import MoneyAmount, OptionalExactMoneyInput, OptionalMoneyAmount
 
 
 def _decimal_to_number(value: Decimal | None) -> float | None:
@@ -170,12 +170,42 @@ class OptimizerRecommendation(BaseModel):
     discount_percent: PercentNumber
     pay_by: str  # ISO date — capture deadline
     roi: DiscountROIResponse
+    # The currency THIS row's money is in — `roi.savings` is computed from the
+    # offer's own `base_amount`, so it is the OFFER's currency, not the
+    # response-level `currency` the totals are summed in. Stated per row
+    # because the two differ exactly when `unconvertible` is set, and a client
+    # that cannot name a figure's currency has to render it bare.
+    currency: str = "USD"
     selected: bool  # True if it fits within the cash budget
     cumulative_outlay: MoneyAmount  # running cash committed through this rank
     # This offer's money is in a currency the totals are NOT in, so it is
     # excluded from every total (and, when a cash budget binds, from selection).
     # Its ROI percentages remain meaningful — a rate is currency-free.
     unconvertible: bool = False
+
+
+class OptimizerRequest(BaseModel):
+    """Request body for ``POST /api/discounts/optimize``.
+
+    This endpoint took a bare ``dict`` and did ``Decimal(str(body["cash_budget"]))``,
+    which is exact only by accident: by then ``json.loads`` had already turned a
+    JSON number into a ``float``, so the budget the optimizer selected against
+    was the rounded double, not what the caller sent. A bare dict on a money
+    path also meant a malformed value reached ``Decimal()`` and surfaced as a
+    500 rather than a 422.
+
+    ``extra="forbid"`` on purpose: with a free-form dict, a misspelled key
+    (``cashBudget``) silently ran the optimizer *unconstrained* and returned a
+    plan committing more cash than the caller asked for. A 422 is the honest
+    answer to a budget we did not understand.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Optional — `None` means "no budget", which selects every worthwhile
+    # opportunity. Accepted as an exact decimal string; see
+    # `schemas/money.py::parse_exact_money`.
+    cash_budget: OptionalExactMoneyInput = Field(default=None, ge=0)
 
 
 class OptimizerResponse(BaseModel):

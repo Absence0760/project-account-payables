@@ -640,6 +640,34 @@ async def generate_recurring_invoices_once(*, today: date | None = None) -> Swee
     return result
 
 
+def _still_due(template: RecurringInvoiceTemplate, today: date) -> bool:
+    """Re-test, under the row lock, the predicate the id query selected on.
+
+    Step 2 of the two-phase shape in ``../docs/background-sweeps.md`` § Locking,
+    and it is **correctness, not an optimisation**.
+
+    ``uq_invoice_recurring_period`` does NOT cover this. That index makes a
+    *duplicate* invoice for one ``(template, period_key)`` impossible; the
+    failure mode here produces an invoice for a period that is **not due yet**,
+    which the index is happy to accept. Two replicas read the same template id
+    unlocked; replica A generates period P, advances ``next_run_on`` to P+1 and
+    commits; replica B then locks the row, reads the *fresh* P+1 cursor and — on
+    the old code, which took whatever ``next_run_on`` said with no re-check —
+    generates P+1 early, on a distinct period key the index cannot object to. A
+    subscription invoice appears in the approval queue for a month that has not
+    started, and the cursor jumps to P+2 so the real P+1 tick raises nothing.
+
+    A ``status`` that is no longer ``active`` is the other half: the sweep's own
+    auto-pause, or an admin's ``pause``/``end``, can land between the id read
+    and the lock, and a paused schedule must not raise one more invoice.
+
+    Deliberately the same three clauses as the id query.
+    """
+    if template.status != STATUS_ACTIVE:
+        return False
+    return template.next_run_on is not None and template.next_run_on <= today
+
+
 def _advance_cursor(template: RecurringInvoiceTemplate, run_on: date) -> None:
     """Force ``next_run_on`` forward one period if generation didn't move it.
 
@@ -726,6 +754,19 @@ async def _sweep_tenant(db_name: str, today: date) -> TenantSweepOutcome:
     ``payment_erp_sync``. Re-reading by id matters because a rollback expires
     the ORM objects a pre-loaded list would still hold, and touching one of
     those from async SQLAlchemy is a ``MissingGreenlet``, not a clean failure.
+
+    **Two-phase, one row locked at a time**, the shape every mutating sweep uses
+    (``../docs/background-sweeps.md`` § Locking): candidate ids are read
+    UNLOCKED in a total order, then each is re-read ``FOR UPDATE``, re-checked
+    against the predicate the id query used (:func:`_still_due`), generated, and
+    committed on its own — which releases the lock before the next template is
+    touched. Capping rather than paginating is legitimate here because a
+    generated period advances ``next_run_on`` and so leaves the candidate set;
+    the next tick resumes past it.
+
+    The re-check is the half this sweep was missing, and
+    ``uq_invoice_recurring_period`` does not substitute for it — see
+    :func:`_still_due` for the not-yet-due period the index cannot catch.
     """
     cap = int(settings.recurring_invoices_max_per_sweep)
     outcome = TenantSweepOutcome()
@@ -742,7 +783,14 @@ async def _sweep_tenant(db_name: str, today: date) -> TenantSweepOutcome:
                             RecurringInvoiceTemplate.next_run_on.isnot(None),
                             RecurringInvoiceTemplate.next_run_on <= today,
                         )
-                        .order_by(RecurringInvoiceTemplate.next_run_on)
+                        # Oldest-due first, `id` as the tiebreak so the order is
+                        # TOTAL, not merely mostly-sorted: every replica then
+                        # locks the same rows in the same sequence and two
+                        # sweeps queue instead of deadlocking.
+                        .order_by(
+                            RecurringInvoiceTemplate.next_run_on.asc(),
+                            RecurringInvoiceTemplate.id.asc(),
+                        )
                         .limit(cap)
                     )
                 )
@@ -752,12 +800,19 @@ async def _sweep_tenant(db_name: str, today: date) -> TenantSweepOutcome:
 
             for template_id in template_ids:
                 try:
-                    template = await db.get(RecurringInvoiceTemplate, template_id)
-                    if template is None:  # deleted since the id query
+                    # `with_for_update` bypasses the identity map, so this is a
+                    # real `SELECT ... FOR UPDATE` on exactly one row.
+                    template = await db.get(
+                        RecurringInvoiceTemplate, template_id, with_for_update=True
+                    )
+                    if template is None or not _still_due(template, today):
+                        # Deleted, paused/ended, or already generated-and-advanced
+                        # by another replica between the id read and the lock.
+                        # End the transaction so the lock is released now rather
+                        # than at the end of the tick.
+                        await db.rollback()
                         continue
                     run_on = template.next_run_on
-                    if run_on is None:
-                        continue
                     period_key = period_key_for(template.cadence, run_on)
 
                     reason = not_generatable_reason(template)

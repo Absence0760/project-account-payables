@@ -7,7 +7,7 @@ Supports 2-way (invoice vs PO), 3-way (invoice vs PO vs GR), and 4-way
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,6 +15,17 @@ from app.models.invoice import Invoice
 from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.quality_inspection import QualityInspection
 from app.tenant import apply_entity_scope
+
+# Goods-receipt statuses that record a delivery which was undone or never
+# happened. `GoodsReceipt.status` is a free-form `String(30)` written by the
+# receiving side (seed data and the ERP feed both use "received"), so this is an
+# EXCLUSION list, not an allowlist: an unrecognised-but-live status such as
+# "partially_received" must keep counting, whereas silently counting a cancelled
+# one is what let a reversed delivery satisfy the 3-way quantity leg.
+#
+# Compared case-insensitively; both the US and UK spellings are listed because
+# the column is free-form and neither is normalised on the way in.
+CANCELLED_GR_STATUSES = frozenset({"cancelled", "canceled", "void", "voided", "reversed"})
 
 
 def _to_decimal(value, default: Decimal = Decimal("0")) -> Decimal:
@@ -31,6 +42,16 @@ def _to_decimal(value, default: Decimal = Decimal("0")) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return default
+
+
+def _qty(value: Decimal) -> str:
+    """Render a quantity for a human-readable issue string.
+
+    ``normalize()`` drops the ``Numeric(12, 4)`` trailing zeros (``12.0000`` →
+    ``12``) and ``:f`` keeps the result in plain notation — ``normalize()``
+    alone turns ``100`` into ``1E+2``.
+    """
+    return f"{value.normalize():f}"
 
 
 def _json_safe(value):
@@ -77,6 +98,14 @@ class MatchResult:
     inspection_accepted_quantity: float | None = None
     inspection_required: bool = False
 
+    # 3-way: received quantity EXCEEDS what was ordered. Additive to the
+    # persisted `invoice.po_match` shape — `status` deliberately keeps its four
+    # values (`no_po` / `matched` / `mismatch` / `partial`), since `mismatch` is
+    # owned by the AMOUNT control and an over-receipt with an in-tolerance
+    # amount is a receiving discrepancy, not a billing one. It rides `issues`,
+    # which the invoice modal renders verbatim.
+    over_receipt: bool = False
+
     issues: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
 
@@ -95,7 +124,9 @@ async def match_invoice_to_po(
 
     1. Find PO by po_number on the invoice
     2. Compare amounts (2-way match)
-    3. If GR exists for the PO, verify quantities (3-way match)
+    3. If a LIVE (non-cancelled) GR exists for the PO, verify quantities
+       (3-way match) — short receipt → ``partial``, over-receipt →
+       ``over_receipt`` + an issue
     4. If a quality inspection exists, fold its verdict in (4-way match)
 
     The PO / GR lookups are confined to the invoice's own subsidiary
@@ -195,9 +226,21 @@ async def match_invoice_to_po(
     # crashed the matcher. The received-quantity comparison sums across every GR
     # (so a PO fully filled by two shipments is `matched`, not falsely `partial`);
     # the newest GR is the representative row for `gr_id` + the inspection leg.
+    #
+    # CANCELLED receipts are excluded. The sum ignored `GoodsReceipt.status`
+    # entirely, so a delivery that was cancelled or reversed still counted as
+    # goods in hand: it kept the receipt leg at 100%, held the invoice at
+    # `matched` instead of `partial`, and — because the whole point of the
+    # 3-way control is "don't pay for what didn't arrive" — cleared an invoice
+    # for goods the business had explicitly recorded as not received. A PO whose
+    # only receipt is cancelled now falls back to a 2-way match, which is the
+    # honest answer: there is no receipt evidence.
     gr_query = (
         select(GoodsReceipt)
-        .where(GoodsReceipt.po_id == po.id)
+        .where(
+            GoodsReceipt.po_id == po.id,
+            func.lower(func.coalesce(GoodsReceipt.status, "")).notin_(CANCELLED_GR_STATUSES),
+        )
         .options(selectinload(GoodsReceipt.line_items))
         .order_by(GoodsReceipt.created_at.desc())
     )
@@ -228,6 +271,21 @@ async def match_invoice_to_po(
                 )
                 if result.status == "matched":
                     result.status = "partial"
+            elif po_qty_total > 0 and gr_qty_total > po_qty_total:
+                # Over-receipt. The short side was flagged from the start; the
+                # long side never was, so more units booked in than were ever
+                # ordered passed the 3-way leg in silence — and an over-delivery
+                # is how an invoice for quantities nobody authorised gets its
+                # supporting receipt. Surfaced as an issue (the invoice modal
+                # renders `issues` verbatim) plus the additive `over_receipt`
+                # flag; `status` is left to the amount control, which is the
+                # gate that decides whether the invoice is payable.
+                result.over_receipt = True
+                over_qty = gr_qty_total - po_qty_total
+                result.issues.append(
+                    f"Over-receipt: {_qty(gr_qty_total)} received against "
+                    f"{_qty(po_qty_total)} ordered (+{_qty(over_qty)})"
+                )
 
     # 4-way match: check for a quality inspection. Prefer one tied to the
     # goods receipt (the goods we actually received); fall back to one tied
@@ -304,6 +362,7 @@ async def match_invoice_to_po(
         "tolerance_pct": tolerance,
         "within_tolerance": result.within_tolerance,
         "has_gr": gr is not None,
+        "over_receipt": result.over_receipt,
         "has_inspection": inspection is not None,
         "inspection_result": result.inspection_result,
     }

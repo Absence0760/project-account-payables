@@ -53,8 +53,17 @@ async def test_run_once_skips_orgs_without_qms_when_default_is_mock():
         patch.object(
             qms_sync,
             "_sweep_tenant",
-            AsyncMock(return_value={"fetched": 3, "created": 3, "updated": 0}),
+            AsyncMock(
+                return_value={
+                    "fetched": 3,
+                    "created": 3,
+                    "updated": 0,
+                    "unchanged": 0,
+                    "skipped": 0,
+                }
+            ),
         ) as sweep,
+        patch.object(qms_sync, "_store_cursor", AsyncMock()),
         patch.object(qms_sync.settings, "qms_provider", "mock"),
     ):
         result = await run_qms_sync_once()
@@ -74,8 +83,17 @@ async def test_run_once_opts_in_all_orgs_when_platform_provider_overridden():
         patch.object(
             qms_sync,
             "_sweep_tenant",
-            AsyncMock(return_value={"fetched": 1, "created": 1, "updated": 0}),
+            AsyncMock(
+                return_value={
+                    "fetched": 1,
+                    "created": 1,
+                    "updated": 0,
+                    "unchanged": 0,
+                    "skipped": 0,
+                }
+            ),
         ) as sweep,
+        patch.object(qms_sync, "_store_cursor", AsyncMock()),
         patch.object(qms_sync.settings, "qms_provider", "generic"),
     ):
         result = await run_qms_sync_once()
@@ -90,12 +108,13 @@ async def test_run_once_continues_after_one_tenant_fails():
         (uuid.uuid4(), "feoh_b", {"qms": {"provider": "mock"}}),
     ]
     side = [
-        {"fetched": 3, "created": 3, "updated": 0},
+        {"fetched": 3, "created": 3, "updated": 0, "unchanged": 0, "skipped": 0},
         RuntimeError("boom"),
     ]
     with (
         patch.object(qms_sync, "control_session_factory", _fake_control_session(rows)),
         patch.object(qms_sync, "_sweep_tenant", AsyncMock(side_effect=side)),
+        patch.object(qms_sync, "_store_cursor", AsyncMock()),
     ):
         result = await run_qms_sync_once()
 
@@ -214,7 +233,7 @@ async def test_sync_upsert_is_idempotent_and_resolves_docs(realdb):
             )
             await db.commit()
 
-    assert summary == {"fetched": 2, "created": 2, "updated": 0, "skipped": 0}
+    assert summary == {"fetched": 2, "created": 2, "updated": 0, "unchanged": 0, "skipped": 0}
 
     async with mk() as db:
         rows = (await db.execute(select_qi(org_id))).scalars().all()
@@ -248,7 +267,15 @@ async def test_sync_upsert_is_idempotent_and_resolves_docs(realdb):
             )
             await db.commit()
 
-    assert summary2 == {"fetched": 2, "created": 0, "updated": 2, "skipped": 0}
+    # QMS-A genuinely changed; QMS-B was re-fetched byte-identical, so it is
+    # `unchanged` (no write, no audit row) rather than a second "update".
+    assert summary2 == {
+        "fetched": 2,
+        "created": 0,
+        "updated": 1,
+        "unchanged": 1,
+        "skipped": 0,
+    }
 
     async with mk() as db:
         rows2 = (await db.execute(select_qi(org_id))).scalars().all()
@@ -334,7 +361,7 @@ async def test_sync_skips_a_record_whose_disposition_does_not_map(realdb):
             )
             await db.commit()
 
-    assert summary == {"fetched": 2, "created": 1, "updated": 0, "skipped": 1}
+    assert summary == {"fetched": 2, "created": 1, "updated": 0, "unchanged": 0, "skipped": 1}
 
     async with mk() as db:
         rows = (await db.execute(select_qi(org_id))).scalars().all()

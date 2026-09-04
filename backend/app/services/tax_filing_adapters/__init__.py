@@ -23,7 +23,9 @@ from app.services.tax_filing_adapters.base import (
     TaxFilingAdapter,
 )
 from app.services.tax_filing_adapters.dispatcher import (
+    UnknownTaxFilingProviderError,
     get_tax_filing_adapter,
+    list_available_providers,
     register_tax_filing_adapter,
 )
 
@@ -32,6 +34,8 @@ __all__ = [
     "FilingFormPayload",
     "FilingFormResult",
     "TaxFilingAdapter",
+    "UnknownTaxFilingProviderError",
     "get_tax_filing_adapter",
+    "list_available_providers",
     "register_tax_filing_adapter",
 ]

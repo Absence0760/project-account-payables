@@ -22,6 +22,7 @@ from app.api.deps import (
     require_permission,
     require_roles,
 )
+from app.api.money_filters import snap_lower_bound, snap_upper_bound
 from app.api.pagination import (
     DEFAULT_PAGE_SIZE,
     MAX_SELECT_ALL_IDS,
@@ -304,8 +305,8 @@ def _payment_list_filters(
     method: str | None,
     invoice_id: uuid.UUID | None,
     search: str | None,
-    amount_min: float | None,
-    amount_max: float | None,
+    amount_min: Decimal | None,
+    amount_max: Decimal | None,
     invoice_joined: bool = False,
 ):
     """Apply the payment-list population filters to ``query``.
@@ -336,10 +337,16 @@ def _payment_list_filters(
         query = query.where(Payment.method == method)
     if invoice_id:
         query = query.where(Payment.invoice_id == invoice_id)
+    # `Decimal`, not `float`: a bound routed through a float is rounded to the
+    # nearest double before any code here sees it. Snapped onto the column's own
+    # 2dp grid in the direction of the comparison because SQLAlchemy casts the
+    # bind parameter to `NUMERIC(15, 2)`, which would otherwise round an
+    # over-precise bound back onto the boundary row it was written to exclude.
+    # See `api/money_filters` (project invariant: money is exact).
     if amount_min is not None:
-        query = query.where(Payment.amount >= Decimal(str(amount_min)))
+        query = query.where(Payment.amount >= snap_lower_bound(amount_min, Payment.amount))
     if amount_max is not None:
-        query = query.where(Payment.amount <= Decimal(str(amount_max)))
+        query = query.where(Payment.amount <= snap_upper_bound(amount_max, Payment.amount))
     if search:
         if not invoice_joined:
             query = query.outerjoin(Invoice, Payment.invoice_id == Invoice.id)
@@ -358,8 +365,8 @@ async def list_payments(
     method: str | None = None,
     invoice_id: uuid.UUID | None = None,
     search: str | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
+    amount_min: Decimal | None = None,
+    amount_max: Decimal | None = None,
     sort: SortParams = Depends(sort_params),
     db: AsyncSession = Depends(get_tenant_db),
     # `payment.execute` OR `payment.void`: the History-tab list a custom-role
@@ -1017,8 +1024,8 @@ async def payment_status_counts(
     method: str | None = None,
     invoice_id: uuid.UUID | None = None,
     search: str | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
+    amount_min: Decimal | None = None,
+    amount_max: Decimal | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     # Exactly the list's gate, not the older role set. A custom-role holder of
     # only one of the two permissions could read the History list and got a 403

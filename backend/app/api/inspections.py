@@ -7,6 +7,7 @@ router is the CRUD surface that creates those rows. See
 ``backend/docs/po-matching.md``.
 """
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,6 +26,7 @@ from app.models.organization import Organization
 from app.models.quality_inspection import QualityInspection
 from app.models.user import User
 from app.schemas.inspection import VALID_RESULTS, InspectionCreate
+from app.services.qms_adapters import UnknownQmsProviderError, list_available_providers
 from app.services.qms_sync import resolve_opted_in_qms_config, sync_tenant_inspections
 from app.tenant import (
     apply_entity_scope,
@@ -32,6 +34,8 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 
@@ -128,7 +132,22 @@ async def sync_inspections(
     ``quality_inspections``. Idempotent (upsert keyed on
     ``(organization_id, inspection_number)``). Reads the QMS config from
     ``Organization.settings.qms`` on the control plane. Returns
-    ``{fetched, created, updated, skipped}``.
+    ``{fetched, created, updated, unchanged, skipped}``.
+
+    **A full re-pull, deliberately.** The background sweep is incremental — it
+    passes each org's persisted ``settings.qms.last_synced_at`` high-water mark
+    and advances it. This route passes no cursor and advances none: a human
+    asking to sync now is asking for everything, usually *because* they suspect
+    the incremental window missed something, and answering that with an empty
+    result would be useless. Re-fetched records that match what is stored come
+    back as ``unchanged`` and write neither a row nor an audit entry.
+
+    **409 when the configured provider has no adapter**, too — the other half of
+    the same guard. `get_qms_adapter` refuses a NAMED provider it has no adapter
+    for rather than resolving to `mock` (`decisions.md` §29), and this route
+    surfaces that as a 409 naming the bad value and the registered alternatives.
+    An operator asked for this pull directly; answering with a clean all-zero
+    summary would hide the reason it found nothing.
 
     **409 when the org has no QMS configured.** Opting in is the same rule the
     background sweep applies (`qms_sync.resolve_opted_in_qms_config`, shared so
@@ -152,13 +171,35 @@ async def sync_inspections(
             ),
         )
 
-    return await sync_tenant_inspections(
-        db,
-        org_id=org_id,
-        qms_config=qms_config,
-        entity_id=entity_id,
-        actor_id=user.id,
-    )
+    try:
+        return await sync_tenant_inspections(
+            db,
+            org_id=org_id,
+            qms_config=qms_config,
+            entity_id=entity_id,
+            actor_id=user.id,
+        )
+    except UnknownQmsProviderError as exc:
+        # The org opted in with a provider we have no adapter for. An operator
+        # asked for this pull directly, so say why it did not happen rather
+        # than returning a clean-looking all-zero summary (`decisions.md` §29).
+        # 409, matching the sibling "no QMS configured" refusal above: the
+        # request is well-formed; the org's QMS configuration is in a state that
+        # cannot service it. The adapter resolves before any query, so nothing
+        # is persisted — no inspection row, no audit row.
+        logger.warning(
+            "[inspections] QMS provider %r has no registered adapter for org=%s",
+            exc.provider,
+            org_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"'{exc.provider}' is not a supported QMS provider "
+                f"(one of: {', '.join(list_available_providers())}). "
+                "Fix settings.qms.provider and retry."
+            ),
+        ) from None
 
 
 @router.get("/{inspection_id}")

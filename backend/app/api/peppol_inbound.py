@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
-from app.services.peppol_adapters import get_peppol_adapter
+from app.services.peppol_adapters import UnknownPeppolProviderError, get_peppol_adapter
 from app.services.peppol_receive import receive_peppol_message, verify_inbound_signature
 from app.services.webhook_security import extract_signature_header
 
@@ -97,7 +97,24 @@ async def peppol_inbound_webhook(
     # 4. Parse the inbound metadata + payload via the tenant's configured
     #    adapter. None = unparseable / missing message id → can't dedupe →
     #    refuse (mirrors email-intake's parse-None drop).
-    adapter = get_peppol_adapter((org.settings or {}).get("peppol"))
+    #    A provider we have no adapter for is refused rather than resolved to
+    #    `mock`, whose `parse_inbound` reads a permissive dev envelope
+    #    (`decisions.md` §29). That is OUR failure, not a decision about this
+    #    message (§37): the document is still unprocessed work and a redelivery
+    #    after the admin fixes the setting would succeed, so ask the Access
+    #    Point to retry with a bodyless 503 instead of acking a document we
+    #    dropped. Bodyless, so it still carries no detail and no tenant, and it
+    #    narrows the enumeration surface to "while this tenant is already
+    #    misconfigured" — the same trade §37 accepted for email intake.
+    try:
+        adapter = get_peppol_adapter((org.settings or {}).get("peppol"))
+    except UnknownPeppolProviderError as exc:
+        logger.warning(
+            "PEPPOL inbound: provider %r has no registered adapter — asking for redelivery",
+            exc.provider,
+        )
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
     message = adapter.parse_inbound(headers, body)
     if message is None or not message.message_id:
         logger.warning("PEPPOL inbound: unparseable delivery or missing message id")

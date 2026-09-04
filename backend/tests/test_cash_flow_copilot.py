@@ -493,6 +493,65 @@ async def test_run_tool_still_allows_base_tools_when_copilot_disabled(realdb, mo
 
 
 # ===========================================================================
+# 2b. A money tool argument is exact — it reaches money, one surface along
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["optimize_discount_capture", "propose_payment_plan"],
+)
+async def test_a_float_cash_budget_is_refused_cleanly_not_rounded(realdb, tool_name):
+    """A JSON-number budget is refused with a tool result the model can act on.
+
+    The argument arrives as an LLM tool call, and ``json.loads`` decodes it
+    before pydantic runs — so a fractional JSON number is ALREADY a rounded
+    float and no annotation can recover it. That is not a display value here:
+    the budget decides which invoices the optimizer selects, and for
+    ``propose_payment_plan`` it is also hashed into ``plan_id``, which
+    ``POST /plans/{plan_id}/draft-run`` then treats as certifying the figure
+    the plan was built from.
+
+    The refusal has to degrade the way every other bad tool argument does —
+    ``run_tool`` catches it and returns ``error`` set / ``result`` None — never
+    a 500 raised into the SSE stream.
+    """
+    mk_a = realdb.sessionmaker("a")
+    ctrl_mk = realdb.control_sessionmaker()
+    async with ctrl_mk() as ctrl, mk_a() as tenant:
+        run_tool = await _build_copilot_run_tool(realdb, "a", "admin", ctrl, tenant)
+        refused = await run_tool(tool_name, {"cash_budget": 9799.999999999999999})
+        # …and the exact string form is accepted, so this is a shape rule, not
+        # a ban on constraining the budget at all.
+        accepted = await run_tool(tool_name, {"cash_budget": "9799.999999999999999"})
+
+    assert refused.result is None, "a refused argument must yield NO data"
+    assert refused.error is not None
+    assert "invalid arguments" in refused.error.lower()
+    assert refused.tool == tool_name
+
+    assert accepted.error is None, accepted.error
+    assert accepted.result is not None
+
+
+async def test_the_llm_is_told_to_send_the_budget_as_a_string(realdb):
+    """The refusal above is a backstop; the tool schema is the actual fix.
+
+    ``ToolSpec.anthropic_spec`` derives each tool's ``input_schema`` straight
+    from ``model_json_schema()``, so a bare ``Decimal`` advertises ``number`` —
+    an instruction to send the one shape the validator refuses. A model cannot
+    comply with a contract it was never shown.
+    """
+    from app.services.assistant.tools import TOOLS
+
+    for tool_name in ("optimize_discount_capture", "propose_payment_plan"):
+        prop = TOOLS[tool_name].anthropic_spec["input_schema"]["properties"]["cash_budget"]
+        types = {branch.get("type") for branch in prop.get("anyOf", [prop])}
+        assert "string" in types, f"{tool_name} must advertise a string budget, got {prop}"
+        assert "number" not in types, f"{tool_name} still advertises a JSON number: {prop}"
+
+
+# ===========================================================================
 # 3. Optimizer parity — the tool matches POST /api/discounts/optimize exactly
 # ===========================================================================
 

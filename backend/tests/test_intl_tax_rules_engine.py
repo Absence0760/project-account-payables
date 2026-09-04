@@ -22,7 +22,10 @@ from app.services.international_tax.country_rules import (
     is_eu_country,
     supported_countries,
 )
-from app.services.tax_rate_adapters import get_tax_rate_adapter
+from app.services.tax_rate_adapters import (
+    UnknownTaxRateProviderError,
+    get_tax_rate_adapter,
+)
 
 
 def _run(coro):
@@ -118,9 +121,15 @@ def test_mock_adapter_unknown_country_raises():
         _run(adapter.get_rate("ZZ"))
 
 
-def test_dispatcher_falls_back_to_mock_for_unknown_provider():
-    adapter = get_tax_rate_adapter({"rate_provider": "does_not_exist"})
-    assert adapter.provider_name == "mock"
+def test_dispatcher_refuses_a_named_unknown_provider():
+    """It used to fall back to `mock`, which answers every country from the
+    in-repo country-rules fixture — so a typo computed VAT / GST off a
+    hardcoded rate while the response named the provider that was asked for.
+    `decisions.md` §29; the route-level 409 lives in
+    `tests/test_adapter_registry_fail_closed.py`."""
+    with pytest.raises(UnknownTaxRateProviderError) as exc:
+        get_tax_rate_adapter({"rate_provider": "does_not_exist"})
+    assert "does_not_exist" in str(exc.value)
 
 
 def test_cloud_skeletons_registered_but_unimplemented():

@@ -14,7 +14,8 @@ import type {
 	VendorEnrichmentResponse,
 	VendorEnrichmentApplyResponse,
 	VendorConsolidationResponse,
-	VendorMergeResponse
+	VendorMergeResponse,
+	VendorStatusCounts
 } from '$lib/types/vendor';
 import type { ImportResult } from '$lib/types/csvImport';
 
@@ -105,6 +106,20 @@ export function getScreeningHistory(id: string): Promise<SanctionsCheck[]> {
 // Vendors needing screening review (potential matches / blocked / high risk).
 export function getScreeningReviewQueue(): Promise<ScreeningReviewItem[]> {
 	return api.get<ScreeningReviewItem[]>('/api/vendors/screening/review-queue');
+}
+
+// Whole-set vendor tallies (status chips + the payment-block figure), over the
+// entity-scoped population narrowed by the SAME `search` / `source` filters the
+// vendor list takes. admin / ap_manager / cfo — exactly the vendor list's gate.
+export function getVendorCounts(params?: {
+	search?: string;
+	source?: string;
+}): Promise<VendorStatusCounts> {
+	const qs = new URLSearchParams();
+	if (params?.search?.trim()) qs.set('search', params.search.trim());
+	if (params?.source) qs.set('source', params.source);
+	const query = qs.toString();
+	return api.get<VendorStatusCounts>(`/api/vendors/counts${query ? `?${query}` : ''}`);
 }
 
 // Block / unblock vendor payments. admin / ap_manager.

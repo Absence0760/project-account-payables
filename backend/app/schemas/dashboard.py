@@ -7,7 +7,8 @@ the response; this schema is what performs the single float hop, at
 JSON-serialization time, matching the pattern used by
 ``app/schemas/discount.py`` and friends. Day-count / percentage fields
 (``processing_time``, ``approval_bottleneck``, ``touchless_rate``,
-``capture_rate_pct``) are not currency and stay plain ``float``.
+``capture_rate_pct``) are not currency and stay plain ``float`` — or ``None``
+where the figure is genuinely not computable.
 """
 
 from __future__ import annotations
@@ -86,12 +87,32 @@ class ApprovalBottleneckEntry(BaseModel):
 
 
 class DiscountCapture(BaseModel):
+    """Early-pay discount opportunity, split three ways.
+
+    `missed` is only what the window CLOSED on; `pending` is what is still
+    capturable. `capture_rate_pct` is null (with `insufficient_data` true)
+    when nothing has been decided yet — a 0% capture rate and "no window has
+    closed yet" are opposite facts and must not share a value
+    (`docs/decisions.md` §34).
+
+    The `*_reporting` figures are in `reporting_currency`; the bare ones are
+    face values that mix currencies once an eligible invoice is foreign.
+    """
+
     eligible_count: int
     captured_count: int
     missed_count: int
+    pending_count: int
     captured_amount: MoneyAmount
     missed_amount: MoneyAmount
-    capture_rate_pct: float
+    pending_amount: MoneyAmount
+    reporting_currency: str
+    captured_amount_reporting: MoneyAmount
+    missed_amount_reporting: MoneyAmount
+    pending_amount_reporting: MoneyAmount
+    unconverted_count: int
+    capture_rate_pct: float | None = None
+    insufficient_data: bool
 
 
 class DashboardResponse(BaseModel):

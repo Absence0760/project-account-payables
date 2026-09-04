@@ -21,6 +21,7 @@ from app.services.peppol_adapters.constants import (
     PEPPOL_BIS_BILLING_PROCESSID,
 )
 from app.services.peppol_adapters.dispatcher import (
+    UnknownPeppolProviderError,
     get_peppol_adapter,
     list_available_providers,
     register_peppol_adapter,
@@ -35,6 +36,7 @@ __all__ = [
     "PeppolSendError",
     "TransmissionRequest",
     "TransmissionResult",
+    "UnknownPeppolProviderError",
     "get_peppol_adapter",
     "list_available_providers",
     "register_peppol_adapter",

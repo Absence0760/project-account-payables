@@ -543,8 +543,9 @@ async def test_dunning_cancels_overdue_past_due(realdb, monkeypatch, _audit_engi
             period_end=now - timedelta(days=30),
         )
         async with realdb.control_sessionmaker()() as s:
-            count = await run_dunning_once(s, now=now)
-        assert count == 1
+            result = await run_dunning_once(s, now=now)
+        assert result.canceled == 1
+        assert result.failures == 0
         async with realdb.control_sessionmaker()() as s:
             sub = (
                 await s.execute(
@@ -558,7 +559,7 @@ async def test_dunning_cancels_overdue_past_due(realdb, monkeypatch, _audit_engi
 
         # Idempotent: re-running cancels nothing more.
         async with realdb.control_sessionmaker()() as s:
-            assert await run_dunning_once(s, now=now) == 0
+            assert (await run_dunning_once(s, now=now)).canceled == 0
     finally:
         await _cleanup(realdb, org_id)
 
@@ -578,8 +579,8 @@ async def test_dunning_spares_within_grace(realdb, monkeypatch):
             period_end=now - timedelta(days=3),
         )
         async with realdb.control_sessionmaker()() as s:
-            count = await run_dunning_once(s, now=now)
-        assert count == 0
+            result = await run_dunning_once(s, now=now)
+        assert result.canceled == 0
         async with realdb.control_sessionmaker()() as s:
             sub = (
                 await s.execute(

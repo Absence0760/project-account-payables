@@ -67,6 +67,31 @@ return the *other* entity's newer `PO-1001`, and the invoice read `matched` — 
 amount control having silently passed against a different subsidiary's order.
 `no_po` is the correct answer there, and it is one a clerk can act on.
 
+**`po_number` being non-unique across subsidiaries binds every other reader of
+that column too.** `GET /api/purchase-orders/{id}` builds its `linked_invoices`
+panel by joining on the number, and did so unscoped — so a US-scoped viewer saw
+the UK subsidiary's invoices (number, vendor, amount) on the PO detail. It now
+scopes that join to the **PO's own** `entity_id` ∪ unstamped rows (NULL on
+`invoices` means *never stamped*, not "shared", and dropping those would hide a
+real invoice from the one page that links it to its PO). The scope is the PO's
+entity rather than the caller's `X-Entity-ID`, because the panel describes one
+PO whichever view the reader has selected. The sync-erp upsert matched the same
+way and is likewise scoped to the entity being synced into — unscoped, a sync
+run under subsidiary B found A's PO by number and overwrote its `total`, which
+silently re-prices the very amount control described above.
+
+The PO **itself** is now resolved through `_get_scoped_po`, too. The by-id route
+matched on the primary key alone while the list and counts beside it had been
+entity-scoped since multi-entity Phase 2, so the selector was advisory on
+exactly the route that hands over a subsidiary's order and its line items —
+the shape `api/payments.py::_get_scoped_payment` and
+`api/positive_pay.py::_get_scoped_file` already close. An out-of-scope id gets
+the **same opaque 404** a missing one does, so it can't enumerate another
+subsidiary's POs; the consolidated view (`X-Entity-ID` absent) still reaches
+every PO, and `linked_invoices` stays keyed on the PO's own entity precisely so
+that view still shows each PO only its own subsidiary's invoices. Covered by
+`backend/tests/test_purchase_order_entity_scope.py`.
+
 A PO may have **several** goods receipts (a PO filled by multiple shipments);
 the 3-way leg sums `quantity_received` across **every** GR for the PO, so a PO
 fully received over two deliveries reads as `matched`, not `partial`. The most
@@ -74,6 +99,60 @@ recent GR is the representative row (`gr_id`) for the 4-way inspection lookup.
 The PO lookup and the GR lookup both pick a single deterministic row when a
 `po_number` / `gr_number` is non-unique — neither column is unique, so they
 cannot crash on a duplicate.
+
+### Cancelled receipts do not count as delivered goods
+
+The GR query excludes any receipt whose `status` is in
+`po_matching.CANCELLED_GR_STATUSES` (`cancelled` / `canceled` / `void` /
+`voided` / `reversed`, compared case-folded). `GoodsReceipt.status` is a
+free-form `String(30)` written by the receiving side, so this is an **exclusion
+list, not an allowlist**: an unrecognised-but-live status such as
+`partially_received` must keep counting, whereas silently counting a cancelled
+one is the failure this closes.
+
+The sum used to ignore `status` entirely, so a delivery the business had
+explicitly cancelled still filled the receipt leg — the invoice read a full
+`3-way` `matched` for goods that were never received, which is precisely what
+the 3-way control exists to prevent. The subtler shape is a *partial* delivery
+whose shortfall is "covered" by a cancelled GR: the downgrade to `partial`
+never fired, so no `po_mismatch` info exception was raised on the part that
+never arrived.
+
+A PO whose only receipt is cancelled falls back to a **2-way** match — the
+honest answer, since there is no receipt evidence at all. The representative
+`gr_id` and the 4-way inspection lookup follow the same filter, so a cancelled
+receipt's inspection can't stand in for a live one either.
+
+### Over-receipt
+
+Only `received < ordered` was ever reported. More units booked in than were
+ordered passed the leg in silence — and an over-delivery is how an invoice for
+quantities nobody authorised acquires its supporting receipt. `received >
+ordered` now sets the additive `over_receipt` flag, mirrors it into `details`,
+and appends an issue (`Over-receipt: 14 received against 10 ordered (+4)`) that
+the invoice modal renders verbatim.
+
+`status` is deliberately **unchanged** by an over-receipt and keeps its four
+values. `mismatch` is owned by the amount control, which is the gate that
+decides whether the invoice is payable; an over-receipt with an in-tolerance
+amount is a receiving discrepancy, not a billing one, and folding it into
+`mismatch` would emit a message about an amount variance that isn't there.
+
+`invoice_warnings._refresh_po_match` raises it **independently of `status`**,
+the way the 4-way inspection block already does — so it lands on a perfectly
+`matched` invoice, which is exactly the case that would otherwise disappear. It
+becomes a `po_mismatch` warning at **`warning`** severity (not the `info` a
+partial receipt gets: a short delivery is routinely benign — goods in transit —
+whereas quantities nobody ordered cannot be explained by timing) plus a
+`po_mismatch` exception. When the amount leg has already opened one,
+`_ensure_exception` de-dupes per `(invoice, type, open)` and the exception call
+is a no-op — the warning still lands, and the amount branch's own message is
+left untouched.
+
+Covered by `backend/tests/test_po_matching_cancelled_receipts.py` (matcher +
+end-to-end through `refresh_warnings` to the exception row) and
+`backend/tests/test_po_matching_wiring.py` (the routing, with the matcher
+patched out).
 
 The 4-way leg runs **after** the 3-way GR block. It looks up the most recent
 `QualityInspection` in two steps: the matched receipt's own (`gr_id == gr.id`),
@@ -126,9 +205,14 @@ MatchResult:
     inspection_result: "pass" | "fail" | "partial" | None
     inspection_accepted_quantity: float | None  # partial acceptance qty
     inspection_required: bool              # require_inspection on + inspection missing
+    over_receipt: bool          # 3-way: received quantity EXCEEDS ordered
     issues: list[str]           # human-readable issues
     details: dict               # full match data for audit (has_inspection, inspection_result)
 ```
+
+`over_receipt` is **additive** on the persisted `invoice.po_match` JSONB shape —
+every pre-existing key keeps its meaning, and a row written before it landed
+simply lacks the key.
 
 `match_invoice_to_po(db, invoice, tolerance_pct=5.0, require_inspection=False)`
 takes both knobs; `invoice_warnings._refresh_po_match` resolves them per-invoice
@@ -248,11 +332,36 @@ families (`financing_adapters`, `fx_adapters`, …):
   resolves each record's `po_number` / `gr_number` to local `PurchaseOrder` /
   `GoodsReceipt` ids, then **upserts** a `QualityInspection` idempotently keyed on
   `(organization_id, inspection_number)` (re-run updates in place, never
-  duplicates). Each landed record writes an append-only `quality_inspection.synced`
-  audit row (PII-free: inspection number + resolution outcome only). After the
+  duplicates). Each record that genuinely **lands or changes** writes an
+  append-only `quality_inspection.synced` audit row (PII-free: inspection number
+  + resolution outcome only). A re-fetched record identical to the stored row
+  counts `unchanged` and writes nothing — the audit write used to be
+  unconditional, with `change` reading `"updated"` even when nothing had moved,
+  so every tick appended `len(records)` rows to `audit_log`. That table is
+  append-only at the DB level (migration 0022's BEFORE-DELETE trigger) and is
+  drained to a WORM store, so the rows could never be reclaimed, and each one
+  described a state change that did not happen. After the
   upsert it best-effort re-runs `invoice_warnings.refresh_warnings` (inside a
   SAVEPOINT) for invoices referencing the affected POs so a fresh quality verdict
   re-gates the 4-way match — never fails the sync.
+- **The pull is incremental.** The adapter contract has always been
+  `fetch_inspections(*, since=None)`, but `since` was accepted by
+  `run_qms_sync_once` and then dropped — every hourly tick re-fetched each
+  tenant's entire inspection history. It now threads `run_qms_sync_once` →
+  `_sweep_tenant` → `sync_tenant_inspections` → `fetch_inspections`. The per-org
+  high-water mark lives in the settings JSON at
+  `Organization.settings.qms.last_synced_at` (no migration; the same shape as
+  `cash_flow_alerts`' alerted-period marker), is captured **before** the fetch
+  and stored only on success — so the window is closed-on-the-left and never
+  skips a record written while a tick was in flight, and a tenant whose sweep
+  raised keeps its old mark and retries the same window. A boundary record
+  simply arrives twice and the idempotent upsert absorbs it.
+  `run_qms_sync_once(since=...)` overrides every org's mark for one call — an
+  operator backfill, not the normal path. **The manual
+  `POST /api/inspections/sync` route deliberately passes no cursor and advances
+  none**: a human asking to sync now is usually asking *because* they suspect
+  the incremental window missed something, and answering that with an empty
+  result would be useless.
 - **An unmappable disposition is SKIPPED, never coerced.**
   `qms_sync.normalize_disposition` maps the provider's verdict onto
   `pass`/`fail`/`partial`, normalising case and whitespace only (`"FAIL"` is a
@@ -274,7 +383,7 @@ families (`financing_adapters`, `fx_adapters`, …):
   Disabled by default (`FEOH_QMS_SYNC_ENABLED=false`); orgs that have not opted
   in are skipped.
 - **Manual trigger**: `POST /api/inspections/sync` (admin / ap_manager) runs one
-  sync for the current tenant, returning `{fetched, created, updated, skipped}`.
+  sync for the current tenant, returning `{fetched, created, updated, unchanged, skipped}`.
   It applies the **same** opt-in rule and **409s** when the org has no QMS
   configured. Without that guard `get_qms_adapter(None)` resolved to the `mock`
   adapter, and one call persisted its three fabricated fixtures
@@ -282,6 +391,28 @@ families (`financing_adapters`, `fx_adapters`, …):
   a synthetic `pass` clearing the quality gate on a real invoice, a synthetic
   `fail` flipping others to `mismatch`, and rows indistinguishable from genuine
   ones in the UI. The sweep already guarded this; the route did not.
+- **A NAMED provider we have no adapter for is refused, never `mock`.** The
+  opt-in rule above covers an org that configured *nothing*; this is the other
+  half — an org that configured *something we cannot honour*.
+  `get_qms_adapter` resolves an absent/empty provider to `mock` (the local-first
+  default) but raises `UnknownQmsProviderError` for an unregistered name. It used
+  to fall back to `mock` there too, and the consequence is the one this whole
+  section is about: three fabricated fixtures resolved against real purchase
+  orders and persisted as `completed` inspections — the quality leg of the 4-way
+  match forged, so a PO is cleared for payment by an inspection that never
+  happened. It is sharper for the platform override than for a single org: a
+  typo'd `FEOH_QMS_PROVIDER` opts **every** org in at once, so the next tick
+  pulled fixtures into every tenant in the estate. `decisions.md` §29 / §36
+  applied to this family.
+
+  The two callers differ, and the difference is the cursor:
+
+  | Caller | On refusal |
+  |---|---|
+  | The background sweep | A **counted per-tenant failure**, not a skip — a skip is indistinguishable from "this tenant had nothing to sync", which is precisely the state the control has silently been in; a counted failure reaches the consecutive-failure streak and shows `degraded` on `GET /api/health/sweeps`. The log line names the bad value rather than an exception class, so it is actionable. Critically, `last_synced_at` is **not** advanced: `_store_cursor` sits on the success path only, because closing a window that was never pulled would skip every inspection written during the outage *forever* once the config is corrected. |
+  | `POST /api/inspections/sync` | **409** naming the bad value and the registered alternatives — matching the sibling "no QMS configured" refusal. An operator asked for this pull directly; a clean all-zero summary would hide why it found nothing. The adapter resolves before any query, so nothing is persisted. |
+
+  Guard: `tests/test_adapter_registry_fail_closed.py`.
 
 ## Data Models
 

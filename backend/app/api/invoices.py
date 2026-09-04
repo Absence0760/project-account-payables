@@ -26,6 +26,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.money_filters import snap_lower_bound, snap_upper_bound
 from app.api.pagination import (
     MAX_SELECT_ALL_IDS,
     MatchingIdsResponse,
@@ -189,8 +190,8 @@ def _invoice_list_filters(
     invoice_number: str | None,
     po_number: str | None,
     description: str | None,
-    amount_min: float | None,
-    amount_max: float | None,
+    amount_min: Decimal | None,
+    amount_max: Decimal | None,
     due_date_from: date | None,
     due_date_to: date | None,
     search: str | None,
@@ -225,10 +226,17 @@ def _invoice_list_filters(
         query = query.where(ilike_contains(Invoice.po_number, po_number))
     if description:
         query = query.where(ilike_contains(Invoice.description, description))
+    # `Decimal`, not `float`: a bound routed through a float is rounded to the
+    # nearest double before any code here sees it. Snapped onto the column's own
+    # 2dp grid in the direction of the comparison because SQLAlchemy casts the
+    # bind parameter to `NUMERIC(15, 2)`, which would otherwise round an
+    # over-precise bound back onto the boundary row it was written to exclude —
+    # here for the `/counts` chips and the `/ids` "select all N matching" set as
+    # well, since both share this builder. See `api/money_filters`.
     if amount_min is not None:
-        query = query.where(Invoice.amount >= Decimal(str(amount_min)))
+        query = query.where(Invoice.amount >= snap_lower_bound(amount_min, Invoice.amount))
     if amount_max is not None:
-        query = query.where(Invoice.amount <= Decimal(str(amount_max)))
+        query = query.where(Invoice.amount <= snap_upper_bound(amount_max, Invoice.amount))
     if due_date_from:
         query = query.where(Invoice.due_date >= due_date_from)
     if due_date_to:
@@ -253,8 +261,8 @@ async def list_invoices(
     invoice_number: str | None = None,
     po_number: str | None = None,
     description: str | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
+    amount_min: Decimal | None = None,
+    amount_max: Decimal | None = None,
     due_date_from: date | None = None,
     due_date_to: date | None = None,
     search: str | None = None,
@@ -319,8 +327,8 @@ async def invoice_counts(
     invoice_number: str | None = None,
     po_number: str | None = None,
     description: str | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
+    amount_min: Decimal | None = None,
+    amount_max: Decimal | None = None,
     due_date_from: date | None = None,
     due_date_to: date | None = None,
     search: str | None = None,
@@ -377,8 +385,8 @@ async def list_invoice_ids(
     invoice_number: str | None = None,
     po_number: str | None = None,
     description: str | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
+    amount_min: Decimal | None = None,
+    amount_max: Decimal | None = None,
     due_date_from: date | None = None,
     due_date_to: date | None = None,
     search: str | None = None,

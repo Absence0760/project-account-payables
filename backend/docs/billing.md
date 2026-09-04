@@ -304,8 +304,40 @@ never charges, refunds, or creates any payment-side row. (A canceled subscriptio
 grants nothing via `get_entitlements`; that down-grade is a read consequence, not
 a money op.) **Control-plane only** — `Subscription` lives in the control DB, so
 one query, no per-tenant fan-out. **Idempotent** — only `past_due` rows are
-touched and canceling moves a row out of `past_due`. Long-lived asyncio task in
+touched, each is re-read `FOR UPDATE` and re-checked inside its own leg, and
+canceling moves a row out of `past_due`. Long-lived asyncio task in
 `main.lifespan`, OFF by default (`FEOH_BILLING_DUNNING_ENABLED`).
+
+### Per-row isolation, and why the audit row gates the commit
+
+Two defects the module docstring used to paper over:
+
+- **No per-row guard.** The tick loaded every `past_due` row and shared one
+  `control_db.commit()`, so anything raising took the whole tick's remaining
+  rows with it — and because a rollback expires already-loaded ORM objects,
+  touching the next one raised `MissingGreenlet` rather than failing cleanly.
+  Ids are now selected first and each row runs in its own `try` /
+  `rollback` / `commit`, exactly as `vendor_rescreen` does.
+- **No failure counter.** `_dunning_tick` returned a bare `int`, which
+  `sweep_health.extract_counts` maps to `{"count": n}` — no `failures` key, so
+  `failure_count` summed to zero and this sweep could never report anything but
+  `ok` short of the tick raising outright. It now returns a `DunningResult`
+  (`subscriptions_scanned` / `canceled` / `failures`); `failures` is the exact
+  name the health registry sums, so a tick that completes while its rows fail is
+  `partial` and eventually `degraded` at `GET /api/health/sweeps`.
+
+The audit row is also no longer best-effort. `dispatch_auth_audit` swallows
+every exception by design (an audit blip must never fail a login), so the sweep
+could commit a cancellation whose `billing.subscription_canceled` row was never
+written and still count it a success — a status change on a regulated record
+with nothing in the trail. `_record_cancellation_audit` writes the identical row
+(same action, same `entity_type`, same PII-free details, and it still honours
+`FEOH_AUDIT_MODE=lambda`) through `dispatch_audit`, which propagates: a failed
+audit write rolls the cancellation back, counts a failure, and the next tick
+retries it. The audit row commits first, so a crash between the two leaves a
+duplicate trail entry for a cancellation that re-runs — recoverable — rather
+than a silent one, which is not. Guarded by
+`backend/tests/test_dunning_sweep_resilience.py`.
 
 ## Per-org provisioning (`services/billing/provisioning.py`)
 
@@ -720,6 +752,13 @@ status → no audit, unknown subscription → 204, disabled switch → 204, prov
 mismatch → 204); and the dunning sweep (cancels overdue `past_due` + audit +
 idempotent re-run, spares within grace). Route auth-gating is in
 `tests/test_rbac.py` (the route is in `NO_AUTH_REQUIRED`).
+
+`backend/tests/test_dunning_sweep_resilience.py` — the dunning sweep's per-row
+isolation and failure accounting: one poisoned row still lets the rest of the
+tick cancel and commit (and is counted, not swallowed), a failed audit write
+rolls its cancellation back and leaves no trail row, a row inside its grace
+window is neither canceled nor a failure, and the `DunningResult` counters reach
+`sweep_health` so a failing tick degrades the sweep.
 
 `backend/tests/test_billing_proration.py` — the proration math (upgrade →
 positive, downgrade → negative, same-price → `0.00`, `ROUND_HALF_UP` 2-dp

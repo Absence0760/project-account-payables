@@ -99,6 +99,12 @@ export interface DiscountRecommendation {
 	discount_percent: number;
 	pay_by: string | null;
 	roi: DiscountRoi;
+	/** The currency THIS row's money is in. `roi.savings` is computed from the
+	 *  offer's own `base_amount`, so it is the OFFER's currency — equal to the
+	 *  response-level `currency` only when `unconvertible` is false. Optional
+	 *  because a response predating the field must still render (the client
+	 *  falls back to a symbol-free figure rather than guessing a code). */
+	currency?: string;
 	/** Whether the optimizer selected this offer under the cash budget. */
 	selected: boolean;
 	/** Running cash outlay through this recommendation in the ranked list. */

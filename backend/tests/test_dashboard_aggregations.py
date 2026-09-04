@@ -81,6 +81,9 @@ def _mk_db(*results):
 #   5.  aging rows (bucket, sum, sum_rep) — SQL-bucketed → .all()
 #   6.  trend rows (month, count, sum, sum_rep) — SQL group → .all()
 #   7.  upcoming payment rows (+ currency/reporting cols)  → .all()
+#   7a. `failed` invoices carrying an approval stamp      → .scalar()
+#       (the touchless-rate split — `failed` is reachable both pre- and
+#       post-review, see `analytics.compute_touchless_rate`)
 #   8.  total paid                        → .scalar()
 #   9.  total pending                     → .scalar()
 #  10.  reporting total paid              → .one() → (amount, unconverted_count)
@@ -99,6 +102,7 @@ def _full_results(
     aging=(),
     trend=(),
     upcoming=(),
+    failed_cleared=0,
     paid=Decimal("0"),
     pending=Decimal("0"),
     reporting_paid=(Decimal("0"), 0),
@@ -115,6 +119,7 @@ def _full_results(
         _r(all_=list(aging)),
         _r(all_=list(trend)),
         _r(all_=list(upcoming)),
+        _r(scalar=failed_cleared),
         _r(scalar=paid),
         _r(scalar=pending),
         _r(one=reporting_paid),

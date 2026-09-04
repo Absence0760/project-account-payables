@@ -1,4 +1,4 @@
-"""Money-typed annotations for response schemas.
+"""Money-typed annotations for request and response schemas.
 
 The DB stores money as ``Numeric(15, 2)`` and the workflow / payment
 code uses ``Decimal`` throughout, but response schemas used to retype
@@ -27,10 +27,10 @@ comfortably below that.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
-from pydantic import PlainSerializer
+from pydantic import BeforeValidator, PlainSerializer, WithJsonSchema
 
 
 def _decimal_to_json_number(value: Decimal | None) -> float | None:
@@ -52,4 +52,97 @@ MoneyAmount = Annotated[
 OptionalMoneyAmount = Annotated[
     Decimal | None,
     PlainSerializer(_decimal_to_json_number, return_type=float | None, when_used="json"),
+]
+
+
+# --------------------------------------------------------------------------- #
+# Inbound money — the request side
+# --------------------------------------------------------------------------- #
+
+
+def parse_exact_money(value: object) -> object:
+    """Parse an INBOUND money value without ever routing it through ``float``.
+
+    ``json.loads`` decodes the request body — or an LLM tool-call's arguments —
+    before any pydantic validator runs, so a JSON *number* carrying a
+    fractional part is already a Python ``float`` by the time this sees it: the
+    rounding has happened and nothing downstream can undo it. Typing the field
+    ``Decimal`` does not help. Pydantic returns ``Decimal('100')`` for a body
+    containing ``100.00000000000000001``, because that literal was a float long
+    before pydantic was involved.
+
+    Only the **string** form round-trips exactly, so that is the shape a
+    fractional amount must arrive in. A JSON integer is admitted as well —
+    ``json.loads`` yields a Python ``int`` for it, which is exact, and it is the
+    shape existing callers already send. A ``float`` is refused with a message
+    naming the fix, rather than silently accepted at whatever value the double
+    happened to round to.
+
+    Two places this is load-bearing, both of which decide where money goes
+    rather than how it is displayed (root ``CLAUDE.md`` § Project invariants):
+
+    * ``discount.OptimizerRequest.cash_budget`` — the budget
+      ``discount_optimizer.optimize`` selects against, i.e. which invoices get
+      paid early.
+    * the cash-flow copilot's plan parameters — ``compute_plan_id`` hashes
+      ``str()`` of each of them, and ``POST /plans/{plan_id}/draft-run`` stages
+      a real ``PaymentRun`` from the plan that id certifies. A rounded figure
+      there is both a different selection AND an id asserting the rounded
+      figure is what the plan was built from.
+
+    Because the preimage is built from ``str()``, this deliberately performs no
+    normalisation: ``"8.00"`` stays ``Decimal("8.00")`` and does not become
+    ``Decimal("8")``. Rescaling here would change the hash of a plan whose
+    parameters had not changed — see
+    ``tests/test_cash_flow_plan_lifecycle.py::test_the_decimal_scale_is_part_of_the_preimage``.
+    """
+    if value is None or isinstance(value, Decimal):
+        return value
+    if isinstance(value, bool):  # `bool` is an `int` — never a money amount.
+        raise ValueError("must be a decimal string, not a boolean")
+    if isinstance(value, float):
+        raise ValueError(
+            'send this amount as a decimal STRING (e.g. "1234.56"); a JSON number '
+            "is parsed as a float and loses exactness before it reaches the server"
+        )
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError("must be a decimal string, not an empty string")
+        try:
+            parsed = Decimal(text)
+        except InvalidOperation:
+            raise ValueError(f"{value!r} is not a valid decimal amount") from None
+        if not parsed.is_finite():
+            raise ValueError("must be a finite decimal amount")
+        return parsed
+    raise ValueError("must be a decimal string")
+
+
+# Advertised to clients — and to the LLM, via `ToolSpec.anthropic_spec`, which
+# derives each tool's input schema straight from `model_json_schema()`. Without
+# this the schema would say `number`, which is an instruction to send the one
+# shape `parse_exact_money` refuses.
+_MONEY_STRING_SCHEMA = {
+    "type": "string",
+    "description": 'An exact decimal amount as a STRING, e.g. "1234.56". Not a JSON number.',
+    "examples": ["1234.56", "250000"],
+}
+
+#: A required inbound money amount, exact by construction.
+ExactMoneyInput = Annotated[
+    Decimal,
+    BeforeValidator(parse_exact_money),
+    WithJsonSchema(_MONEY_STRING_SCHEMA),
+]
+
+#: An optional inbound money amount, exact by construction. The validator is
+#: attached to the whole ``Decimal | None`` (not to the ``Decimal`` arm) so a
+#: refusal reports this field's own message rather than a union error.
+OptionalExactMoneyInput = Annotated[
+    Decimal | None,
+    BeforeValidator(parse_exact_money),
+    WithJsonSchema({"anyOf": [_MONEY_STRING_SCHEMA, {"type": "null"}]}),
 ]

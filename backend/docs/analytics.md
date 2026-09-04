@@ -95,7 +95,27 @@ Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
   review without manual rework (reached `approved` or beyond) over every
   invoice that has finished review (those same states **plus** `rejected`).
   The numerator is a strict subset of the denominator, so the value is always
-  in `[0, 100]` — it can never go negative.
+  in `[0, 100]` — it can never go negative. **Both legs are declared once**, in
+  `services/analytics` (`TOUCHLESS_CLEARED_STATUSES` /
+  `TOUCHLESS_BOUNCED_STATUSES` / `compute_touchless_rate`), because the
+  hand-written copy that used to live in `api/dashboard` had drifted:
+  `sending_to_erp` is reachable ONLY from `approved`, yet it appeared in
+  neither leg, so an invoice sitting in the ERP export hop dropped out of the
+  metric it had already earned a place in — understating the rate on exactly
+  the tenants whose ERP export is slow. `failed` is the one status the pipeline
+  map cannot classify on its own: `VALID_TRANSITIONS` reaches it BOTH from
+  `pending` (extraction failed — never reviewed) and from `sending_to_erp`
+  (approved, then the export failed). The durable `Invoice.approval_date` stamp
+  separates them — a stamped `failed` invoice counts in both legs, an
+  extraction failure in neither, because an invoice that never finished review
+  is evidence neither for nor against touchless processing.
+- `monthly_trend` — invoice count + amount (+ `reporting_amount`) per calendar
+  month, for the **last six calendar months**. The window is anchored to the
+  1st of the month five months back, not `today - 180 days`: a rolling day
+  window against a calendar-month `GROUP BY` never lines up, so the oldest bar
+  was a partial slice of a month — sometimes a seventh, stub bucket of a
+  fortnight's data — that reads as a spend collapse and shifts every single day
+  as the window slides.
 - `upcoming_total_amount` — server-computed total across the same rows behind
   `upcoming_payments` (summed in `Decimal`, converted to `float` exactly once
   at the response boundary). Callers (the mobile dashboard) must read this
@@ -113,11 +133,36 @@ New keys added in a prior iteration:
   pending_count descending. Unassigned steps roll under the
   synthetic `unassigned` approver_id — a non-zero bucket there
   is its own routing-broken signal.
-- `discount_capture` — eligible / captured / missed counts and
-  amounts, with capture_rate_pct. Eligibility comes from
+- `discount_capture` — eligible / captured / **missed / pending** counts and
+  amounts, with `capture_rate_pct`. Eligibility comes from
   `PaymentSchedule.discount_percent`; capture is determined by
   whether the matching completed Payment's `completed_at` ≤
   `discount_date`.
+
+  Three buckets, not two. An eligible invoice is `missed` only once its
+  discount window has **elapsed** without being captured; while the deadline is
+  still ahead (or the schedule carries no `discount_date` at all) the row is
+  `pending` — still fully on the table. This surface was the only one of the
+  consumers of these economics that never applied the elapsed-window gate
+  (`bucket_outflows`' discount-eligible amount, the `early` what-if scenario,
+  `discount_optimizer.optimize` and `discount_offers._tier_achievable` all
+  did), so every newly-scheduled discount landed straight in a growing pile of
+  "forgone savings" that had not been forgone. The rule now has one owner,
+  `analytics.discount_window_open`.
+
+  `capture_rate_pct` is over the DECIDED population (`captured + missed`) and
+  is **`null`, never `0`**, when nothing has been decided — with
+  `insufficient_data: true` beside it. "We have not missed a discount yet" and
+  "we captured none of the discounts we could have" are opposite facts, and 0%
+  renders as the bad one (`docs/decisions.md` §34).
+
+  Money: `captured_amount` / `missed_amount` / `pending_amount` are per-row
+  FACE values (a share of `Invoice.amount`) and mix currencies the moment one
+  eligible invoice is foreign. The figures to render are
+  `*_amount_reporting`, denominated in the response's own
+  `reporting_currency` and resolved by `currency_conversion.reporting_amount_for_row`;
+  a row with no usable rate lock contributes face value and is counted on
+  `unconverted_count` rather than dropped (`docs/decisions.md` §35).
 
 ## CFO metrics (`GET /api/analytics/cfo`)
 
@@ -151,7 +196,15 @@ Response:
   `api/analytics._received_amount`.)
 - `working_capital_impact_5_days` — `avg_daily_outflow × 5`
 - `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor **reaches or** exceeds 25% (configurable; the boundary is inclusive on purpose — a risk flag that stays dark at exactly the configured limit is the wrong direction to be wrong in). **Every share is computed against the whole period's spend**, never a top-N subtotal: `compute_supplier_concentration` derives its denominator from the list it is handed and takes its own `[:10]`/`[:50]` cuts, so the caller must pass the full vendor set and slice only for display. Passing a pre-sliced top-50 made `total_spend` the top-50 subtotal, inflated `top_10_share_pct` / `largest_vendor_share_pct` (and with them `flagged`), and pinned `top_50_share_pct` at exactly `100.0` on any tenant with 50+ vendors. The same rule governs `/drill/spend_concentration`, whose `total_spend` and `share_pct` are computed before `?limit=` is applied — otherwise `limit` silently rebased both and the drill disagreed with the tile it was opened from. Excludes `rejected` invoices (never real spend) — the SAME population its drill-through and the `vendor_spend` export/scheduled report use, so clicking from the tile into either agrees with the number the CFO started from. Also the SAME reporting-currency rollup as the dashboard's `vendor_spend` (see above) — a vendor's multi-currency invoices are converted before summing, never naively added across currencies
-- `fraud_rate_trend` — exceptions / invoices × 100 per month
+- `fraud_rate_trend` — exceptions / invoices × 100 per month. **`rate_pct` is
+  `null` (with `insufficient_data: true`) for a month that booked no
+  invoices** — an empty denominator makes the rate not computable, and
+  returning `0` reported the most reassuring value on the chart for the one
+  shape carrying no information at all. It did that hardest in the case that
+  most warrants a look: zero invoices booked, exceptions raised anyway. Same
+  treatment `cash_conversion_cycle` gets for an unknown leg and the adaptive
+  feedback surface gets under its minimum sample; `docs/decisions.md` §34. The
+  `/cfo` chart renders those months as `—` with a reason line, and draws no bar.
 - `rebate_yield.{yield_pct, annualised_rebates, ...}` — **windowed to the same
   trailing `period_days` as `total_spend`**, which is the denominator it divides
   by and the span `months_in_period` describes. The rebate sum carried no date
@@ -201,10 +254,26 @@ Drill-through (money as exact decimal strings here too — see
 - `POST /api/analytics/forecast_variance` — body `{"months":
   [{"month": "YYYY-MM", "forecast": "100000"}, ...]}`. Server
   fills in `actual` from completed payments and returns
-  `{rows: [{forecast, actual, variance, variance_pct}, ...]}` —
-  the first three money, `variance_pct` a percentage.
+  `{reporting_currency, rows: [{month, forecast, actual, variance,
+  variance_pct, unconverted_count}, ...]}` — the three amounts money,
+  `variance_pct` a percentage, `unconverted_count` a count.
   Forecasts are NOT persisted — the CFO pastes from their FP&A
   tool.
+  - **`actual` is resolved into the org's reporting currency** via
+    `currency_conversion.payment_reporting_amount_sql`, not summed off raw
+    `Payment.amount` — that column is denominated in the INVOICE's currency, so
+    one foreign payment turned the month's actual into a two-currency mixture
+    and then compared it against a forecast typed in a single currency. A
+    payment neither rung can express is EXCLUDED and counted on
+    `unconverted_count`, never added at face value: a variance is a number
+    someone acts on, so it must read as the floor it is (`decisions.md` §35).
+    Same resolver the payments summary, the AML trailing-spend gate and the
+    1099 filing use.
+  - **A malformed `month` is a `422`, not a `500`.** The guarded parse used to
+    cover `int(...)` but not the `date(year, mon, 1)` it fed, so a
+    caller-supplied `"2026-13"` (or `"2026-00"`) escaped as a bare `ValueError`.
+    Both halves are now inside one `try`, and every month-shape rejection on
+    this route answers `422` rather than a mix of `400` and a crash.
 
 **Frontend surface**: `frontend/src/lib/components/analytics/CfoMetrics.svelte`,
 embedded in `/cfo` below the forecast/what-if/cash-position panels (a
@@ -656,12 +725,14 @@ the cadence anchoring).
 
 | File | Coverage |
 |---|---|
-| `tests/test_analytics.py` | 27 cases — every compute_* function: DPO formula, CCC None-on-missing-legs, working-capital monotonicity, supplier concentration flag threshold, fraud-rate zero-invoice safety, rebate annualisation, forecast-variance sign convention, processing-time min-sample collapse, approval-bottleneck rollup + unassigned bucket, discount-capture empty safety |
+| `tests/test_analytics.py` | Every compute_* function: DPO formula, CCC None-on-missing-legs, working-capital monotonicity, supplier concentration flag threshold, fraud-rate **not-computable** on a zero-invoice month (`None`, never `0`), rebate annualisation, forecast-variance sign convention, processing-time min-sample collapse, approval-bottleneck rollup + unassigned bucket, discount-capture three-way split (open window is `pending`, not `missed`) and its no-decided-rows `None` rate |
 | `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
 | `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address; **cadence anchoring** — 30 late ticks in a row leave the 09:00 slot at 09:00, a dormant fortnight catches up to ONE next slot rather than 14 sends, an exactly-due slot still moves forward (no busy-loop), a future slot takes exactly one step, a naive `scheduled_for` reads as UTC |
 | `tests/test_scheduled_reports_api.py` | 23 cases — CRUD round-trip; the created row is what `list_due_schedules` picks up; `report_type` / `cadence` validated against the runner's own registries (create AND patch); recipient list shape-checked / de-duped / bounded / non-empty; our validator message names no address; RBAC (mutations admin-only, reads admin+cfo, ap_manager/ap_clerk refused); tenant isolation (list, get, patch); PII-free audit rows carrying the recipient COUNT; re-enabling a 5-strike-disabled row clears the stale `[retry N]` marker |
 | `tests/test_utc_today.py` | Drift guard — `utc_today()` is the UTC calendar date; an AST scan fails on any `date.today()` / `datetime.today()` / `datetime.date.today()` reappearing in the modules that have converged on it (the cash-flow stack, plus the AP surfaces: discounts, portal, dashboard, payments queue, recurring, workflow, review, extraction, invoice warnings, 1099, Positive Pay, the exporters). The scanner itself is a tested helper — the module-attribute spelling `datetime.date.today()` slipped past the first version, which is how two Positive Pay modules could have been listed as converged while still reading local time, and naive `datetime.now().date()` isn't spelled `today` at all |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
+| `tests/test_dashboard_aggregates.py` | Real-Postgres guards for the four aggregates that were each wrong in their own way: `total_paid` vs its converted `total_paid_reporting` counterpart under mixed currency; `discount_capture`'s elapsed-window gate (open window → `pending`, elapsed → still a `missed`) and its reporting-currency amounts + `unconverted_count`; `touchless_rate` counting `sending_to_erp` and an approval-stamped `failed` while ignoring an extraction-failed one; `monthly_trend` returning six WHOLE calendar months with no partial oldest bar and no seventh stub bucket (both window shapes pinned against a frozen `utc_today`) |
+| `tests/test_analytics_trend_insufficient_data.py` | The two "reported a comfortable number where there was none" surfaces: `compute_fraud_rate_trend` returning `None` + `insufficient_data` for a zero-invoice month (including the zero-invoices-with-exceptions shape) while still reporting a genuine 0%, and end-to-end `null` on the `/cfo` wire; `/forecast_variance` resolving `actual` into the reporting currency under mixed currency, excluding-and-disclosing an unexpressible payment, and answering `422` (not `500`) for `2026-13` / `2026-00` / `2026-99` / `0000-01` / `2026/07` |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |
 | `tests/test_analytics_money_serialization.py` | Money serialisation — a **structural** guard over `/cfo`, the cash-flow trio, both drill-throughs, `/forecast_variance` and `/by-entity`: every response is walked and any JSON *number* whose key isn't in the declared day-count / percentage / count roster fails, so a new money field added as a float can't land silently. Plus the zero-population `/cfo` response (where `0` and `"0"` both read as "nothing here"), the `null` cash-position threshold, and the exact seeded figures surviving the round trip |

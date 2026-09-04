@@ -28,13 +28,17 @@ from app.services.tin_validation_adapters.base import (
     TINValidationResult,
 )
 from app.services.tin_validation_adapters.dispatcher import (
+    UnknownTinValidationProviderError,
     get_tin_validation_adapter,
+    list_available_providers,
     register_tin_validation_adapter,
 )
 
 __all__ = [
     "TINValidationAdapter",
     "TINValidationResult",
+    "UnknownTinValidationProviderError",
     "get_tin_validation_adapter",
+    "list_available_providers",
     "register_tin_validation_adapter",
 ]

@@ -249,9 +249,13 @@ async def test_ship_tenant_requires_every_adapter_to_succeed(tmp_path):
             await audit_log_shipper._ship_tenant("feoh_a", [good, bad])
 
     # The good adapter DID ship (no way to roll back a side-effectful
-    # adapter) — documented at-least-once semantic. But crucially the
-    # DB UPDATE was NOT committed, so the next tick will retry all rows.
-    assert len(mock_adapter.received) == 1
+    # adapter) — documented at-least-once semantic. It sees the row TWICE:
+    # once in the batch, once in the bounded isolation pass the failed batch
+    # triggers (see `test_audit_shipper_poison_row`), which exists so one
+    # unshippable row can't block every newer row for the tenant forever.
+    # Crucially the DB UPDATE was still NOT committed, so the next tick
+    # retries all rows.
+    assert len(mock_adapter.received) == 2
     db_session.commit.assert_not_called()
 
 

@@ -183,21 +183,80 @@ async def purchase_order_status_counts(
     return {"total": sum(by_status.values()), "by_status": by_status}
 
 
+async def _get_scoped_po(
+    db: AsyncSession, po_id: uuid.UUID, entity_id: uuid.UUID | None
+) -> PurchaseOrder:
+    """Resolve one PO within the caller's selected entity, or an opaque 404.
+
+    The by-id route resolved on the primary key alone while the list and the
+    counts beside it were entity-scoped from the day multi-entity Phase 2
+    landed — so the selector was advisory on exactly the route that hands over
+    a subsidiary's order and its line items. `api/payments.py` closed the same
+    shape with `_get_scoped_payment` / `_get_scoped_run`, and
+    `api/positive_pay.py` with `_get_scoped_file`.
+
+    The 404 is deliberately identical to the one a genuinely missing id gets:
+    an out-of-scope id must be indistinguishable from a nonexistent one, or the
+    response enumerates another subsidiary's POs by id. `entity_id is None` (the
+    consolidated view) still sees everything, which is what that view means.
+    """
+    po = (
+        await db.execute(
+            apply_entity_scope(
+                select(PurchaseOrder)
+                .options(selectinload(PurchaseOrder.line_items))
+                .where(PurchaseOrder.id == po_id),
+                PurchaseOrder,
+                entity_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    return po
+
+
 @router.get("/{po_id}")
 async def get_purchase_order(
     po_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Single PO with line items + the invoices that reference its number."""
-    result = await db.execute(
-        select(PurchaseOrder)
-        .options(selectinload(PurchaseOrder.line_items))
-        .where(PurchaseOrder.id == po_id)
-    )
-    po = result.scalar_one_or_none()
-    if not po:
-        raise HTTPException(status_code=404, detail="Purchase order not found")
+    """Single PO with line items + the invoices that reference its number.
+
+    The PO itself is resolved through `_get_scoped_po`, so a sibling
+    subsidiary's id is the same opaque 404 as an unknown one.
+
+    ``linked_invoices`` is confined to the PO's OWN subsidiary
+    (``po.entity_id``) ∪ unstamped rows — the ``services/vendor_matching``
+    shape. It stays keyed on the PO rather than on the caller's header even now
+    that the PO itself is entity-gated, because the consolidated view
+    (``X-Entity-ID`` absent) legitimately reaches every PO and must still show
+    each one only its own subsidiary's invoices.
+
+    It has to be scoped at all because ``po_number`` is NOT unique across
+    subsidiaries — ``services/po_matching`` explicitly designs around that (its
+    own PO lookup is entity-scoped for exactly this reason, and two
+    subsidiaries each numbering from ``PO-1001`` is the documented case).
+    Joining on the number alone therefore listed a UK subsidiary's invoices —
+    number, vendor and amount — on a US-scoped viewer's PO detail: a
+    cross-entity read through a route that never consulted the entity selector
+    at all.
+
+    A NULL ``entity_id`` is admitted on the invoice side. There it means
+    *unstamped* (pre-multi-entity, or created before the row carried an
+    entity), not "shared", and excluding those would hide a real invoice from
+    the one page that links it to its PO — under-showing here is silent, so
+    NULL stays in. A NULL on the PO itself is a passthrough: every
+    single-entity tenant is unchanged.
+
+    The vendor is deliberately NOT also matched on. An invoice whose vendor
+    disagrees with the PO's is precisely what a reviewer opens this panel to
+    see; narrowing by vendor would hide it, and vendor is not a tenancy
+    boundary.
+    """
+    po = await _get_scoped_po(db, po_id, entity_id)
 
     vendor_name: str | None = None
     if po.vendor_id:
@@ -205,7 +264,12 @@ async def get_purchase_order(
         vendor_name = v.scalar_one_or_none()
 
     inv_q = await db.execute(
-        select(Invoice).where(Invoice.po_number == po.po_number).order_by(Invoice.created_at.desc())
+        apply_entity_scope(
+            select(Invoice).where(Invoice.po_number == po.po_number),
+            Invoice,
+            po.entity_id,
+            include_shared=True,
+        ).order_by(Invoice.created_at.desc())
     )
     linked_invoices = [
         {
@@ -280,11 +344,32 @@ async def sync_pos_from_erp(
     skipped = 0
     updated = 0
     for erp_po in erp_pos:
+        # The upsert key is (po_number, org) SCOPED TO THE ENTITY BEING SYNCED
+        # INTO — the second unscoped `po_number` match in this file. `po_number`
+        # is not unique across subsidiaries (`services/po_matching` designs
+        # around that), so matching on the number alone let a sync run under
+        # subsidiary B find subsidiary A's PO and overwrite its total and status
+        # — a cross-entity WRITE, and one that silently re-prices the amount
+        # control 3-way match runs against A's invoices.
+        #
+        # Unstamped rows (NULL entity_id) stay matchable, for the reason
+        # `vendor_matching._candidate_query` gives: excluding them would not
+        # fail loudly, it would quietly create a DUPLICATE PO under the same
+        # number. `limit(1)`, own-entity first, keeps the pick deterministic
+        # and replaces a latent `MultipleResultsFound` (a 500 mid-sync) that
+        # two same-numbered POs in one org could already trigger.
         existing = await db.execute(
-            select(PurchaseOrder).where(
-                PurchaseOrder.po_number == erp_po.po_number,
-                PurchaseOrder.organization_id == org_id,
+            apply_entity_scope(
+                select(PurchaseOrder).where(
+                    PurchaseOrder.po_number == erp_po.po_number,
+                    PurchaseOrder.organization_id == org_id,
+                ),
+                PurchaseOrder,
+                entity_id,
+                include_shared=True,
             )
+            .order_by(PurchaseOrder.entity_id.is_(None), PurchaseOrder.created_at)
+            .limit(1)
         )
         existing_po = existing.scalar_one_or_none()
         if existing_po is not None:

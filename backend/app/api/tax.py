@@ -10,6 +10,7 @@ review ones.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, date, datetime
 
@@ -57,10 +58,27 @@ from app.services.tax_1099_forms import (
     build_form_context,
     render_1099_pdf,
 )
-from app.services.tax_filing_adapters import FilingFormPayload, get_tax_filing_adapter
-from app.services.tin_validation_adapters import get_tin_validation_adapter
+from app.services.tax_filing_adapters import (
+    FilingFormPayload,
+    TaxFilingAdapter,
+    UnknownTaxFilingProviderError,
+    get_tax_filing_adapter,
+)
+from app.services.tax_filing_adapters import (
+    list_available_providers as list_filing_providers,
+)
+from app.services.tin_validation_adapters import (
+    TINValidationAdapter,
+    UnknownTinValidationProviderError,
+    get_tin_validation_adapter,
+)
+from app.services.tin_validation_adapters import (
+    list_available_providers as list_tin_providers,
+)
 from app.tenant import get_tenant, get_tenant_db
 from app.utils.dates import utc_today
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tax", tags=["tax"])
 
@@ -252,6 +270,11 @@ async def verify_vendor_tin(
     """
     vendor = await _get_vendor_or_404(db, vendor_id)
 
+    # Resolve the provider FIRST, before anything on the row moves: a config we
+    # cannot service must leave `tax_id` and `tin_verified_at` exactly as they
+    # were (`decisions.md` §29 — refuse before any state changes).
+    adapter = _require_tin_adapter(org)
+
     # An explicit tax_id in the request updates the stored TIN and validates
     # the new value; otherwise validate whatever is already on the row.
     if body.tax_id is not None:
@@ -259,8 +282,6 @@ async def verify_vendor_tin(
     tin = vendor.tax_id
     if not tin:
         raise HTTPException(status_code=400, detail="Vendor has no TIN on file")
-
-    adapter = get_tin_validation_adapter(_tin_validation_config(org))
     result = await adapter.validate(
         tin=tin,
         legal_name=vendor.name,
@@ -402,7 +423,9 @@ async def file_1099_batch(
     if prior is not None:
         return _filing_response(prior, already_filed=True)
 
-    adapter = get_tax_filing_adapter(_filing_config(org))
+    # Before the slot is claimed: an unresolvable filing partner must not burn
+    # the `(org, idempotency_key)` reservation the honest retry needs.
+    adapter = _require_filing_adapter(org)
 
     # Claim the idempotency slot now, before any partner call. status="pending"
     # is a transient marker overwritten with the real outcome once the
@@ -525,6 +548,68 @@ def _filing_config(org: Organization) -> dict:
     cfg = dict(_tax_settings(org).get("filing") or {})
     cfg.setdefault("provider", app_settings.tax_filing_provider)
     return cfg
+
+
+def _require_tin_adapter(org: Organization) -> TINValidationAdapter:
+    """Resolve the TIN-validation provider or 409 naming the bad value.
+
+    ``get_tin_validation_adapter`` refuses a NAMED provider it has no adapter
+    for rather than resolving to ``mock``, whose verdict is a format check that
+    never reached the IRS (`decisions.md` §29). Refusing here is what keeps
+    ``Vendor.tin_verified_at`` honest: an unresolvable provider leaves the stamp
+    exactly as it was instead of asserting a TIN match nobody performed — the
+    stamp B-notice and 24% backup-withholding decisions are made off.
+
+    409, matching the card dispatcher's refusal: the request is well-formed;
+    the org's tax configuration is in a state that cannot service it. The
+    provider name is admin-supplied config, not PII, and never a TIN.
+    """
+    try:
+        return get_tin_validation_adapter(_tin_validation_config(org))
+    except UnknownTinValidationProviderError as exc:
+        logger.warning(
+            "[tax] TIN-validation provider %r has no registered adapter for org %s",
+            exc.provider,
+            org.id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{exc.provider}' is not a supported TIN-validation provider "
+                f"(one of: {', '.join(list_tin_providers())}). "
+                "Fix it in Organization Settings and retry."
+            ),
+        ) from None
+
+
+def _require_filing_adapter(org: Organization) -> TaxFilingAdapter:
+    """Resolve the 1099 e-filing partner or 409 naming the bad value.
+
+    ``get_tax_filing_adapter`` refuses a NAMED provider it has no adapter for
+    rather than resolving to ``mock``, which "accepts" every batch and returns a
+    ``MOCK-…`` confirmation (`decisions.md` §29). Refusing before the
+    ``Tax1099Filing`` row is inserted keeps the whole record honest: no filing
+    row, no fabricated confirmation number, no ``tax_1099.filed`` audit row
+    asserting a transmission — and, critically, no ``(org, idempotency_key)``
+    slot burned, which would turn the operator's corrected retry into a
+    ``already_filed`` no-op.
+    """
+    try:
+        return get_tax_filing_adapter(_filing_config(org))
+    except UnknownTaxFilingProviderError as exc:
+        logger.warning(
+            "[tax] 1099 filing provider %r has no registered adapter for org %s",
+            exc.provider,
+            org.id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{exc.provider}' is not a supported 1099 e-filing provider "
+                f"(one of: {', '.join(list_filing_providers())}). "
+                "Fix it in Organization Settings and retry."
+            ),
+        ) from None
 
 
 def _tin_type_hint(tax_classification: str | None) -> str | None:

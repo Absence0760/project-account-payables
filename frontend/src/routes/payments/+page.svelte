@@ -717,6 +717,14 @@
 		payment_count: number;
 	}
 	let runs = $state<RunItem[]>([]);
+	// Three states, not two — the same rule the Queue and History tabs in this
+	// same file already follow. "No payment runs yet." is a claim about whether
+	// this tenant has ever moved money; rendered during the first fetch and left
+	// standing forever after a failed one, it read as "you have none" when the
+	// truth was "we could not look". The Runs tab was the last list here with no
+	// loading flag at all.
+	let runsLoading = $state(true);
+	let runsErrored = $state(false);
 
 	/**
 	 * Badge tone per run status — `services/payment_runs`' three claim states
@@ -1061,14 +1069,22 @@
 
 	async function loadRuns() {
 		const token = runsSequence.start();
+		runsLoading = true;
 		try {
 			const data = await api.get<{ items: RunItem[] }>('/api/payments/runs/?page_size=100');
 			if (!runsSequence.canCommit(token)) return; // superseded by a newer load
 			runs = data.items;
+			runsErrored = false;
 		} catch (err) {
 			if (runsSequence.isCurrentRequest(token)) {
+				runsErrored = true;
 				toast(err instanceof Error ? err.message : 'Failed to load payment runs', 'error');
 			}
+		} finally {
+			// `isCurrentRequest`, not `canCommit`: a request superseded by a local
+			// edit must still clear the spinner, or the tab sits on "Loading…"
+			// with no request left to clear it (mirrors `loadQueue`).
+			if (runsSequence.isCurrentRequest(token)) runsLoading = false;
 		}
 	}
 
@@ -1554,10 +1570,19 @@
 		{/if}
 
 	{:else if activeTab === 'runs'}
+		{#if runsErrored}
+			<!-- A failed load is a dead end without a way back: the toast that
+			     reported it has already faded. Same error-with-retry block
+			     `/admin/api-keys` uses. -->
+			<div class="state error" data-testid="runs-error" role="alert">
+				<p>{m('payments.runs.empty.errored')}</p>
+				<button type="button" class="btn-cancel" onclick={loadRuns}>{m('payments.runs.retry')}</button>
+			</div>
+		{:else}
 		<DataTable
 			columns={RUNS_COLUMNS}
 			isEmpty={runs.length === 0}
-			empty={m('payments.runs.empty')}
+			empty={runsLoading ? m('common.loading') : m('payments.runs.empty')}
 			colspan={6}
 		>
 			{#snippet body()}
@@ -1585,6 +1610,7 @@
 				{/each}
 			{/snippet}
 		</DataTable>
+		{/if}
 	{:else if activeTab === 'cards'}
 		{#if cardDashboard}
 			<div class="rebate-grid">
@@ -1823,6 +1849,18 @@
 
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
+
+	/* Error-with-retry block — same shape as `/admin/api-keys`. */
+	.state {
+		color: var(--text-muted);
+		padding: 0.75rem 0;
+	}
+	.state.error {
+		color: var(--danger);
+	}
+	.state.error p {
+		margin: 0 0 8px;
+	}
 
 	/* --- Summary --- */
 

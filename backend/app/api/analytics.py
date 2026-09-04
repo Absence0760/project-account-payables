@@ -1192,8 +1192,18 @@ async def get_cfo_analytics(
             "largest_vendor_share_pct": float(concentration.largest_vendor_share_pct),
             "flagged": concentration.flagged,
         },
-        # `rate_pct` is a percentage; the row's other fields are counts.
-        "fraud_rate_trend": [{**r, "rate_pct": float(r["rate_pct"])} for r in fraud_trend],
+        # `rate_pct` is a percentage; the row's other fields are counts. It is
+        # `null` for a month with no invoices — an empty denominator makes the
+        # rate NOT COMPUTABLE, and the old `Decimal("0")` rendered that as the
+        # most reassuring value on the chart (`docs/decisions.md` §34). The
+        # accompanying `insufficient_data` flag is what the UI renders "—" from.
+        "fraud_rate_trend": [
+            {
+                **r,
+                "rate_pct": float(r["rate_pct"]) if r["rate_pct"] is not None else None,
+            }
+            for r in fraud_trend
+        ],
         "rebate_yield": {
             "rebates_total": _money(rebate["rebates_total"]),
             "total_spend": _money(rebate["total_spend"]),
@@ -1873,6 +1883,7 @@ async def export_report(
 async def post_forecast_variance(
     body: dict,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -1882,24 +1893,53 @@ async def post_forecast_variance(
 
     Forecasts are not persisted — the CFO either pastes from their
     FP&A tool or re-runs the call with adjusted numbers. The
-    actuals-vs-forecast comparison is what we contribute."""
+    actuals-vs-forecast comparison is what we contribute.
+
+    **`actual` is resolved into the org's reporting currency**, not summed off
+    raw `Payment.amount` — that column is denominated in the INVOICE's
+    currency (`currency_conversion.payment_reporting_amount_sql`), so one
+    foreign payment turned the month's actual into a two-currency mixture and
+    then compared it against a forecast the CFO typed in one currency. A
+    payment neither rung can express is EXCLUDED and counted on
+    `unconverted_count` rather than added at face value (`decisions.md` §35):
+    a variance is a number someone acts on, so it must read as the floor it
+    is."""
     rows = body.get("months") or []
     if not isinstance(rows, list):
-        raise HTTPException(status_code=400, detail="`months` must be a list")
+        raise HTTPException(status_code=422, detail="`months` must be a list")
+    reporting_currency = resolve_reporting_currency(org.settings)
+    reported = payment_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        payment_amount=Payment.amount,
+        payment_source_amount=Payment.source_amount,
+        payment_source_currency=Payment.source_currency,
+        invoice_currency=Invoice.currency,
+    )
+    countable = reported.is_expressible
     augmented: list[dict] = []
     for r in rows:
         month = r.get("month")
         if not isinstance(month, str) or len(month) != 7:
-            raise HTTPException(status_code=400, detail="each row needs `month` in YYYY-MM format")
+            raise HTTPException(status_code=422, detail="each row needs `month` in YYYY-MM format")
+        # ONE guarded parse. Splitting the int conversion from the `date()`
+        # construction left the second half unguarded, so a caller-supplied
+        # `"2026-13"` (or `"2026-00"`) sailed through the try/except and blew
+        # up as a bare ValueError → 500 on ordinary bad input.
         try:
             year, mon = (int(x) for x in month.split("-"))
+            start = date(year, mon, 1)
+            end = date(year + (mon // 12), (mon % 12) + 1, 1) - timedelta(days=1)
         except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=400, detail=f"bad month value: {month!r}") from exc
-        start = date(year, mon, 1)
-        end = date(year + (mon // 12), (mon % 12) + 1, 1) - timedelta(days=1)
+            raise HTTPException(status_code=422, detail=f"bad month value: {month!r}") from exc
         actual_q = await db.execute(
             apply_entity_scope(
-                select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                select(
+                    func.coalesce(func.sum(case((countable, reported.amount))), 0),
+                    func.count(case((not_(countable), Payment.id))),
+                )
+                .select_from(Payment)
+                .join(Invoice, Invoice.id == Payment.invoice_id)
+                .where(
                     Payment.status == "completed",
                     Payment.completed_at
                     >= datetime.combine(start, datetime.min.time()).replace(tzinfo=UTC),
@@ -1910,6 +1950,7 @@ async def post_forecast_variance(
                 entity_id,
             )
         )
+        actual_total, unconverted = actual_q.one()
         augmented.append(
             {
                 "month": month,
@@ -1917,11 +1958,13 @@ async def post_forecast_variance(
                 # parses it. `actual` is ours and is kept `Decimal` all the way
                 # in — the same DB-scalar idiom the rest of this module uses.
                 "forecast": r.get("forecast", "0"),
-                "actual": Decimal(str(actual_q.scalar() or 0)),
+                "actual": Decimal(str(actual_total or 0)),
+                "unconverted_count": int(unconverted or 0),
             }
         )
     result = compute_forecast_variance(augmented)
     return {
+        "reporting_currency": reporting_currency,
         "rows": [
             {
                 "month": r["month"],
@@ -1930,7 +1973,11 @@ async def post_forecast_variance(
                 "variance": _money(r["variance"]),
                 # A percentage, not money — stays a JSON number.
                 "variance_pct": float(r["variance_pct"]),
+                # Completed payments in this month whose outflow could not be
+                # expressed in `reporting_currency` and are therefore NOT in
+                # `actual`. Non-zero means the variance is a floor.
+                "unconverted_count": r.get("unconverted_count", 0),
             }
             for r in result
-        ]
+        ],
     }

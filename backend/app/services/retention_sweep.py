@@ -12,7 +12,11 @@ DELETE). So this sweep NEVER deletes audit rows. For the ``audit_log`` class,
 "retention" means *verifying* that rows past the window have been WORM-shipped
 (``shipped_at`` set) and recording a retention manifest (counts) in the audit
 trail — never deletion. Unshipped-but-overdue rows are surfaced in the manifest
-so an operator knows the WORM sink is behind.
+so an operator knows the WORM sink is behind. The manifest is written only when
+the tick has something ACTIONABLE to record — invoices archived, or overdue rows
+the WORM sink has not taken — never merely because overdue audit rows exist,
+which is permanently true once a tenant crosses its window (see the gate's
+comment in :func:`sweep_tenant`).
 
 For deletable business records we soft-archive terminal-state invoices: an
 ``invoices`` row in a terminal state (``done`` / ``paid``) whose age exceeds the
@@ -174,11 +178,30 @@ async def sweep_tenant(
     result.audit_rows_overdue_unshipped = int(overdue_unshipped)
 
     # --- Audited manifest of this sweep -------------------------------------
-    # Only write a row when the sweep actually did / observed something, so an
-    # idle tenant doesn't append a no-op manifest every tick. The details are a
-    # PII-free retention manifest — counts + window months ONLY, never the
-    # archived ids (see the note on the details dict below).
-    if archived or overdue_total:
+    # Only write a row when the sweep actually did / observed something
+    # ACTIONABLE, so an idle tenant doesn't append a no-op manifest every tick.
+    #
+    # The gate is deliberately NOT `overdue_total`. That counter is monotonic
+    # and self-inflating: it counts every `audit_log` row past the window, and
+    # this sweep never deletes an audit row (the migration-0022 BEFORE-DELETE
+    # trigger forbids it, and WORM evidence must not be destroyed anyway). So
+    # once a tenant's oldest audit row crosses its window the condition is
+    # permanently true, a manifest with `invoices_archived: 0` is appended every
+    # tick forever, and each of those manifests is itself an `audit_log` row
+    # that ages past the window and inflates the next tick's count — unbounded
+    # growth in an append-only, undeletable table.
+    #
+    # `overdue_unshipped` is the actionable half of the same observation: rows
+    # past the window that the WORM shipper has NOT taken yet. It is what an
+    # operator must act on, it cannot inflate itself (a manifest written now is
+    # far younger than the window, so it is not overdue and cannot be counted),
+    # and it returns to zero once the sink catches up — at which point the
+    # manifest stops being written. Archival work (`archived`) is the other
+    # actionable signal, and it is unchanged.
+    #
+    # The details are a PII-free retention manifest — counts + window months
+    # ONLY, never the archived ids (see the note on the details dict below).
+    if archived or overdue_unshipped:
         await dispatch_audit(
             db,
             correlation_id=uuid.uuid4(),

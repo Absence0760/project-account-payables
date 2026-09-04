@@ -294,6 +294,176 @@ async def test_optimize_ranks_and_respects_cash_budget(realdb):
     assert body["total_savings_available"] > body["total_savings_selected"]
 
 
+async def _single_tier_offer(realdb, *, amount: str, percent: str) -> str:
+    """One open offer on a fresh invoice, with exactly one tier.
+
+    A single tier keeps the outlay arithmetic deterministic: savings =
+    ``amount * percent / 100`` quantised to 2dp, so the discounted outlay the
+    budget is measured against is an exact figure the test can name.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id, amount=amount)
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": invoice_id,
+                "tiers": [{"days": 10, "percent": percent}],
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    return invoice_id
+
+
+def _selected_invoice_ids(body: dict) -> set[str]:
+    return {r["invoice_id"] for r in body["recommendations"] if r["selected"]}
+
+
+async def test_optimize_cash_budget_is_exact_not_a_rounded_float(realdb):
+    """The budget decides which invoices get paid early — so it must be exact.
+
+    ``POST /optimize`` took a bare ``dict`` and did
+    ``Decimal(str(body["cash_budget"]))``. That *looks* exact, but ``json.loads``
+    had already turned a JSON number into a ``float``, so the value the
+    optimizer compared against was whatever double the literal rounded to.
+    Typing the field ``Decimal`` does not fix a JSON body either — pydantic
+    yields ``Decimal('100')`` from ``100.00000000000000001`` for the same
+    reason. Only the string form round-trips.
+
+    This is not a display value: the rounding changes WHICH INVOICES ARE
+    SELECTED, and the two parses of one wire value disagree below.
+    """
+    invoice_id = await _single_tier_offer(realdb, amount="10000.00", percent="2.00")
+    # savings = 10000.00 * 2% = 200.00 → discounted outlay = exactly 9800.00.
+    outlay = Decimal("9800.00")
+
+    # The wire value under test, and what the old float path made of it.
+    lossy_wire = "9799.999999999999999"
+    assert Decimal(str(float(lossy_wire))) == Decimal("9800.0")  # the rounding, stated
+    assert Decimal(lossy_wire) < outlay  # …and what it rounded away from
+
+    async with realdb.client(key="a", role="cfo") as c:
+        # (a) The budget the OLD float path produced: it covers the outlay, so
+        #     the invoice is selected and the cash goes out.
+        rounded = await c.post("/api/discounts/optimize", json={"cash_budget": "9800.0"})
+        # (b) The budget the caller actually sent: a hair short, so it does not.
+        exact = await c.post("/api/discounts/optimize", json={"cash_budget": lossy_wire})
+        # (c) The wire shape that caused (a) to stand in for (b). It is refused
+        #     now; before, it was accepted and silently became (a).
+        lossy = await c.post("/api/discounts/optimize", json={"cash_budget": 9799.999999999999999})
+
+    assert rounded.status_code == 200, rounded.text
+    assert exact.status_code == 200, exact.text
+    # Different SELECTIONS from the same wire value — the rounding mattered.
+    assert invoice_id in _selected_invoice_ids(rounded.json())
+    assert invoice_id not in _selected_invoice_ids(exact.json())
+    # …so the shape that collapses (b) into (a) cannot be accepted at all.
+    assert lossy.status_code == 422, lossy.text
+
+
+async def test_optimize_refuses_a_json_number_budget(realdb):
+    """The lossy shape is refused outright, not silently accepted rounded.
+
+    A fractional JSON number has already lost exactness before the server sees
+    it, so there is no honest value to proceed with. The 422 names the fix.
+    """
+    await _single_tier_offer(realdb, amount="10000.00", percent="2.00")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/discounts/optimize", json={"cash_budget": 9799.999999999999999})
+    assert resp.status_code == 422, resp.text
+    assert "string" in resp.text.lower()
+
+    async with realdb.client(key="a", role="cfo") as c:
+        # A JSON integer is exact (`json.loads` yields `int`), so it still works —
+        # that is the shape existing callers send.
+        ok = await c.post("/api/discounts/optimize", json={"cash_budget": 100000})
+    assert ok.status_code == 200, ok.text
+
+
+async def test_optimize_rejects_a_malformed_or_misspelled_budget(realdb):
+    """A bare dict on a money path made both of these silent or fatal.
+
+    ``Decimal(str(...))`` on a non-numeric value raised ``InvalidOperation`` and
+    surfaced as a 500; a misspelled key ran the optimizer UNCONSTRAINED and
+    returned a plan committing more cash than the caller asked for. Both are
+    422s now.
+    """
+    await _single_tier_offer(realdb, amount="10000.00", percent="2.00")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        malformed = await c.post("/api/discounts/optimize", json={"cash_budget": "lots"})
+        misspelled = await c.post("/api/discounts/optimize", json={"cashBudget": "100.00"})
+        negative = await c.post("/api/discounts/optimize", json={"cash_budget": "-5.00"})
+
+    assert malformed.status_code == 422, malformed.text
+    assert misspelled.status_code == 422, misspelled.text
+    assert negative.status_code == 422, negative.text
+
+
+async def test_optimize_recommendation_states_its_own_currency(realdb):
+    """Each row names the currency ITS money is in.
+
+    ``roi.savings`` is computed from the offer's own ``base_amount``, so it is
+    the OFFER's currency — which equals the response-level ``currency`` only
+    when ``unconvertible`` is False. Without a per-row code a client cannot
+    label a foreign row's figure at all: it either renders the amount bare or
+    stamps the totals' currency on it, which is how "Save $412.00" came to
+    describe €412.
+    """
+    invoice_id = await _single_tier_offer(realdb, amount="10000.00", percent="2.00")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/discounts/optimize", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    rec = next(r for r in body["recommendations"] if r["invoice_id"] == invoice_id)
+    assert rec["currency"] == "USD"
+    # This row IS in the totals' currency, so the two agree — and the flag says so.
+    assert rec["unconvertible"] is False
+    assert rec["currency"] == body["currency"]
+
+
+async def test_optimize_foreign_recommendation_carries_the_offers_currency(realdb):
+    """A row flagged `unconvertible` names the currency the totals are NOT in.
+
+    This is the row the per-row field exists for: its money is real, it is
+    simply denominated in something the totals could not absorb.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id, amount="10000.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": invoice_id,
+                "tiers": [{"days": 10, "percent": "2.00"}],
+            },
+        )
+    assert created.status_code == 201, created.text
+    offer_id = created.json()["id"]
+    # Denominate the offer in a currency the tenant does not report in. Set on
+    # the row directly: the create route inherits the invoice's currency.
+    async with mk() as s:
+        offer = await s.get(DiscountOffer, uuid.UUID(offer_id))
+        offer.currency = "JPY"
+        await s.commit()
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.post("/api/discounts/optimize", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["currency"] != "JPY"  # the premise: the totals are in something else
+    rec = next(r for r in body["recommendations"] if r["invoice_id"] == invoice_id)
+    assert rec["unconvertible"] is True
+    assert rec["currency"] == "JPY"
+
+
 # ---------------------------------------------------------------------------
 # bulk negotiation
 # ---------------------------------------------------------------------------

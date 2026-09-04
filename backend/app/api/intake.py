@@ -31,6 +31,7 @@ from app.api.deps import (
 from app.api.pagination import PaginationParams, pagination_params
 from app.models.procurement import IntakeRequest, IntakeStatus, PurchaseRequisition
 from app.models.user import User
+from app.models.vendor import Vendor
 from app.schemas.intake import (
     IntakeConvertRequest,
     IntakeConvertResponse,
@@ -100,6 +101,57 @@ def _to_response(r: IntakeRequest) -> IntakeRequestResponse:
         created_at=r.created_at.isoformat() if r.created_at else "",
         updated_at=r.updated_at.isoformat() if r.updated_at else "",
     )
+
+
+async def _resolve_vendor_id(
+    db: AsyncSession,
+    raw: str | None,
+    *,
+    org_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Coerce + VALIDATE the optional ``vendor_id`` link. ``None`` clears it.
+
+    ``vendor_id`` was the only cross-object link on this router that was stored
+    verbatim: a well-formed but non-existent id reached the FK at flush and
+    surfaced as a 500 for input the caller simply got wrong, and a *valid* id
+    belonging to another subsidiary was accepted outright — riding through
+    ``convert_intake_to_requisition`` onto the ``PurchaseRequisition`` and from
+    there onto the ``PurchaseOrder``, so one subsidiary's spend was committed
+    against another's supplier record (and its bank details). Entity isolation
+    is a data-layer invariant, so it is enforced here, before the insert.
+
+    404 on an unknown id — the same shape (and the same opaque body) as
+    ``api/catalogs.py::_resolve_vendor_id`` and
+    ``api/requisitions.py::_resolve_links``, so an out-of-entity id is
+    indistinguishable from a missing one and the response can't enumerate a
+    sibling subsidiary's vendors.
+
+    Unstamped vendors (NULL ``entity_id``) stay selectable, for the reason
+    ``services/vendor_matching._candidate_query`` documents: a NULL there means
+    the row was never stamped with a subsidiary, not that it is private to one,
+    and excluding it would silently push the buyer into creating a duplicate
+    supplier record.
+    """
+    if not raw:
+        return None
+    try:
+        vendor_uuid = uuid.UUID(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid vendor_id")
+    exists = (
+        await db.execute(
+            apply_entity_scope(
+                select(Vendor.id).where(Vendor.id == vendor_uuid, Vendor.organization_id == org_id),
+                Vendor,
+                entity_id,
+                include_shared=True,
+            )
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return vendor_uuid
 
 
 async def _get_intake_or_404(
@@ -226,12 +278,7 @@ async def create_intake(
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
-    vendor_uuid: uuid.UUID | None = None
-    if body.vendor_id:
-        try:
-            vendor_uuid = uuid.UUID(body.vendor_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid vendor_id")
+    vendor_uuid = await _resolve_vendor_id(db, body.vendor_id, org_id=org_id, entity_id=entity_id)
 
     # The requester is always the authenticated caller — an intake can't be
     # raised on someone else's behalf, and the body field is ignored for safety
@@ -317,14 +364,12 @@ async def update_intake(
     # before the pop so the audit condition below doesn't have to re-dump body.
     vendor_id_provided = "vendor_id" in payload
     if vendor_id_provided:
-        raw = payload.pop("vendor_id")
-        vendor_uuid: uuid.UUID | None = None
-        if raw is not None:
-            try:
-                vendor_uuid = uuid.UUID(raw)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid vendor_id")
-        intake.vendor_id = vendor_uuid
+        # Re-pointing the vendor is validated exactly like setting it on create
+        # — against the INTAKE's own entity, not the caller's selector, so a
+        # PATCH can't smuggle in a sibling subsidiary's supplier.
+        intake.vendor_id = await _resolve_vendor_id(
+            db, payload.pop("vendor_id"), org_id=org_id, entity_id=intake.entity_id
+        )
 
     changed: list[str] = []
     for field in _INTAKE_UPDATABLE_FIELDS:
@@ -356,6 +401,27 @@ async def delete_intake(
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     intake = await _get_intake_or_404(db, intake_id)
+    # A converted intake is a record of spend that now EXISTS downstream — a
+    # `PurchaseRequisition` (and, through it, a `PurchaseOrder`). Deleting it
+    # destroys the only link between the ask and the commitment it produced,
+    # and the FK it holds means the attempt lands as a 500 or leaves the
+    # requisition orphaned rather than saying so. Refuse it the way
+    # `DELETE /api/recurring/{id}` refuses a template that has already
+    # generated invoices: 409, naming the terminal state instead.
+    #
+    # This is also what keeps the conversion route's idempotency real. Its
+    # "dangling link — fall through and rebuild" branch exists for a
+    # requisition that vanished; with delete refused at both ends, an intake
+    # can never be re-converted into a SECOND requisition for the same ask.
+    if (
+        intake.status == IntakeStatus.converted
+        or intake.converted_requisition_id is not None
+        or intake.converted_po_id is not None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Intake has been converted; cancel the downstream requisition instead.",
+        )
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),

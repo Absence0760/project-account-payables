@@ -36,6 +36,7 @@ from app.api.pagination import PaginationParams, pagination_params
 from app.models.contract import Contract
 from app.models.procurement import (
     Budget,
+    IntakeRequest,
     PurchaseOrder,
     PurchaseRequisition,
     RequisitionStatus,
@@ -306,6 +307,9 @@ async def create_requisition(
         },
         org_id=org_id,
         currency=body.currency,
+        # The entity the new row will land under — links are validated against
+        # the same subsidiary the requisition itself is stamped with.
+        entity_id=entity_id,
     )
     req = PurchaseRequisition(
         requisition_number=body.requisition_number,
@@ -388,7 +392,17 @@ async def update_requisition(
     to_resolve = {f: payload[f] for f in _UPDATABLE_FK_FIELDS if f in payload}
     if "currency" in payload and "budget_id" not in to_resolve and req.budget_id is not None:
         to_resolve["budget_id"] = str(req.budget_id)
-    resolved = await _resolve_links(db, to_resolve, org_id=org_id, currency=effective_currency)
+    # The REQUISITION's own entity governs, not the caller's `X-Entity-ID`:
+    # otherwise switching the selector would smuggle a sibling subsidiary's
+    # vendor / contract / budget onto the row one request after create refused
+    # it.
+    resolved = await _resolve_links(
+        db,
+        to_resolve,
+        org_id=org_id,
+        currency=effective_currency,
+        entity_id=req.entity_id,
+    )
 
     changed: list[str] = []
     for field in _UPDATABLE_FIELDS:
@@ -431,6 +445,40 @@ async def delete_requisition(
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     req = await _get_or_404(db, req_id)
+    # Refuse once the requisition has produced downstream artifacts, the way
+    # `DELETE /api/recurring/{id}` refuses a template that has already
+    # generated invoices. Two distinct failures, both reachable today:
+    #
+    #   * a CONVERTED requisition owns a `PurchaseOrder` through
+    #     `converted_po_id`. Deleting the requisition does not delete the PO —
+    #     it strands committed spend with nothing recording where it came from,
+    #     and the requisition's own audit trail then describes a row that no
+    #     longer exists.
+    #   * an `IntakeRequest` may point AT this requisition
+    #     (`converted_requisition_id`). That FK RESTRICTs, so the delete came
+    #     back as an IntegrityError — a 500 for a state the API should simply
+    #     name. It is also the only thing standing between the intake's
+    #     "dangling link — rebuild" branch and a double-spend: delete the
+    #     requisition, re-convert the intake, and one ask has bought twice.
+    #     Guarding it here closes that at the application layer instead of
+    #     relying on the FK's ON DELETE mode never changing.
+    if req.converted_po_id is not None or req.status == RequisitionStatus.converted:
+        raise HTTPException(
+            status_code=409,
+            detail="Requisition has been converted to a PO; it cannot be deleted.",
+        )
+    linked_intake = (
+        await db.execute(
+            select(func.count())
+            .select_from(IntakeRequest)
+            .where(IntakeRequest.converted_requisition_id == req.id)
+        )
+    ).scalar() or 0
+    if linked_intake:
+        raise HTTPException(
+            status_code=409,
+            detail="Requisition was converted from an intake request; cancel it instead.",
+        )
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -683,6 +731,7 @@ async def _resolve_links(
     *,
     org_id: uuid.UUID,
     currency: str,
+    entity_id: uuid.UUID | None,
 ) -> dict[str, uuid.UUID | None]:
     """Parse + VALIDATE the optional ``vendor_id`` / ``contract_id`` /
     ``budget_id`` links. Returns only the fields present in ``payload``.
@@ -699,6 +748,31 @@ async def _resolve_links(
     404 on an unknown id (mirrors ``api/catalogs.py::_resolve_vendor_id``);
     422 when the named budget is denominated in another currency, since the
     budget legs never convert.
+
+    **Existence was checked; the entity boundary was not.** All three targets
+    carry ``EntityMixin``, and an org-scoped-only lookup accepted a sibling
+    subsidiary's row on every one of them — the same defect
+    ``api/intake.py::_resolve_vendor_id`` closed one router over, and here it
+    reaches further: ``convert_requisition_to_po`` copies ``vendor_id`` onto the
+    ``PurchaseOrder``, so subsidiary A's spend was committed against B's
+    supplier record (and its bank details); a cross-entity ``budget_id`` charged
+    B's budget for A's commitment, silently distorting the headroom
+    ``/budgets/check`` reports; a cross-entity ``contract_id`` attributed the
+    spend to the wrong subsidiary's contract. Entity isolation is a data-layer
+    invariant, so it is enforced here, before the row is built.
+
+    An out-of-entity id gets the SAME opaque 404 an unknown one does, so the
+    response can't enumerate a sibling subsidiary's vendors, contracts or
+    budgets. It is raised BEFORE the budget-currency 422 for the same reason:
+    a 422 naming the budget's currency would confirm the row exists.
+
+    Unstamped rows (NULL ``entity_id``) stay selectable on all three, the
+    reason ``services/vendor_matching._candidate_query`` documents — a NULL
+    means the row was never stamped with a subsidiary, not that it is private
+    to one, and excluding it would break existing links rather than fail
+    loudly. ``entity_id is None`` (an unstamped requisition, or a caller in the
+    consolidated view whose row lands on the default entity) is a passthrough,
+    so single-entity tenants are unchanged.
     """
     resolved: dict[str, uuid.UUID | None] = {}
     for field, (model, label) in _FK_TARGETS.items():
@@ -710,7 +784,12 @@ async def _resolve_links(
             continue
         row = (
             await db.execute(
-                select(model).where(model.id == value, model.organization_id == org_id)
+                apply_entity_scope(
+                    select(model).where(model.id == value, model.organization_id == org_id),
+                    model,
+                    entity_id,
+                    include_shared=True,
+                )
             )
         ).scalar_one_or_none()
         if row is None:

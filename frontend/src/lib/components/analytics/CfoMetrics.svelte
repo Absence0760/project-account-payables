@@ -40,7 +40,17 @@
 	}
 
 	let maxDpo = $derived(Math.max(1, ...(data?.dpo_trend ?? []).map((r) => r.dpo)));
-	let maxFraudRate = $derived(Math.max(1, ...(data?.fraud_rate_trend ?? []).map((r) => r.rate_pct)));
+	// `rate_pct` is null for a month with no invoices — the rate is not
+	// computable, not zero. Those months contribute nothing to the scale (and
+	// draw no bar) rather than being coerced to 0.
+	let maxFraudRate = $derived(
+		Math.max(
+			1,
+			...(data?.fraud_rate_trend ?? [])
+				.map((r) => r.rate_pct)
+				.filter((v): v is number => v !== null)
+		)
+	);
 
 	// Sequences `load` (latest-issued wins). `periodDays` comes from the 30/90/
 	// 180/365 button group on `/cfo`, so two clicks in quick succession left two
@@ -184,15 +194,39 @@
 				<h3>{m('cfoMetrics.fraudTrend.title')}</h3>
 				<div class="cf-bars">
 					{#each data.fraud_rate_trend as r (r.month)}
+						<!-- A month that booked no invoices has NO exception rate. It used
+						     to arrive as 0 and draw the flattest, most reassuring bar on
+						     the chart — worst of all for the "no invoices but exceptions
+						     raised anyway" month. Same "—" + reason treatment the cash
+						     conversion cycle above already gets. -->
+						{@const unknown = r.rate_pct === null}
 						<div class="cf-bar-row">
 							<span class="cf-bar-label">{formatPeriod(r.month)}</span>
-							<div class="cf-bar-bg" role="img" aria-label={`${r.rate_pct.toFixed(1)}%`}>
-								<div class="cf-bar pending" style="width:{(r.rate_pct / maxFraudRate) * 100}%"></div>
+							<div
+								class="cf-bar-bg"
+								role="img"
+								aria-label={unknown
+									? m('cfoMetrics.fraudTrend.noInvoices')
+									: `${(r.rate_pct ?? 0).toFixed(1)}%`}
+							>
+								{#if !unknown}
+									<div
+										class="cf-bar pending"
+										style="width:{((r.rate_pct ?? 0) / maxFraudRate) * 100}%"
+									></div>
+								{/if}
 							</div>
-							<span class="cf-bar-amount">{r.rate_pct.toFixed(1)}%</span>
+							{#if unknown}
+								<span class="cf-bar-amount cfm-unknown" data-testid="fraud-rate-unknown">—</span>
+							{:else}
+								<span class="cf-bar-amount">{(r.rate_pct ?? 0).toFixed(1)}%</span>
+							{/if}
 						</div>
 					{/each}
 				</div>
+				{#if data.fraud_rate_trend.some((r) => r.insufficient_data)}
+					<p class="cfm-note">{m('cfoMetrics.fraudTrend.noInvoices')}</p>
+				{/if}
 			</div>
 		{/if}
 
@@ -376,5 +410,15 @@
 		font-size: 0.85rem;
 		font-weight: 600;
 		margin: 0 0 12px;
+	}
+	/* Muted, not amber: "this month has no rate" is a fact about the data,
+	   not a warning about the figure beside it. */
+	.cfm-note {
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		margin: 10px 0 0;
+	}
+	.cfm-unknown {
+		color: var(--text-muted);
 	}
 </style>
