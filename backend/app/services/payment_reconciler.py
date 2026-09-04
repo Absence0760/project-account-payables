@@ -420,151 +420,188 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                 age = now - (submitted_at or now)
                 if age < settle_after:
                     continue
-                # Past the absolute max age — give up and mark failed.
-                if age > max_age:
-                    # Lock + re-read the committed state before clobbering it:
-                    # a webhook may have settled this payment between the bulk
-                    # read above and now. Without the lock + re-check the
-                    # reconciler would overwrite the webhook's terminal status
-                    # (and its regulated completed_at) and write a duplicate
-                    # transition audit row.
-                    await db.refresh(payment, with_for_update=True)
-                    if payment.status not in ("submitted", "processing"):
-                        # Nothing to write — end the transaction so the
-                        # `FOR UPDATE` lock is released NOW rather than being
-                        # held across every remaining processor call in this
-                        # tenant. `payment_webhook` takes the same row lock.
-                        await db.rollback()
-                        continue
-                    previous_status = payment.status
-                    payment.status = "failed"
-                    payment.failure_reason = (
-                        f"reconciler_max_age_exceeded after {age.total_seconds() / 3600:.1f}h"
-                    )
-                    # `completed_at` is the regulated SETTLEMENT timestamp. This
-                    # payment never settled — we gave up waiting on a rail that
-                    # never answered — so stamping it here would put a
-                    # settlement time on a payment nobody can show settled.
-                    # `/retry-failed` refuses to overwrite the same two
-                    # timestamps for the same reason.
-                    aged_out += 1
-                    await _audit_reconcile_transition(
-                        db,
-                        org=org,
-                        payment=payment,
-                        previous_status=previous_status,
-                        source="reconciler_aged_out",
-                    )
-                    # `failed` is in `LIVE_PAYMENT_TERMINAL_STATUSES`, so the
-                    # row we just aged out stops holding the invoice's
-                    # live-payment slot — while real money may still be in
-                    # flight at the rail. The invoice stays `payment_scheduled`
-                    # (a payable status), so without this it silently
-                    # reappears in `/payments/queue` and the next run pays it
-                    # again. `payment_reconciliation` is payment-blocking, so
-                    # a fresh run refuses the invoice until a human has
-                    # reconciled the rail — the same fail-closed posture
-                    # `_RETRY_SAFE_FAILURE_PREFIXES` already takes by excluding
-                    # `reconciler_max_age_exceeded` from `/retry-failed`.
-                    await _flag_aged_out_payment(db, org=org, payment=payment, age=age)
-                    await db.commit()
-                    continue
-
-                if not provider_payment_id:
-                    # Submitted with no processor id — the executor
-                    # logged that as a failure already; just advance.
-                    continue
-
-                polled += 1
+                # One payment must not halt the tenant. The lock-and-write
+                # section below can raise — an audit row that will not land,
+                # an asyncpg error mid-commit — and without this the whole
+                # tenant aborted, counted as a `failures` ("tenant we
+                # couldn't reach") that named no payment. Same shape as
+                # `vendor_rescreen` / `scheduled_reports` / `extraction_reaper`:
+                # log the class, roll back so the next payment starts clean,
+                # count it, continue.
                 try:
-                    upstream = await adapter.get_payment_status(provider_payment_id)
-                except Exception as exc:  # noqa: BLE001
-                    # See note above — log the class, not the message. WARNING,
-                    # not INFO: this is the sweep failing to do the one thing it
-                    # exists for, and it is now counted so the tick reports
-                    # `degraded` instead of a clean `polled=N, resolved=0`.
+                    # Past the absolute max age — give up and mark failed.
+                    if age > max_age:
+                        # Lock + re-read the committed state before clobbering it:
+                        # a webhook may have settled this payment between the bulk
+                        # read above and now. Without the lock + re-check the
+                        # reconciler would overwrite the webhook's terminal status
+                        # (and its regulated completed_at) and write a duplicate
+                        # transition audit row.
+                        await db.refresh(payment, with_for_update=True)
+                        if payment.status not in ("submitted", "processing"):
+                            # Nothing to write — end the transaction so the
+                            # `FOR UPDATE` lock is released NOW rather than being
+                            # held across every remaining processor call in this
+                            # tenant. `payment_webhook` takes the same row lock.
+                            await db.rollback()
+                            continue
+                        previous_status = payment.status
+                        payment.status = "failed"
+                        payment.failure_reason = (
+                            f"reconciler_max_age_exceeded after {age.total_seconds() / 3600:.1f}h"
+                        )
+                        # `completed_at` is the regulated SETTLEMENT timestamp. This
+                        # payment never settled — we gave up waiting on a rail that
+                        # never answered — so stamping it here would put a
+                        # settlement time on a payment nobody can show settled.
+                        # `/retry-failed` refuses to overwrite the same two
+                        # timestamps for the same reason.
+                        await _audit_reconcile_transition(
+                            db,
+                            org=org,
+                            payment=payment,
+                            previous_status=previous_status,
+                            source="reconciler_aged_out",
+                        )
+                        # `failed` is in `LIVE_PAYMENT_TERMINAL_STATUSES`, so the
+                        # row we just aged out stops holding the invoice's
+                        # live-payment slot — while real money may still be in
+                        # flight at the rail. The invoice stays `payment_scheduled`
+                        # (a payable status), so without this it silently
+                        # reappears in `/payments/queue` and the next run pays it
+                        # again. `payment_reconciliation` is payment-blocking, so
+                        # a fresh run refuses the invoice until a human has
+                        # reconciled the rail — the same fail-closed posture
+                        # `_RETRY_SAFE_FAILURE_PREFIXES` already takes by excluding
+                        # `reconciler_max_age_exceeded` from `/retry-failed`.
+                        await _flag_aged_out_payment(db, org=org, payment=payment, age=age)
+                        await db.commit()
+                        # Counted only once the transition is DURABLE. A raise
+                        # before this point is rolled back by the per-payment
+                        # handler below, and a counter incremented earlier would
+                        # report work the tenant never kept.
+                        aged_out += 1
+                        continue
+
+                    if not provider_payment_id:
+                        # Submitted with no processor id — the executor
+                        # logged that as a failure already; just advance.
+                        continue
+
+                    polled += 1
+                    try:
+                        upstream = await adapter.get_payment_status(provider_payment_id)
+                    except Exception as exc:  # noqa: BLE001
+                        # See note above — log the class, not the message. WARNING,
+                        # not INFO: this is the sweep failing to do the one thing it
+                        # exists for, and it is now counted so the tick reports
+                        # `degraded` instead of a clean `polled=N, resolved=0`.
+                        logger.warning(
+                            "[payment-reconciler] adapter %s raised on %s: %s",
+                            adapter.provider_name,
+                            payment_id,
+                            exc.__class__.__name__,
+                        )
+                        payment_failures += 1
+                        continue
+
+                    if upstream == known_status:
+                        continue
+                    # Webhooks could have raced us — only accept terminal
+                    # status updates from the poll. The async webhook path
+                    # handles the in-flight transitions.
+                    if upstream in (
+                        PaymentStatus.completed,
+                        PaymentStatus.failed,
+                        PaymentStatus.cancelled,
+                    ):
+                        # Resolve the settled figure BEFORE the lock. This is a
+                        # live rail round trip, and running it under
+                        # `SELECT ... FOR UPDATE` blocked `payment_webhook`'s own
+                        # lock on the very row a webhook was most likely arriving
+                        # for. Same shape as `payment_erp_sync` resolving its ERP
+                        # adapter ahead of the invoice lock.
+                        reported_amount: Decimal | None = None
+                        reported_currency: str | None = None
+                        if upstream is PaymentStatus.completed:
+                            reported_amount, reported_currency = await _prefetch_settlement(
+                                adapter,
+                                provider_payment_id=provider_payment_id,
+                                payment_id=payment_id,
+                            )
+
+                        # Lock + re-read before writing the terminal status (see the
+                        # max-age branch). A webhook that raced us between the bulk
+                        # read and this poll — or during the settlement fetch above —
+                        # already settled the row; skip rather than overwrite its
+                        # completed_at + double-audit. Re-checking the predicate the
+                        # unlocked read used is the two-phase rule, and it is what
+                        # makes moving the fetch out of the lock safe.
+                        await db.refresh(payment, with_for_update=True)
+                        if payment.status not in ("submitted", "processing"):
+                            # Nothing to write — release the lock now.
+                            await db.rollback()
+                            continue
+                        previous_status = payment.status
+                        payment.status = upstream.value
+                        payment.completed_at = now
+                        settlement: SettlementVerification | None = None
+                        if payment.status == "completed":
+                            settlement = await _settle_from_poll(
+                                db,
+                                payment=payment,
+                                adapter=_PREFETCHED_ONLY,
+                                org=org,
+                                reported_amount=reported_amount,
+                                reported_currency=reported_currency,
+                            )
+                        await _audit_reconcile_transition(
+                            db,
+                            org=org,
+                            payment=payment,
+                            previous_status=previous_status,
+                            source="reconciler_poll",
+                            settlement=settlement,
+                        )
+                        # Durable per-payment commit, mirroring
+                        # `api/payments._dispatch_run_payments`. Two things depend
+                        # on it. (1) The `FOR UPDATE` lock taken above is released
+                        # here rather than being held across every remaining
+                        # `await adapter.get_payment_status(...)` in this tenant —
+                        # a webhook for a locked payment used to block on
+                        # `payment_webhook`'s own `FOR UPDATE` for the rest of the
+                        # sweep. (2) A raise later in the loop can only lose ITS
+                        # OWN payment's transition, not every terminal status,
+                        # `completed_at` and audit row the sweep already decided
+                        # for this tenant.
+                        await db.commit()
+                        # Same rule as the aged-out branch, and the ERP hand-off
+                        # rides it: `dispatch_payment_sync` flips the invoice to
+                        # `paid`, so it must never be handed a run whose payment
+                        # is still `submitted` because the audit write raised.
+                        resolved += 1
+                        if payment.status == "completed" and payment.payment_run_id:
+                            runs_to_sync.add(payment.payment_run_id)
+                except Exception as exc:  # noqa: BLE001 — one payment must not halt the tenant
+                    # Class only, never the message — an asyncpg / audit
+                    # error string can echo row values (PII-out-of-logs).
+                    # `payment_id` is the SNAPSHOT, not `payment.id`: the
+                    # rollback below expires the identity map, and this
+                    # handler runs on the row that just failed.
                     logger.warning(
-                        "[payment-reconciler] adapter %s raised on %s: %s",
-                        adapter.provider_name,
+                        "[payment-reconciler] payment=%s reconcile failed in %s: %s",
                         payment_id,
+                        org.db_name,
                         exc.__class__.__name__,
                     )
+                    await db.rollback()
+                    # `payment_failures`, never `failures`: the tenant was
+                    # reached and the rest of its payments are still being
+                    # swept. Both feed `sweep_health.failure_count`, and they
+                    # stay separate fields so an operator can tell one bad row
+                    # from an unreachable tenant.
                     payment_failures += 1
                     continue
-
-                if upstream == known_status:
-                    continue
-                # Webhooks could have raced us — only accept terminal
-                # status updates from the poll. The async webhook path
-                # handles the in-flight transitions.
-                if upstream in (
-                    PaymentStatus.completed,
-                    PaymentStatus.failed,
-                    PaymentStatus.cancelled,
-                ):
-                    # Resolve the settled figure BEFORE the lock. This is a
-                    # live rail round trip, and running it under
-                    # `SELECT ... FOR UPDATE` blocked `payment_webhook`'s own
-                    # lock on the very row a webhook was most likely arriving
-                    # for. Same shape as `payment_erp_sync` resolving its ERP
-                    # adapter ahead of the invoice lock.
-                    reported_amount: Decimal | None = None
-                    reported_currency: str | None = None
-                    if upstream is PaymentStatus.completed:
-                        reported_amount, reported_currency = await _prefetch_settlement(
-                            adapter,
-                            provider_payment_id=provider_payment_id,
-                            payment_id=payment_id,
-                        )
-
-                    # Lock + re-read before writing the terminal status (see the
-                    # max-age branch). A webhook that raced us between the bulk
-                    # read and this poll — or during the settlement fetch above —
-                    # already settled the row; skip rather than overwrite its
-                    # completed_at + double-audit. Re-checking the predicate the
-                    # unlocked read used is the two-phase rule, and it is what
-                    # makes moving the fetch out of the lock safe.
-                    await db.refresh(payment, with_for_update=True)
-                    if payment.status not in ("submitted", "processing"):
-                        # Nothing to write — release the lock now.
-                        await db.rollback()
-                        continue
-                    previous_status = payment.status
-                    payment.status = upstream.value
-                    payment.completed_at = now
-                    resolved += 1
-                    settlement: SettlementVerification | None = None
-                    if payment.status == "completed":
-                        settlement = await _settle_from_poll(
-                            db,
-                            payment=payment,
-                            adapter=_PREFETCHED_ONLY,
-                            org=org,
-                            reported_amount=reported_amount,
-                            reported_currency=reported_currency,
-                        )
-                    if payment.status == "completed" and payment.payment_run_id:
-                        runs_to_sync.add(payment.payment_run_id)
-                    await _audit_reconcile_transition(
-                        db,
-                        org=org,
-                        payment=payment,
-                        previous_status=previous_status,
-                        source="reconciler_poll",
-                        settlement=settlement,
-                    )
-                    # Durable per-payment commit, mirroring
-                    # `api/payments._dispatch_run_payments`. Two things depend
-                    # on it. (1) The `FOR UPDATE` lock taken above is released
-                    # here rather than being held across every remaining
-                    # `await adapter.get_payment_status(...)` in this tenant —
-                    # a webhook for a locked payment used to block on
-                    # `payment_webhook`'s own `FOR UPDATE` for the rest of the
-                    # sweep. (2) A raise later in the loop can only lose ITS
-                    # OWN payment's transition, not every terminal status,
-                    # `completed_at` and audit row the sweep already decided
-                    # for this tenant.
-                    await db.commit()
     finally:
         await engine.dispose()
 

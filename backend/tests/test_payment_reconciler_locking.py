@@ -452,3 +452,119 @@ async def test_a_clean_tick_still_reports_ok():
         assert sweep_health.overall_state([health]) == "ok"
     finally:
         sweep_health.reset()
+
+
+# ---------------------------------------------------------------------------
+# 4. One poisoned payment costs one payment, not the tenant
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_raise_mid_write_costs_one_payment_not_the_whole_tenant(caplog):
+    """The lock-and-write section can raise — an audit row that will not land,
+    an asyncpg error mid-commit. Without per-payment isolation that aborted the
+    tenant: every payment after the bad row went unswept, and the tick reported
+    it as `failures` ("a tenant we couldn't reach") naming no payment.
+
+    Now the bad row is rolled back and counted as `payment_failures`, the rest
+    of the tenant still commits its transitions, and the two counters stay
+    separately visible to `sweep_health`.
+    """
+    from app.services.payment_reconciler import reconcile_once
+
+    poisoned = _payment(provider_payment_id="px_poisoned")
+    healthy = _payment(provider_payment_id="px_healthy")
+    db = _LockTrackingSession([poisoned, healthy])
+
+    ctrl_result = MagicMock()
+    ctrl_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[_org()])))
+    ctrl_db = AsyncMock()
+    ctrl_db.execute = AsyncMock(return_value=ctrl_result)
+
+    async def _audit(_db, *, payment, **_kwargs):
+        if payment is poisoned:
+            raise RuntimeError("audit row for vendor Acme Corp would not land")
+
+    with (
+        patch(
+            "app.services.payment_reconciler.control_session_factory",
+            _session_factory(ctrl_db),
+        ),
+        patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
+        patch(
+            "app.services.payment_reconciler.async_sessionmaker",
+            return_value=_session_factory(db),
+        ),
+        patch("app.services.payment_reconciler.get_payment_adapter", return_value=_adapter()),
+        patch(
+            "app.services.payment_reconciler._audit_reconcile_transition",
+            AsyncMock(side_effect=_audit),
+        ),
+        caplog.at_level(logging.WARNING, logger="app.services.payment_reconciler"),
+    ):
+        mk_engine.return_value = MagicMock(dispose=AsyncMock())
+        result = await reconcile_once()
+
+    # The tenant was reached and swept — this is not a tenant failure.
+    assert result.tenants_scanned == 1
+    assert result.failures == 0
+    assert result.payment_failures == 1
+
+    # The payment AFTER the poisoned one still got its transition. Before the
+    # fix the raise escaped the tenant loop and this row was never touched.
+    assert result.payments_resolved == 1
+    assert healthy.status == "completed"
+    assert healthy.completed_at is not None
+
+    # Rolled back the bad row, committed the good one — in that order, so the
+    # tail is reached rather than starved.
+    assert db.events == ["lock", "rollback", "lock", "commit"]
+    assert db.rollbacks == 1
+    assert db.commits == 1
+    assert db.lock_held is False
+
+    # PII discipline: the exception CLASS, never its message.
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("reconcile failed" in m and str(poisoned.id) in m for m in warnings)
+    assert all("Acme Corp" not in m for m in warnings)
+
+    # Both counters reach sweep_health, and stay distinguishable there.
+    counts = sweep_health.extract_counts(result)
+    assert counts["failures"] == 0
+    assert counts["payment_failures"] == 1
+    assert sweep_health.failure_count(counts) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_transition_is_counted_only_once_it_is_durable():
+    """`payments_resolved` and the ERP hand-off must ride the commit, not the
+    in-memory mutation: a run whose payment rolled back must never reach
+    `dispatch_payment_sync`, which flips the invoice to `paid`."""
+    from app.services.payment_reconciler import _reconcile_tenant
+
+    poisoned = _payment(provider_payment_id="px_poisoned")
+    poisoned.payment_run_id = uuid.uuid4()
+    db = _LockTrackingSession([poisoned])
+
+    async def _audit(_db, **_kwargs):
+        raise RuntimeError("boom")
+
+    with (
+        patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
+        patch(
+            "app.services.payment_reconciler.async_sessionmaker",
+            return_value=_session_factory(db),
+        ),
+        patch("app.services.payment_reconciler.get_payment_adapter", return_value=_adapter()),
+        patch(
+            "app.services.payment_reconciler._audit_reconcile_transition",
+            AsyncMock(side_effect=_audit),
+        ),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync") as mk_sync,
+    ):
+        mk_engine.return_value = MagicMock(dispose=AsyncMock())
+        outcome = await _reconcile_tenant(_org(), datetime.now(UTC))
+
+    assert outcome["resolved"] == 0, "a rolled-back transition must not be counted"
+    assert outcome["payment_failures"] == 1
+    mk_sync.assert_not_awaited()
