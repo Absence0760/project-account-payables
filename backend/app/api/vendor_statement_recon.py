@@ -704,15 +704,20 @@ async def reconciliation_summary(
 
 @router.get("/close-readiness", response_model=CloseReadinessResponse)
 async def close_readiness(
-    materiality: float | None = Query(None, ge=0),
+    materiality: Decimal | None = Query(None, ge=0),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    threshold = Decimal(
-        str(
-            materiality if materiality is not None else settings.statement_recon_materiality_default
-        )
+    # `Decimal`, not `float`: the materiality bound is compared against
+    # per-vendor unreconciled balances summed as exact decimals, and a bound
+    # carried through a float is re-rounded to the nearest double first —
+    # enough to move a vendor sitting exactly on the threshold to the wrong
+    # side of the period-close gate. FastAPI parses the raw query string
+    # straight into `Decimal`, and the platform default already is one, so no
+    # conversion hop remains (money is exact).
+    threshold = (
+        materiality if materiality is not None else settings.statement_recon_materiality_default
     )
 
     # Every OPEN run in scope, newest first — we keep only the most recent per
