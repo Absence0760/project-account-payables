@@ -9,13 +9,13 @@ the wire); tier/ROI percents stay ``Decimal`` for exactness. See
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
-from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+from app.schemas.money import MoneyAmount, OptionalExactMoneyInput, OptionalMoneyAmount
 
 
 def _decimal_to_number(value: Decimal | None) -> float | None:
@@ -28,59 +28,6 @@ PercentNumber = Annotated[
     Decimal,
     PlainSerializer(_decimal_to_number, return_type=float, when_used="json"),
 ]
-
-
-def _parse_exact_money(value: object) -> object:
-    """Parse an INBOUND money value without ever routing it through ``float``.
-
-    ``json.loads`` decodes the request body before any pydantic validator runs,
-    so a JSON *number* carrying a fractional part is already a Python ``float``
-    by the time this sees it — the rounding has happened and nothing downstream
-    can undo it. Typing the field ``Decimal`` does not help: pydantic returns
-    ``Decimal('100')`` for a body containing ``100.00000000000000001``, because
-    that literal was a float long before pydantic was involved.
-
-    Only the **string** form round-trips exactly, so that is the shape a
-    fractional amount must arrive in. A JSON integer is admitted as well —
-    ``json.loads`` yields a Python ``int`` for it, which is exact, and it is the
-    shape existing callers already send. A ``float`` is refused with a message
-    naming the fix, rather than silently accepted at whatever value the double
-    happened to round to: this is a spend decision (`optimize` chooses which
-    invoices get paid early), not a display value. Root ``CLAUDE.md``
-    § Project invariants — money is ``Decimal``, never ``float``.
-
-    Lives here because ``/api/discounts`` is the only request surface that
-    needs it today; promote it to ``app/schemas/money.py`` beside the response
-    annotations the moment a second router wants the same rule.
-    """
-    if value is None or isinstance(value, Decimal):
-        return value
-    if isinstance(value, bool):  # `bool` is an `int` — never a money amount.
-        raise ValueError("must be a decimal string, not a boolean")
-    if isinstance(value, float):
-        raise ValueError(
-            'send this amount as a decimal STRING (e.g. "1234.56"); a JSON number '
-            "is parsed as a float and loses exactness before it reaches the server"
-        )
-    if isinstance(value, int):
-        return Decimal(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            raise ValueError("must be a decimal string, not an empty string")
-        try:
-            parsed = Decimal(text)
-        except InvalidOperation:
-            raise ValueError(f"{value!r} is not a valid decimal amount") from None
-        if not parsed.is_finite():
-            raise ValueError("must be a finite decimal amount")
-        return parsed
-    raise ValueError("must be a decimal string")
-
-
-# An inbound money amount that is exact by construction. See
-# `_parse_exact_money` for why a bare `Decimal` annotation is not enough.
-ExactMoneyInput = Annotated[Decimal, BeforeValidator(_parse_exact_money)]
 
 
 class OfferScope(StrEnum):
@@ -256,10 +203,9 @@ class OptimizerRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Optional — `None` means "no budget", which selects every worthwhile
-    # opportunity. Accepted as an exact decimal string; see `_parse_exact_money`.
-    cash_budget: Annotated[Decimal | None, BeforeValidator(_parse_exact_money)] = Field(
-        default=None, ge=0
-    )
+    # opportunity. Accepted as an exact decimal string; see
+    # `schemas/money.py::parse_exact_money`.
+    cash_budget: OptionalExactMoneyInput = Field(default=None, ge=0)
 
 
 class OptimizerResponse(BaseModel):

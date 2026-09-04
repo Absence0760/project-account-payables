@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.models.invoice import InvoiceStatus
+from app.schemas.money import OptionalExactMoneyInput
 
 # ---------------------------------------------------------------------------
 # list_invoices
@@ -247,7 +248,16 @@ class PaymentWhatifResult(BaseModel):
 
 
 class OptimizeDiscountsParams(BaseModel):
-    cash_budget: Decimal | None = Field(default=None, ge=0)
+    # An exact decimal STRING, not a JSON number — see
+    # `schemas/money.py::parse_exact_money`. These arrive as LLM tool-call
+    # arguments, which `json.loads` decodes before pydantic sees them, so a
+    # fractional JSON number is already a rounded float. The budget decides
+    # which invoices are selected for early payment, so it is a spend decision
+    # rather than a display value. The JSON schema the model is handed says
+    # `string` for the same reason (`ToolSpec.anthropic_spec`), and a float is
+    # refused — `orchestrator.run_tool` turns that into a clean
+    # "Invalid arguments" tool result the model can retry, never a 500.
+    cash_budget: OptionalExactMoneyInput = Field(default=None, ge=0)
     cost_of_capital_pct: Decimal | None = Field(default=None, ge=0, le=100)
 
 
@@ -289,9 +299,17 @@ class OptimizeDiscountsResult(BaseModel):
 class ProposePaymentPlanParams(BaseModel):
     granularity: Literal["day", "week", "month"] = "week"
     horizon_days: int | None = Field(default=None, ge=7, le=730)
-    opening_balance: Decimal | None = None
-    min_balance_threshold: Decimal | None = None
-    cash_budget: Decimal | None = Field(default=None, ge=0)
+    # Exact decimal STRINGs (`schemas/money.py::parse_exact_money`). Two of
+    # these — `min_balance_threshold` and `cash_budget` — are hashed by
+    # `compute_plan_id` via `str()`, and `POST /plans/{plan_id}/draft-run`
+    # stages a real `PaymentRun` from the plan that id certifies. A budget
+    # rounded on the way in is both a different SELECTION and a `plan_id`
+    # asserting the rounded figure is what the plan was built from.
+    # `opening_balance` is outside the preimage (it seeds the displayed curve
+    # only) but is money, and is persisted verbatim by a plan save.
+    opening_balance: OptionalExactMoneyInput = None
+    min_balance_threshold: OptionalExactMoneyInput = None
+    cash_budget: OptionalExactMoneyInput = Field(default=None, ge=0)
     cost_of_capital_pct: Decimal | None = Field(default=None, ge=0, le=100)
 
 

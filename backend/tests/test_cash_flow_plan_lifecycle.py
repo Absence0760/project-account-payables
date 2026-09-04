@@ -680,6 +680,86 @@ async def _assert_nothing_enacted(realdb, *, offer_id):
         assert offer.accepted_at is None
 
 
+async def test_an_exact_budget_survives_propose_then_replay(realdb):
+    """The plan-id round trip holds for a budget no ``float`` could carry.
+
+    This is the guard on the fix, not just on the parse. `compute_plan_id`
+    hashes ``str(cash_budget)``, so propose and replay MUST resolve the same
+    wire value to the same `Decimal` — including its scale. If either side
+    normalised, rounded, or re-scaled it, a plan whose parameters had not
+    changed would start failing its own stale-plan check with a 409 nobody
+    could explain.
+    """
+    _inv_id, offer_id = await _seed_payable_invoice_with_offer(realdb)
+    exact = "9799.999999999999999"
+    assert Decimal(str(float(exact))) != Decimal(exact), (
+        "fixture assumption: this value does not survive a float round-trip"
+    )
+
+    plan = await _propose_plan(realdb, cash_budget=exact)
+    # Echoed back verbatim, digit for digit — that is what makes the replay
+    # reproducible at all.
+    assert str(plan.cash_budget) == exact
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            f"/api/cash-flow/plans/{plan.plan_id}/draft-run", json=_replay_body(plan)
+        )
+    assert resp.status_code in (200, 201), resp.text
+    assert resp.json()["plan_id"] == plan.plan_id
+
+
+async def test_a_float_budget_would_have_certified_a_different_plan(realdb):
+    """Why the budget's exactness reaches money, one surface past the parse.
+
+    Rounding the budget changes the id, and the id is what
+    ``POST /plans/{plan_id}/draft-run`` treats as certifying the figure the
+    plan was built from. So the rounded and the exact budget are two DIFFERENT
+    plans — and a client replaying the exact value against the rounded plan's
+    id is refused, which is precisely the confusion an accepted float would
+    have created silently.
+    """
+    _inv_id, offer_id = await _seed_payable_invoice_with_offer(realdb)
+    exact = "9799.999999999999999"
+    rounded = str(float(exact))  # "9800.0" — what the old parse produced
+
+    exact_plan = await _propose_plan(realdb, cash_budget=exact)
+    rounded_plan = await _propose_plan(realdb, cash_budget=rounded)
+    assert exact_plan.plan_id != rounded_plan.plan_id
+
+    # The exact parameters do not hash to the rounded plan's id, so enacting
+    # under it is a clean 409 rather than a run staged against a budget the
+    # user never chose.
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            f"/api/cash-flow/plans/{rounded_plan.plan_id}/draft-run",
+            json=_replay_body(exact_plan),
+        )
+    assert resp.status_code == 409, resp.text
+    await _assert_nothing_enacted(realdb, offer_id=offer_id)
+
+
+async def test_a_json_number_budget_is_refused_by_every_plan_body_route(realdb):
+    """The wire shape is part of the contract on the enact side too.
+
+    A shipped client already sends these as strings
+    (``frontend/src/lib/api/cashFlow.ts`` ``PlanReplayParams``), so this closes
+    a door nothing walks through — but the two sides have to agree, or the
+    stale-plan guard starts refusing plans that are actually identical.
+    """
+    _inv_id, offer_id = await _seed_payable_invoice_with_offer(realdb)
+    plan = await _propose_plan(realdb, cash_budget="5000.00")
+    body = _replay_body(plan)
+    body["cash_budget"] = 5000.00  # a JSON number, not a decimal string
+
+    async with realdb.client(key="a", role="admin") as c:
+        for route in _PLAN_BODY_ROUTES:
+            resp = await c.post(f"/api/cash-flow/plans/{plan.plan_id}/{route}", json=body)
+            assert resp.status_code == 422, f"{route}: {resp.text}"
+            assert "string" in resp.text.lower()
+    await _assert_nothing_enacted(realdb, offer_id=offer_id)
+
+
 @pytest.mark.parametrize("route", _PLAN_BODY_ROUTES)
 @pytest.mark.parametrize(("field", "value"), _TAMPERS, ids=[t[0] for t in _TAMPERS])
 async def test_a_tampered_replay_parameter_is_refused_on_every_plan_route(

@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.money import OptionalExactMoneyInput
+
 
 class CashFlowPlanReplay(BaseModel):
     """The plan-defining parameters read off the `propose_payment_plan` tool
@@ -31,8 +33,18 @@ class CashFlowPlanReplay(BaseModel):
 
     granularity: Literal["day", "week", "month"] = "week"
     horizon_days: int | None = Field(default=None, ge=7, le=730)
-    min_balance_threshold: Decimal | None = None
-    cash_budget: Decimal | None = Field(default=None, ge=0)
+    # Exact decimal STRINGs, parsed the same way `ProposePaymentPlanParams`
+    # parses them (`schemas/money.py::parse_exact_money`). The two sides MUST
+    # agree: `compute_plan_id` hashes `str()` of each, so a replay that parsed
+    # a budget differently from the propose that issued the id would fail the
+    # stale-plan check on a plan that had not actually changed. The parser
+    # normalises nothing for the same reason — `"8.00"` stays `Decimal("8.00")`
+    # (see `test_the_decimal_scale_is_part_of_the_preimage`). A shipped client
+    # already sends these as strings (`frontend/src/lib/api/cashFlow.ts`
+    # `PlanReplayParams`), so refusing a JSON number closes a door nothing
+    # walks through.
+    min_balance_threshold: OptionalExactMoneyInput = None
+    cash_budget: OptionalExactMoneyInput = Field(default=None, ge=0)
     cost_of_capital_pct: Decimal | None = Field(default=None, ge=0, le=100)
 
 
@@ -93,7 +105,7 @@ class CashFlowPlanSaveRequest(CashFlowPlanReplay):
       lookup, so two plans may share one.
     """
 
-    opening_balance: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
+    opening_balance: OptionalExactMoneyInput = Field(default=None, max_digits=15, decimal_places=2)
     label: str | None = Field(default=None, max_length=200)
 
     # The parent's three plan-defining params are unbounded there because a
@@ -102,8 +114,16 @@ class CashFlowPlanSaveRequest(CashFlowPlanReplay):
     # are bounded to those columns: without it an out-of-range value reaches
     # Postgres and raises NumericValueOutOfRangeError — a 500 for what is really
     # a 422.
-    min_balance_threshold: Decimal | None = Field(default=None, max_digits=15, decimal_places=2)
-    cash_budget: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    # Re-declared, so the parent's exact-string parsing has to be re-declared
+    # WITH them: a subclass field replaces the parent's annotation outright, and
+    # a save that parsed a budget differently from the replay it extends would
+    # hash to a different `plan_id` than the snapshot it is filing under.
+    min_balance_threshold: OptionalExactMoneyInput = Field(
+        default=None, max_digits=15, decimal_places=2
+    )
+    cash_budget: OptionalExactMoneyInput = Field(
+        default=None, ge=0, max_digits=15, decimal_places=2
+    )
     cost_of_capital_pct: Decimal | None = Field(
         default=None, ge=0, le=100, max_digits=5, decimal_places=2
     )
