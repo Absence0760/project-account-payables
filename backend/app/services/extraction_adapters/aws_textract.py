@@ -1,4 +1,18 @@
-"""AWS Textract extraction adapter — BYOK option for customers on AWS."""
+"""AWS Textract extraction adapter — BYOK option for customers on AWS.
+
+Textract is the one extraction provider with no async client: every other
+adapter in this registry (and in the other twenty) talks to its provider over
+``httpx.AsyncClient``, but boto3 is synchronous. Constructing the client
+resolves the credential chain (which can reach the instance-metadata endpoint)
+and ``analyze_expense`` is a full HTTPS round trip against a multi-second OCR
+service — so calling either inline from an ``async def`` occupies the event
+loop for that whole window and every other in-flight request on the worker
+waits behind it. Both are handed to ``asyncio.to_thread``, the same treatment
+``services/storage``'s ``_put_object`` and the three ``*_dispatch`` SQS sends
+already get. ``tests/test_sqs_dispatch_nonblocking.py`` is the drift guard.
+"""
+
+import asyncio
 
 from app.services.extraction_adapters.base import (
     ExtractedField,
@@ -66,19 +80,9 @@ class AWSTextractAdapter(ExtractionAdapter):
                 success=False, error="No file bytes provided", provider=self.provider_name
             )
 
-        # Call Textract AnalyzeExpense
+        # Call Textract AnalyzeExpense — off the loop thread (see module docstring).
         try:
-            from app.config import settings
-
-            textract = boto3.client(
-                "textract",
-                aws_access_key_id=self.config.get("aws_access_key_id"),
-                aws_secret_access_key=self.config.get("aws_secret_access_key"),
-                endpoint_url=settings.aws_endpoint_url or None,
-                region_name=self.config.get("aws_region", "us-east-1"),
-            )
-
-            response = textract.analyze_expense(Document={"Bytes": file_bytes})
+            response = await asyncio.to_thread(self._analyze_expense, boto3, file_bytes)
         except Exception as exc:
             return ExtractionResult(
                 success=False,
@@ -143,21 +147,39 @@ class AWSTextractAdapter(ExtractionAdapter):
 
         return result
 
+    def _client(self, boto3):
+        """Build the Textract client. **Synchronous** — call it only from a
+        worker thread: boto3 resolves the credential chain here, which loads
+        botocore's on-disk service model and can reach the instance-metadata
+        endpoint."""
+        from app.config import settings
+
+        return boto3.client(
+            "textract",
+            aws_access_key_id=self.config.get("aws_access_key_id"),
+            aws_secret_access_key=self.config.get("aws_secret_access_key"),
+            endpoint_url=settings.aws_endpoint_url or None,
+            region_name=self.config.get("aws_region", "us-east-1"),
+        )
+
+    def _analyze_expense(self, boto3, file_bytes: bytes) -> dict:
+        """The blocking Textract round trip. Runs on a worker thread."""
+        return self._client(boto3).analyze_expense(Document={"Bytes": file_bytes})
+
+    def _probe(self, boto3) -> bool:
+        """The blocking connection probe. Runs on a worker thread."""
+        client = self._client(boto3)
+        # Cheapest possible check — the client exposes the operation we need.
+        # No network call: a real probe would cost an OCR job.
+        return hasattr(client, "get_expense_analysis")
+
     async def test_connection(self) -> bool:
+        """Probe the credentials. Awaited directly by
+        ``POST /api/organization/test-extraction`` on the request path, so the
+        blocking client construction goes to a worker thread."""
         try:
             import boto3
 
-            from app.config import settings
-
-            textract = boto3.client(
-                "textract",
-                aws_access_key_id=self.config.get("aws_access_key_id"),
-                aws_secret_access_key=self.config.get("aws_secret_access_key"),
-                endpoint_url=settings.aws_endpoint_url or None,
-                region_name=self.config.get("aws_region", "us-east-1"),
-            )
-            # Simple check — list adapters (lightweight call)
-            textract.get_expense_analysis  # just check the method exists
-            return True
+            return await asyncio.to_thread(self._probe, boto3)
         except Exception:
             return False
