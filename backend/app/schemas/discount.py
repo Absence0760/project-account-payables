@@ -216,3 +216,9 @@ class DiscountDashboard(BaseModel):
     # Open offers excluded from `projected_savings` because they are denominated
     # in a currency other than `currency` — never summed in at face value.
     unconvertible_offer_count: int = 0
+    # The same honesty for the two realised figures: `captured_amount` and
+    # `missed_amount` count only offers denominated in `currency`, and these say
+    # how many were left out. A bare cross-currency SUM presented under one code
+    # is not a smaller number than the truth, it is a different quantity.
+    excluded_captured_count: int = 0
+    excluded_missed_count: int = 0

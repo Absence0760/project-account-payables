@@ -56,6 +56,7 @@ from app.schemas.discount import (
 )
 from app.services import discount_offers as offers_svc
 from app.services.audit_dispatch import dispatch_audit
+from app.services.currency_conversion import resolve_reporting_currency
 from app.services.discount_auto_trigger import _resolve_due_date, _tier_deadline
 from app.services.discount_optimizer import OfferOpportunity, optimize
 from app.services.discount_roi import compute_roi, days_between
@@ -94,7 +95,21 @@ _OPEN_FOR_DISCOUNT = (
 
 
 def _org_currency(org: Organization) -> str:
-    return ((org.settings or {}).get("reporting_currency") or "USD").upper()
+    """The org's reporting currency, via the one canonical resolver.
+
+    This used to read `settings.reporting_currency` alone and fall back to a
+    hardcoded "USD", which diverged from `resolve_reporting_currency` in two
+    ways that both mislabel money: it ignored the rest of the resolution chain
+    (`payments.home_currency`, then `invoice_defaults.currency`), so an org that
+    set a home currency but no explicit reporting currency had every discount
+    figure stamped USD; and it ignored the platform default
+    (`FEOH_REPORTING_CURRENCY_DEFAULT`), so a non-USD deployment's fallback was
+    wrong too.
+
+    Kept as a named wrapper rather than inlined at the seven call sites so the
+    delegation is visible and there is one place to look.
+    """
+    return resolve_reporting_currency(org.settings)
 
 
 def _cost_of_capital(org: Organization) -> Decimal:
@@ -710,17 +725,49 @@ async def dashboard(
     def _scope(q):
         return apply_entity_scope(q, DiscountOffer, entity_id)
 
-    # Captured.
+    # The whole rollup is reported under ONE currency code, so every money
+    # figure in it must be denominated in that code. `captured_amount` and
+    # `missed_amount` were bare cross-currency SUMs stamped with the reporting
+    # currency: an org running USD + EUR offers got the two added together and
+    # labelled USD — not an approximation but a different quantity, and one
+    # that silently changed whenever the currency mix did. `projected_savings`
+    # in this same response already filtered (the optimizer takes a
+    # `reporting_currency` and reports `unconvertible_count`), so one field was
+    # currency-correct while the two beside it were not.
+    #
+    # Deliberately filtered rather than converted: these are historical
+    # realised figures, and fetching an FX rate on a dashboard read would make
+    # the number non-deterministic (`services/cashflow` refuses the same trade
+    # for the same reason). Counts of what was left out ride along instead, so
+    # a partial figure is visibly partial.
+    reporting_currency = _org_currency(org)
+
+    def _in_reporting_currency(q):
+        return q.where(func.upper(DiscountOffer.currency) == reporting_currency)
+
+    # Captured — counted and summed only in the reporting currency.
     captured_count, captured_amount = (
         await db.execute(
             _scope(
-                select(
-                    func.count(),
-                    func.coalesce(func.sum(DiscountOffer.captured_amount), 0),
-                ).where(DiscountOffer.status == OFFER_STATUS_CAPTURED)
+                _in_reporting_currency(
+                    select(
+                        func.count(),
+                        func.coalesce(func.sum(DiscountOffer.captured_amount), 0),
+                    ).where(DiscountOffer.status == OFFER_STATUS_CAPTURED)
+                )
             )
         )
     ).one()
+    excluded_captured_count = (
+        await db.execute(
+            _scope(
+                select(func.count()).where(
+                    DiscountOffer.status == OFFER_STATUS_CAPTURED,
+                    func.upper(DiscountOffer.currency) != reporting_currency,
+                )
+            )
+        )
+    ).scalar() or 0
 
     # Missed (declined + expired) — count + the discount that *would* have been
     # captured at each offer's best tier.
@@ -728,13 +775,25 @@ async def dashboard(
         (
             await db.execute(
                 _scope(
-                    select(DiscountOffer.base_amount, DiscountOffer.tiers).where(
-                        DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED])
+                    _in_reporting_currency(
+                        select(DiscountOffer.base_amount, DiscountOffer.tiers).where(
+                            DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED])
+                        )
                     )
                 )
             )
         ).all()
     )
+    excluded_missed_count = (
+        await db.execute(
+            _scope(
+                select(func.count()).where(
+                    DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED]),
+                    func.upper(DiscountOffer.currency) != reporting_currency,
+                )
+            )
+        )
+    ).scalar() or 0
     missed_count = len(missed_rows)
     missed_amount = Decimal("0")
     for base_amount, tiers in missed_rows:
@@ -766,9 +825,9 @@ async def dashboard(
         cash_budget=None,
         cost_of_capital_pct=_cost_of_capital(org),
         today=today,
-        # `projected_savings` below is reported with `currency=_org_currency(org)`,
+        # `projected_savings` below is reported with `currency=reporting_currency`,
         # so it must only sum offers actually denominated in it.
-        reporting_currency=_org_currency(org),
+        reporting_currency=reporting_currency,
     )
 
     total = (captured_count or 0) + missed_count
@@ -786,6 +845,8 @@ async def dashboard(
         capture_rate_pct=capture_rate,
         open_offer_count=len(open_offers),
         projected_savings=result.total_savings_selected,
-        currency=_org_currency(org),
+        currency=reporting_currency,
         unconvertible_offer_count=result.unconvertible_count,
+        excluded_captured_count=excluded_captured_count,
+        excluded_missed_count=excluded_missed_count,
     )

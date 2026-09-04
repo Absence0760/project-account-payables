@@ -389,3 +389,41 @@ scope filter an operator with subsidiary A selected could raise an offer under
 A against subsidiary B's invoice — visible in A's queue while pricing B's
 payable. Advisory data, never money, but the sibling money path was fixed for
 exactly this shape. An out-of-scope id is the same opaque 404 as a missing one.
+
+## Currency integrity
+
+Every money figure on the discounting surfaces is denominated in the org's
+**reporting currency**, resolved by the one canonical
+`currency_conversion.resolve_reporting_currency` (explicit
+`settings.reporting_currency` → `payments.home_currency` →
+`invoice_defaults.currency` → `FEOH_REPORTING_CURRENCY_DEFAULT`).
+`api/discounts._org_currency` is a thin named wrapper over it. It previously
+read the first key alone and fell back to a hardcoded `"USD"`, so an org that
+set a home currency but no explicit reporting currency had every discount
+figure stamped USD, and a non-USD deployment's platform default was ignored.
+
+`GET /api/discounts/dashboard` reports **one** currency code, so every money
+field in it aggregates only rows denominated in that code:
+
+| Field | Population |
+|---|---|
+| `captured_amount` / `captured_count` | captured offers in the reporting currency |
+| `missed_amount` / `missed_count` | declined + expired offers in the reporting currency |
+| `projected_savings` | open offers in the reporting currency (via the optimizer) |
+| `excluded_captured_count` / `excluded_missed_count` / `unconvertible_offer_count` | how many rows each figure left out |
+
+`captured_amount` and `missed_amount` were previously bare cross-currency
+`SUM`s stamped with the reporting currency, while `projected_savings` in the
+same response was already filtered — one response carried one currency-correct
+figure and two that were not. A cross-currency sum under a single code is not
+an approximation of the truth but a different quantity, and it moves silently
+whenever the currency mix does.
+
+The figures are **filtered rather than converted** on purpose: these are
+historical realised amounts, and fetching an FX rate during a dashboard read
+would make the number non-deterministic (`services/cashflow` refuses the same
+trade for the same reason, see `docs/cash-flow-copilot.md` §12). The excluded
+counts ride along so a partial figure is visibly partial rather than quietly
+short. `capture_rate_pct` is computed over the same reporting-currency
+population as the counts beside it, so every field in the response describes
+one set.
