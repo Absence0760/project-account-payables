@@ -675,7 +675,14 @@ async def _vendor_name(db: AsyncSession, vendor_id: uuid.UUID) -> str | None:
 @router.get("/change-requests/counts")
 async def change_request_counts(
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # EXACTLY the queue list's gate (decisions §48). It admitted ROLE_CFO while
+    # `list_change_requests` does not, so a CFO could read how many bank
+    # redirects were staged for review without being able to see — or act on —
+    # any of them. That is the wrong direction of the §48 mismatch: not a chip
+    # that cannot explain its rows, but the size of a fraud-review queue
+    # readable by a role deliberately kept out of it. The nav entry and the
+    # page already exclude CFO, so nothing on screen depended on the wider gate.
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Status tallies for the vendor change-request (dual-control) queue.
 

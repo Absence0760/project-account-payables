@@ -1963,6 +1963,32 @@ cannot explain them, which is a worse failure than the count simply being
 unavailable — and the frontend already latches an unavailable count back to
 pre-counts behaviour.
 
+**Amended 2026-09-04 — the contract is now enforced, and the RBAC clause runs
+both ways.** All three parts of the above are asserted by
+`backend/tests/test_whole_set_kpi_rollups.py`, which discovers `/counts`
+surfaces off the mounted OpenAPI schema (and each handler off its generated
+`operationId`) so a new one is covered without editing the file. Stating the
+contract was not enough: three violations were found the day the guard was
+written — the payments History chips tallying the whole entity while the list
+was searched, the vendors chips hand-rolling a predicate set that had already
+diverged on `source`, and the purchase-order pair running two copies of the
+same predicates that disagreed on a malformed `vendor_id` (a 400 from one, a
+500 from the other).
+
+The RBAC clause is checked in **both** directions, which the original entry did
+not spell out. It argued the tighter case (a tally a reader of the rows cannot
+reach). The looser case is worse and had actually shipped:
+`GET /api/vendors/change-requests/counts` admitted `ROLE_CFO` while its queue
+does not, so a role deliberately excluded from the dual-control bank-change
+review could still read how many redirects were staged. A tally reachable by
+more callers than the rows it counts discloses the size of a set they cannot
+see — for a fraud-review queue that is the whole point of the exclusion.
+
+One exemption is legitimate and is recorded in the guard rather than assumed: a
+list offering **no** narrowing filter has no predicate set for a shared builder
+to protect. The change-request queue is the only such surface today, and the
+exemption fails if that queue ever gains a real filter.
+
 ## 49. A blocked row names the exception type, never the exception's description
 
 **Decided:** 2026-08-19 · `backend/app/api/payments.py`, `backend/app/services/payment_runs.py`

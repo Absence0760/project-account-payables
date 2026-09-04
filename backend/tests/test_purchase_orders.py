@@ -248,12 +248,22 @@ async def test_counts_honours_the_vendor_filter(realdb):
     assert resp.json() == {"total": 2, "by_status": {"open": 2}}
 
 
-async def test_counts_rejects_a_malformed_vendor_id(realdb):
-    """A garbage filter value is a 400, not the 500 an unguarded
-    `uuid.UUID(...)` would raise out of the handler."""
+async def test_a_malformed_vendor_id_is_a_client_error_on_both_endpoints(realdb):
+    """A garbage filter value must never be the 500 an unguarded
+    `uuid.UUID(...)` raises out of a handler.
+
+    This previously asserted a hand-rolled 400 on `/counts` alone — and the
+    LIST endpoint, running the same predicate from its own copy, still raised
+    that 500. Both now declare `vendor_id: uuid.UUID`, so FastAPI refuses a
+    malformed value at the boundary with its own 422 before either handler
+    runs. The assertion's intent is unchanged (a client error, not a crash) and
+    now covers the endpoint that was actually broken; only the mechanism moved,
+    from hand-rolled validation in one handler to the boundary for both.
+    """
     async with realdb.client(key="a", role="ap_manager") as c:
-        resp = await c.get("/api/purchase-orders/counts", params={"vendor_id": "not-a-uuid"})
-    assert resp.status_code == 400
+        for path in ("/api/purchase-orders", "/api/purchase-orders/counts"):
+            resp = await c.get(path, params={"vendor_id": "not-a-uuid"})
+            assert resp.status_code == 422, f"{path} returned {resp.status_code}"
 
 
 async def test_counts_empty_set_is_zero_not_an_error(realdb):

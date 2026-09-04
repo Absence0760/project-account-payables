@@ -44,6 +44,7 @@ Requires the dev Postgres (``pnpm db:up``); skips otherwise, like every other
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from datetime import date, timedelta
 from decimal import Decimal
@@ -204,6 +205,36 @@ async def _await_row_lock_wait(mk, *, timeout: float = 15.0) -> tuple[str, str] 
             return (row[0] or "", row[1] or "")
         await asyncio.sleep(0.05)
     return None
+
+
+@contextlib.asynccontextmanager
+async def _running_sweep(coro, *, release: asyncio.Event | None = None):
+    """Run a sweep as a task whose lifetime ends with the ``with`` block.
+
+    Every test below parks the sweep mid-transaction, while it holds a row
+    lock, in order to observe the block from a third session. A failed
+    assertion inside such a block must not leave that task parked: the
+    harness's per-test reset TRUNCATEs `discount_offers`, which needs an ACCESS
+    EXCLUSIVE lock and would queue behind the orphaned transaction forever — so
+    one failed assertion would surface as a HUNG suite rather than a failed
+    test, in whatever unrelated file happened to run next.
+
+    Releases the gate (so a parked sweep can finish), then awaits the task,
+    cancelling it if it will not. Bounded, and swallows the task's own
+    exception so the ORIGINAL assertion failure is what the test reports.
+    """
+    task = asyncio.create_task(coro)
+    try:
+        yield task
+    finally:
+        if release is not None:
+            release.set()
+        try:
+            await asyncio.wait_for(task, timeout=30)
+        except BaseException:  # noqa: BLE001 - cleanup must not mask the real failure
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
 
 
 # ---------------------------------------------------------------------------
@@ -372,24 +403,22 @@ async def test_sweep_blocks_on_a_humans_uncommitted_row_lock_and_then_loses(real
             .values(status=OFFER_STATUS_DECLINED)
         )
 
-        sweep = asyncio.create_task(
+        async with _running_sweep(
             discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
-        )
+        ) as sweep:
+            waiting = await _await_row_lock_wait(watcher_mk)
+            assert waiting is not None, "the sweep never blocked — the claim took no row lock"
+            blocked_sql, locktype = waiting
+            assert "discount_offers" in blocked_sql.lower()
+            assert locktype in _ROW_LOCK_TYPES, (
+                "the sweep is not waiting on a ROW lock; the claim must take FOR "
+                f"UPDATE at the point of mutation. Waiting on {locktype}: {blocked_sql}"
+            )
+            assert not sweep.done()
 
-        waiting = await _await_row_lock_wait(watcher_mk)
-        assert waiting is not None, "the sweep never blocked — the claim took no row lock"
-        blocked_sql, locktype = waiting
-        assert "discount_offers" in blocked_sql.lower()
-        assert locktype in _ROW_LOCK_TYPES, (
-            "the sweep is not waiting on a ROW lock; the claim must take FOR "
-            f"UPDATE at the point of mutation. Waiting on {locktype}: {blocked_sql}"
-        )
-        assert not sweep.done()
-
-        # Release: the human's decision lands.
-        await human.commit()
-
-    captured = await sweep
+            # Release: the human's decision lands.
+            await human.commit()
+            captured = await sweep
 
     assert captured == 0
     row = await _read(mk, offer_id)
@@ -438,23 +467,28 @@ async def test_a_human_arriving_while_the_sweep_holds_the_claim_blocks_and_sees_
             await human.rollback()
 
     with patch.object(discount_auto_trigger, "dispatch_audit", _hold_after_audit):
-        sweep = asyncio.create_task(
-            discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
-        )
-        await asyncio.wait_for(claimed.wait(), timeout=15)
+        async with _running_sweep(
+            discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const),
+            release=release,
+        ) as sweep:
+            # Inside the manager, so a timeout HERE still releases the gate and
+            # reaps the task. Previously this ran before the try/finally, so a
+            # slow runner missing the 15s window orphaned a locked transaction.
+            await asyncio.wait_for(claimed.wait(), timeout=15)
 
-        human = asyncio.create_task(_human_locking_read())
-        try:
-            waiting = await _await_row_lock_wait(watcher_mk)
-            assert waiting is not None, "the human was not blocked — the sweep holds no row lock"
-            assert waiting[1] in _ROW_LOCK_TYPES
-            assert not human.done()
-        finally:
-            # Always let the sweep finish, so a failed assertion above cannot
-            # leave a task parked on an open transaction holding the row lock.
-            release.set()
-        captured = await sweep
-        await human
+            human = asyncio.create_task(_human_locking_read())
+            try:
+                waiting = await _await_row_lock_wait(watcher_mk)
+                assert waiting is not None, (
+                    "the human was not blocked — the sweep holds no row lock"
+                )
+                assert waiting[1] in _ROW_LOCK_TYPES
+                assert not human.done()
+            finally:
+                release.set()
+                with contextlib.suppress(BaseException):
+                    await asyncio.wait_for(human, timeout=30)
+            captured = await sweep
 
     assert captured == 1
     # The human read the sweep's COMMITTED outcome, not the stale `offered`.
@@ -546,16 +580,17 @@ async def test_expiry_does_not_clobber_a_decline_it_blocked_behind(realdb):
             .values(status=OFFER_STATUS_DECLINED)
         )
 
-        sweep = asyncio.create_task(
+        async with _running_sweep(
             discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
-        )
-        waiting = await _await_row_lock_wait(watcher_mk)
-        assert waiting is not None, "the expiry path took no row lock"
-        assert waiting[1] in _ROW_LOCK_TYPES
+        ) as sweep:
+            waiting = await _await_row_lock_wait(watcher_mk)
+            assert waiting is not None, "the expiry path took no row lock"
+            assert waiting[1] in _ROW_LOCK_TYPES
 
-        await human.commit()
+            await human.commit()
+            expired = await sweep
 
-    assert await sweep == 0
+    assert expired == 0
     assert (await _read(mk, offer_id)).status == OFFER_STATUS_DECLINED
 
 

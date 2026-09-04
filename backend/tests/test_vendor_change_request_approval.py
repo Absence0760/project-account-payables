@@ -252,6 +252,35 @@ async def test_change_request_counts_forbidden_for_clerk(realdb):
     assert resp.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_change_request_counts_are_gated_exactly_like_the_queue(realdb):
+    """A CFO must not learn how many bank redirects are staged for review.
+
+    The tally used to admit ROLE_CFO while `GET /api/vendors/change-requests`
+    does not, so a CFO could read the size of a fraud-review queue they can
+    neither see nor act on (they hold no `vendor.bank_change.approve`, and both
+    the nav entry and the page exclude them). decisions §48 requires a counts
+    endpoint's RBAC to match its list's exactly; this asserts the pairing
+    behaviourally, per role, rather than only structurally.
+    """
+    for role in ("admin", "ap_manager"):
+        async with realdb.client(key=TENANT, role=role) as client:
+            listed = await client.get("/api/vendors/change-requests")
+            counted = await client.get("/api/vendors/change-requests/counts")
+        assert listed.status_code == 200, f"{role} should read the queue"
+        assert counted.status_code == 200, f"{role} should read its tally"
+
+    for role in ("cfo", "ap_clerk"):
+        async with realdb.client(key=TENANT, role=role) as client:
+            listed = await client.get("/api/vendors/change-requests")
+            counted = await client.get("/api/vendors/change-requests/counts")
+        assert listed.status_code == 403, f"{role} should not read the queue"
+        assert counted.status_code == 403, (
+            f"{role} is refused the queue but was served its tally — the size of "
+            "the staged-bank-change queue is exactly what must not leak"
+        )
+
+
 # ===========================================================================
 # AP-initiated bank-detail changes are dual-control (BEC / bank-redirect gate).
 # An AP user can PROPOSE a bank change but it stages a pending request instead
