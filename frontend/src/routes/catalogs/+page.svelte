@@ -36,7 +36,13 @@
 
 	let catalogs = $state<Catalog[]>([]);
 	let total = $state(0);
-	let loading = $state(false);
+	let loading = $state(true);
+	// Three states, not two. `isEmpty` used to be gated on `!loading`, so during
+	// the first fetch the table rendered a header with NOTHING under it — no
+	// rows, no spinner, no message — and a failed load (reported only by a toast
+	// that then faded) left "No catalogs yet." standing forever. Same rule
+	// `/exceptions` and the payments queue follow.
+	let errored = $state(false);
 	let pageNum = $state(1);
 	let loadingMore = $state(false);
 
@@ -110,10 +116,12 @@
 			catalogs = opts.append ? appendUnique(catalogs, res.items) : res.items;
 			total = res.total;
 			pageNum = nextPage;
+			errored = false;
 		} catch (err) {
 			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
 			// delete still failed, and no newer load is coming to report it.
 			if (!fetchSequence.isCurrentRequest(token)) return;
+			errored = true;
 			toast(err instanceof Error ? err.message : m('catalogs.toast.loadFailed'), 'error');
 		} finally {
 			if (fetchSequence.isCurrentRequest(token)) {
@@ -282,7 +290,20 @@
 
 	<FilterChips chips={TYPE_CHIPS} bind:active={typeFilter} onchange={() => load()} />
 
-	<DataTable columns={COLUMNS} isEmpty={!loading && catalogs.length === 0} empty={m('catalogs.empty')}>
+	{#if errored}
+		<!-- A failed load is a dead end without a way back: the toast that
+		     reported it has already faded. Same error-with-retry block
+		     `/admin/api-keys` uses. -->
+		<div class="state error" data-testid="catalogs-error" role="alert">
+			<p>{m('catalogs.empty.errored')}</p>
+			<button type="button" class="btn-cancel" onclick={() => load()}>{m('catalogs.retry')}</button>
+		</div>
+	{:else}
+	<DataTable
+		columns={COLUMNS}
+		isEmpty={catalogs.length === 0}
+		empty={loading ? m('common.loading') : m('catalogs.empty')}
+	>
 		{#snippet body()}
 			{#each catalogs as c (c.id)}
 				<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editing = c; }}>
@@ -313,6 +334,7 @@
 			{/each}
 		{/snippet}
 	</DataTable>
+	{/if}
 
 	{#if hasMore}
 		<div class="load-more-row">
@@ -366,6 +388,18 @@
 {/if}
 
 <style>
+	/* Error-with-retry block — same shape as `/admin/api-keys`. */
+	.state {
+		color: var(--text-muted);
+		padding: 0.75rem 0;
+	}
+	.state.error {
+		color: var(--danger);
+	}
+	.state.error p {
+		margin: 0 0 8px;
+	}
+
 	.toolbar-row {
 		display: flex;
 		gap: 10px;

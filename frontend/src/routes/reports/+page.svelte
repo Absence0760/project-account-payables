@@ -349,7 +349,14 @@
 	{#if catalogLoading}
 		<p class="muted">Loading catalog…</p>
 	{:else if catalogError}
-		<p class="error-banner" role="alert">{catalogError}</p>
+		<!-- The catalog drives the WHOLE builder, so a failure has to replace it —
+		     but it was replaced by a bare paragraph fired from a single-shot,
+		     dependency-free `$effect`, leaving nothing on screen that could
+		     re-run the load. Same error-with-retry block `/admin/api-keys` uses. -->
+		<div class="state error" data-testid="catalog-error" role="alert">
+			<p>{catalogError}</p>
+			<button type="button" class="btn-cancel" onclick={loadCatalog}>Retry</button>
+		</div>
 	{:else if catalog}
 		<div class="builder">
 			<div class="field source-field">
@@ -430,11 +437,16 @@
 		<section class="saved" data-testid="saved-reports">
 			<h2>Saved reports</h2>
 			{#if savedError}
-				<p class="error-banner" role="alert">{savedError}</p>
-			{/if}
+				<!-- Not rendered ALONGSIDE the table: an error banner over "No saved
+				     reports yet." tells the reader two different things at once. -->
+				<div class="state error" data-testid="saved-error" role="alert">
+					<p>{savedError}</p>
+					<button type="button" class="btn-cancel" onclick={loadSaved}>Retry</button>
+				</div>
+			{:else}
 			<DataTable
 				columns={SAVED_COLUMNS}
-				isEmpty={!savedLoading && saved.length === 0}
+				isEmpty={saved.length === 0}
 				empty={savedLoading ? 'Loading…' : 'No saved reports yet.'}
 			>
 				{#snippet body()}
@@ -474,6 +486,7 @@
 					{/each}
 				{/snippet}
 			</DataTable>
+			{/if}
 		</section>
 	{/if}
 </PageHeader>
@@ -487,6 +500,18 @@
 />
 
 <style>
+	/* Error-with-retry block — same shape as `/admin/api-keys`. */
+	.state {
+		color: var(--text-muted);
+		padding: 0.75rem 0;
+	}
+	.state.error {
+		color: var(--danger);
+	}
+	.state.error p {
+		margin: 0 0 8px;
+	}
+
 	.lede {
 		color: var(--text-muted);
 		max-width: 80ch;
