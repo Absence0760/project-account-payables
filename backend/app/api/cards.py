@@ -34,6 +34,7 @@ from app.schemas.virtual_card import (
     RebateResponse,
     RebateStatusBreakdown,
 )
+from app.services.currency_conversion import resolve_reporting_currency
 from app.services.payment_adapters.base import minor_units_to_decimal
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -129,6 +130,33 @@ def _normalize_charge_amount(
             return fallback
     converted = minor_units_to_decimal(amount, currency)
     return fallback if converted is None else converted
+
+
+def resolve_rebate_base(
+    settled_amount: Decimal | None, authorized_amount: Decimal | None
+) -> tuple[Decimal, str]:
+    """The amount a rebate is earned on, and which figure it came from.
+
+    A card network's SETTLEMENT routinely differs from the authorization it
+    clears — partial capture, tips, fuel adjustments — and the processor pays
+    rebate on what actually settled. The settlement branch used to read
+    `card.amount_charged`, which is stamped by the AUTH event and never updated
+    at settlement, so the rebate was computed on the authorized figure while the
+    settlement event's own amount sat unused in scope.
+
+    The fallback is the sharper half. It used to be `or card.amount_limit`: the
+    card's authorization CEILING, not spend. A settlement webhook that arrived
+    without a usable amount, on a card whose auth was also missing, rebated on
+    the full limit — a $10,000 card that settled $100 earned a rebate on
+    $10,000. With no evidence of what moved, the honest base is zero; the
+    returned source says which figure was used so a reconciliation against the
+    processor's own statement can tell them apart.
+    """
+    if settled_amount is not None:
+        return settled_amount, "settled"
+    if authorized_amount:
+        return authorized_amount, "authorized"
+    return Decimal("0"), "unknown"
 
 
 def _resolve_card_config(org: Organization) -> dict:
@@ -304,16 +332,34 @@ async def list_cards(
 @router.get("/dashboard", response_model=CardDashboardResponse)
 async def card_dashboard(
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     now = datetime.now(UTC)
 
+    # Every money figure in this response is reported under ONE currency code,
+    # so each aggregate below counts only rows denominated in it. These were
+    # bare cross-currency SUMs presented as a single headline: a programme
+    # running USD and EUR cards added the two together, which is not a quantity
+    # in either currency and moves silently as the mix changes.
+    #
+    # `CardRebate` carries no currency column of its own — a rebate's currency
+    # is only knowable through the card that earned it — so the rebate rollups
+    # join `VirtualCard` rather than guessing.
+    #
+    # Filtered rather than converted, for the same reason as the discounting
+    # rollups: these are historical realised figures and an FX fetch on a
+    # dashboard read would make them non-deterministic.
+    reporting_currency = resolve_reporting_currency(org.settings)
+    _card_ccy = func.upper(func.coalesce(VirtualCard.currency, reporting_currency))
+
     # Active cards (scoped to the entity; rebates below are control-plane and
     # stay org-wide, like the payments summary).
     active_q = apply_entity_scope(
         select(func.count(), func.coalesce(func.sum(VirtualCard.amount_limit), 0)).where(
-            VirtualCard.status.in_(["created", "sent", "active"])
+            VirtualCard.status.in_(["created", "sent", "active"]),
+            _card_ccy == reporting_currency,
         ),
         VirtualCard,
         entity_id,
@@ -321,12 +367,26 @@ async def card_dashboard(
     active_result = await db.execute(active_q)
     active_count, active_value = active_result.one()
 
+    excluded_card_count = (
+        await db.execute(
+            apply_entity_scope(
+                select(func.count()).where(
+                    VirtualCard.status.in_(["created", "sent", "active"]),
+                    _card_ccy != reporting_currency,
+                ),
+                VirtualCard,
+                entity_id,
+            )
+        )
+    ).scalar() or 0
+
     # Spend this month
     spend_q = apply_entity_scope(
         select(func.coalesce(func.sum(VirtualCard.amount_charged), 0)).where(
             VirtualCard.status.in_(["charged", "completed"]),
             extract("month", VirtualCard.charged_at) == now.month,
             extract("year", VirtualCard.charged_at) == now.year,
+            _card_ccy == reporting_currency,
         ),
         VirtualCard,
         entity_id,
@@ -345,11 +405,18 @@ async def card_dashboard(
     _confirmed_amt = case((CardRebate.status == "confirmed", CardRebate.amount), else_=0)
     _paid_out_amt = case((CardRebate.status == "paid_out", CardRebate.amount), else_=0)
 
-    rebate_month_q = select(
-        func.coalesce(func.sum(_pending_amt), 0),
-        func.coalesce(func.sum(_confirmed_amt), 0),
-        func.coalesce(func.sum(_paid_out_amt), 0),
-    ).where(CardRebate.period == now.strftime("%Y-%m"))
+    rebate_month_q = (
+        select(
+            func.coalesce(func.sum(_pending_amt), 0),
+            func.coalesce(func.sum(_confirmed_amt), 0),
+            func.coalesce(func.sum(_paid_out_amt), 0),
+        )
+        .join(VirtualCard, VirtualCard.id == CardRebate.virtual_card_id)
+        .where(
+            CardRebate.period == now.strftime("%Y-%m"),
+            _card_ccy == reporting_currency,
+        )
+    )
     month_pending, month_confirmed, month_paid_out = (await db.execute(rebate_month_q)).one()
     month_pending = Decimal(str(month_pending or 0))
     month_confirmed = Decimal(str(month_confirmed or 0))
@@ -361,18 +428,35 @@ async def card_dashboard(
     # above "2026-01"), letting a forward-dated row leak into a
     # year-to-date figure — and `projected_annual` divides that figure by
     # months elapsed, so one such row inflates the projection too.
-    rebate_ytd_q = select(
-        func.coalesce(func.sum(_pending_amt), 0),
-        func.coalesce(func.sum(_confirmed_amt), 0),
-        func.coalesce(func.sum(_paid_out_amt), 0),
-    ).where(
-        CardRebate.period >= f"{now.year}-01",
-        CardRebate.period <= now.strftime("%Y-%m"),
+    rebate_ytd_q = (
+        select(
+            func.coalesce(func.sum(_pending_amt), 0),
+            func.coalesce(func.sum(_confirmed_amt), 0),
+            func.coalesce(func.sum(_paid_out_amt), 0),
+        )
+        .join(VirtualCard, VirtualCard.id == CardRebate.virtual_card_id)
+        .where(
+            CardRebate.period >= f"{now.year}-01",
+            CardRebate.period <= now.strftime("%Y-%m"),
+            _card_ccy == reporting_currency,
+        )
     )
     ytd_pending, ytd_confirmed, ytd_paid_out = (await db.execute(rebate_ytd_q)).one()
     ytd_pending = Decimal(str(ytd_pending or 0))
     ytd_confirmed = Decimal(str(ytd_confirmed or 0))
     ytd_paid_out = Decimal(str(ytd_paid_out or 0))
+    excluded_rebate_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(CardRebate)
+            .join(VirtualCard, VirtualCard.id == CardRebate.virtual_card_id)
+            .where(
+                CardRebate.period >= f"{now.year}-01",
+                CardRebate.period <= now.strftime("%Y-%m"),
+                _card_ccy != reporting_currency,
+            )
+        )
+    ).scalar() or 0
     rebate_ytd_realized = ytd_confirmed + ytd_paid_out
 
     # Projected annual: (REALIZED YTD / months elapsed) × 12 — never the
@@ -405,6 +489,9 @@ async def card_dashboard(
             confirmed_total=ytd_confirmed,
             paid_out_total=ytd_paid_out,
         ),
+        currency=reporting_currency,
+        excluded_card_count=excluded_card_count,
+        excluded_rebate_count=excluded_rebate_count,
     )
 
 
@@ -846,11 +933,30 @@ async def card_webhook(provider: str, request: Request):
                     )
                 elif is_settled and card.status == "charged":
                     card.status = "completed"
+                    # The SETTLED figure is the rebate base, not the authorized
+                    # one. A card network's settlement routinely differs from the
+                    # authorization it clears (partial capture, tips, fuel
+                    # adjustments), and the processor pays rebate on what
+                    # actually settled — so basing it on the auth over- or
+                    # under-states what we are owed. This branch read
+                    # `card.amount_charged`, stamped by the AUTH event above and
+                    # never updated at settlement, while the settlement event's
+                    # own `amount` sat unused in scope.
+                    settled_amount = _normalize_charge_amount(provider, amount, None, card.currency)
+                    if settled_amount is not None:
+                        # Persist it: `amount_charged` is what the card detail,
+                        # the spend rollups and the corporate-card feed all read,
+                        # and after settlement the settled figure is the true one.
+                        card.amount_charged = settled_amount
+
                     # Create rebate at the org's negotiated rate (not a hardcoded
                     # 1%), quantized to cents — the rate field was documented on
                     # settings.cards but never read, so every org earned 1%.
                     rebate_rate = _resolve_rebate_rate(card_config)
-                    _rebate_base = card.amount_charged or card.amount_limit
+                    # Never the card's limit — see `resolve_rebate_base`.
+                    _rebate_base, rebate_base_source = resolve_rebate_base(
+                        settled_amount, card.amount_charged
+                    )
                     rebate_amount = (_rebate_base * rebate_rate).quantize(
                         Decimal("0.01"), rounding=ROUND_HALF_UP
                     )
@@ -890,6 +996,12 @@ async def card_webhook(provider: str, request: Request):
                             "rebate_amount": str(rebate_amount),
                             "rebate_rate": str(rebate_rate),
                             "rebate_created": rebate_created,
+                            # Which figure the rebate was computed on, so a
+                            # reconciliation against the processor's own
+                            # statement can tell a settled base from an
+                            # authorized one without re-deriving it.
+                            "rebate_base": str(_rebate_base),
+                            "rebate_base_source": rebate_base_source,
                         },
                     )
 

@@ -26,13 +26,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-def _make_db_session(active_row, spend_scalar, rebate_month_row, rebate_ytd_row):
-    """Build a session that walks the endpoint's four queries in order:
+def _make_db_session(
+    active_row,
+    spend_scalar,
+    rebate_month_row,
+    rebate_ytd_row,
+    *,
+    excluded_cards=0,
+    excluded_rebates=0,
+):
+    """Build a session that walks the endpoint's six queries in order:
 
-    1. `active_q`          → `.one()`  → (active_count, active_value)
-    2. `spend_q`           → `.scalar()` → spend_this_month
-    3. `rebate_month_q`    → `.one()`  → (pending, confirmed, paid_out)
-    4. `rebate_ytd_q`      → `.one()`  → (pending, confirmed, paid_out)
+    1. `active_q`            → `.one()`    → (active_count, active_value)
+    2. excluded active cards → `.scalar()` → count in another currency
+    3. `spend_q`             → `.scalar()` → spend_this_month
+    4. `rebate_month_q`      → `.one()`    → (pending, confirmed, paid_out)
+    5. `rebate_ytd_q`        → `.one()`    → (pending, confirmed, paid_out)
+    6. excluded YTD rebates  → `.scalar()` → count earned on another currency
+
+    The two `excluded_*` queries exist because every money field in the
+    response is reported under ONE currency code, so each aggregate counts only
+    rows denominated in it and says how many it left out.
     """
     session = AsyncMock()
 
@@ -41,6 +55,10 @@ def _make_db_session(active_row, spend_scalar, rebate_month_row, rebate_ytd_row)
     active_result = MagicMock()
     active_result.one.return_value = active_row
     results.append(active_result)
+
+    excluded_cards_result = MagicMock()
+    excluded_cards_result.scalar.return_value = excluded_cards
+    results.append(excluded_cards_result)
 
     spend_result = MagicMock()
     spend_result.scalar.return_value = spend_scalar
@@ -54,6 +72,10 @@ def _make_db_session(active_row, spend_scalar, rebate_month_row, rebate_ytd_row)
     ytd_result.one.return_value = rebate_ytd_row
     results.append(ytd_result)
 
+    excluded_rebates_result = MagicMock()
+    excluded_rebates_result.scalar.return_value = excluded_rebates
+    results.append(excluded_rebates_result)
+
     async def execute_side_effect(_query):
         return results.pop(0)
 
@@ -63,6 +85,11 @@ def _make_db_session(active_row, spend_scalar, rebate_month_row, rebate_ytd_row)
 
 def _user():
     return SimpleNamespace(id="user-1", roles=["admin"])
+
+
+def _org(settings=None):
+    """The tenant org the endpoint resolves its reporting currency from."""
+    return SimpleNamespace(id="org-1", settings=settings if settings is not None else {})
 
 
 @pytest.mark.asyncio
@@ -79,7 +106,7 @@ async def test_card_dashboard_returns_all_fields():
         (Decimal("400.00"), Decimal("0"), Decimal("0")),  # ytd: pending/confirmed/paid_out
     )
 
-    result = await card_dashboard(db=db, user=_user())
+    result = await card_dashboard(db=db, org=_org(), user=_user())
 
     assert result.active_cards == 3
     assert result.active_cards_value == 10000.0
@@ -106,7 +133,7 @@ async def test_realized_total_excludes_pending_and_splits_by_status():
         (Decimal("500.00"), Decimal("300.00"), Decimal("200.00")),  # ytd
     )
 
-    result = await card_dashboard(db=db, user=_user())
+    result = await card_dashboard(db=db, org=_org(), user=_user())
 
     # Headline = confirmed + paid_out only.
     assert result.rebates_this_month == pytest.approx(50.0)
@@ -143,7 +170,7 @@ async def test_projected_annual_extrapolates_from_realized_ytd_when_present():
 
     with patch("app.api.cards.datetime") as mk_dt:
         mk_dt.now.return_value = fixed_now
-        result = await card_dashboard(db=db, user=_user())
+        result = await card_dashboard(db=db, org=_org(), user=_user())
 
     assert result.projected_annual_rebates == pytest.approx(960.0)
 
@@ -168,7 +195,7 @@ async def test_projected_annual_falls_back_to_realized_month_when_ytd_zero():
 
     with patch("app.api.cards.datetime") as mk_dt:
         mk_dt.now.return_value = fixed_now
-        result = await card_dashboard(db=db, user=_user())
+        result = await card_dashboard(db=db, org=_org(), user=_user())
 
     assert result.projected_annual_rebates == pytest.approx(1200.0)
 
@@ -186,9 +213,100 @@ async def test_projected_annual_is_zero_when_no_rebates_at_all():
         (Decimal("0"), Decimal("0"), Decimal("0")),
     )
 
-    result = await card_dashboard(db=db, user=_user())
+    result = await card_dashboard(db=db, org=_org(), user=_user())
 
     assert result.projected_annual_rebates == 0.0
     assert result.rebates_this_month_by_status.pending_total == 0.0
     assert result.rebates_this_month_by_status.confirmed_total == 0.0
     assert result.rebates_this_month_by_status.paid_out_total == 0.0
+
+
+# ---------------------------------------------------------------------------
+# One currency per figure
+#
+# The rollups were bare cross-currency SUMs over `VirtualCard.amount_limit` /
+# `.amount_charged` and `CardRebate.amount`, presented as a single headline
+# with no currency code at all. A programme running USD and EUR cards had the
+# two added together — not a quantity in either currency, and one that moved
+# silently as the mix changed. `CardRebate` has no currency column of its own,
+# so a rebate's currency is only knowable through the card that earned it.
+#
+# Recorded as an unverified lead in docs/followups.md ("Card and Positive Pay
+# totals may mix currencies"); confirmed here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dashboard_declares_the_currency_its_figures_are_in():
+    from app.api.cards import card_dashboard
+
+    db = _make_db_session(
+        (1, Decimal("100.00")),
+        Decimal("0"),
+        (Decimal("0"), Decimal("0"), Decimal("0")),
+        (Decimal("0"), Decimal("0"), Decimal("0")),
+    )
+    result = await card_dashboard(db=db, org=_org(), user=_user())
+    # No explicit setting → the platform default, via the canonical resolver.
+    assert result.currency == "USD"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_currency_follows_the_canonical_resolver():
+    """Not just `settings.reporting_currency`: the whole resolution chain, so
+    an org with only a home currency is labelled correctly."""
+    from app.api.cards import card_dashboard
+
+    for settings, expected in (
+        ({"reporting_currency": "EUR"}, "EUR"),
+        ({"payments": {"home_currency": "GBP"}}, "GBP"),
+        ({"invoice_defaults": {"currency": "CAD"}}, "CAD"),
+    ):
+        db = _make_db_session(
+            (0, Decimal("0")),
+            Decimal("0"),
+            (Decimal("0"), Decimal("0"), Decimal("0")),
+            (Decimal("0"), Decimal("0"), Decimal("0")),
+        )
+        result = await card_dashboard(db=db, org=_org(settings), user=_user())
+        assert result.currency == expected
+
+
+@pytest.mark.asyncio
+async def test_dashboard_reports_what_each_figure_left_out():
+    """A partial figure must be visibly partial — counts only, because a
+    cross-currency remainder has no single total to report."""
+    from app.api.cards import card_dashboard
+
+    db = _make_db_session(
+        (2, Decimal("500.00")),
+        Decimal("120.00"),
+        (Decimal("0"), Decimal("5.00"), Decimal("0")),
+        (Decimal("0"), Decimal("20.00"), Decimal("0")),
+        excluded_cards=4,
+        excluded_rebates=3,
+    )
+    result = await card_dashboard(db=db, org=_org(), user=_user())
+    assert result.excluded_card_count == 4
+    assert result.excluded_rebate_count == 3
+    # The in-currency figures are untouched by the exclusions.
+    assert result.active_cards_value == 500.0
+    assert result.rebates_ytd == 20.0
+
+
+@pytest.mark.asyncio
+async def test_single_currency_programme_reports_no_exclusions():
+    """The common case must be unchanged."""
+    from app.api.cards import card_dashboard
+
+    db = _make_db_session(
+        (3, Decimal("10000.00")),
+        Decimal("5000.00"),
+        (Decimal("0"), Decimal("75.00"), Decimal("0")),
+        (Decimal("0"), Decimal("400.00"), Decimal("0")),
+    )
+    result = await card_dashboard(db=db, org=_org(), user=_user())
+    assert result.excluded_card_count == 0
+    assert result.excluded_rebate_count == 0
+    assert result.active_cards_value == 10000.0
+    assert result.rebates_ytd == 400.0
