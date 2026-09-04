@@ -10,11 +10,18 @@ network, no credential); production deployments configure
 """
 
 from app.services.qms_adapters.base import QMSAdapter, QMSInspectionRecord
-from app.services.qms_adapters.dispatcher import get_qms_adapter, register_qms_adapter
+from app.services.qms_adapters.dispatcher import (
+    UnknownQmsProviderError,
+    get_qms_adapter,
+    list_available_providers,
+    register_qms_adapter,
+)
 
 __all__ = [
     "QMSAdapter",
     "QMSInspectionRecord",
+    "UnknownQmsProviderError",
     "get_qms_adapter",
+    "list_available_providers",
     "register_qms_adapter",
 ]

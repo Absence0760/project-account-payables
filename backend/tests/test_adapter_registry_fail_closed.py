@@ -42,6 +42,13 @@ guard that stops a fifth appearing.
   `parse_order_message` reads a permissive dev envelope on the PUBLIC
   cart-return route, whose fixture cart converts into a real
   `PurchaseRequisition`.
+* **`qms_adapters`** — returns three deterministic fixtures that `qms_sync`
+  resolves against the tenant's REAL purchase orders and persists as
+  `completed` `QualityInspection` rows. Those are the 4-way match's quality
+  leg, so a fabricated `pass` clears the quality gate for whatever invoice
+  references that PO — a purchase order cleared for payment by an inspection
+  that never happened — and a fabricated `fail` flips real invoices to
+  `mismatch`. A typo'd `FEOH_QMS_PROVIDER` opts **every** org in at once.
 
 **The caller decides what the refusal means** (§29's per-caller table). This
 file pins the callers for the two registries it converts, plus the positive-pay
@@ -61,6 +68,10 @@ route (which had the refusal but no route-level coverage of it):
   | `POST /api/catalogs/{id}/punchout/start` | 422 — no `PunchoutSession` row |
   | `POST /api/catalogs/punchout/return/{slug}` | silent 204 — the supplier |
   |   | posts once from a browser, so there is no retry to ask for |
+  | `qms_sync` background sweep | counted per-tenant failure (not a skip) |
+  |   | and `last_synced_at` NOT advanced |
+  | `POST /api/inspections/sync` | 409 — an operator asked directly, so say |
+  |   | why; nothing persisted |
 
 The card call sites (all six of them) are pinned in
 `tests/test_card_provider_resolution.py`; they are not duplicated here.
@@ -79,6 +90,7 @@ import pathlib
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -88,8 +100,10 @@ from app.models.organization import Organization
 from app.models.peppol_transmission import PeppolTransmission
 from app.models.positive_pay import PositivePayFile
 from app.models.procurement import PunchoutSession
+from app.models.quality_inspection import QualityInspection
 from app.models.tax_filing import Tax1099Filing
 from app.models.vendor import Vendor
+from app.services import qms_sync
 from app.services.card_adapters import UnknownCardProviderError, get_card_adapter
 from app.services.card_adapters.lithic import LithicAdapter
 from app.services.peppol_adapters import UnknownPeppolProviderError, get_peppol_adapter
@@ -104,6 +118,8 @@ from app.services.punchout_adapters import (
     get_punchout_adapter,
 )
 from app.services.punchout_adapters.mock_adapter import MockPunchoutAdapter
+from app.services.qms_adapters import UnknownQmsProviderError, get_qms_adapter
+from app.services.qms_adapters.mock_adapter import MockQMSAdapter
 from app.services.tax_filing_adapters import (
     UnknownTaxFilingProviderError,
     get_tax_filing_adapter,
@@ -188,6 +204,14 @@ REGISTRY_CASES = [
         UnknownPunchoutProviderError,
         id="punchout_adapters",
     ),
+    pytest.param(
+        get_qms_adapter,
+        None,
+        MockQMSAdapter,
+        {"provider": "labware_xyz"},
+        UnknownQmsProviderError,
+        id="qms_adapters",
+    ),
 ]
 
 
@@ -258,6 +282,7 @@ FAIL_CLOSED_DISPATCHERS = {
     "peppol_adapters",
     "positive_pay_adapters",
     "punchout_adapters",
+    "qms_adapters",
     "sanctions_adapters",
     "tax_filing_adapters",
     "tax_rate_adapters",
@@ -266,8 +291,13 @@ FAIL_CLOSED_DISPATCHERS = {
 
 #: Dispatchers that still resolve an unknown NAMED provider to their default.
 #: Listed with what the fallback actually does, so the next reviewer can judge
-#: it rather than inherit an assertion. These are **not** blessed — they are the
-#: remainder of the same §29 sweep, tracked in `docs/followups.md`.
+#: it rather than inherit an assertion. Every reason here was re-verified
+#: against the current resolver and its consumer when the eighth registry
+#: (`qms_adapters`) was converted — none is inherited. What they share, and what
+#: separates them from the eight that were converted, is that the fallback
+#: cannot produce a confident wrong answer about money, a document, or a
+#: control: it degrades to a no-op, a log line, or a lower-quality suggestion.
+#: A new entry belongs here only if that is true of it too.
 FAIL_OPEN_DISPATCHERS = {
     "assistant": (
         "claude-without-a-key → mock is the documented local-first downgrade; a "
@@ -285,11 +315,6 @@ FAIL_OPEN_DISPATCHERS = {
     ),
     "email_adapters": "falls back to `console`, which logs instead of sending.",
     "embedding_adapters": "falls back to mock vectors — RAG / duplicate-similarity quality only.",
-    "qms_adapters": (
-        "UNREVIEWED — mock inspection fixtures feed the 4-way match quality "
-        "gate. Deferred: another agent holds `qms_adapters/` + `qms_sync.py` "
-        "this round, so converting it here would collide."
-    ),
 }
 
 
@@ -668,3 +693,114 @@ async def test_punchout_start_422s_and_persists_no_session(realdb):
     async with realdb.sessionmaker(TENANT)() as s:
         rows = (await s.execute(select(PunchoutSession))).scalars().all()
     assert rows == [], "a punch-out session was persisted for a supplier never contacted"
+
+
+# --------------------------------------------------------------------------- #
+# (c) — the callers, round 3: QMS sync
+# --------------------------------------------------------------------------- #
+
+
+def _fake_control_session(rows: list[tuple]):
+    """Stand-in for `control_session_factory()` yielding a fixed org listing."""
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=MagicMock(all=lambda: rows))
+    cm = AsyncMock()
+    cm.__aenter__.return_value = session
+    cm.__aexit__.return_value = None
+    return MagicMock(return_value=cm)
+
+
+@pytest.mark.asyncio
+async def test_qms_sweep_counts_a_failure_and_holds_the_cursor():
+    """A counted failure, NOT a skip — and `last_synced_at` must not move.
+
+    A skip is indistinguishable from "this tenant had nothing to sync", which
+    is the state this control has silently been in. A counted failure reaches
+    the consecutive-failure streak and shows `degraded` on
+    `GET /api/health/sweeps` (decisions §24), which is the only signal anyone
+    gets that the quality leg of the 4-way match stopped being fed.
+
+    Advancing the cursor would be worse than the fallback it replaces: it
+    closes a window that was never pulled, so every inspection written during
+    the outage is skipped forever once the config is corrected.
+    """
+    org_id = uuid.uuid4()
+    stored: list = []
+
+    async def _record_cursor(oid, *, at):
+        stored.append((oid, at))
+
+    with (
+        patch.object(
+            qms_sync,
+            "control_session_factory",
+            _fake_control_session(
+                [(org_id, "feoh_nonexistent", {"qms": {"provider": "labware_xyz"}})]
+            ),
+        ),
+        patch.object(qms_sync, "_store_cursor", AsyncMock(side_effect=_record_cursor)),
+        patch.object(qms_sync.settings, "qms_provider", "mock"),
+    ):
+        result = await qms_sync.run_qms_sync_once()
+
+    assert result.tenants_scanned == 1, "an opted-in tenant must still be counted as scanned"
+    assert result.failures == 1, "an unresolvable provider is a counted failure, not a skip"
+    assert result.created == 0 and result.updated == 0
+    assert stored == [], "the high-water mark was advanced for a window never pulled"
+
+
+@pytest.mark.asyncio
+async def test_qms_sweep_still_syncs_a_registered_provider():
+    """The refusal must not cost a working tenant its sweep — or its cursor."""
+    org_id = uuid.uuid4()
+    stored: list = []
+
+    async def _record_cursor(oid, *, at):
+        stored.append((oid, at))
+
+    summary = {"fetched": 1, "created": 1, "updated": 0, "unchanged": 0, "skipped": 0}
+    with (
+        patch.object(
+            qms_sync,
+            "control_session_factory",
+            _fake_control_session([(org_id, "feoh_x", {"qms": {"provider": "generic"}})]),
+        ),
+        patch.object(qms_sync, "_sweep_tenant", AsyncMock(return_value=summary)),
+        patch.object(qms_sync, "_store_cursor", AsyncMock(side_effect=_record_cursor)),
+        patch.object(qms_sync.settings, "qms_provider", "mock"),
+    ):
+        result = await qms_sync.run_qms_sync_once()
+
+    assert result.failures == 0
+    assert result.created == 1
+    assert [oid for oid, _ in stored] == [org_id], "a successful sweep must advance the cursor"
+
+
+async def test_manual_sync_409s_and_persists_no_inspection(realdb):
+    """An operator asked for this pull directly. A clean all-zero summary would
+    hide the reason it found nothing — and the fixtures the old fallback
+    returned would have landed as `completed` inspections against this tenant's
+    real purchase orders."""
+    await _set_provider(realdb, ["qms"], "labware_xyz")
+
+    async with realdb.client(key=TENANT, role="ap_manager") as c:
+        resp = await c.post("/api/inspections/sync")
+
+    assert resp.status_code == 409, resp.text
+    assert "labware_xyz" in resp.text
+    assert "mock" in resp.text  # names the registered alternatives
+
+    async with realdb.sessionmaker(TENANT)() as s:
+        rows = (await s.execute(select(QualityInspection))).scalars().all()
+    assert rows == [], "a fabricated inspection was persisted for a QMS never reached"
+
+
+async def test_manual_sync_still_works_for_a_registered_provider(realdb):
+    """The refusal must not cost the opted-in path."""
+    await _set_provider(realdb, ["qms"], "mock")
+
+    async with realdb.client(key=TENANT, role="ap_manager") as c:
+        resp = await c.post("/api/inspections/sync")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["fetched"] >= 1

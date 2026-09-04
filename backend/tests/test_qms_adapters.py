@@ -10,7 +10,11 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.qms_adapters import QMSInspectionRecord, get_qms_adapter
+from app.services.qms_adapters import (
+    QMSInspectionRecord,
+    UnknownQmsProviderError,
+    get_qms_adapter,
+)
 from app.services.qms_adapters.generic_qms import GenericQMSAdapter
 from app.services.qms_adapters.mock_adapter import MockQMSAdapter
 
@@ -112,8 +116,15 @@ def test_dispatcher_defaults_to_mock_on_empty_config():
     assert get_qms_adapter({}).provider_name == "mock"
 
 
-def test_dispatcher_unknown_provider_falls_back_to_mock():
-    assert get_qms_adapter({"provider": "does-not-exist"}).provider_name == "mock"
+def test_dispatcher_refuses_a_named_unknown_provider():
+    """It used to fall back to `mock`, whose three fixtures `qms_sync` resolves
+    against the tenant's REAL purchase orders and persists as `completed`
+    inspections — a fabricated `pass` clearing the 4-way quality gate on a real
+    invoice. `decisions.md` §29; the caller-level cases (sweep failure + held
+    cursor, route 409) live in `tests/test_adapter_registry_fail_closed.py`."""
+    with pytest.raises(UnknownQmsProviderError) as exc:
+        get_qms_adapter({"provider": "does-not-exist"})
+    assert "does-not-exist" in str(exc.value)
 
 
 def test_dispatcher_selects_generic():

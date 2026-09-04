@@ -332,11 +332,36 @@ families (`financing_adapters`, `fx_adapters`, …):
   resolves each record's `po_number` / `gr_number` to local `PurchaseOrder` /
   `GoodsReceipt` ids, then **upserts** a `QualityInspection` idempotently keyed on
   `(organization_id, inspection_number)` (re-run updates in place, never
-  duplicates). Each landed record writes an append-only `quality_inspection.synced`
-  audit row (PII-free: inspection number + resolution outcome only). After the
+  duplicates). Each record that genuinely **lands or changes** writes an
+  append-only `quality_inspection.synced` audit row (PII-free: inspection number
+  + resolution outcome only). A re-fetched record identical to the stored row
+  counts `unchanged` and writes nothing — the audit write used to be
+  unconditional, with `change` reading `"updated"` even when nothing had moved,
+  so every tick appended `len(records)` rows to `audit_log`. That table is
+  append-only at the DB level (migration 0022's BEFORE-DELETE trigger) and is
+  drained to a WORM store, so the rows could never be reclaimed, and each one
+  described a state change that did not happen. After the
   upsert it best-effort re-runs `invoice_warnings.refresh_warnings` (inside a
   SAVEPOINT) for invoices referencing the affected POs so a fresh quality verdict
   re-gates the 4-way match — never fails the sync.
+- **The pull is incremental.** The adapter contract has always been
+  `fetch_inspections(*, since=None)`, but `since` was accepted by
+  `run_qms_sync_once` and then dropped — every hourly tick re-fetched each
+  tenant's entire inspection history. It now threads `run_qms_sync_once` →
+  `_sweep_tenant` → `sync_tenant_inspections` → `fetch_inspections`. The per-org
+  high-water mark lives in the settings JSON at
+  `Organization.settings.qms.last_synced_at` (no migration; the same shape as
+  `cash_flow_alerts`' alerted-period marker), is captured **before** the fetch
+  and stored only on success — so the window is closed-on-the-left and never
+  skips a record written while a tick was in flight, and a tenant whose sweep
+  raised keeps its old mark and retries the same window. A boundary record
+  simply arrives twice and the idempotent upsert absorbs it.
+  `run_qms_sync_once(since=...)` overrides every org's mark for one call — an
+  operator backfill, not the normal path. **The manual
+  `POST /api/inspections/sync` route deliberately passes no cursor and advances
+  none**: a human asking to sync now is usually asking *because* they suspect
+  the incremental window missed something, and answering that with an empty
+  result would be useless.
 - **An unmappable disposition is SKIPPED, never coerced.**
   `qms_sync.normalize_disposition` maps the provider's verdict onto
   `pass`/`fail`/`partial`, normalising case and whitespace only (`"FAIL"` is a
@@ -358,7 +383,7 @@ families (`financing_adapters`, `fx_adapters`, …):
   Disabled by default (`FEOH_QMS_SYNC_ENABLED=false`); orgs that have not opted
   in are skipped.
 - **Manual trigger**: `POST /api/inspections/sync` (admin / ap_manager) runs one
-  sync for the current tenant, returning `{fetched, created, updated, skipped}`.
+  sync for the current tenant, returning `{fetched, created, updated, unchanged, skipped}`.
   It applies the **same** opt-in rule and **409s** when the org has no QMS
   configured. Without that guard `get_qms_adapter(None)` resolved to the `mock`
   adapter, and one call persisted its three fabricated fixtures
@@ -366,6 +391,28 @@ families (`financing_adapters`, `fx_adapters`, …):
   a synthetic `pass` clearing the quality gate on a real invoice, a synthetic
   `fail` flipping others to `mismatch`, and rows indistinguishable from genuine
   ones in the UI. The sweep already guarded this; the route did not.
+- **A NAMED provider we have no adapter for is refused, never `mock`.** The
+  opt-in rule above covers an org that configured *nothing*; this is the other
+  half — an org that configured *something we cannot honour*.
+  `get_qms_adapter` resolves an absent/empty provider to `mock` (the local-first
+  default) but raises `UnknownQmsProviderError` for an unregistered name. It used
+  to fall back to `mock` there too, and the consequence is the one this whole
+  section is about: three fabricated fixtures resolved against real purchase
+  orders and persisted as `completed` inspections — the quality leg of the 4-way
+  match forged, so a PO is cleared for payment by an inspection that never
+  happened. It is sharper for the platform override than for a single org: a
+  typo'd `FEOH_QMS_PROVIDER` opts **every** org in at once, so the next tick
+  pulled fixtures into every tenant in the estate. `decisions.md` §29 / §36
+  applied to this family.
+
+  The two callers differ, and the difference is the cursor:
+
+  | Caller | On refusal |
+  |---|---|
+  | The background sweep | A **counted per-tenant failure**, not a skip — a skip is indistinguishable from "this tenant had nothing to sync", which is precisely the state the control has silently been in; a counted failure reaches the consecutive-failure streak and shows `degraded` on `GET /api/health/sweeps`. The log line names the bad value rather than an exception class, so it is actionable. Critically, `last_synced_at` is **not** advanced: `_store_cursor` sits on the success path only, because closing a window that was never pulled would skip every inspection written during the outage *forever* once the config is corrected. |
+  | `POST /api/inspections/sync` | **409** naming the bad value and the registered alternatives — matching the sibling "no QMS configured" refusal. An operator asked for this pull directly; a clean all-zero summary would hide why it found nothing. The adapter resolves before any query, so nothing is persisted. |
+
+  Guard: `tests/test_adapter_registry_fail_closed.py`.
 
 ## Data Models
 

@@ -61,7 +61,7 @@ from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.quality_inspection import QualityInspection
 from app.schemas.inspection import VALID_RESULTS
 from app.services.audit_dispatch import dispatch_audit
-from app.services.qms_adapters import get_qms_adapter
+from app.services.qms_adapters import UnknownQmsProviderError, get_qms_adapter
 from app.services.qms_adapters.base import QMSInspectionRecord
 from app.services.sweep_health import SWEEP_QMS_SYNC, run_sweep_loop
 from app.tenant import resolve_default_entity_id
@@ -281,6 +281,13 @@ async def sync_tenant_inspections(
     caller owns the transaction — this flushes but does not commit (so a
     request-path call commits via the dependency wrapper and the background
     sweep commits explicitly).
+
+    Raises :class:`~app.services.qms_adapters.UnknownQmsProviderError` when the
+    org named a provider we have no adapter for. It is the FIRST thing this
+    function does, before any query or write, so a refusal leaves nothing
+    behind — no inspection row, no audit row, no rematch. The two callers
+    decide what it means (the sweep counts a failure and holds the cursor; the
+    manual route 409s).
 
     ``since`` is the adapter contract's incremental-pull hint: ask the provider
     only for records changed after that instant. It is a hint, not a guarantee —
@@ -517,6 +524,31 @@ async def run_qms_sync_once(*, since: datetime | None = None) -> QMSSyncResult:
             result.updated += summary["updated"]
             result.unchanged += summary["unchanged"]
             result.skipped += summary["skipped"]
+        except UnknownQmsProviderError as exc:
+            # The org opted in with a provider we have no adapter for. A
+            # counted FAILURE, not a skip: a skip is indistinguishable from
+            # "this tenant had nothing to sync", and this control has silently
+            # stopped working — three consecutive ticks put the sweep at
+            # `degraded` on `GET /api/health/sweeps` (§24), which is the only
+            # signal anyone gets. Named explicitly rather than left to the
+            # generic handler below so the log line carries the bad VALUE, not
+            # just an exception class name an operator cannot act on.
+            #
+            # It must also leave `last_synced_at` alone — `_store_cursor` is
+            # deliberately below the `try`, on the success path only. Advancing
+            # it here would close a window that was never actually pulled, so
+            # every inspection written during the outage would be skipped
+            # forever once the config was corrected: a silent hole in the 4-way
+            # match's quality leg, which is exactly the failure the refusal
+            # exists to prevent.
+            logger.warning(
+                "[qms-sync] provider %r has no registered adapter for org=%s — "
+                "tenant not synced, cursor not advanced",
+                exc.provider,
+                org_id,
+            )
+            result.failures += 1
+            continue
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
             logger.warning("[qms-sync] failed sweeping %s: %s", db_name, exc.__class__.__name__)
             result.failures += 1
