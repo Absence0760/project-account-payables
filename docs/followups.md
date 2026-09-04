@@ -34,21 +34,53 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-03 — a coverage pass over the work issue
+**Last reconciled:** 2026-09-04 — the confirming pass the "unverified leads"
+section had been waiting for. All **eight** round-14 money-path leads were
+probed against the real code; **all eight reproduced**, so none was discarded
+and the whole section is gone: they are findings now, fixed with regression
+tests that fail against the previous implementation. What they were:
+
+| Lead | Verdict |
+|---|---|
+| Card rebate base is authorized, not settled | Real — the settled branch ignored the settlement event's own `amount`, and the `or amount_limit` fallback rebated on the card's authorization CEILING (a $10,000 card settling $100 earned a rebate on $10,000). Now `resolve_rebate_base`, which cannot reach the limit because it is not passed one |
+| `card_settlement_block` ignores `expires_at` | Real — an aged-out card was a valid settlement target, so the payment went `completed` and the invoice `paid` while the vendor was never paid at all |
+| Card totals mix currencies | Real — bare cross-currency `SUM`s over `amount_limit` / `amount_charged` / `CardRebate.amount` under no currency code at all. `CardRebate` has no currency column, so the rollups now join `VirtualCard` |
+| Fixed-width Positive Pay truncates | Real — and worse than "loses precision": the pad-then-slice kept HIGH-order digits, rescaling an overrunning amount by ten per dropped digit. The drawee account column was also 8 chars against a FULL account number, so every file carried a truncated account |
+| `discounts._org_currency` diverges | Real — one settings key plus a hardcoded `"USD"` against the canonical four-step chain |
+| Discount dashboard sums across currencies | Real — `captured` / `missed` unfiltered while `projected_savings` in the same response was filtered |
+| `discount_auto_trigger` clobbers a decline | Real — unlocked read, no status predicate on the update, one commit; a committed decline was overwritten and an append-only audit row asserted the sweep found the offer open |
+| Unrecognised `screening.result` → `allow` | Real — only `match` / `review_required` branched, so a fourth value fell through to the trailing `allow` ([decisions.md](decisions.md) §61) |
+
+The Positive Pay half of that third lead ("Card **and Positive Pay** totals may
+mix currencies") is closed differently: `api/positive_pay` already resolves the
+stored row's currency through `resolve_reporting_currency`, and its two
+`invoice_defaults.currency` reads are the FormatterContext for the rendered
+file, not a rollup — no cross-currency sum exists there to fix.
+
+The same pass replaced the list/rollup filter-parity guard with
+`test_whole_set_kpi_rollups.py`. The old one covered four surfaces and only
+`search`, through an `isinstance(default, fastapi.params.Query)` check that a
+plain-default parameter is not — so it passed vacuously on `/api/recurring`,
+which is written that way. The replacement discovers surfaces from the mounted
+OpenAPI schema, checks the full filter set, and asserts both endpoints route
+through the shared `_*_list_filters` builder. Discovery turned up two more
+rollups taking none of their list's filters — `/api/payments/summary` and
+`/api/exceptions/summary` — both deliberate (a whole-entity treasury figure;
+chip counts that must span every value) and both called from the frontend with
+no parameters, so they are recorded as justified exemptions in the test rather
+than dropped, and a stale exemption fails.
+
+**Previously reconciled:** 2026-09-03 — a coverage pass over the work issue
 [#321](https://github.com/Absence0760/project-account-payables/issues/321) said
 was complete, which closed three entries and opened none. `GET
-/api/expenses/export` now shares the list's filter builder (it had no `search`
-leg); the six correct-but-unguarded `datetime.now(UTC).date()` sites converged
-on `utc_today`, and that guard became a whole-`app/` scan instead of an opt-in
-allowlist; the badge conversion gained a ratchet (`badgeAudit.test.ts`) so its
-remaining count lives in a test rather than in prose that goes stale, and the
-duplicate `.overdue-badge` closed with it. Writing the call-site tests for the
-round-13 email hoist surfaced one new defect, fixed in the same pass rather than
-parked: `identity_provisioning.extract_and_check_email` stored an IdP-supplied
-address containing a control character as `User.email` — a login and a mail
-destination ([decisions.md](decisions.md) §60). **The GitHub mirror (#321) was
-four rounds stale and has been re-synced** — it read 21 items against this
-file's ~74.
+/api/expenses/export` gained the list's filter builder; the six unguarded
+`datetime.now(UTC).date()` sites converged on `utc_today` behind a whole-`app/`
+scan; the badge conversion gained a ratchet (`badgeAudit.test.ts`). Writing the
+call-site tests for the round-13 email hoist surfaced one new defect, fixed in
+the same pass:  `identity_provisioning.extract_and_check_email` stored an
+IdP-supplied address containing a control character as `User.email`
+([decisions.md](decisions.md) §60). The GitHub mirror (#321), four rounds stale,
+was re-synced.
 
 **Previously reconciled:** 2026-08-20 against round 14 — a five-agent parallel bug
 hunt across the money path, auth/tenant isolation, the SvelteKit frontend, the
@@ -909,37 +941,6 @@ is a confirmed reading of the code, not a hypothesis.
       **Durable fix:** convert through the reporting-currency SQL helper and
       return 422 on an unparseable month.
       **Trigger:** the next slice touching forecast variance.
-
-### Unverified leads from the round-14 money-path hunt — need a confirming pass
-
-These are **hypotheses, not findings.** They were raised by exploratory
-subagents during the round-14 money-path hunt and the agent that owned the area
-did NOT confirm them itself, so none has a probe behind it and none should be
-cited as a known defect. They are recorded because the diagnosis is the
-expensive part and re-deriving the list costs more than checking it. The first
-step for each is *verify or discard*, not *fix*.
-
-- [ ] Card rebate base may be the **authorized** rather than the settled amount.
-- [ ] `card_settlement_block` may ignore `expires_at`.
-- [ ] Card and Positive Pay totals may mix currencies.
-- [ ] The fixed-width Positive Pay formatter may truncate low-order digits and
-      check numbers.
-- [ ] `discounts._org_currency` may diverge from `resolve_reporting_currency`
-      (round 14 fixed the frontend half of this class in
-      `utils/reportingCurrency.ts`).
-- [ ] The discount dashboard may sum `captured` / `missed` across currencies.
-- [ ] `discount_auto_trigger` may clobber a declined offer (unlocked read, one
-      commit) — note round 14 *did* fix this sweep's tier-aging bug, so the file
-      has moved since the lead was raised.
-- [ ] An unrecognised `screening.result` may fall through to `allow` — latent
-      either way, since no shipped adapter emits one.
-
-**Durable fix:** one scoped pass that probes each against the real DB, promotes
-whatever reproduces into a fix or a `known-issues.md` entry, and deletes the
-rest from this list.
-**Trigger:** the next money-path hunt, or the next slice touching cards,
-Positive Pay, or discounting.
-
 
 ### Surfaced by the round-15 bug hunt
 
