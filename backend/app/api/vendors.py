@@ -348,7 +348,8 @@ def _vendor_list_filters(
 ):
     """Apply the vendor-list search / status / source filters to ``query``.
 
-    Shared by ``GET /api/vendors`` and ``GET /api/vendors/ids`` so the
+    Shared by ``GET /api/vendors``, ``GET /api/vendors/ids`` and
+    ``GET /api/vendors/counts`` so the
     "select all N matching" bulk-selection affordance resolves EXACTLY the
     set the table is showing — a second, independently-maintained filter
     builder is how the two would silently drift apart (the same reasoning

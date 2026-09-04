@@ -301,7 +301,7 @@ def _payment_list_filters(
     entity_id: uuid.UUID | None,
     status: str | None,
     method: str | None,
-    invoice_id: str | None,
+    invoice_id: uuid.UUID | None,
     search: str | None,
     amount_min: float | None,
     amount_max: float | None,
@@ -334,7 +334,7 @@ def _payment_list_filters(
     if method:
         query = query.where(Payment.method == method)
     if invoice_id:
-        query = query.where(Payment.invoice_id == uuid.UUID(invoice_id))
+        query = query.where(Payment.invoice_id == invoice_id)
     if amount_min is not None:
         query = query.where(Payment.amount >= Decimal(str(amount_min)))
     if amount_max is not None:
@@ -355,7 +355,7 @@ async def list_payments(
     pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query(None, alias="status"),
     method: str | None = None,
-    invoice_id: str | None = None,
+    invoice_id: uuid.UUID | None = None,
     search: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
@@ -987,12 +987,16 @@ async def compare_corridor_quotes(
 @router.get("/counts")
 async def payment_status_counts(
     method: str | None = None,
-    invoice_id: str | None = None,
+    invoice_id: uuid.UUID | None = None,
     search: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # Exactly the list's gate, not the older role set. A custom-role holder of
+    # only one of the two permissions could read the History list and got a 403
+    # here, at which point the page falls back to the page-scoped tally this
+    # endpoint exists to replace — reintroducing the undercount for that user.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Per-status payment tallies for the History-tab filter chips.

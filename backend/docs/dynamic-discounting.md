@@ -428,6 +428,23 @@ short. `capture_rate_pct` is computed over the same reporting-currency
 population as the counts beside it, so every field in the response describes
 one set.
 
+Two conventions worth knowing before reading the response:
+
+- **`open_offer_count` is deliberately whole-set** while the three money figures
+  are reporting-currency-only. It answers "how much is on the table to work
+  through", which is a queue depth rather than an amount, and dropping foreign
+  offers from it would hide work that still needs a decision.
+  `unconvertible_offer_count` is what reconciles it against
+  `projected_savings`.
+- **Money crosses the wire as a JSON number, not a decimal string.** These
+  schemas use `app/schemas/money.py::MoneyAmount`, which serialises `Decimal`
+  to a number at write time (see that module for the >2^53-cents caveat). The
+  exactness invariant holds where it matters — `Decimal` in Python and
+  `Numeric` on the column, never a float — so `missed_amount`, the one figure
+  accumulated in Python rather than by a Postgres `SUM`, still reports `0.30`
+  over thirty one-cent misses where a float loop lands on
+  `0.3000000000000001`.
+
 ### The auto-capture sweep never overwrites a human decision
 
 `discount_auto_trigger` selects its candidates **unlocked**, then does per-row

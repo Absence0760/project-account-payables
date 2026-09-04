@@ -1085,7 +1085,8 @@
 			// reading the tenant's whole total over a one-row table.
 			// `status`/`sort`/`order` ride along and are ignored by the endpoint,
 			// which must NOT filter by status: that's the dimension it tallies.
-			const query = '?' + new URLSearchParams(buildParams()).toString();
+			const qs = new URLSearchParams(buildParams()).toString();
+			const query = qs ? `?${qs}` : '';
 			const data = await api.get<{ total: number; by_status: Record<string, number> }>(
 				`/api/payments/counts${query}`
 			);

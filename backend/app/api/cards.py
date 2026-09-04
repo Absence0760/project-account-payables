@@ -354,8 +354,9 @@ async def card_dashboard(
     reporting_currency = resolve_reporting_currency(org.settings)
     _card_ccy = func.upper(func.coalesce(VirtualCard.currency, reporting_currency))
 
-    # Active cards (scoped to the entity; rebates below are control-plane and
-    # stay org-wide, like the payments summary).
+    # Every aggregate below is entity-scoped, rebates included — `CardRebate` is
+    # tenant-scoped (decisions §57) and reaches its entity through the
+    # `VirtualCard` join the currency predicate already needs.
     active_q = apply_entity_scope(
         select(func.count(), func.coalesce(func.sum(VirtualCard.amount_limit), 0)).where(
             VirtualCard.status.in_(["created", "sent", "active"]),
