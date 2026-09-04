@@ -441,7 +441,7 @@ async def test_reconciler_skips_org_without_payment_provider():
     with patch("app.services.payment_reconciler.create_async_engine") as mk_engine:
         outcome = await _reconcile_tenant(org, datetime.now(UTC))
 
-    assert outcome == {"polled": 0, "resolved": 0, "aged_out": 0}
+    assert outcome == {"polled": 0, "resolved": 0, "aged_out": 0, "payment_failures": 0}
     mk_engine.assert_not_called()
 
 
@@ -489,9 +489,9 @@ async def test_reconcile_once_aggregates_outcomes_across_tenants():
 
     per_tenant = AsyncMock(
         side_effect=[
-            {"polled": 2, "resolved": 1, "aged_out": 0},
-            {"polled": 5, "resolved": 3, "aged_out": 1},
-            {"polled": 0, "resolved": 0, "aged_out": 0},
+            {"polled": 2, "resolved": 1, "aged_out": 0, "payment_failures": 0},
+            {"polled": 5, "resolved": 3, "aged_out": 1, "payment_failures": 2},
+            {"polled": 0, "resolved": 0, "aged_out": 0, "payment_failures": 0},
         ]
     )
 
@@ -509,6 +509,8 @@ async def test_reconcile_once_aggregates_outcomes_across_tenants():
     assert result.payments_resolved == 4
     assert result.payments_aged_out == 1
     assert result.failures == 0
+    # Per-payment poll failures aggregate apart from whole-tenant `failures`.
+    assert result.payment_failures == 2
     assert per_tenant.await_count == 3
 
 
@@ -532,9 +534,9 @@ async def test_reconcile_once_isolates_per_tenant_failures():
 
     per_tenant = AsyncMock(
         side_effect=[
-            {"polled": 1, "resolved": 1, "aged_out": 0},
+            {"polled": 1, "resolved": 1, "aged_out": 0, "payment_failures": 0},
             RuntimeError("connection refused"),
-            {"polled": 2, "resolved": 0, "aged_out": 1},
+            {"polled": 2, "resolved": 0, "aged_out": 1, "payment_failures": 0},
         ]
     )
 
@@ -583,7 +585,9 @@ async def test_reconcile_once_passes_caller_supplied_now_through():
         ),
     ]
     fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=UTC)
-    per_tenant = AsyncMock(return_value={"polled": 0, "resolved": 0, "aged_out": 0})
+    per_tenant = AsyncMock(
+        return_value={"polled": 0, "resolved": 0, "aged_out": 0, "payment_failures": 0}
+    )
 
     with (
         patch(

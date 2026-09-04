@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -30,7 +31,7 @@ from app.database import _make_tenant_url, control_session_factory
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
-from app.services.payment_adapters import PaymentStatus, get_payment_adapter
+from app.services.payment_adapters import PaymentStatus, SettlementReport, get_payment_adapter
 from app.services.payment_settlement import SettlementVerification
 from app.services.payment_settlement_record import (
     open_settlement_mismatch_exception,
@@ -48,6 +49,77 @@ class ReconcileResult:
     payments_resolved: int = 0  # transitioned to a terminal status
     payments_aged_out: int = 0  # forced `failed` after the max age
     failures: int = 0  # tenants we couldn't reach
+    #: Individual payments whose processor status poll RAISED. Counted apart
+    #: from `failures`, which means "the whole tenant sweep aborted".
+    #:
+    #: The `*_failures` suffix is load-bearing, not decoration:
+    #: `sweep_health.failure_count` sums exactly `failures` plus any counter
+    #: ending in `_failures`, so this is what makes a tick that polled 200
+    #: payments against a processor returning 503 on every one report
+    #: `degraded` instead of `ok`. It was previously counted nowhere and
+    #: logged at INFO, so a rail that was 100% down produced
+    #: `polled=N, resolved=0, failures=0` — indistinguishable from a healthy
+    #: platform with nothing to settle, which is the exact blindness the sweep
+    #: registry exists to remove. See `docs/background-sweeps.md`
+    #: § What counts as a failed run.
+    payment_failures: int = 0
+
+
+class _PrefetchedSettlementSource:
+    """Adapter stand-in used for the settlement leg once the row is LOCKED.
+
+    ``record_settlement`` re-asks the processor whenever it is handed no
+    amount — a live rail round trip. The reconciler resolves that figure
+    *before* taking the row lock (`_prefetch_settlement`), so the lock-side
+    call must not be able to make a second one: this reports the capability
+    unavailable, which `record_settlement` already treats as "leave the
+    verdict `unverified`".
+
+    Stateless, so one module-level instance serves every tenant.
+    """
+
+    async def fetch_settlement(self, provider_payment_id: str) -> SettlementReport:
+        return SettlementReport(available=False, unavailable_reason="prefetched_outside_lock")
+
+
+_PREFETCHED_ONLY = _PrefetchedSettlementSource()
+
+
+async def _prefetch_settlement(
+    adapter, *, provider_payment_id: str | None, payment_id
+) -> tuple[Decimal | None, str | None]:
+    """Ask the processor what it settled — **before** the row lock is taken.
+
+    This is a live HTTP round trip to a third party. Running it while holding
+    `SELECT ... FOR UPDATE` on the payment row blocked `payment_webhook`
+    (which takes the same lock) for the whole fetch, on the one row a real
+    webhook was most likely to arrive for. Resolving the figure first and
+    locking second is the shape `payment_erp_sync` uses when it resolves the
+    ERP adapter before taking the invoice lock.
+
+    Best-effort by contract, exactly like `record_settlement`'s own call: any
+    failure returns no figure, which leaves the verdict `unverified` rather
+    than halting the sweep. Logs the exception CLASS only — a processor SDK
+    error string can embed partial account data.
+
+    Takes the identifiers rather than the ORM row on purpose: it runs before
+    the locking `db.refresh()`, at which point a previous iteration's skip-path
+    `rollback()` may have left the instance expired.
+    """
+    if not provider_payment_id:
+        return None, None
+    try:
+        report = await adapter.fetch_settlement(provider_payment_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort by contract
+        logger.warning(
+            "[payment-reconciler] settlement fetch failed for payment %s: %s",
+            payment_id,
+            exc.__class__.__name__,
+        )
+        return None, None
+    if report.available and report.amount is not None:
+        return report.amount, report.currency
+    return None, None
 
 
 async def _settle_from_poll(
@@ -56,6 +128,8 @@ async def _settle_from_poll(
     payment,
     adapter,
     org: Organization,
+    reported_amount: Decimal | None = None,
+    reported_currency: str | None = None,
 ) -> SettlementVerification:
     """Verify + record what the processor settled for a payment THIS sweep
     completed, and flag a discrepancy.
@@ -81,6 +155,13 @@ async def _settle_from_poll(
     Best-effort on every axis, like every other optional-capability call: an
     adapter without ``fetch_settlement`` reports ``available=False``, and any
     failure leaves the verdict `unverified` rather than halting the sweep.
+
+    ``reported_amount`` / ``reported_currency`` are the figure the caller
+    already resolved. The sweep passes what ``_prefetch_settlement`` obtained
+    **outside** the row lock, together with ``_PREFETCHED_ONLY`` as the
+    ``adapter``, so no processor round trip can happen while the lock is held.
+    A caller that hands a real adapter and no figure keeps the original
+    behaviour (``record_settlement`` fetches for itself).
     """
     invoice = (
         await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
@@ -90,6 +171,8 @@ async def _settle_from_poll(
         payment=payment,
         adapter=adapter,
         invoice=invoice,
+        reported_amount=reported_amount,
+        reported_currency=reported_currency,
     )
     if verification.is_discrepancy:
         # Same payment-blocking `fraud_flag` the webhook raises — the
@@ -242,6 +325,7 @@ async def reconcile_once(*, now: datetime | None = None) -> ReconcileResult:
             result.payments_polled += outcome["polled"]
             result.payments_resolved += outcome["resolved"]
             result.payments_aged_out += outcome["aged_out"]
+            result.payment_failures += outcome["payment_failures"]
         except Exception as exc:  # noqa: BLE001
             # Log the exception class, not the message — a processor
             # SDK could surface partial PAN / account numbers in its
@@ -253,15 +337,16 @@ async def reconcile_once(*, now: datetime | None = None) -> ReconcileResult:
             )
             result.failures += 1
 
-    if result.payments_polled or result.failures:
+    if result.payments_polled or result.failures or result.payment_failures:
         logger.info(
             "[payment-reconciler] swept %d tenant(s); polled=%d resolved=%d "
-            "aged_out=%d failures=%d",
+            "aged_out=%d failures=%d payment_failures=%d",
             result.tenants_scanned,
             result.payments_polled,
             result.payments_resolved,
             result.payments_aged_out,
             result.failures,
+            result.payment_failures,
         )
     return result
 
@@ -282,7 +367,7 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
     payment_config = (org.settings or {}).get("payments") or {}
     if not payment_config.get("provider"):
         # Org hasn't configured a processor; nothing to poll.
-        return {"polled": 0, "resolved": 0, "aged_out": 0}
+        return {"polled": 0, "resolved": 0, "aged_out": 0, "payment_failures": 0}
 
     # An unsupported provider name raises (see `get_payment_adapter`). Let it
     # propagate: `reconcile_once` counts the tenant as a failure, which is what
@@ -297,6 +382,7 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
     polled = 0
     resolved = 0
     aged_out = 0
+    payment_failures = 0
     # Runs holding a payment the sweep just settled to `completed`. After the
     # commit we hand these to dispatch_payment_sync — the exact downstream the
     # webhook path fires — so the invoice flips payment_scheduled → paid and the
@@ -320,8 +406,18 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                 .all()
             )
 
-            for payment in stuck:
-                age = now - (payment.submitted_at or now)
+            # Snapshot the fields the PRE-LOCK decisions read, while every
+            # loaded row is still fresh. `Session.rollback()` — which the skip
+            # paths below now issue so a row lock is released immediately
+            # rather than at end of tick — expires every object in the identity
+            # map, and a bare `payment.submitted_at` on an expired instance
+            # would then trigger a lazy refresh, which an async session raises
+            # on rather than transparently reloading. Everything read AFTER the
+            # locking `db.refresh()` is safe: the refresh repopulates the row.
+            candidates = [(p, p.id, p.status, p.submitted_at, p.provider_payment_id) for p in stuck]
+
+            for payment, payment_id, known_status, submitted_at, provider_payment_id in candidates:
+                age = now - (submitted_at or now)
                 if age < settle_after:
                     continue
                 # Past the absolute max age — give up and mark failed.
@@ -334,6 +430,11 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     # transition audit row.
                     await db.refresh(payment, with_for_update=True)
                     if payment.status not in ("submitted", "processing"):
+                        # Nothing to write — end the transaction so the
+                        # `FOR UPDATE` lock is released NOW rather than being
+                        # held across every remaining processor call in this
+                        # tenant. `payment_webhook` takes the same row lock.
+                        await db.rollback()
                         continue
                     previous_status = payment.status
                     payment.status = "failed"
@@ -369,25 +470,29 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     await db.commit()
                     continue
 
-                if not payment.provider_payment_id:
+                if not provider_payment_id:
                     # Submitted with no processor id — the executor
                     # logged that as a failure already; just advance.
                     continue
 
                 polled += 1
                 try:
-                    upstream = await adapter.get_payment_status(payment.provider_payment_id)
+                    upstream = await adapter.get_payment_status(provider_payment_id)
                 except Exception as exc:  # noqa: BLE001
-                    # See note above — log the class, not the message.
-                    logger.info(
+                    # See note above — log the class, not the message. WARNING,
+                    # not INFO: this is the sweep failing to do the one thing it
+                    # exists for, and it is now counted so the tick reports
+                    # `degraded` instead of a clean `polled=N, resolved=0`.
+                    logger.warning(
                         "[payment-reconciler] adapter %s raised on %s: %s",
                         adapter.provider_name,
-                        payment.id,
+                        payment_id,
                         exc.__class__.__name__,
                     )
+                    payment_failures += 1
                     continue
 
-                if upstream == payment.status:
+                if upstream == known_status:
                     continue
                 # Webhooks could have raced us — only accept terminal
                 # status updates from the poll. The async webhook path
@@ -397,12 +502,32 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     PaymentStatus.failed,
                     PaymentStatus.cancelled,
                 ):
+                    # Resolve the settled figure BEFORE the lock. This is a
+                    # live rail round trip, and running it under
+                    # `SELECT ... FOR UPDATE` blocked `payment_webhook`'s own
+                    # lock on the very row a webhook was most likely arriving
+                    # for. Same shape as `payment_erp_sync` resolving its ERP
+                    # adapter ahead of the invoice lock.
+                    reported_amount: Decimal | None = None
+                    reported_currency: str | None = None
+                    if upstream is PaymentStatus.completed:
+                        reported_amount, reported_currency = await _prefetch_settlement(
+                            adapter,
+                            provider_payment_id=provider_payment_id,
+                            payment_id=payment_id,
+                        )
+
                     # Lock + re-read before writing the terminal status (see the
                     # max-age branch). A webhook that raced us between the bulk
-                    # read and this poll already settled the row; skip rather
-                    # than overwrite its completed_at + double-audit.
+                    # read and this poll — or during the settlement fetch above —
+                    # already settled the row; skip rather than overwrite its
+                    # completed_at + double-audit. Re-checking the predicate the
+                    # unlocked read used is the two-phase rule, and it is what
+                    # makes moving the fetch out of the lock safe.
                     await db.refresh(payment, with_for_update=True)
                     if payment.status not in ("submitted", "processing"):
+                        # Nothing to write — release the lock now.
+                        await db.rollback()
                         continue
                     previous_status = payment.status
                     payment.status = upstream.value
@@ -411,7 +536,12 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     settlement: SettlementVerification | None = None
                     if payment.status == "completed":
                         settlement = await _settle_from_poll(
-                            db, payment=payment, adapter=adapter, org=org
+                            db,
+                            payment=payment,
+                            adapter=_PREFETCHED_ONLY,
+                            org=org,
+                            reported_amount=reported_amount,
+                            reported_currency=reported_currency,
                         )
                     if payment.status == "completed" and payment.payment_run_id:
                         runs_to_sync.add(payment.payment_run_id)
@@ -454,7 +584,12 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     exc.__class__.__name__,
                 )
 
-    return {"polled": polled, "resolved": resolved, "aged_out": aged_out}
+    return {
+        "polled": polled,
+        "resolved": resolved,
+        "aged_out": aged_out,
+        "payment_failures": payment_failures,
+    }
 
 
 async def run_reconciler_loop() -> None:
