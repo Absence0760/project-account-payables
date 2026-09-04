@@ -10,7 +10,9 @@ any that newly hit. Every tick:
   2. For each tenant, open a fresh per-tenant engine and select ``active``
      vendors whose ``last_screened_at`` is NULL or older than the staleness
      window (``settings.vendor_rescreen_after_days``).
-  3. Re-screen each via ``vendor_screening.screen_vendor_record``
+  3. Re-read each candidate ``FOR UPDATE``, re-check that it is *still* due
+     (see :func:`_still_due`), and re-screen it via
+     ``vendor_screening.screen_vendor_record``
      (``check_type="periodic"``) — the trail row, denormalised state, and the
      payment block are all handled there.
   4. Track how many vendors NEWLY flip to ``match`` / ``review`` (a vendor that
@@ -62,6 +64,30 @@ logger = logging.getLogger(__name__)
 # Denormalised statuses that count as "flagged" — a vendor flipping INTO one of
 # these (from anything else) is a new flag worth surfacing.
 _FLAGGED_STATUSES = frozenset({"match", "review"})
+
+
+def _still_due(vendor: Vendor, cutoff: datetime) -> bool:
+    """Re-test, under the row lock, the predicate the id query selected on.
+
+    Step 2 of the two-phase shape in ``../docs/background-sweeps.md`` § Locking,
+    and it is **correctness, not an optimisation**. The id query is unlocked, so
+    between reading the id and locking the row another replica's sweep — or a
+    manual ``POST /api/vendors/{id}/screen`` — can have screened the same vendor
+    and committed. Acting on the stale snapshot bills the sanctions provider a
+    second time for one screening event and appends a second
+    ``SanctionsCheck`` row plus a second ``vendor.screened`` audit row for it,
+    and both trails are append-only, so the duplicate cannot be tidied away
+    afterwards. It also races the vendor's denormalised
+    ``screening_status`` / ``last_screened_at``, whose last writer wins.
+
+    Deliberately the same three clauses as the id query (``status == "active"``
+    and a NULL-or-stale ``last_screened_at``), so a vendor deactivated mid-tick
+    is skipped too — re-screening a vendor an admin just retired is work nobody
+    asked for and a payment block nobody expects.
+    """
+    if vendor.status != "active":
+        return False
+    return vendor.last_screened_at is None or vendor.last_screened_at < cutoff
 
 
 @dataclass
@@ -132,13 +158,27 @@ async def _sweep_tenant(
     Returns ``(vendors_screened, new_flags, vendor_failures)``. Commits per
     vendor — see the module docstring for why one commit per tenant made a
     single failing vendor block the tenant's sweep permanently.
+
+    **Two-phase, one row locked at a time**, the shape every mutating sweep uses
+    (``../docs/background-sweeps.md`` § Locking): candidate ids are read
+    UNLOCKED ``ORDER BY id`` (the same lock order on every replica, so two
+    sweeps queue instead of deadlocking), then each is re-read ``FOR UPDATE``,
+    re-checked against the predicate the id query used (:func:`_still_due`),
+    screened, and committed on its own — which releases the lock before the
+    next vendor is touched.
+
+    The re-check is the half this sweep was missing. See :func:`_still_due` for
+    what the gap cost: a duplicate paid sanctions call and a duplicate
+    append-only ``SanctionsCheck`` row for a single screening event.
     """
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
-            # Ids only: each vendor is re-read inside its own leg, so a leg that
-            # rolls back can't leave the NEXT one holding an expired ORM object.
+            # Ids only, UNLOCKED: each vendor is re-read `FOR UPDATE` inside its
+            # own leg, so a leg that rolls back can't leave the NEXT one holding
+            # an expired ORM object, and no lock outlives the vendor that needed
+            # it. `ORDER BY id` gives every replica the same lock order.
             due_ids = (
                 (
                     await db.execute(
@@ -162,8 +202,15 @@ async def _sweep_tenant(
             vendor_failures = 0
             for vendor_id in due_ids:
                 try:
-                    vendor = await db.get(Vendor, vendor_id)
-                    if vendor is None:  # deleted since the id query
+                    # `with_for_update` bypasses the identity map, so this is a
+                    # real `SELECT ... FOR UPDATE` on exactly one row.
+                    vendor = await db.get(Vendor, vendor_id, with_for_update=True)
+                    if vendor is None or not _still_due(vendor, cutoff):
+                        # Deleted, deactivated, or screened by another replica /
+                        # a manual re-screen between the id read and the lock.
+                        # End the transaction so the lock is released now rather
+                        # than at the end of the tick.
+                        await db.rollback()
                         continue
 
                     # Capture the pre-screen status so we only count a vendor
