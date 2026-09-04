@@ -2,32 +2,49 @@ import { describe, expect, it } from 'vitest';
 import { formatAmountWithoutCurrency, recommendationCurrency } from './discountRecommendation';
 
 describe('recommendationCurrency', () => {
-	it('labels a convertible recommendation with the response’s own totals currency', () => {
-		// The whole point: the currency comes off the RESPONSE, never off an
-		// org-default store the response does not agree with.
-		expect(recommendationCurrency({ unconvertible: false }, 'EUR')).toBe('EUR');
+	it('uses the row’s OWN currency, which is the question being asked', () => {
+		expect(recommendationCurrency({ currency: 'EUR', unconvertible: false }, 'EUR')).toBe('EUR');
+	});
+
+	it('labels an unconvertible row with its own currency, not the totals’', () => {
+		// This is the row the per-row field exists for. Its money is real and in
+		// JPY; the totals are in USD. Before the field existed the card could
+		// only render the figure bare — and before THAT it stamped the org
+		// default on it, which is how "Save $412.00" described €412.
+		expect(recommendationCurrency({ currency: 'JPY', unconvertible: true }, 'USD')).toBe('JPY');
 	});
 
 	it('normalises the code the response sent', () => {
-		expect(recommendationCurrency({ unconvertible: false }, ' gbp ')).toBe('GBP');
+		expect(recommendationCurrency({ currency: ' gbp ' }, 'USD')).toBe('GBP');
 	});
 
-	it('refuses to name a currency for an unconvertible recommendation', () => {
-		// `unconvertible` means "this offer is in a currency the totals are NOT
-		// in" — and the response never says which. Stamping the totals currency
-		// on it is how "Save $412.00" rendered a €412 saving.
-		expect(recommendationCurrency({ unconvertible: true }, 'USD')).toBeNull();
+	describe('a response that omits the per-row currency (older payload)', () => {
+		// The field is additive, so the client must degrade rather than break.
+		it('falls back to the totals currency when the row is not excluded', () => {
+			// `unconvertible === false` means the offer's currency PROVABLY equals
+			// the response's own — a safe stand-in.
+			expect(recommendationCurrency({ unconvertible: false }, 'EUR')).toBe('EUR');
+			expect(recommendationCurrency({}, 'USD')).toBe('USD');
+			expect(recommendationCurrency({ unconvertible: null }, 'USD')).toBe('USD');
+		});
+
+		it('refuses to name a currency for an excluded row', () => {
+			// The old payload says the offer is in some OTHER currency without
+			// saying which, so the caller renders the figure symbol-free.
+			expect(recommendationCurrency({ unconvertible: true }, 'USD')).toBeNull();
+			expect(recommendationCurrency({ currency: null, unconvertible: true }, 'USD')).toBeNull();
+		});
+
+		it('returns null rather than guess when the totals currency is unusable too', () => {
+			expect(recommendationCurrency({ unconvertible: false }, null)).toBeNull();
+			expect(recommendationCurrency({ unconvertible: false }, '')).toBeNull();
+			expect(recommendationCurrency({ unconvertible: false }, 'US DOLLAR')).toBeNull();
+		});
 	});
 
-	it('treats a missing flag as convertible (the backend default)', () => {
-		expect(recommendationCurrency({}, 'USD')).toBe('USD');
-		expect(recommendationCurrency({ unconvertible: null }, 'USD')).toBe('USD');
-	});
-
-	it('returns null rather than guess when the totals currency is missing or malformed', () => {
-		expect(recommendationCurrency({ unconvertible: false }, null)).toBeNull();
-		expect(recommendationCurrency({ unconvertible: false }, '')).toBeNull();
-		expect(recommendationCurrency({ unconvertible: false }, 'US DOLLAR')).toBeNull();
+	it('ignores a malformed per-row code and falls back', () => {
+		expect(recommendationCurrency({ currency: 'EUROS', unconvertible: false }, 'USD')).toBe('USD');
+		expect(recommendationCurrency({ currency: 'EUROS', unconvertible: true }, 'USD')).toBeNull();
 	});
 
 	it('handles a null recommendation', () => {

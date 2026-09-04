@@ -3408,6 +3408,7 @@ export const en = {
 	'discounts.modal.title': 'Accept discount',
 	'discounts.opt.availableSavings': 'Available savings:',
 	'discounts.opt.budgetAria': 'Cash budget',
+	'discounts.opt.budgetInvalid': 'Enter the cash budget as a plain amount, e.g. 250000 or 250000.00',
 	'discounts.opt.budgetLabel': 'Cash budget (optional)',
 	'discounts.opt.budgetPlaceholder': 'e.g. 250000',
 	'discounts.opt.costOfCapital': 'Cost of capital:',

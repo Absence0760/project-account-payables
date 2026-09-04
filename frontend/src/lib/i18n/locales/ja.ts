@@ -3323,6 +3323,7 @@ export const messages = {
 	'discounts.modal.title': '割引を承諾',
 	'discounts.opt.availableSavings': '利用可能な節約額：',
 	'discounts.opt.budgetAria': '現金予算',
+	'discounts.opt.budgetInvalid': '現金予算は 250000 や 250000.00 のような数値で入力してください',
 	'discounts.opt.budgetLabel': '現金予算（任意）',
 	'discounts.opt.budgetPlaceholder': '例：250000',
 	'discounts.opt.costOfCapital': '資本コスト：',

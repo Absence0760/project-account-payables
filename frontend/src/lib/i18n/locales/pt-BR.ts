@@ -3355,6 +3355,7 @@ export const messages = {
 	'discounts.modal.title': 'Aceitar desconto',
 	'discounts.opt.availableSavings': 'Economia disponível:',
 	'discounts.opt.budgetAria': 'Orçamento de caixa',
+	'discounts.opt.budgetInvalid': 'Informe o orçamento de caixa como um valor simples, ex.: 250000 ou 250000.00',
 	'discounts.opt.budgetLabel': 'Orçamento de caixa (opcional)',
 	'discounts.opt.budgetPlaceholder': 'ex. 250000',
 	'discounts.opt.costOfCapital': 'Custo de capital:',

@@ -10,6 +10,7 @@ import type {
 	DiscountRoi,
 	DiscountStatusFilter
 } from '$lib/types/discounts';
+import type { MoneyString } from '$lib/utils/money';
 
 /** KPI roll-up for the dashboard header (captured / missed / open / projected). */
 export function getDiscountDashboard(): Promise<DiscountDashboard> {
@@ -56,7 +57,17 @@ export function getInvoiceRoi(invoiceId: string): Promise<DiscountRoi> {
 
 /** Budget-constrained optimization: ranks open offers by ROI and greedily
  *  selects within the optional cash budget. */
-export function optimizeDiscounts(cashBudget?: number): Promise<DiscountOptimization> {
+/**
+ * Rank open offers and pick which to capture under a cash budget.
+ *
+ * `cashBudget` is an **exact decimal string** (`MoneyString`), never a number:
+ * the backend's `json.loads` turns a JSON number into a float before any
+ * validator runs, so the budget it selected against was the rounded double —
+ * and that budget decides which invoices get paid early. `POST /optimize` now
+ * refuses a JSON number outright (422). Validate the user's text with
+ * `utils/moneyInput.ts` before calling.
+ */
+export function optimizeDiscounts(cashBudget?: MoneyString): Promise<DiscountOptimization> {
 	const body = cashBudget === undefined ? {} : { cash_budget: cashBudget };
 	return api.post<DiscountOptimization>('/api/discounts/optimize', body);
 }

@@ -3353,6 +3353,7 @@ export const messages = {
 	'discounts.modal.title': 'Aceptar descuento',
 	'discounts.opt.availableSavings': 'Ahorros disponibles:',
 	'discounts.opt.budgetAria': 'Presupuesto de efectivo',
+	'discounts.opt.budgetInvalid': 'Introduzca el presupuesto de efectivo como un importe simple, p. ej. 250000 o 250000.00',
 	'discounts.opt.budgetLabel': 'Presupuesto de efectivo (opcional)',
 	'discounts.opt.budgetPlaceholder': 'p. ej. 250000',
 	'discounts.opt.costOfCapital': 'Coste de capital:',

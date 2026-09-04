@@ -3326,6 +3326,7 @@ export const messages = {
 	'discounts.modal.title': 'Accepter l\'escompte',
 	'discounts.opt.availableSavings': 'Économies disponibles :',
 	'discounts.opt.budgetAria': 'Budget de trésorerie',
+	'discounts.opt.budgetInvalid': 'Saisissez le budget de trésorerie sous forme de montant simple, p. ex. 250000 ou 250000.00',
 	'discounts.opt.budgetLabel': 'Budget de trésorerie (optionnel)',
 	'discounts.opt.budgetPlaceholder': 'ex. 250000',
 	'discounts.opt.costOfCapital': 'Coût du capital :',

@@ -7,6 +7,7 @@
 		formatAmountWithoutCurrency,
 		recommendationCurrency
 	} from '$lib/utils/discountRecommendation';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
@@ -268,12 +269,25 @@
 	let optimization = $state<DiscountOptimization | null>(null);
 
 	async function runOptimize() {
+		// The budget goes out as the EXACT STRING the user typed. It used to go
+		// through `Number()`, and the backend's `json.loads` then handed the
+		// optimizer a float — so the budget it selected against was the rounded
+		// double, not what was typed. This budget decides which invoices get
+		// paid early: a spend decision, not a display value (root `CLAUDE.md`
+		// § Project invariants). `POST /optimize` now refuses a JSON number.
+		const typed = cashBudget.trim();
+		const budget = normalizeMoneyInput(typed);
+		// A blank field legitimately means "no budget"; text we could not read
+		// does NOT — running unconstrained on a typo would commit more cash than
+		// was asked for, which is exactly what the server's `extra="forbid"`
+		// closes on its side.
+		if (typed && budget === null) {
+			toast(m('discounts.opt.budgetInvalid'), 'error');
+			return;
+		}
 		optimizing = true;
 		try {
-			const budget = cashBudget.trim() ? Number(cashBudget.trim()) : undefined;
-			optimization = await optimizeDiscounts(
-				budget !== undefined && Number.isFinite(budget) ? budget : undefined
-			);
+			optimization = await optimizeDiscounts(budget ?? undefined);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : m('discounts.toast.optimizeFailed'), 'error');
 		} finally {
@@ -400,10 +414,11 @@
 					<div class="scenario-grid">
 						{#each optimization.recommendations as rec (rec.offer_id)}
 							<!-- `roi.savings` is computed from the OFFER's own base amount, so
-							     it is in the OFFER's currency. `unconvertible` is the response's
-							     statement that this row is NOT in the totals' currency — and it
-							     never says which one it IS in, so there is no code to stamp on
-							     it. See `utils/discountRecommendation.ts`. -->
+							     it is in the OFFER's currency — which the row now states.
+							     `unconvertible` keeps its separate job: this row's money is not
+							     in the totals' currency and so is not counted in them. A payload
+							     predating the per-row code still degrades to a bare figure. See
+							     `utils/discountRecommendation.ts`. -->
 							{@const recCurrency = recommendationCurrency(rec, optimization.currency)}
 							<div class="scenario-card" class:best={rec.selected}>
 								<span class="scenario-title">

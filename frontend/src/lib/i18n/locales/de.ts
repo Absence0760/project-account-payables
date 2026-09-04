@@ -3325,6 +3325,7 @@ export const messages = {
 	'discounts.modal.title': 'Skonto annehmen',
 	'discounts.opt.availableSavings': 'Verfügbare Einsparungen:',
 	'discounts.opt.budgetAria': 'Liquiditätsbudget',
+	'discounts.opt.budgetInvalid': 'Geben Sie das Barbudget als einfachen Betrag ein, z. B. 250000 oder 250000.00',
 	'discounts.opt.budgetLabel': 'Liquiditätsbudget (optional)',
 	'discounts.opt.budgetPlaceholder': 'z. B. 250000',
 	'discounts.opt.costOfCapital': 'Kapitalkosten:',

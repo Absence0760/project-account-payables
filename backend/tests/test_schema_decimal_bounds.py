@@ -286,6 +286,18 @@ UNBOUNDED_BY_DESIGN: dict[tuple[str, str, str], str] = {
         "Plan-replay parameter, already range-bounded `ge=0, le=100`. Never "
         "persisted; the ROI math it feeds is bounded by that range."
     ),
+    ("discount", "OptimizerRequest", "cash_budget"): (
+        "The optimizer's cash BUDGET, already `ge=0`. Same shape as "
+        "`CashFlowPlanReplay.cash_budget` above and the same reasoning: it "
+        "feeds `discount_optimizer.optimize`, which only accumulates real "
+        "invoice amounts up to it and never makes the budget an operand of a "
+        "quantize. Never persisted — `/optimize` is a read-only advisory pass. "
+        "Bounding `decimal_places` here would be actively WRONG: this field "
+        "exists to carry the caller's amount EXACTLY (it is parsed from a "
+        "decimal string precisely because a JSON number is rounded to a float "
+        "before pydantic sees it), so rejecting extra fractional digits would "
+        "re-introduce a narrower version of the rounding the field prevents."
+    ),
     ("discount", "DiscountTier", "percent"): (
         "A tier rung, already range-bounded `gt=0, lt=100`. Persisted into the "
         "`discount_offers.tiers` JSONB as an exact string (never a Numeric "

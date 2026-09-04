@@ -52,6 +52,7 @@ from app.schemas.discount import (
     DiscountOfferResponse,
     DiscountROIResponse,
     OptimizerRecommendation,
+    OptimizerRequest,
     OptimizerResponse,
 )
 from app.services import discount_offers as offers_svc
@@ -543,15 +544,19 @@ async def invoice_roi(
 
 @router.post("/optimize", response_model=OptimizerResponse)
 async def optimize_discounts(
-    body: dict | None = None,
+    body: OptimizerRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    cash_budget = None
-    if body and body.get("cash_budget") is not None:
-        cash_budget = Decimal(str(body["cash_budget"]))
+    # `OptimizerRequest`, not a bare dict: this used to be
+    # `Decimal(str(body["cash_budget"]))`, which reads exact but isn't — the
+    # value had already been through `json.loads` and was a `float` by then, so
+    # the budget the optimizer selected against was the rounded double. The
+    # schema accepts the amount as an exact decimal STRING (the only JSON shape
+    # that round-trips) and 422s the lossy one. See `_parse_exact_money`.
+    cash_budget = body.cash_budget if body else None
 
     today = utc_today()
     cost_of_capital = _cost_of_capital(org)
@@ -610,6 +615,10 @@ async def optimize_discounts(
                 discount_percent=r.opportunity.discount_percent,
                 pay_by=r.opportunity.pay_by.isoformat(),
                 roi=_roi_response(r.roi),
+                # THIS row's currency — `roi.savings` comes off the offer's own
+                # `base_amount`, so it is the offer's currency, which is the
+                # response-level `currency` only when `unconvertible` is False.
+                currency=r.opportunity.currency,
                 selected=r.selected,
                 cumulative_outlay=r.cumulative_outlay,
                 unconvertible=r.unconvertible,
