@@ -1094,6 +1094,25 @@ treasurer looks for "what is still committed".
 **Tests:** `tests/test_payment_summary_currency.py` (DB-backed),
 `tests/test_payment_summary.py` (shape).
 
+**The rebate figure is denominated too, and it is the odd one out.** `total_paid`
+/ `total_pending` convert through `payment_reporting_amount_sql`; the rebate
+total cannot, because `card_rebates` carries no currency column at all — a
+rebate's denomination is only knowable through the card it accrued on. So it
+*filters* rather than converts: join `virtual_cards`, keep the rows whose
+currency matches, and count the rest onto `excluded_rebate_count`. The shared
+expression is `currency_conversion.rebate_currency_sql`, and the same four
+rollups read it (this endpoint, the dashboard KPI, `GET /api/cards/dashboard`,
+`GET /api/cards/rebates`, and the analytics rebate-yield numerator) — they were
+five separate bare cross-currency `SUM`s, several under a response that
+declared a currency.
+
+`excluded_rebate_count` is deliberately **not** folded into
+`unconverted_payment_count`. They answer different questions: one is a payment
+whose reporting-currency figure could not be ESTABLISHED (a missing rate), the
+other a rebate whose currency is perfectly well known and simply is not this
+one. A single combined number would describe neither, and the two have
+different remedies — book the missing rate, versus nothing to fix.
+
 ### The payment queue is paginated
 
 `GET /api/payments/queue` used to return the tenant's **whole** approved-unpaid
@@ -1381,7 +1400,7 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
 | `GET` | `/api/payments/queue` | List invoices ready for payment — paginated (`page` / `page_size`, default 20). Response carries the whole-set `total` / `selectable_total` / `blocked_total` / `by_currency` + per-row `blocked` / `blocked_reason`. See § The payment queue is paginated and § Financial-integrity exception gate → The queue says which rows the gate would refuse. |
 | `GET` | `/api/payments/queue/ids` | "Select all N matching" resolver — `{ids, total, truncated, currency, by_currency}` for the whole selectable set, capped at 5000. Same RBAC as `/queue`. |
-| `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
+| `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates — every money figure in the org's reporting currency, with `unconverted_payment_count` / `excluded_rebate_count` reporting what each had to leave out. `CardRebate` is a **tenant** table (`decisions.md` §57), so the rebate figure is read from the tenant session and joins `virtual_cards` for its currency + entity; there is no `control_db` dependency and no try/except fallback — a DB failure is a 500, not a confident `0`. See § The payments KPIs are denominated, not just summed. |
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
 | `POST` | `/api/payments/{id}/compliance/release` | Re-run compliance-then-adapter for a payment stuck `pending_compliance`. `payment.execute`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |
 | `POST` | `/api/payments/{id}/compliance/dismiss` | Give up on a payment stuck `pending_compliance` — flips it to `failed` with a required `{reason}`, never reaches the adapter. `payment.void`-gated, 409 outside that status. See § Sanctions / compliance hold resolution. |

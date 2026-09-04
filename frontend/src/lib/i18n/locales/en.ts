@@ -204,6 +204,8 @@ export const en = {
 	'payments.summary.totalPaid': 'Total Paid',
 	'payments.summary.unconvertedPayments':
 		'Excluded: {n, plural, one {# payment} other {# payments}} with no exchange rate into {currency}, left out of the totals above — so the figures shown understate what actually moved. Book the missing rate to see the full picture.',
+	'payments.summary.excludedRebates':
+		'Excluded: {n, plural, one {# card rebate} other {# card rebates}} denominated in another currency, left out of the rebate figure above — it describes {currency} only.',
 	'payments.queue.unconvertedRows':
 		'{n, plural, one {# invoice has} other {# invoices have}} no exchange rate into the reporting currency, so the queue totals leave them out. The rows themselves are listed and payable, each in its own currency.',
 	'payments.summary.pending': 'Pending',

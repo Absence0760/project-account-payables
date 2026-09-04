@@ -22,9 +22,9 @@ Key contracts tested:
   report what they had to exclude (see `test_payment_summary_currency.py`).
 
 The endpoint issues exactly five tenant-db queries, in order:
-paid, pending, payment_count, rebates, queue_count. The first two select a
-(sum, excluded_count) PAIR and read it with `.one()`; the last three are
-scalars.
+paid, pending, payment_count, rebates, queue_count. Three of them select a
+(sum, excluded_count) PAIR and read it with `.one()` — paid, pending and
+rebates; `payment_count` and `queue_count` are scalars.
 """
 
 from __future__ import annotations
@@ -43,9 +43,10 @@ def _make_db_session(*scalar_sequence):
     """Build an AsyncSession mock whose sequential execute() calls each
     return successive values from scalar_sequence.
 
-    The first two calls (paid, pending) select a `(sum, excluded_count)` pair
-    and read it with `.one()`; the rest are `.scalar()`. A bare value in the
-    sequence is treated as the sum with zero excluded.
+    The paid / pending / rebate calls select a `(sum, excluded_count)` pair and
+    read it with `.one()`; the two counts are `.scalar()`. A bare value in the
+    sequence is treated as the sum with zero excluded, so a caller only spells
+    the pair out when it cares about the excluded half.
     """
     session = AsyncMock()
     results = []

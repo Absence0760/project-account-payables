@@ -442,6 +442,13 @@ def test_every_card_rollup_filters_on_the_declared_currency():
     src = inspect.getsource(card_dashboard)
     assert src.count("_card_ccy == reporting_currency") == 4, src
     assert src.count("_card_ccy != reporting_currency") == 2, src
-    # The card currency is coalesced (a NULL is unstamped, not foreign) and
-    # upper-cased (the column is free-form varchar(3)).
-    assert "func.upper(func.coalesce(VirtualCard.currency, reporting_currency))" in src
+    # The card-currency expression itself now has ONE owner —
+    # `currency_conversion.card_currency_sql`, shared by the six rollups that
+    # were each spelling it. This asserts the delegation rather than the inline
+    # literal it replaced; the coalesce + upper-case behaviour is asserted on
+    # the helper in `test_rebate_currency_denomination.py`, which also fails any
+    # module that re-derives it inline.
+    assert "card_currency_sql(reporting_currency)" in src
+    assert "func.coalesce(VirtualCard.currency" not in src, (
+        "the currency expression is back inline; call card_currency_sql instead"
+    )

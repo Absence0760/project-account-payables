@@ -56,12 +56,17 @@ export interface BillingUsage {
 	[meter: string]: string;
 }
 
-/** One currency's rebate total, as it arrives on the meter map. */
+/** One currency's rebate total, as it arrives on the meter map.
+ *
+ * `{currency, total}` deliberately matches the house per-currency shape every
+ * backend `*CurrencyTotal` schema emits and `utils/currencyGroups.ts` renders,
+ * so this can feed the shared display primitive rather than needing its own.
+ */
 export interface RebateMeterGroup {
 	/** ISO 4217 code, from the meter key. */
 	currency: string;
 	/** Exact decimal string — never parsed to a number for display. */
-	amount: string;
+	total: string;
 }
 
 /** The prefix every per-currency rebate meter carries. */
@@ -84,7 +89,7 @@ export function rebateMeterGroups(usage: BillingUsage | null | undefined): Rebat
 		if (!key.startsWith(REBATE_METER_PREFIX)) continue;
 		const currency = key.slice(REBATE_METER_PREFIX.length).trim().toUpperCase();
 		if (currency.length !== 3) continue;
-		groups.push({ currency, amount: String(amount ?? '0') });
+		groups.push({ currency, total: String(amount ?? '0') });
 	}
 	groups.sort((a, b) => a.currency.localeCompare(b.currency));
 	return groups;

@@ -183,6 +183,8 @@ export const messages = {
 	'payments.summary.totalPaid': 'Gesamt bezahlt',
 	'payments.summary.unconvertedPayments':
 		'Ausgeschlossen: {n, plural, one {# Zahlung} other {# Zahlungen}} ohne Wechselkurs in {currency}, nicht in den obigen Summen enthalten — die angezeigten Zahlen unterschätzen daher den tatsächlichen Zahlungsfluss. Erfassen Sie den fehlenden Kurs für ein vollständiges Bild.',
+	'payments.summary.excludedRebates':
+		'Ausgeschlossen: {n, plural, one {# Karten-Rückvergütung} other {# Karten-Rückvergütungen}} in einer anderen Währung, nicht in der obigen Rückvergütungssumme enthalten — sie umfasst ausschließlich {currency}.',
 	'payments.queue.unconvertedRows':
 		'{n, plural, one {# Rechnung hat} other {# Rechnungen haben}} keinen Wechselkurs in die Berichtswährung, daher bleiben sie in den Summen der Warteschlange unberücksichtigt. Die Zeilen selbst werden angezeigt und sind zahlbar — jeweils in ihrer eigenen Währung.',
 	'payments.summary.pending': 'Ausstehend',

@@ -224,7 +224,7 @@ async def _seed_card_rebate(
     mk,
     org_id,
     *,
-    card_currency: str | None,
+    card_currency: str,
     rebate_amount: str,
     entity_id=None,
 ) -> uuid.UUID:
@@ -239,7 +239,7 @@ async def _seed_card_rebate(
     inv_id = await _seed_invoice_with_payment(
         mk,
         org_id,
-        invoice_currency=card_currency or "USD",
+        invoice_currency=card_currency,
         amount=rebate_amount,
         status="completed",
     )
@@ -252,10 +252,8 @@ async def _seed_card_rebate(
             provider_card_id=f"card_{uuid.uuid4().hex[:10]}",
             amount_limit=Decimal(rebate_amount),
             status="active",
-            currency=card_currency or "USD",
+            currency=card_currency,
         )
-        if card_currency is None:
-            card.currency = None
         if entity_id is not None:
             card.entity_id = entity_id
         s.add(card)
@@ -335,14 +333,24 @@ async def test_the_rebate_exclusion_count_is_separate_from_the_payment_one(reald
     assert Decimal(res["total_rebates"]) == Decimal("4.00")
 
 
-async def test_a_lowercase_or_missing_card_currency_still_counts(realdb):
-    """`usd` is USD, and an unstamped legacy card is not silently deleted from
-    the figure — it coalesces to the reporting currency, matching the
-    dashboard's own handling."""
+async def test_a_lowercase_card_currency_still_counts(realdb):
+    """`usd` is USD.
+
+    `resolve_reporting_currency` always returns an uppercase code, so an
+    un-normalised comparison would exclude every row rather than fail loudly —
+    which is why `rebate_currency_sql` uppercases.
+
+    It does NOT also assert the `COALESCE` half. `virtual_cards.currency` is
+    `nullable=False` with a Python-side `default="USD"`, so a card seeded with
+    `currency=None` persists `'USD'` and the coalesce branch is never reached —
+    a test of it here would pass with the coalesce deleted. The coalesce stays
+    for parity with `api/cards.py`'s identical expression, but it is not
+    load-bearing and is not claimed to be.
+    """
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
     await _seed_card_rebate(mk, org_id, card_currency="usd", rebate_amount="3.00")
-    await _seed_card_rebate(mk, org_id, card_currency=None, rebate_amount="2.00")
+    await _seed_card_rebate(mk, org_id, card_currency="USD", rebate_amount="2.00")
 
     res = await _summary(realdb, org_id)
     assert Decimal(res["total_rebates"]) == Decimal("5.00")

@@ -113,4 +113,10 @@ class RebateResponse(BaseModel):
 
 class RebateListResponse(BaseModel):
     items: list[RebateResponse]
-    total: MoneyAmount  # total rebate amount
+    total: MoneyAmount  # total rebate amount, in `currency`
+    # What `total` is denominated in, and how many rebates were left out of it
+    # for being denominated in something else. `total` was a bare
+    # cross-currency SUM presented beside per-row amounts that each state their
+    # own card's currency, so it could be a figure in nothing the rows showed.
+    currency: str = "USD"
+    excluded_rebate_count: int = 0

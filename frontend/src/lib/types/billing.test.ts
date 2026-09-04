@@ -13,8 +13,8 @@ describe('rebateMeterGroups', () => {
 				usage({ 'card_rebate_total.USD': '15.00', 'card_rebate_total.EUR': '7.00' })
 			)
 		).toEqual([
-			{ currency: 'EUR', amount: '7.00' },
-			{ currency: 'USD', amount: '15.00' }
+			{ currency: 'EUR', total: '7.00' },
+			{ currency: 'USD', total: '15.00' }
 		]);
 	});
 
@@ -43,19 +43,19 @@ describe('rebateMeterGroups', () => {
 					'card_rebate_total.gbp': '4.00'
 				})
 			)
-		).toEqual([{ currency: 'GBP', amount: '4.00' }]);
+		).toEqual([{ currency: 'GBP', total: '4.00' }]);
 	});
 
 	it('leaves other meters alone', () => {
 		const groups = rebateMeterGroups(
 			usage({ extractions_lambda: '9', 'card_rebate_total.USD': '1.00' })
 		);
-		expect(groups).toEqual([{ currency: 'USD', amount: '1.00' }]);
+		expect(groups).toEqual([{ currency: 'USD', total: '1.00' }]);
 	});
 
 	it('keeps the amount an exact string', () => {
 		// Money never round-trips through a float on the way to the screen.
 		const [g] = rebateMeterGroups(usage({ 'card_rebate_total.JPY': '12345678901234.56' }));
-		expect(g.amount).toBe('12345678901234.56');
+		expect(g.total).toBe('12345678901234.56');
 	});
 });

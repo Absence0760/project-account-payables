@@ -50,6 +50,7 @@ from app.schemas.payment import (
 )
 from app.services.audit_access import log_access
 from app.services.currency_conversion import (
+    card_currency_sql,
     payment_reporting_amount_sql,
     reporting_amount_at_locked_rate,
     resolve_reporting_currency,
@@ -836,7 +837,7 @@ async def payment_summary(
     # be reconciled against either. (The comment this replaces claimed to match
     # "the dashboard KPI" org-wide; that dashboard is itself entity-scoped now,
     # so the claim had stopped being true in the direction it was arguing.)
-    _rebate_ccy = func.upper(func.coalesce(VirtualCard.currency, reporting_currency))
+    _rebate_ccy = card_currency_sql(reporting_currency)
     rebate_q = apply_entity_scope(
         select(
             func.coalesce(

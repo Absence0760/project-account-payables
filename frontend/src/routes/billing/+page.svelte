@@ -333,7 +333,7 @@
 					     page picked. -->
 					{#each rebateGroups as group (group.currency)}
 						<KpiCard
-							value={formatMoney(group.amount, { currency: group.currency })}
+							value={formatMoney(group.total, { currency: group.currency })}
 							label={rebateGroups.length > 1
 								? `${m('billing.usage.cardRebates')} (${group.currency})`
 								: m('billing.usage.cardRebates')}
@@ -418,7 +418,7 @@
 					{m('billing.usage.cardRebatesNote')}
 					{#each rebateGroups as group, i (group.currency)}{i > 0
 							? ', '
-							: ''}<Money amount={group.amount} currency={group.currency} />{/each}
+							: ''}<Money amount={group.total} currency={group.currency} />{/each}
 					{m('billing.usage.informational')}
 				</p>
 			{/if}

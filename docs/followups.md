@@ -836,8 +836,17 @@ none is a hypothesis.
       `rec.unconvertible` on the card rather than only in the page banner.
       **Trigger:** the next slice touching `/cfo` or `/discounts`.
 
-- [x] **DONE.** Two backend rollups were bare cross-currency `SUM`s presented as
-      one figure. `GET /api/payments/summary`'s `total_rebates` was
+- [x] **DONE — and it was five rollups, not two.** The entry named two; a review
+      of the fix found the same bare `SUM(CardRebate.amount)` on three more
+      surfaces, including the "Rebates Earned" KPI on the main dashboard and the
+      analytics rebate-yield NUMERATOR (divided by a reporting-currency
+      denominator, then annualised). All five are fixed, the expression has one
+      owner (`currency_conversion.card_currency_sql`), and
+      `tests/test_rebate_currency_denomination.py` guards the CLASS — an AST
+      scan fails any statement summing rebate amounts without a currency
+      filter or group-by, so a sixth cannot be added bare. Reasoning is
+      [decisions.md](decisions.md) §62, since this file's own contents are
+      transient. What the entry originally said: `GET /api/payments/summary`'s `total_rebates` was
       `func.sum(CardRebate.amount)` with no currency grouping, shipped under the
       response's own `"currency": reporting_currency`; the billing usage rollup
       did the same for `card_rebate_total`, and `/billing` rendered it with no

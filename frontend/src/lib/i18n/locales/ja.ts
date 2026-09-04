@@ -187,6 +187,8 @@ export const messages = {
 	'payments.summary.totalPaid': '支払済み合計',
 	'payments.summary.unconvertedPayments':
 		'除外: {currency} への為替レートがない{n, plural, other {# 件の支払い}}が上記の合計に含まれていません。表示されている金額は実際の支払額を下回ります。正確な全体像を得るには不足しているレートを登録してください。',
+	'payments.summary.excludedRebates':
+		'除外: 他通貨建ての{n, plural, other {# 件のカードリベート}}は上記のリベート額に含まれていません。この金額は {currency} のみを対象としています。',
 	'payments.queue.unconvertedRows':
 		'報告通貨への為替レートがない{n, plural, other {# 件の請求書}}は、キューの合計から除外されています。行自体は表示され、それぞれの通貨で支払い可能です。',
 	'payments.summary.pending': '保留中',

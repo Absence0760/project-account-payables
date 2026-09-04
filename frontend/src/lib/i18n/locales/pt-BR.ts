@@ -184,6 +184,8 @@ export const messages = {
 	'payments.summary.totalPaid': 'Total pago',
 	'payments.summary.unconvertedPayments':
 		'Excluídos: {n, plural, one {# pagamento} other {# pagamentos}} sem taxa de câmbio para {currency}, fora dos totais acima — portanto os valores exibidos subestimam o que de fato foi movimentado. Registre a taxa faltante para ver o quadro completo.',
+	'payments.summary.excludedRebates':
+		'Excluídos: {n, plural, one {# cashback de cartão} other {# cashbacks de cartão}} denominados em outra moeda, fora do valor de cashback acima — ele considera apenas {currency}.',
 	'payments.queue.unconvertedRows':
 		'{n, plural, one {# fatura não tem} other {# faturas não têm}} taxa de câmbio para a moeda de relatório, então os totais da fila as deixam de fora. As linhas continuam listadas e pagáveis, cada uma na sua própria moeda.',
 	'payments.summary.pending': 'Pendente',

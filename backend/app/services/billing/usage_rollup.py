@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.usage import ExtractionUsage
 from app.models.virtual_card import CardRebate, VirtualCard
+from app.services.currency_conversion import card_currency_sql
 
 
 @dataclass(frozen=True)
@@ -132,14 +133,11 @@ async def rollup_usage(
 
     # Grouped by the card's currency — `card_rebates` has no currency column of
     # its own, so the join is the only way to know what these amounts are
-    # denominated in. A card with no currency stamped (pre-multi-currency row)
-    # coalesces to the platform default rather than being dropped from the
-    # meter entirely; losing money from a billing figure is worse than
-    # attributing it to the default, and it is visible either way because the
-    # currency is in the key.
-    rebate_currency = func.upper(
-        func.coalesce(VirtualCard.currency, settings.reporting_currency_default)
-    )
+    # denominated in. The COALESCE is defensive parity with the sibling
+    # expressions in `api/cards.py` / `api/payments.py` rather than a reachable
+    # branch: `virtual_cards.currency` is NOT NULL with a `default="USD"`, so
+    # there is no unstamped row for it to catch.
+    rebate_currency = card_currency_sql(settings.reporting_currency_default)
     rebate_rows = (
         await db.execute(
             select(
