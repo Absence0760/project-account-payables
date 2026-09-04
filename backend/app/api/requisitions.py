@@ -36,6 +36,7 @@ from app.api.pagination import PaginationParams, pagination_params
 from app.models.contract import Contract
 from app.models.procurement import (
     Budget,
+    IntakeRequest,
     PurchaseOrder,
     PurchaseRequisition,
     RequisitionStatus,
@@ -431,6 +432,40 @@ async def delete_requisition(
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     req = await _get_or_404(db, req_id)
+    # Refuse once the requisition has produced downstream artifacts, the way
+    # `DELETE /api/recurring/{id}` refuses a template that has already
+    # generated invoices. Two distinct failures, both reachable today:
+    #
+    #   * a CONVERTED requisition owns a `PurchaseOrder` through
+    #     `converted_po_id`. Deleting the requisition does not delete the PO —
+    #     it strands committed spend with nothing recording where it came from,
+    #     and the requisition's own audit trail then describes a row that no
+    #     longer exists.
+    #   * an `IntakeRequest` may point AT this requisition
+    #     (`converted_requisition_id`). That FK RESTRICTs, so the delete came
+    #     back as an IntegrityError — a 500 for a state the API should simply
+    #     name. It is also the only thing standing between the intake's
+    #     "dangling link — rebuild" branch and a double-spend: delete the
+    #     requisition, re-convert the intake, and one ask has bought twice.
+    #     Guarding it here closes that at the application layer instead of
+    #     relying on the FK's ON DELETE mode never changing.
+    if req.converted_po_id is not None or req.status == RequisitionStatus.converted:
+        raise HTTPException(
+            status_code=409,
+            detail="Requisition has been converted to a PO; it cannot be deleted.",
+        )
+    linked_intake = (
+        await db.execute(
+            select(func.count())
+            .select_from(IntakeRequest)
+            .where(IntakeRequest.converted_requisition_id == req.id)
+        )
+    ).scalar() or 0
+    if linked_intake:
+        raise HTTPException(
+            status_code=409,
+            detail="Requisition was converted from an intake request; cancel it instead.",
+        )
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
