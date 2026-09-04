@@ -381,10 +381,15 @@ def card_currency_sql(reporting_currency: str) -> ColumnElement[str]:
     quantity in no currency at all, several shipped under a response that
     declared one.
 
-    ``COALESCE`` keeps an unstamped legacy card in the figure rather than
-    silently deleting its money, and ``UPPER`` keeps a lowercase code in it;
+    ``UPPER`` is load-bearing: the column is a free-form ``varchar(3)`` while
     ``resolve_reporting_currency`` always returns uppercase, so an
-    un-normalised comparison would exclude everything rather than fail loudly.
+    un-normalised comparison would exclude every row rather than fail loudly.
+    The ``COALESCE`` is **not** — ``virtual_cards.currency`` is ``NOT NULL``
+    with a Python-side ``default="USD"``, so there is no unstamped row for it to
+    catch. It is kept as defensive symmetry with the money columns beside it
+    (and would be the right behaviour if the column were ever made nullable),
+    but nothing asserts it, because a test of an unreachable branch passes with
+    the branch deleted.
 
     Callers filter with ``== reporting_currency`` and, where the response can
     carry it, count the ``!=`` rows so a single-currency figure says what it

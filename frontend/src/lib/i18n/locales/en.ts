@@ -126,6 +126,8 @@ export const en = {
 	'dashboard.kpi.rebatesEarned': 'Rebates Earned',
 	'dashboard.reporting.unconverted':
 		'Some totals above exclude rows with no locked exchange rate into {currency} — treat them as a floor, not an exact figure.',
+	'dashboard.kpi.rebatesExcluded':
+		'{n, plural, one {# rebate} other {# rebates}} in another currency excluded — this figure is {currency} only.',
 	'dashboard.chart.pipeline': 'Invoice Pipeline',
 	'dashboard.chart.topVendors': 'Top Vendors by Spend',
 	'dashboard.chart.aging': 'Invoice Aging',

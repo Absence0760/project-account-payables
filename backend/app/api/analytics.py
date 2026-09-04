@@ -1009,35 +1009,34 @@ async def get_cfo_analytics(
     # rebate yield is a confident claim, not a safe default, and every sibling
     # figure on this dashboard fails loudly instead.
     _rebate_ccy = card_currency_sql(reporting_currency)
-    rebates_total = Decimal(
-        str(
-            (
-                await db.execute(
-                    apply_entity_scope(
-                        select(
-                            func.coalesce(
-                                func.sum(
-                                    case((_rebate_ccy == reporting_currency, CardRebate.amount))
-                                ),
-                                0,
-                            )
-                        )
-                        .select_from(CardRebate)
-                        .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
-                        .where(
-                            CardRebate.created_at
-                            >= datetime.combine(period_start, datetime.min.time()).replace(
-                                tzinfo=UTC
-                            )
-                        ),
-                        VirtualCard,
-                        entity_id,
-                    )
+    rebate_row = (
+        await db.execute(
+            apply_entity_scope(
+                select(
+                    func.coalesce(
+                        func.sum(case((_rebate_ccy == reporting_currency, CardRebate.amount))),
+                        0,
+                    ),
+                    func.count(case((_rebate_ccy != reporting_currency, CardRebate.id))),
                 )
-            ).scalar()
-            or 0
+                .select_from(CardRebate)
+                .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
+                .where(
+                    CardRebate.created_at
+                    >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC)
+                ),
+                VirtualCard,
+                entity_id,
+            )
         )
-    )
+    ).one()
+    rebates_total = Decimal(str(rebate_row[0] or 0))
+    # Disclosed like every other single-figure rebate rollup (decisions §62).
+    # It matters most here: a numerator missing 90% of the rebates yields a
+    # silently 10x-understated `yield_pct` that is then ANNUALISED, and the
+    # `unconverted_count` on the leg immediately beside it in this same
+    # response does exactly this for the same reason.
+    excluded_rebate_count = int(rebate_row[1] or 0)
     rebate = compute_rebate_yield(
         rebates_total=rebates_total,
         total_spend=total_spend,
@@ -1200,6 +1199,7 @@ async def get_cfo_analytics(
             "total_spend": _money(rebate["total_spend"]),
             "yield_pct": float(rebate["yield_pct"]),
             "annualised_rebates": _money(rebate["annualised_rebates"]),
+            "excluded_rebate_count": excluded_rebate_count,
         },
     }
 

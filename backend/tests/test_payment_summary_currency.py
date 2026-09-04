@@ -338,7 +338,7 @@ async def test_a_lowercase_card_currency_still_counts(realdb):
 
     `resolve_reporting_currency` always returns an uppercase code, so an
     un-normalised comparison would exclude every row rather than fail loudly —
-    which is why `rebate_currency_sql` uppercases.
+    which is why `card_currency_sql` uppercases.
 
     It does NOT also assert the `COALESCE` half. `virtual_cards.currency` is
     `nullable=False` with a Python-side `default="USD"`, so a card seeded with

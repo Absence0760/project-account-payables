@@ -16,15 +16,19 @@ Each was a quantity in no currency at all, and several shipped under a response
 that declared one two keys away. `currency_conversion.card_currency_sql` is
 now the single owner of the expression.
 
-This file guards the class, not just the instances: a source scan (so a SIXTH
-rollup cannot be added bare) plus behavioural cover for the surfaces whose
-figures a person reads.
+This file guards the class, not just the instances: an AST scan over every
+statement summing a rebate amount (so the NEXT rollup cannot be added bare)
+plus behavioural cover for the surfaces whose figures a person reads. It does
+not hardcode how many sites it expects — that count moves legitimately whenever
+a rollup is split, and a stale number is a worse guard than none, so
+`test_the_scan_still_finds_the_known_rollups` names the surfaces instead.
 """
 
 from __future__ import annotations
 
 import ast
 import pathlib
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -39,6 +43,12 @@ from app.models.virtual_card import CardRebate, VirtualCard
 
 TENANT = "a"
 _APP_DIR = pathlib.Path(__file__).resolve().parents[1] / "app"
+
+#: What a rebate sum looks like, including the indirected form. `CardRebate` in
+#: the same statement as a `sum` is the broad net; the `_*_amt` locals are the
+#: specific idiom `api/cards.py` uses to split a rebate sum by status first —
+#: matching the column text alone missed the surface with the MOST rollups.
+_REBATE_SUM = re.compile(r"CardRebate|_pending_amt|_confirmed_amt|_paid_out_amt")
 
 
 # ---------------------------------------------------------------------------
@@ -65,9 +75,9 @@ def _statements_summing_rebate_amount() -> list[tuple[str, int, str]]:
             if any(isinstance(c, ast.stmt) for c in ast.iter_child_nodes(node)):
                 continue  # compound; its leaves are visited instead
             rendered = ast.unparse(node)
-            if "CardRebate.amount" not in rendered:
-                continue
             if "sum" not in rendered:
+                continue
+            if not _REBATE_SUM.search(rendered):
                 continue
             found.append((str(path.relative_to(_APP_DIR.parent)), node.lineno, rendered))
     return found
@@ -79,6 +89,18 @@ def test_the_scan_still_finds_the_known_rollups():
     package root) would pass by finding nothing."""
     found = _statements_summing_rebate_amount()
     assert found, "the scan matched no rebate sums at all — it has stopped working"
+    files = {path for path, _, _ in found}
+    for expected in (
+        "app/api/analytics.py",
+        "app/api/cards.py",
+        "app/api/dashboard.py",
+        "app/api/payments.py",
+        "app/services/billing/usage_rollup.py",
+    ):
+        assert expected in files, (
+            f"{expected} holds a rebate rollup the scan no longer sees — most "
+            "likely a new indirection the `_REBATE_SUM` pattern misses"
+        )
 
 
 @pytest.mark.parametrize(
@@ -93,13 +115,19 @@ def test_every_rebate_sum_is_denominated(site):
     scalar. Either is denominated. Neither is a cross-currency sum.
     """
     path, lineno, rendered = site
-    denominated = (
+    # A currency must appear in the FILTER or in the GROUPING. A bare
+    # `group_by(CardRebate.period)` is a per-period cross-currency total — the
+    # defect class itself — so `group_by` alone is not enough.
+    grouped_by_currency = bool(
+        re.search(r"group_by\([^)]*(currency|_ccy)", rendered, re.IGNORECASE)
+    )
+    filtered_by_currency = (
         "card_currency_sql" in rendered
         or "_rebate_ccy" in rendered
         or "_card_ccy" in rendered
-        or "group_by" in rendered
         or "rebate_currency" in rendered
     )
+    denominated = grouped_by_currency or filtered_by_currency
     assert denominated, (
         f"{path}:{lineno} sums CardRebate.amount without stating a currency. "
         "`card_rebates` has no currency column, so join `virtual_cards` and use "
@@ -206,6 +234,32 @@ async def test_the_dashboard_rebate_kpi_reports_one_currency(realdb):
 
     assert Decimal(str(res["total_rebates"])) == Decimal("10.00")
     assert res["excluded_rebate_count"] == 2
+
+
+async def test_the_dashboard_disclosure_survives_the_response_model(realdb):
+    """Over HTTP, not through the handler — because the handler returning the
+    key is not the same as the API emitting it.
+
+    `DashboardResponse` had no `excluded_rebate_count` field, so Pydantic's
+    default `extra="ignore"` dropped it on the way out and the KPI was
+    right-but-silently-partial for every real caller. A test that calls
+    `get_dashboard(...)` and reads the dict cannot see that, which is exactly
+    how it shipped.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    await _seed_rebate(mk, org_id, currency="USD", amount="10.00")
+    await _seed_rebate(mk, org_id, currency="EUR", amount="7.00")
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        resp = await c.get("/api/dashboard")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "excluded_rebate_count" in body, (
+        "the response model dropped the disclosure — add the field to "
+        "DashboardResponse, not just to the handler's return dict"
+    )
+    assert body["excluded_rebate_count"] == 1
 
 
 async def test_the_dashboard_rebate_kpi_is_entity_scoped(realdb):

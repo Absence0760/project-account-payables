@@ -2415,9 +2415,19 @@ join — one expression, two jobs.
 **Filter, don't convert.** `total_paid` / `total_pending` convert through
 `payment_reporting_amount_sql`; a rebate cannot, because there is no rate on the
 row to convert with. So each single-figure rollup keeps the matching rows and
-counts the rest onto an `excluded_rebate_count`, which is the same
-"be honest about what could not be combined" rule §18 established for read-time
-FX. Converting on a read would make a historical figure move under the reader.
+counts the rest onto an `excluded_rebate_count` — all four of them, including
+the analytics rebate-yield leg, where it matters most: a numerator missing most
+of the rebates yields a silently understated `yield_pct` that is then
+*annualised*. That is the same "be honest about what could not be combined"
+rule §18 established for read-time FX.
+
+The disclosure has to reach the wire, not just the handler.
+`DashboardResponse` had no `excluded_rebate_count` field, so `response_model`'s
+default `extra="ignore"` dropped the key the handler returned and the dashboard
+KPI was right-but-silently-partial for every real caller — the state this whole
+entry argues is worse than the original wrong-but-complete figure. A test that
+calls the handler and reads its dict cannot see that; the guard is an
+HTTP-level assertion. Converting on a read would make a historical figure move under the reader.
 
 **Two things that look inconsistent and are not.**
 

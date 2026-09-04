@@ -1100,11 +1100,12 @@ total cannot, because `card_rebates` carries no currency column at all — a
 rebate's denomination is only knowable through the card it accrued on. So it
 *filters* rather than converts: join `virtual_cards`, keep the rows whose
 currency matches, and count the rest onto `excluded_rebate_count`. The shared
-expression is `currency_conversion.rebate_currency_sql`, and the same four
-rollups read it (this endpoint, the dashboard KPI, `GET /api/cards/dashboard`,
-`GET /api/cards/rebates`, and the analytics rebate-yield numerator) — they were
-five separate bare cross-currency `SUM`s, several under a response that
-declared a currency.
+expression is `currency_conversion.card_currency_sql` — named for the card,
+because card figures read it directly while rebate figures reach it through the
+join — and six rollups read it: this endpoint, the dashboard KPI,
+`GET /api/cards/dashboard`, `GET /api/cards/rebates`, the analytics
+rebate-yield numerator, and the billing usage meter. Five of the six were bare
+cross-currency `SUM`s, several under a response that declared a currency.
 
 `excluded_rebate_count` is deliberately **not** folded into
 `unconverted_payment_count`. They answer different questions: one is a payment

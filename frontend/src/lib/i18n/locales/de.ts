@@ -107,6 +107,8 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Erzielte Rückvergütungen',
 	'dashboard.reporting.unconverted':
 		'Einige der obigen Summen schließen Zeilen ohne festgelegten Wechselkurs in {currency} aus – behandeln Sie sie als Untergrenze, nicht als exakten Wert.',
+	'dashboard.kpi.rebatesExcluded':
+		'{n, plural, one {# Rückvergütung} other {# Rückvergütungen}} in anderer Währung ausgeschlossen — dieser Wert umfasst nur {currency}.',
 	'dashboard.chart.pipeline': 'Rechnungs-Pipeline',
 	'dashboard.chart.topVendors': 'Top-Lieferanten nach Ausgaben',
 	'dashboard.chart.aging': 'Rechnungsalter',

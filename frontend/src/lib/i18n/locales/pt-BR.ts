@@ -108,6 +108,8 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Reembolsos obtidos',
 	'dashboard.reporting.unconverted':
 		'Alguns totais acima excluem linhas sem taxa de câmbio travada para {currency} — trate-os como um piso, não um valor exato.',
+	'dashboard.kpi.rebatesExcluded':
+		'{n, plural, one {# cashback} other {# cashbacks}} em outra moeda excluídos — este valor é apenas {currency}.',
 	'dashboard.chart.pipeline': 'Pipeline de faturas',
 	'dashboard.chart.topVendors': 'Principais fornecedores por gasto',
 	'dashboard.chart.aging': 'Idade das faturas',

@@ -107,6 +107,8 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Reembolsos obtenidos',
 	'dashboard.reporting.unconverted':
 		'Algunos totales anteriores excluyen filas sin tipo de cambio fijado a {currency}; considérelos un mínimo, no una cifra exacta.',
+	'dashboard.kpi.rebatesExcluded':
+		'{n, plural, one {# reembolso} other {# reembolsos}} en otra moneda excluidos: esta cifra es solo {currency}.',
 	'dashboard.chart.pipeline': 'Flujo de facturas',
 	'dashboard.chart.topVendors': 'Principales proveedores por gasto',
 	'dashboard.chart.aging': 'Antigüedad de facturas',

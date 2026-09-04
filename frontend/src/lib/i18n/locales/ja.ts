@@ -111,6 +111,8 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': '獲得リベート',
 	'dashboard.reporting.unconverted':
 		'上記の一部の合計には、{currency} への為替レートが未確定の項目は含まれていません。正確な数値ではなく下限としてお考えください。',
+	'dashboard.kpi.rebatesExcluded':
+		'他通貨建ての{n, plural, other {# 件のリベート}}を除外。この金額は {currency} のみです。',
 	'dashboard.chart.pipeline': '請求書パイプライン',
 	'dashboard.chart.topVendors': '支出上位の取引先',
 	'dashboard.chart.aging': '請求書の経過日数',

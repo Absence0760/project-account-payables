@@ -40,6 +40,10 @@
 		total_paid_unconverted_count: number;
 		total_pending_unconverted_count: number;
 		total_rebates: number;
+		// Rebates left out of `total_rebates` for being denominated in another
+		// currency — a DIFFERENT fact from the unconverted counts above, which
+		// are rows whose reporting figure could not be established at all.
+		excluded_rebate_count?: number;
 		touchless_rate: number;
 		stale_approvals: number;
 		open_exceptions: number;
@@ -202,7 +206,17 @@
 				<KpiCard value={data.stale_approvals} label={m('dashboard.kpi.staleApprovals')} highlight="red" />
 			{/if}
 			{#if data.total_rebates > 0}
-				<KpiCard value={fmt(data.total_rebates)} label={m('dashboard.kpi.rebatesEarned')} highlight="green" />
+				<KpiCard
+					value={fmt(data.total_rebates)}
+					label={m('dashboard.kpi.rebatesEarned')}
+					highlight="green"
+					sub={(data.excluded_rebate_count ?? 0) > 0
+						? m('dashboard.kpi.rebatesExcluded', {
+								n: data.excluded_rebate_count ?? 0,
+								currency: data.reporting.reporting_currency
+							})
+						: null}
+				/>
 			{/if}
 		</div>
 

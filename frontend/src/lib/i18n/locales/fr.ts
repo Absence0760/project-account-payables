@@ -107,6 +107,8 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Remises obtenues',
 	'dashboard.reporting.unconverted':
 		'Certains totaux ci-dessus excluent les lignes sans taux de change verrouillé vers {currency} — à considérer comme un plancher, pas un montant exact.',
+	'dashboard.kpi.rebatesExcluded':
+		'{n, plural, one {# remise} other {# remises}} dans une autre devise exclue — ce montant ne concerne que {currency}.',
 	'dashboard.chart.pipeline': 'Pipeline des factures',
 	'dashboard.chart.topVendors': 'Principaux fournisseurs par dépense',
 	'dashboard.chart.aging': 'Ancienneté des factures',
