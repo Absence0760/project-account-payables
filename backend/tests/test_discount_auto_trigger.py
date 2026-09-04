@@ -61,7 +61,11 @@ async def test_run_once_iterates_every_tenant():
             "control_session_factory",
             _fake_control_session(["feoh_a", "feoh_b", "feoh_c"]),
         ),
-        patch.object(discount_auto_trigger, "_sweep_tenant", AsyncMock(return_value=2)) as sweep,
+        patch.object(
+            discount_auto_trigger,
+            "_sweep_tenant",
+            AsyncMock(return_value=discount_auto_trigger.TenantSweepOutcome(captured=2)),
+        ) as sweep,
     ):
         result = await run_auto_trigger_once(today=_TODAY)
 
@@ -72,7 +76,11 @@ async def test_run_once_iterates_every_tenant():
 
 
 async def test_run_once_continues_after_one_tenant_fails():
-    side_effects = [2, RuntimeError("bad json"), 1]
+    side_effects = [
+        discount_auto_trigger.TenantSweepOutcome(captured=2),
+        RuntimeError("bad json"),
+        discount_auto_trigger.TenantSweepOutcome(captured=1),
+    ]
     with (
         patch.object(
             discount_auto_trigger,
@@ -159,7 +167,7 @@ async def test_sweep_accepts_worthwhile_offer_and_audits(realdb):
         offer_id = offer.id
 
     captured = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
-    assert captured == 1
+    assert captured.captured == 1
 
     from sqlalchemy import select
 
@@ -208,7 +216,7 @@ async def test_sweep_skips_below_threshold(realdb):
         offer_id = offer.id
 
     captured = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
-    assert captured == 0
+    assert captured.captured == 0
 
     from sqlalchemy import select
 
@@ -247,7 +255,7 @@ async def test_sweep_ignores_declined_and_expires_past_valid_until(realdb):
         declined_id, expired_id = declined.id, expired.id
 
     captured = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
-    assert captured == 0
+    assert captured.captured == 0
 
     from sqlalchemy import select
 
@@ -286,7 +294,7 @@ async def test_sweep_does_not_auto_accept_a_tier_whose_window_has_closed(realdb)
         offer_id = offer.id
 
     captured = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
-    assert captured == 0
+    assert captured.captured == 0
 
     from sqlalchemy import select
 
@@ -327,7 +335,7 @@ async def test_sweep_ages_an_offer_with_no_valid_from_by_its_creation_date(reald
         offer_id = offer.id
 
     captured = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
-    assert captured == 0
+    assert captured.captured == 0
 
     from sqlalchemy import select
 
@@ -357,8 +365,8 @@ async def test_sweep_is_idempotent_no_double_accept(realdb):
 
     first = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
     second = await discount_auto_trigger._sweep_tenant(db_name, _TODAY, _resolver_const)
-    assert first == 1
-    assert second == 0  # status guard dedupes
+    assert first.captured == 1
+    assert second.captured == 0  # status guard dedupes
 
     from sqlalchemy import select
 
@@ -501,7 +509,7 @@ async def test_sweep_does_not_clobber_a_decline_committed_mid_sweep(realdb):
         captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
 
     # The sweep must report it accepted nothing...
-    assert captured == 0
+    assert captured.captured == 0
     async with mk() as db:
         row = (
             await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
@@ -591,7 +599,7 @@ async def test_an_acceptance_committed_mid_sweep_is_also_respected(realdb):
     with patch.object(discount_auto_trigger, "_resolve_due_date", _accept_midway):
         captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
 
-    assert captured == 0
+    assert captured.captured == 0
     async with mk() as db:
         row = (
             await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
@@ -617,7 +625,7 @@ async def test_the_uncontended_path_still_accepts(realdb):
         offer_id = offer.id
 
     captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
-    assert captured == 1
+    assert captured.captured == 1
     async with mk() as db:
         row = (
             await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))

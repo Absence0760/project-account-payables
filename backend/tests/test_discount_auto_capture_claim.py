@@ -261,7 +261,7 @@ async def test_sweep_never_touches_an_offer_that_is_not_offered(realdb, seeded_s
 
     captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
 
-    assert captured == 0
+    assert captured.captured == 0
     row = await _read(mk, offer_id)
     assert row.status == seeded_status
     assert row.accepted_at is None
@@ -322,7 +322,7 @@ async def test_a_status_committed_mid_sweep_is_never_overwritten(realdb, raced_s
     ):
         captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
 
-    assert captured == 0
+    assert captured.captured == 0
     row = await _read(mk, offer_id)
     assert row.status == raced_status
     assert row.accepted_at is None
@@ -343,10 +343,14 @@ async def test_a_lost_race_leaves_nothing_for_a_later_sweep_to_pick_up(realdb):
         "_resolve_due_date",
         _commit_status_midway(mk, offer_id, OFFER_STATUS_DECLINED),
     ):
-        assert await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const) == 0
+        assert (
+            await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+        ).captured == 0
 
     for _ in range(2):
-        assert await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const) == 0
+        assert (
+            await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+        ).captured == 0
 
     assert (await _read(mk, offer_id)).status == OFFER_STATUS_DECLINED
     assert await _audit_rows(mk, offer_id) == []
@@ -362,7 +366,7 @@ async def test_an_accepted_offer_is_audited_exactly_once_across_repeated_sweeps(
     second = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
     third = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
 
-    assert (first, second, third) == (1, 0, 0)
+    assert (first.captured, second.captured, third.captured) == (1, 0, 0)
     assert len(await _audit_rows(mk, offer_id)) == 1
     assert (await _read(mk, offer_id)).status == OFFER_STATUS_ACCEPTED
 
@@ -420,7 +424,7 @@ async def test_sweep_blocks_on_a_humans_uncommitted_row_lock_and_then_loses(real
             await human.commit()
             captured = await sweep
 
-    assert captured == 0
+    assert captured.captured == 0
     row = await _read(mk, offer_id)
     assert row.status == OFFER_STATUS_DECLINED
     assert row.accepted_at is None
@@ -490,7 +494,7 @@ async def test_a_human_arriving_while_the_sweep_holds_the_claim_blocks_and_sees_
                     await asyncio.wait_for(human, timeout=30)
             captured = await sweep
 
-    assert captured == 1
+    assert captured.captured == 1
     # The human read the sweep's COMMITTED outcome, not the stale `offered`.
     assert human_status == [OFFER_STATUS_ACCEPTED]
 
@@ -590,7 +594,7 @@ async def test_expiry_does_not_clobber_a_decline_it_blocked_behind(realdb):
             await human.commit()
             expired = await sweep
 
-    assert expired == 0
+    assert expired.captured == 0
     assert (await _read(mk, offer_id)).status == OFFER_STATUS_DECLINED
 
 
@@ -600,7 +604,9 @@ async def test_an_uncontended_past_due_offer_still_expires(realdb):
     info = realdb.info("a")
     offer_id = await _seed(mk, _offer(info.org_id, valid_until=_TODAY - timedelta(days=1)))
 
-    assert await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const) == 0
+    assert (
+        await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+    ).captured == 0
 
     assert (await _read(mk, offer_id)).status == OFFER_STATUS_EXPIRED
     # Expiry is not an acceptance and must never be audited as one.
@@ -635,7 +641,7 @@ async def test_the_roi_threshold_boundary_is_inclusive(
 
     captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
 
-    assert captured == expected_captured
+    assert captured.captured == expected_captured
     assert (await _read(mk, offer_id)).status == expected_status
 
 
@@ -652,7 +658,7 @@ async def test_an_offer_clearing_the_threshold_but_not_the_cost_of_capital_is_sk
         info.db_name, _TODAY, _resolver_of(str(_APR + Decimal("0.01")))
     )
 
-    assert captured == 0
+    assert captured.captured == 0
     assert (await _read(mk, offer_id)).status == OFFER_STATUS_OFFERED
     assert await _audit_rows(mk, offer_id) == []
 
@@ -665,7 +671,9 @@ async def test_the_audited_roi_records_the_threshold_the_decision_was_made_again
     info = realdb.info("a")
     offer_id = await _seed(mk, _offer(info.org_id))
 
-    assert await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const) == 1
+    assert (
+        await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+    ).captured == 1
 
     rows = await _audit_rows(mk, offer_id)
     assert len(rows) == 1
@@ -711,7 +719,9 @@ async def test_accepting_moves_no_money_and_does_not_advance_the_invoice(realdb)
 
     offer_id = await _seed(mk, _offer(org_id, invoice_id=invoice_id))
 
-    assert await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const) == 1
+    assert (
+        await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+    ).captured == 1
 
     async with mk() as db:
         assert (await db.execute(select(func.count()).select_from(Payment))).scalar_one() == 0
@@ -764,7 +774,7 @@ async def test_one_lost_race_does_not_cost_the_sweep_its_other_candidates(realdb
     ):
         captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
 
-    assert captured == 1
+    assert captured.captured == 1
     assert (await _read(mk, raced_id)).status == OFFER_STATUS_DECLINED
     assert (await _read(mk, other_id)).status == OFFER_STATUS_ACCEPTED
     assert await _audit_rows(mk, raced_id) == []
