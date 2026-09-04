@@ -352,6 +352,32 @@ async def check_payment_compliance(
             f"vendor screening returned review_required "
             f"({screening.matched_list or 'see audit row'}) via {screening.provider}"
         )
+    elif screening.result != "clear":
+        # `ScreeningResult.result` is a three-value contract — 'clear' | 'match'
+        # | 'review_required'. Anything else is a provider we do not understand,
+        # and the branch structure above meant an unrecognised value matched
+        # neither test and fell through to `allow`: the one verdict that must
+        # never be reached by omission. A sanctions gate that clears a name
+        # because it could not read the answer is worse than one that never ran.
+        #
+        # Same reasoning — and the same `hold`, not `refuse` — as the unknown
+        # PROVIDER path above (`docs/decisions.md` §36): the payment waits in
+        # `pending_compliance` and the caller opens the
+        # `payment_compliance_hold` exception, so a misconfigured or upgraded
+        # adapter reaches the AP queue instead of the payment rail. `refuse`
+        # would be a dead end a human could not clear.
+        #
+        # Latent today (no shipped adapter emits a fourth value) and deliberately
+        # fixed anyway: the three live provider adapters are fail-closed
+        # skeletons awaiting keys, so the first real response shape we have
+        # never seen would otherwise arrive as a silent allow. The value is
+        # bounded provider vocabulary, not PII, but it is truncated before it
+        # reaches an operator-facing reason string.
+        reasons.append(
+            f"vendor screening returned an unrecognised result "
+            f"'{str(screening.result)[:32]}' via {screening.provider}; "
+            "treating as review_required"
+        )
     # Adverse media is called out separately from the bare verdict — it is the
     # signal the taxonomy exists for, and "negative news" is a different
     # instruction to a reviewer than "on a watchlist". Deliberately NOT nested
