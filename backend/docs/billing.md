@@ -98,18 +98,39 @@ status <> 'canceled'` (a canceled row is kept for history). Migration
 `rollup_usage(db, organization_id=…, period="YYYY-MM") -> UsageRollup` aggregates
 the existing meters into billable counters. **`db` is a TENANT session** — both
 source tables live in the tenant DB (see § Where it lives). Pure read, no
-mutation, `Decimal`-exact (`card_rebate_total` sums the `Numeric`
-`card_rebates.amount` via `COALESCE(..., 0.00)` so an empty month yields
-`Decimal('0.00')`, never `None`).
+mutation, `Decimal`-exact (`card_rebate_totals` sums the `Numeric`
+`card_rebates.amount` per currency, so every subtotal is an exact `Decimal`).
 
 | Meter | Source |
 |-------|--------|
 | `extractions` | count of `extraction_usage` rows in the period |
 | `extractions_platform` | the `program_type='platform'` (billable) subset |
-| `card_rebate_total` | sum of `card_rebates.amount` (informational this slice) |
+| `card_rebate_totals` | `card_rebates.amount` **grouped by currency**, joined through `virtual_cards` (informational this slice) |
 
 `UsageRollup.as_meters()` serializes to a `dict[str, str]` (money + counts as
-exact strings) for the API/adapter payload.
+exact strings) for the API/adapter payload. The rebate meter is emitted **one
+key per currency** — `card_rebate_total.USD` — never a bare
+`card_rebate_total`.
+
+That is not cosmetic. It was a single cross-currency
+`sum(card_rebates.amount)`, which is a quantity in no currency at all, on a
+meter a later slice will price — there is no rate that turns
+a mixed scalar into a charge, and `card_rebates` carries no currency column of
+its own, so a rebate's denomination is only knowable through its card. Hence
+the join, and hence the currency living in the meter NAME.
+
+Two consequences worth knowing:
+
+- **An org with no rebates emits no rebate key at all**, rather than a `0.00`
+  in an unstated currency. Zero rebates in no currency is not a fact, and one
+  shape is better than two: a consumer reads every key prefixed
+  `card_rebate_total.` and finds none. The frontend reads it through
+  `types/billing.ts::rebateMeterGroups` and renders nothing.
+- **The rollup is deliberately org-wide, not entity-scoped.** The platform
+  bills the customer ORG, so a subsidiary breakdown is the wrong unit. The
+  sibling figure on `GET /api/payments/summary` *is* entity-scoped — same
+  table, different question: that one sits beside entity-scoped outflows an
+  operator reconciles it against.
 
 ## Billing adapters (`services/billing_adapters/`)
 
@@ -514,7 +535,8 @@ period:
                    "current_period_end": "...", "trial_end": null,
                    "externally_managed": false},
   "period": "2026-06",
-  "usage": {"extractions": "12", "extractions_platform": "10", "card_rebate_total": "0.00"}
+  "usage": {"extractions": "12", "extractions_platform": "10",
+            "card_rebate_total.USD": "18.40", "card_rebate_total.EUR": "3.10"}
 }
 ```
 
