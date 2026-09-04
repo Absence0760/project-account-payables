@@ -16,13 +16,17 @@ Same registry pattern as ``fx_adapters`` / ``sanctions_adapters``::
 
 from app.services.tax_rate_adapters.base import TaxRateAdapter, TaxRateResult
 from app.services.tax_rate_adapters.dispatcher import (
+    UnknownTaxRateProviderError,
     get_tax_rate_adapter,
+    list_available_providers,
     register_tax_rate_adapter,
 )
 
 __all__ = [
     "TaxRateAdapter",
     "TaxRateResult",
+    "UnknownTaxRateProviderError",
     "get_tax_rate_adapter",
+    "list_available_providers",
     "register_tax_rate_adapter",
 ]

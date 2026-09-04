@@ -92,6 +92,26 @@ reduce, never raise, the rate).
 
 ## Tax-rate adapters
 
+**A NAMED provider we have no adapter for is refused, never `mock`.**
+`get_tax_rate_adapter` resolves an absent/empty `rate_provider` to `mock` (the
+local-first default — the country-rules engine is genuinely the right answer
+with no cloud account) but raises `UnknownTaxRateProviderError` for an
+unregistered name. The mock answers *every* country from the in-repo
+country-rules table, which is a plausible fixture rather than a maintained rate
+feed — the whole reason an org configures Avalara or TaxJar is that statutory
+rates change and a hardcoded one goes stale silently. So a typo'd
+`settings.tax.rate_provider` computed VAT / GST off the fixture while the
+response's `provider` field named the provider that was asked for, and nothing
+said the figure was not the jurisdiction's current rate. `decisions.md` §29 / §36
+applied to this family.
+
+All three routes that reach a rate (`GET /rate/{country}`, `POST /vat`,
+`POST /gst`) resolve through the shared `_require_rate_adapter`, which turns the
+refusal into a **409** naming the bad value and the registered alternatives. They
+are pure compute and persist nothing, so there is no half-written state to
+unwind — what the refusal buys is that a jurisdiction figure is never quoted from
+a source nobody chose. Guard: `tests/test_adapter_registry_fail_closed.py`.
+
 Same registry pattern as `fx_adapters` / `sanctions_adapters`:
 
 ```python
