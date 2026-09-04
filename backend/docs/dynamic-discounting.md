@@ -427,3 +427,28 @@ counts ride along so a partial figure is visibly partial rather than quietly
 short. `capture_rate_pct` is computed over the same reporting-currency
 population as the counts beside it, so every field in the response describes
 one set.
+
+### The auto-capture sweep never overwrites a human decision
+
+`discount_auto_trigger` selects its candidates **unlocked**, then does per-row
+async work (cost-of-capital resolution, due-date lookup, ROI) before deciding.
+A supplier or an AP user can decline or accept an offer inside that window.
+
+The sweep previously mutated the stale ORM object and issued an unconditional
+`UPDATE ... SET status` at its single end-of-loop commit, so a *committed*
+decline was silently overwritten: the offer came back `accepted`, and an
+append-only `discount_offer.auto_accepted` audit row asserted the sweep had
+found it open. Because the trail is append-only, that false entry could not be
+corrected afterwards.
+
+Each status write now re-reads its row under `FOR UPDATE` with a
+`status = 'offered'` predicate (`_claim_if_still_offered`) immediately before
+mutating; a row someone else has moved returns `None` and is skipped, with no
+audit row. `populate_existing` is required — without it the second SELECT
+returns the stale identity-mapped object and re-checks nothing.
+
+The lock is taken at the point of mutation rather than on the candidate scan on
+purpose: holding `FOR UPDATE` across the whole loop would keep a growing lock
+set open across unrelated awaits, the pattern `payment_reconciler` is already
+flagged for in `docs/followups.md`. Expiry (`expire_if_past`) takes the same
+claim — it is a status write too.

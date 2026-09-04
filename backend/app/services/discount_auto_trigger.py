@@ -186,6 +186,39 @@ async def run_auto_trigger_once(*, today: date | None = None) -> AutoTriggerResu
     return result
 
 
+async def _claim_if_still_offered(db, offer_id) -> DiscountOffer | None:
+    """Re-read ONE offer under a row lock, returning it only if it is still
+    ``offered``; ``None`` means someone else has since moved it.
+
+    The candidate scan above is deliberately unlocked and its rows are only a
+    snapshot: the sweep then does per-row async work (cost-of-capital resolution,
+    due-date lookup, ROI) before deciding, and a supplier or an AP user can
+    decline or accept an offer in that window. The sweep used to mutate the
+    stale ORM object and issue an unconditional ``UPDATE ... SET status`` at the
+    single end-of-loop commit, so a *committed* human decision was silently
+    overwritten — an offer the supplier had declined came back as
+    ``auto_accepted``, with an audit row asserting the sweep found it open.
+
+    The lock is taken here, at the point of mutation, rather than on the
+    candidate scan: holding ``FOR UPDATE`` across the whole loop would keep a
+    growing lock set open across unrelated awaits, which is the pattern
+    ``payment_reconciler`` is already flagged for. ``populate_existing`` forces
+    the identity-mapped object to refresh from the locked row — without it the
+    second SELECT returns the stale in-memory copy and re-checks nothing.
+    """
+    return (
+        await db.execute(
+            select(DiscountOffer)
+            .where(
+                DiscountOffer.id == offer_id,
+                DiscountOffer.status == OFFER_STATUS_OFFERED,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
 async def _sweep_tenant(
     db_name: str,
     ref_today: date,
@@ -225,7 +258,12 @@ async def _sweep_tenant(
                 # anywhere else — expire_if_past was never invoked by any
                 # sweep. Piggyback on this one (already running periodically)
                 # rather than standing up a separate background loop.
-                if expire_if_past(offer, as_of=ref_today):
+                # Expiry is a status write too, so it takes the same claim.
+                if offer.valid_until and offer.valid_until < ref_today:
+                    claimed = await _claim_if_still_offered(db, offer.id)
+                    if claimed is None:
+                        continue
+                    expire_if_past(claimed, as_of=ref_today)
                     continue
 
                 # Date-window-enforced pick — the SAME rule the acceptance
@@ -267,18 +305,25 @@ async def _sweep_tenant(
 
                 # Auto-accept: flag for capture. Money still moves via the
                 # CFO-gated payment run — never here.
-                offer.accepted_tier = tier
-                offer.accepted_at = datetime.now(UTC)
-                offer.status = OFFER_STATUS_ACCEPTED
+                #
+                # Re-claim under a row lock: everything above ran against the
+                # unlocked candidate snapshot, and a decline committed in that
+                # window must win over a sweep that never saw it.
+                claimed = await _claim_if_still_offered(db, offer.id)
+                if claimed is None:
+                    continue
+                claimed.accepted_tier = tier
+                claimed.accepted_at = datetime.now(UTC)
+                claimed.status = OFFER_STATUS_ACCEPTED
 
                 await dispatch_audit(
                     db,
                     correlation_id=uuid.uuid4(),
-                    organization_id=offer.organization_id,
+                    organization_id=claimed.organization_id,
                     actor_id=None,  # system actor
                     action="discount_offer.auto_accepted",
                     entity_type="discount_offer",
-                    entity_id=offer.id,
+                    entity_id=claimed.id,
                     details={
                         "tier": tier,
                         "threshold_pct": str(threshold),

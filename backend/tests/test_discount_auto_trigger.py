@@ -23,6 +23,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from app.config import settings
 from app.models.discount import (
@@ -438,3 +439,187 @@ async def test_resolver_uses_org_override_then_platform_default():
     with patch.object(discount_auto_trigger, "control_session_factory", _ctrl({})):
         got = await discount_auto_trigger._resolve_cost_of_capital(org_id)
         assert got == Decimal(str(settings.discount_cost_of_capital_pct))
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — a human decision committed mid-sweep must win
+#
+# The candidate scan is deliberately unlocked, and the sweep then does per-row
+# async work (cost-of-capital, due-date, ROI) before deciding. A supplier or an
+# AP user can decline an offer in that window. The sweep used to mutate the
+# stale ORM object and issue an unconditional `UPDATE ... SET status` at its
+# single end-of-loop commit, so the committed decline was silently overwritten
+# and the offer came back `accepted` — with an audit row asserting the sweep
+# had found it open.
+#
+# Recorded as an unverified lead in docs/followups.md ("discount_auto_trigger
+# may clobber a declined offer (unlocked read, one commit)"); confirmed here.
+# ---------------------------------------------------------------------------
+
+
+def _decline_midway(mk, offer_id, new_status=OFFER_STATUS_DECLINED):
+    """Patch target for `_resolve_due_date` that commits a status change from a
+    SEPARATE session before returning, landing it exactly in the window between
+    the sweep's candidate read and its write."""
+    real = discount_auto_trigger._resolve_due_date
+    state = {"fired": False}
+
+    async def _side_effect(db, offer):
+        if not state["fired"]:
+            state["fired"] = True
+            async with mk() as other:
+                row = (
+                    await other.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+                ).scalar_one()
+                row.status = new_status
+                await other.commit()
+        return await real(db, offer)
+
+    return _side_effect
+
+
+@pytest.mark.asyncio
+async def test_sweep_does_not_clobber_a_decline_committed_mid_sweep(realdb):
+    mk = realdb.sessionmaker("a")
+    info = realdb.info("a")
+
+    offer = _make_offer(
+        info.org_id,
+        tiers=[{"days": 5, "percent": "3.00"}],
+        valid_until=date(2026, 1, 26),
+    )
+    async with mk() as db:
+        db.add(offer)
+        await db.commit()
+        offer_id = offer.id
+
+    with patch.object(
+        discount_auto_trigger,
+        "_resolve_due_date",
+        _decline_midway(mk, offer_id),
+    ):
+        captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+
+    # The sweep must report it accepted nothing...
+    assert captured == 0
+    async with mk() as db:
+        row = (
+            await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        # ...and the human decision must still stand.
+        assert row.status == OFFER_STATUS_DECLINED
+        assert row.accepted_at is None
+        assert row.accepted_tier is None
+
+
+@pytest.mark.asyncio
+async def test_no_auto_accepted_audit_row_is_written_for_a_clobbered_offer(realdb):
+    """The audit trail must not assert an acceptance that did not happen — the
+    row is append-only, so a false entry cannot be corrected later."""
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker("a")
+    info = realdb.info("a")
+
+    offer = _make_offer(
+        info.org_id,
+        tiers=[{"days": 5, "percent": "3.00"}],
+        valid_until=date(2026, 1, 26),
+    )
+    async with mk() as db:
+        db.add(offer)
+        await db.commit()
+        offer_id = offer.id
+
+    with patch.object(
+        discount_auto_trigger,
+        "_resolve_due_date",
+        _decline_midway(mk, offer_id),
+    ):
+        await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+
+    async with mk() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "discount_offer.auto_accepted",
+                        AuditLog.entity_id == offer_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_an_acceptance_committed_mid_sweep_is_also_respected(realdb):
+    """Not only declines: an offer accepted by a human in the same window must
+    keep the human's `accepted_tier`, not be re-stamped with the sweep's."""
+    mk = realdb.sessionmaker("a")
+    info = realdb.info("a")
+
+    offer = _make_offer(
+        info.org_id,
+        tiers=[{"days": 5, "percent": "3.00"}],
+        valid_until=date(2026, 1, 26),
+    )
+    async with mk() as db:
+        db.add(offer)
+        await db.commit()
+        offer_id = offer.id
+
+    human_tier = {"days": 30, "percent": "0.50"}
+
+    # Captured BEFORE the patch below — reading it inside would resolve to this
+    # very function and recurse.
+    real_resolve = discount_auto_trigger._resolve_due_date
+
+    async def _accept_midway(db, off):
+        async with mk() as other:
+            row = (
+                await other.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+            ).scalar_one()
+            if row.status == OFFER_STATUS_OFFERED:
+                row.status = OFFER_STATUS_ACCEPTED
+                row.accepted_tier = human_tier
+                await other.commit()
+        return await real_resolve(db, off)
+
+    with patch.object(discount_auto_trigger, "_resolve_due_date", _accept_midway):
+        captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+
+    assert captured == 0
+    async with mk() as db:
+        row = (
+            await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert row.accepted_tier == human_tier
+
+
+@pytest.mark.asyncio
+async def test_the_uncontended_path_still_accepts(realdb):
+    """The claim must not have broken the ordinary case: with nothing racing,
+    the sweep still accepts and still writes its audit row."""
+    mk = realdb.sessionmaker("a")
+    info = realdb.info("a")
+
+    offer = _make_offer(
+        info.org_id,
+        tiers=[{"days": 5, "percent": "3.00"}],
+        valid_until=date(2026, 1, 26),
+    )
+    async with mk() as db:
+        db.add(offer)
+        await db.commit()
+        offer_id = offer.id
+
+    captured = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+    assert captured == 1
+    async with mk() as db:
+        row = (
+            await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_ACCEPTED
