@@ -183,19 +183,57 @@ async def purchase_order_status_counts(
     return {"total": sum(by_status.values()), "by_status": by_status}
 
 
+async def _get_scoped_po(
+    db: AsyncSession, po_id: uuid.UUID, entity_id: uuid.UUID | None
+) -> PurchaseOrder:
+    """Resolve one PO within the caller's selected entity, or an opaque 404.
+
+    The by-id route resolved on the primary key alone while the list and the
+    counts beside it were entity-scoped from the day multi-entity Phase 2
+    landed — so the selector was advisory on exactly the route that hands over
+    a subsidiary's order and its line items. `api/payments.py` closed the same
+    shape with `_get_scoped_payment` / `_get_scoped_run`, and
+    `api/positive_pay.py` with `_get_scoped_file`.
+
+    The 404 is deliberately identical to the one a genuinely missing id gets:
+    an out-of-scope id must be indistinguishable from a nonexistent one, or the
+    response enumerates another subsidiary's POs by id. `entity_id is None` (the
+    consolidated view) still sees everything, which is what that view means.
+    """
+    po = (
+        await db.execute(
+            apply_entity_scope(
+                select(PurchaseOrder)
+                .options(selectinload(PurchaseOrder.line_items))
+                .where(PurchaseOrder.id == po_id),
+                PurchaseOrder,
+                entity_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    return po
+
+
 @router.get("/{po_id}")
 async def get_purchase_order(
     po_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Single PO with line items + the invoices that reference its number.
 
+    The PO itself is resolved through `_get_scoped_po`, so a sibling
+    subsidiary's id is the same opaque 404 as an unknown one.
+
     ``linked_invoices`` is confined to the PO's OWN subsidiary
     (``po.entity_id``) ∪ unstamped rows — the ``services/vendor_matching``
-    shape, not the caller's ``X-Entity-ID``: this panel describes one PO, and
-    the PO's entity is the only correct scope for it whichever view the reader
-    has selected.
+    shape. It stays keyed on the PO rather than on the caller's header even now
+    that the PO itself is entity-gated, because the consolidated view
+    (``X-Entity-ID`` absent) legitimately reaches every PO and must still show
+    each one only its own subsidiary's invoices.
 
     It has to be scoped at all because ``po_number`` is NOT unique across
     subsidiaries — ``services/po_matching`` explicitly designs around that (its
@@ -218,14 +256,7 @@ async def get_purchase_order(
     see; narrowing by vendor would hide it, and vendor is not a tenancy
     boundary.
     """
-    result = await db.execute(
-        select(PurchaseOrder)
-        .options(selectinload(PurchaseOrder.line_items))
-        .where(PurchaseOrder.id == po_id)
-    )
-    po = result.scalar_one_or_none()
-    if not po:
-        raise HTTPException(status_code=404, detail="Purchase order not found")
+    po = await _get_scoped_po(db, po_id, entity_id)
 
     vendor_name: str | None = None
     if po.vendor_id:

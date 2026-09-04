@@ -128,13 +128,13 @@ async def test_linked_invoices_are_scoped_to_the_pos_own_entity(realdb):
     assert foreign not in linked, "a sibling subsidiary's invoice leaked onto the PO detail"
 
 
-async def test_linked_invoices_scope_ignores_the_callers_entity_selector(realdb):
+async def test_linked_invoices_scope_is_the_pos_entity_in_the_consolidated_view(realdb):
     """The scope is the PO's entity, not the reader's `X-Entity-ID`.
 
-    A PO describes one subsidiary's order however the reader has the selector
-    set, so the panel must answer identically from the consolidated view and
-    from a sibling subsidiary — and must never widen because the caller
-    selected everything.
+    The consolidated view (`X-Entity-ID` absent) legitimately reaches every PO,
+    so it is the case that proves the panel is keyed on the PO rather than on
+    the caller: it must still show each PO only its own subsidiary's invoices,
+    never widen to everything the reader can see.
     """
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
@@ -152,12 +152,51 @@ async def test_linked_invoices_scope_ignores_the_callers_entity_selector(realdb)
     )
 
     async with realdb.client(key=TENANT, role="ap_clerk") as c:
-        for headers in ({}, {"X-Entity-ID": default_id}, {"X-Entity-ID": other_id}):
+        # Consolidated, and the PO's own entity — both reach the PO, and both
+        # must report only the default entity's invoice.
+        for headers in ({}, {"X-Entity-ID": default_id}):
             resp = await c.get(f"/api/purchase-orders/{po_id}", headers=headers)
             assert resp.status_code == 200, resp.text
             linked = {row["id"] for row in resp.json()["linked_invoices"]}
             assert linked == {own}, (headers, linked)
             assert foreign not in linked
+
+
+async def test_po_detail_is_entity_scoped(realdb):
+    """The by-id route resolved on the primary key alone.
+
+    The list and the counts beside it were entity-scoped from the day
+    multi-entity Phase 2 landed, so the selector was advisory on exactly the
+    route that hands over a subsidiary's order and its line items. Closed with
+    `_get_scoped_po`, the shape `api/payments.py::_get_scoped_payment` uses —
+    including its opaque 404, so an out-of-scope id is indistinguishable from a
+    missing one and can't be used to enumerate another subsidiary's POs.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    number = f"PO-DETAIL-{uuid.uuid4().hex[:6]}"
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        default_id, other_id = await _entities(c, name="PO Detail IE", slug="po-detail-ie")
+
+    po_id = await _add_po(mk, org_id, po_number=number, entity_id=uuid.UUID(default_id))
+
+    async with realdb.client(key=TENANT, role="ap_clerk") as c:
+        own = await c.get(f"/api/purchase-orders/{po_id}", headers={"X-Entity-ID": default_id})
+        assert own.status_code == 200, own.text
+
+        # The consolidated view still sees every entity's rows — that is what
+        # it means, and the list behaves the same way.
+        assert (await c.get(f"/api/purchase-orders/{po_id}")).status_code == 200
+
+        blocked = await c.get(f"/api/purchase-orders/{po_id}", headers={"X-Entity-ID": other_id})
+        assert blocked.status_code == 404, blocked.text
+        # Byte-identical to the missing-row body: no enumeration oracle.
+        missing = await c.get(
+            f"/api/purchase-orders/{uuid.uuid4()}", headers={"X-Entity-ID": other_id}
+        )
+        assert missing.status_code == 404
+        assert blocked.json() == missing.json()
 
 
 async def test_unstamped_po_still_sees_every_invoice(realdb):
