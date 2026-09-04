@@ -315,21 +315,51 @@ async def list_invoices(
 
 @router.get("/counts", response_model=InvoiceCountsResponse)
 async def invoice_counts(
+    vendor: str | None = None,
+    invoice_number: str | None = None,
+    po_number: str | None = None,
+    description: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    due_date_from: date | None = None,
+    due_date_to: date | None = None,
+    search: str | None = None,
+    assigned_to_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Per-status invoice tallies for the list-page filter chips.
 
-    A single GROUP BY over the whole tenant so the "All" chip and each
-    status chip stay correct regardless of how many invoices the tenant
-    has — the previous client-side tally over the first page of results
-    undercounted past that window. Scoped to the selected entity so the
-    chips match the entity-scoped list.
+    A single GROUP BY so the "All" chip and each status chip stay correct
+    regardless of how many invoices the tenant has — the previous client-side
+    tally over the first page of results undercounted past that window.
+
+    Takes the list's population filters (`search` + the advanced filters +
+    `assigned_to_id`) through the SAME `_invoice_list_filters` builder as
+    `GET /api/invoices`, so the chips describe exactly the rows the list would
+    return — searching "acme" no longer leaves the chips reading `All 1284`
+    over a 3-row table. Deliberately NOT `status`: status is the dimension
+    being tallied, so applying it would zero every other chip (the sibling
+    `purchase_orders.py::purchase_order_status_counts` states the same rule).
+    Scoped to the selected entity so the chips match the entity-scoped list.
     """
-    counts_q = apply_entity_scope(
-        select(Invoice.status, func.count()).group_by(Invoice.status), Invoice, entity_id
-    )
+    counts_q = _invoice_list_filters(
+        apply_entity_scope(
+            select(Invoice.status, func.count()).select_from(Invoice), Invoice, entity_id
+        ),
+        status=None,
+        vendor=vendor,
+        invoice_number=invoice_number,
+        po_number=po_number,
+        description=description,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
+        search=search,
+        assigned_to_id=assigned_to_id,
+    ).group_by(Invoice.status)
     result = await db.execute(counts_q)
     counts: dict[str, int] = {}
     for db_status, count in result.all():

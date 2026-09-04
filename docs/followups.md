@@ -728,20 +728,17 @@ none is a hypothesis.
       normalisation moved to exact Postgres numeric + `ROUND_HALF_UP`.
       `backend/app/api/expenses.py::expense_summary` was the reference.
 
-- [ ] **`GET /api/invoices/counts` ignores the list's filters, so the chips
-      contradict the table.** The counts endpoint (`backend/app/api/invoices.py`
-      `:236-257`) takes only `db`/`user`/`entity_id`, and
-      `stores/invoices.svelte.ts:79-90` calls it with no params and never re-fires
-      it on a filter change — while the list carries `search` plus eight advanced
-      filters. Search "acme", get 3 rows under chips reading `All 1284 · New 402`.
-      The house rule is already stated verbatim on the sibling endpoint
-      (`purchase_orders.py:127-129`: "Takes the list's population filters … so the
-      tallies describe exactly the rows the list would return") and `/vendors/counts`
-      follows it; `/invoices/counts` is the outlier.
-      **Durable fix:** give `invoice_status_counts` the same population filters as
-      `list_invoices`, factored into one shared predicate builder so they cannot
-      drift, and re-fire `fetchCounts` from the store's filter path.
-      **Trigger:** the next slice touching the invoice list or its chips.
+- [x] **DONE (PR #351).** `GET /api/invoices/counts` ignored the list's filters,
+      so the chips contradicted the table — search "acme", get 3 rows under chips
+      reading `All 1284 · New 402`. `invoice_counts` now takes the list's
+      population filters (`search` + the advanced filters + `assigned_to_id`)
+      through the **same** `_invoice_list_filters` builder as `list_invoices`
+      (with `status=None` — status is the dimension being tallied), and the
+      `/invoices` page re-fires `invoiceStore.fetchCounts(buildParams())` from
+      the filter effect + the debounced search (the store gained its own
+      `countsSequence` so a stale tally can't land over a fresh one). Matches the
+      rule already stated on `purchase_orders.py::purchase_order_status_counts`
+      and `/vendors/counts`.
 
 - [ ] **Three surfaces still label money with `orgCurrency` while the response
       states its own currency two lines away.** Now that `orgCurrency` resolves
