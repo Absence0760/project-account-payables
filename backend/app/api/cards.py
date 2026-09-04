@@ -354,8 +354,9 @@ async def card_dashboard(
     reporting_currency = resolve_reporting_currency(org.settings)
     _card_ccy = func.upper(func.coalesce(VirtualCard.currency, reporting_currency))
 
-    # Active cards (scoped to the entity; rebates below are control-plane and
-    # stay org-wide, like the payments summary).
+    # Every aggregate below is entity-scoped, rebates included — `CardRebate` is
+    # tenant-scoped (decisions §57) and reaches its entity through the
+    # `VirtualCard` join the currency predicate already needs.
     active_q = apply_entity_scope(
         select(func.count(), func.coalesce(func.sum(VirtualCard.amount_limit), 0)).where(
             VirtualCard.status.in_(["created", "sent", "active"]),
@@ -405,7 +406,13 @@ async def card_dashboard(
     _confirmed_amt = case((CardRebate.status == "confirmed", CardRebate.amount), else_=0)
     _paid_out_amt = case((CardRebate.status == "paid_out", CardRebate.amount), else_=0)
 
-    rebate_month_q = (
+    # Entity-scoped through `VirtualCard`, the same way `GET /rebates` scopes
+    # its list: `CardRebate` carries no `entity_id` of its own, and the join
+    # this rollup already needs for the currency predicate is what makes the
+    # subsidiary reachable. Without it the dashboard reported entity-scoped
+    # card figures beside org-wide rebate figures, so the rebate total could
+    # not be reconciled against the rebate list the operator drills into.
+    rebate_month_q = apply_entity_scope(
         select(
             func.coalesce(func.sum(_pending_amt), 0),
             func.coalesce(func.sum(_confirmed_amt), 0),
@@ -415,7 +422,9 @@ async def card_dashboard(
         .where(
             CardRebate.period == now.strftime("%Y-%m"),
             _card_ccy == reporting_currency,
-        )
+        ),
+        VirtualCard,
+        entity_id,
     )
     month_pending, month_confirmed, month_paid_out = (await db.execute(rebate_month_q)).one()
     month_pending = Decimal(str(month_pending or 0))
@@ -428,7 +437,7 @@ async def card_dashboard(
     # above "2026-01"), letting a forward-dated row leak into a
     # year-to-date figure — and `projected_annual` divides that figure by
     # months elapsed, so one such row inflates the projection too.
-    rebate_ytd_q = (
+    rebate_ytd_q = apply_entity_scope(
         select(
             func.coalesce(func.sum(_pending_amt), 0),
             func.coalesce(func.sum(_confirmed_amt), 0),
@@ -439,7 +448,9 @@ async def card_dashboard(
             CardRebate.period >= f"{now.year}-01",
             CardRebate.period <= now.strftime("%Y-%m"),
             _card_ccy == reporting_currency,
-        )
+        ),
+        VirtualCard,
+        entity_id,
     )
     ytd_pending, ytd_confirmed, ytd_paid_out = (await db.execute(rebate_ytd_q)).one()
     ytd_pending = Decimal(str(ytd_pending or 0))
@@ -447,13 +458,17 @@ async def card_dashboard(
     ytd_paid_out = Decimal(str(ytd_paid_out or 0))
     excluded_rebate_count = (
         await db.execute(
-            select(func.count())
-            .select_from(CardRebate)
-            .join(VirtualCard, VirtualCard.id == CardRebate.virtual_card_id)
-            .where(
-                CardRebate.period >= f"{now.year}-01",
-                CardRebate.period <= now.strftime("%Y-%m"),
-                _card_ccy != reporting_currency,
+            apply_entity_scope(
+                select(func.count())
+                .select_from(CardRebate)
+                .join(VirtualCard, VirtualCard.id == CardRebate.virtual_card_id)
+                .where(
+                    CardRebate.period >= f"{now.year}-01",
+                    CardRebate.period <= now.strftime("%Y-%m"),
+                    _card_ccy != reporting_currency,
+                ),
+                VirtualCard,
+                entity_id,
             )
         )
     ).scalar() or 0

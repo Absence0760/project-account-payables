@@ -96,6 +96,36 @@ async def test_counts_honour_the_list_population_filters(realdb):
 
 
 @pytest.mark.asyncio
+async def test_counts_are_whole_set_within_a_filter_not_just_within_the_tenant(realdb):
+    """The two halves of this defect compose, and each hides the other.
+
+    Before PR #352 the chips ignored the filters; before that they were tallied
+    client-side over page 1. A *filtered* population that is itself larger than
+    the list window is the only case that fails if EITHER half regresses:
+    a page-scoped tally caps at the window, and a filter-blind tally reports
+    the whole tenant.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    # 26 matching rows (past the 20-row list window) + 9 that must not be counted.
+    await _add_invoices(mk, org_id, InvoiceStatus.new, 18, vendor_name="Globex Corp")
+    await _add_invoices(
+        mk, org_id, InvoiceStatus.approved, 8, vendor_name="Globex Corp", number_prefix="GLB2"
+    )
+    await _add_invoices(mk, org_id, InvoiceStatus.new, 9, vendor_name="Initech LLC")
+
+    async with realdb.client(key="a") as c:
+        page = (await c.get("/api/invoices", params={"search": "globex"})).json()
+        counts = (await c.get("/api/invoices/counts", params={"search": "globex"})).json()
+
+    # The filtered set really does paginate …
+    assert len(page["items"]) == 20 < page["total"] == 26
+    # … and the chips describe all 26 of it, not the 20 loaded and not all 35.
+    assert counts["counts"] == {"new": 18, "approved": 8}
+    assert counts["total"] == 26
+
+
+@pytest.mark.asyncio
 async def test_counts_ignore_a_status_param(realdb):
     """`status` is the dimension being tallied — passing it (an inline-chip
     toggle re-uses the same param builder) must NOT zero the other chips."""

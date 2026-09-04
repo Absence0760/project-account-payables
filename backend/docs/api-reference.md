@@ -296,6 +296,8 @@ See [`access-reviews.md`](access-reviews.md).
 | `POST`   | `/api/vendors/{id}/verify`      | admin/manager | Promote `unverified` → `active` |
 | `POST`   | `/api/vendors/{id}/reject`      | admin/manager | Mark `rejected` |
 | `POST`   | `/api/vendors/sync-erp`         | admin/manager | Pull vendors from connected ERP |
+| `GET`    | `/api/vendors/counts`           | admin/manager/cfo | Per-status tallies for the list filter chips — `{total, by_status}` via a server-side GROUP BY, so the red "Unverified" attention badge can't undercount past page 1. Honours the list's population filters (`search`, `source`) through the SAME `_vendor_list_filters` builder as `GET /api/vendors` and `/ids` — **not** `status` (the dimension being tallied). Entity-scoped. Mirrors `/api/invoices/counts`. |
+| `GET`    | `/api/vendors/counts`           | admin/manager/cfo | Per-status tallies for the list filter chips — `{total, by_status}` via a server-side GROUP BY, so the red "Unverified" attention badge can't undercount past page 1. Honours the list's population filters (`search`, `source`) through the SAME `_vendor_list_filters` builder as `GET /api/vendors` and `/ids` — **not** `status` (the dimension being tallied). Entity-scoped. Mirrors `/api/invoices/counts`. |
 | `GET`    | `/api/vendors/change-requests/counts`  | admin/manager/cfo | Whole-set tallies for the dual-control queue (`{total, pending, by_status}`); counts only, PII-free — drives the nav badge |
 | `GET`    | `/api/vendors/change-requests`  | admin/manager | Pending supplier change-request queue (`?status=`); proposed value masked |
 | `GET`    | `/api/vendors/{id}/change-requests` | admin/manager/cfo | One vendor's change requests; value revealed |
@@ -328,6 +330,8 @@ All payment endpoints require `admin/manager/cfo`.
 | `GET`  | `/api/payments/{id}`          | Get one payment |
 | `POST` | `/api/payments`               | Create payment for an invoice |
 | `GET`  | `/api/payments/queue`         | Approved invoices sorted by due date. Each row carries `blocked` / `blocked_reason` — whether an unresolved `PAYMENT_BLOCKING_EXCEPTION_TYPES` exception means `POST /api/payments/runs` would refuse it, and which type. Reason is a fixed vocabulary code, never the exception's description. |
+| `GET`  | `/api/payments/counts`        | Per-status tallies for the History-tab filter chips — `{total, by_status}` via a server-side GROUP BY, so the chips span every page. Honours the list's population filters (`method`, `invoice_id`, `search`, `amount_min/max`) through the SAME `_payment_list_filters` builder as `GET /api/payments` — **not** `status` (the dimension being tallied). Entity-scoped; same permission gate as the list (`payment.execute` OR `payment.void`). Mirrors `/api/invoices/counts`. |
+| `GET`  | `/api/payments/counts`        | Per-status tallies for the History-tab filter chips — `{total, by_status}` via a server-side GROUP BY, so the chips span every page. Honours the list's population filters (`method`, `invoice_id`, `search`, `amount_min/max`) through the SAME `_payment_list_filters` builder as `GET /api/payments` — **not** `status` (the dimension being tallied). Entity-scoped; same permission gate as the list (`payment.execute` OR `payment.void`). Mirrors `/api/invoices/counts`. |
 | `GET`  | `/api/payments/summary`       | Totals: paid, pending, queue count, rebates earned |
 | `GET`  | `/api/payments/runs/`         | List payment runs |
 | `POST` | `/api/payments/runs`          | Create a payment run |

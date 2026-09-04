@@ -193,9 +193,12 @@ async def template_summary(
     Takes the SAME filters as ``GET /api/recurring`` through the shared
     ``_recurring_list_filters``. The page derived ``activeCount`` /
     ``soonestNextRun`` / ``monthlyRecurringTotal`` from the LOADED page and did
-    the cadence-normalisation division in float. Here the monthly figure is an
-    exact Postgres numeric (``amount`` / {1, 3, 12}), quantised to 2dp per
-    template, summed per currency — never across currencies.
+    the cadence-normalisation division in float. Here each template's monthly
+    figure is an exact Postgres numeric (``amount`` / {1, 3, 12}); those exact
+    quotients are summed per currency and the SUM is quantised once to 2dp
+    (``ROUND_HALF_UP``) — never across currencies, and never rounded per
+    template. Rounding first would drop up to half a cent per row: three
+    100.00 annual templates are 25.00 a month, not 3 x 8.33 = 24.99.
     """
     tmpl = RecurringInvoiceTemplate
 

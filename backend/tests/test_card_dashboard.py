@@ -310,3 +310,138 @@ async def test_single_currency_programme_reports_no_exclusions():
     assert result.excluded_rebate_count == 0
     assert result.active_cards_value == 10000.0
     assert result.rebates_ytd == 400.0
+
+
+@pytest.mark.asyncio
+async def test_exclusion_counts_default_to_zero_when_the_count_is_null():
+    """`func.count()` cannot return NULL, but the endpoint reads it with
+    `.scalar() or 0` — pin the defensive branch so the response is always an
+    int the frontend can render, never `None`."""
+    from app.api.cards import card_dashboard
+
+    db = _make_db_session(
+        (1, Decimal("10.00")),
+        Decimal("0"),
+        (Decimal("0"), Decimal("0"), Decimal("0")),
+        (Decimal("0"), Decimal("0"), Decimal("0")),
+        excluded_cards=None,
+        excluded_rebates=None,
+    )
+    result = await card_dashboard(db=db, org=_org(), user=_user())
+    assert result.excluded_card_count == 0
+    assert result.excluded_rebate_count == 0
+
+
+@pytest.mark.asyncio
+async def test_money_fields_stay_exact_decimals():
+    """The money invariant at the response boundary: `Decimal` in Python (the
+    float hop happens once, at JSON-write time), so a sum of many small rebates
+    is exact to the cent."""
+    from app.api.cards import card_dashboard
+
+    db = _make_db_session(
+        (3, Decimal("0.10")),
+        Decimal("0.20"),
+        (Decimal("0.10"), Decimal("0.10"), Decimal("0.10")),
+        (Decimal("0.10"), Decimal("0.10"), Decimal("0.10")),
+    )
+    result = await card_dashboard(db=db, org=_org(), user=_user())
+
+    for value in (
+        result.active_cards_value,
+        result.spend_this_month,
+        result.rebates_this_month,
+        result.rebates_ytd,
+        result.projected_annual_rebates,
+        result.rebates_this_month_by_status.pending_total,
+    ):
+        assert isinstance(value, Decimal), value
+        assert not isinstance(value, float)
+    # 0.10 + 0.10 realized, exactly — 0.2 in binary floats is 0.200000000000000011.
+    assert result.rebates_ytd == Decimal("0.20")
+
+
+@pytest.mark.asyncio
+async def test_an_org_with_no_settings_at_all_still_declares_a_currency():
+    """`Organization.settings` is nullable. A dashboard read must not 500 on a
+    freshly provisioned tenant, and must not present money under no code."""
+    from app.api.cards import card_dashboard
+
+    db = _make_db_session(
+        (0, Decimal("0")),
+        Decimal("0"),
+        (Decimal("0"), Decimal("0"), Decimal("0")),
+        (Decimal("0"), Decimal("0"), Decimal("0")),
+    )
+    result = await card_dashboard(
+        db=db, org=SimpleNamespace(id="org-1", settings=None), user=_user()
+    )
+    assert result.currency == "USD"
+
+
+@pytest.mark.asyncio
+async def test_exclusion_counts_never_leak_into_a_money_figure():
+    """A count is not a total: a cross-currency remainder has no single sum, so
+    the counters must stay counts and must not be added to anything."""
+    from app.api.cards import card_dashboard
+
+    db = _make_db_session(
+        (1, Decimal("100.00")),
+        Decimal("50.00"),
+        (Decimal("0"), Decimal("5.00"), Decimal("0")),
+        (Decimal("0"), Decimal("5.00"), Decimal("0")),
+        excluded_cards=7,
+        excluded_rebates=9,
+    )
+    result = await card_dashboard(db=db, org=_org(), user=_user())
+
+    assert result.active_cards == 1
+    assert result.active_cards_value == Decimal("100.00")
+    assert result.spend_this_month == Decimal("50.00")
+    assert result.rebates_ytd == Decimal("5.00")
+    assert isinstance(result.excluded_card_count, int)
+    assert isinstance(result.excluded_rebate_count, int)
+
+
+def test_every_rebate_rollup_joins_the_card_that_carries_the_currency():
+    """The structural guard behind the fix: `CardRebate` has NO currency column
+    of its own, so a rebate's currency is only knowable through its card. Each
+    of the three rebate queries (month, YTD, excluded-YTD) must therefore join
+    `VirtualCard` — a refactor that drops a join is back to guessing, which is
+    the defect."""
+    import ast
+    import inspect
+
+    from app.api.cards import card_dashboard
+
+    tree = ast.parse(inspect.getsource(card_dashboard).lstrip())
+    statements = [
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign | ast.Expr | ast.Await)
+    ]
+    rebate_statements = [
+        text
+        for text in statements
+        if "CardRebate." in text and ("func.sum" in text or "func.count" in text)
+    ]
+    assert rebate_statements, "no CardRebate aggregate found — did the rollups move?"
+    for text in rebate_statements:
+        assert "VirtualCard.id == CardRebate.virtual_card_id" in text, text
+        assert "_card_ccy" in text, text
+
+
+def test_every_card_rollup_filters_on_the_declared_currency():
+    """The other half: each `VirtualCard` aggregate counts only rows in the
+    declared currency, and the excluded counter is the exact complement (`!=`),
+    so nothing is double-counted and nothing is silently dropped."""
+    import inspect
+
+    from app.api.cards import card_dashboard
+
+    src = inspect.getsource(card_dashboard)
+    assert src.count("_card_ccy == reporting_currency") == 4, src
+    assert src.count("_card_ccy != reporting_currency") == 2, src
+    # The card currency is coalesced (a NULL is unstamped, not foreign) and
+    # upper-cased (the column is free-form varchar(3)).
+    assert "func.upper(func.coalesce(VirtualCard.currency, reporting_currency))" in src

@@ -295,12 +295,67 @@ PAYMENT_SORTABLE_COLUMNS: dict[str, object] = {
 }
 
 
+def _payment_list_filters(
+    query,
+    *,
+    entity_id: uuid.UUID | None,
+    status: str | None,
+    method: str | None,
+    invoice_id: uuid.UUID | None,
+    search: str | None,
+    amount_min: float | None,
+    amount_max: float | None,
+    invoice_joined: bool = False,
+):
+    """Apply the payment-list population filters to ``query``.
+
+    Shared by ``GET /api/payments`` (both its row query and its total), and by
+    ``GET /api/payments/counts``, so the History-tab chips describe exactly the
+    rows the list would return. ``/counts`` previously declared no parameters at
+    all and grouped over the whole entity-scoped set, so a search for one vendor
+    left the chips reading the tenant's total over a one-row table — the same
+    defect `invoices.py::invoice_counts` closed, on a sibling surface. The list
+    endpoint also restated its whole filter block twice (once for the rows, once
+    for the fan-out-free count), which is the drift this builder removes.
+
+    ``invoice_joined`` says whether the caller already joined ``Invoice``: the
+    row query does (it selects from it), while the count and the tallies select
+    from ``Payment`` alone and need the join added for the search leg only.
+    Joining unconditionally would fan the count out.
+
+    ``status`` is a normal filter here, but ``/counts`` passes ``None`` for it:
+    status is the dimension being tallied, so applying it would zero every other
+    chip (`invoices.py::invoice_counts` states the same rule).
+    """
+    query = apply_entity_scope(query, Payment, entity_id)
+    if status:
+        statuses = [s.strip() for s in status.split(",")]
+        query = query.where(Payment.status.in_(statuses))
+    if method:
+        query = query.where(Payment.method == method)
+    if invoice_id:
+        query = query.where(Payment.invoice_id == invoice_id)
+    if amount_min is not None:
+        query = query.where(Payment.amount >= Decimal(str(amount_min)))
+    if amount_max is not None:
+        query = query.where(Payment.amount <= Decimal(str(amount_max)))
+    if search:
+        if not invoice_joined:
+            query = query.outerjoin(Invoice, Payment.invoice_id == Invoice.id)
+        query = query.where(
+            ilike_contains(Invoice.vendor_name, search)
+            | ilike_contains(Invoice.invoice_number, search)
+            | ilike_contains(Payment.reference, search)
+        )
+    return query
+
+
 @router.get("", response_model=PaymentListResponse)
 async def list_payments(
     pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query(None, alias="status"),
     method: str | None = None,
-    invoice_id: str | None = None,
+    invoice_id: uuid.UUID | None = None,
     search: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
@@ -317,51 +372,26 @@ async def list_payments(
     user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = (
+    _filters = {
+        "entity_id": entity_id,
+        "status": status_filter,
+        "method": method,
+        "invoice_id": invoice_id,
+        "search": search,
+        "amount_min": amount_min,
+        "amount_max": amount_max,
+    }
+    query = _payment_list_filters(
         select(Payment, Invoice, VirtualCard)
         .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .outerjoin(VirtualCard, VirtualCard.payment_id == Payment.id)
+        .outerjoin(VirtualCard, VirtualCard.payment_id == Payment.id),
+        invoice_joined=True,
+        **_filters,
     )
-    query = apply_entity_scope(query, Payment, entity_id)
 
-    if status_filter:
-        statuses = [s.strip() for s in status_filter.split(",")]
-        query = query.where(Payment.status.in_(statuses))
-    if method:
-        query = query.where(Payment.method == method)
-    if invoice_id:
-        query = query.where(Payment.invoice_id == uuid.UUID(invoice_id))
-    if amount_min is not None:
-        query = query.where(Payment.amount >= Decimal(str(amount_min)))
-    if amount_max is not None:
-        query = query.where(Payment.amount <= Decimal(str(amount_max)))
-    if search:
-        query = query.where(
-            ilike_contains(Invoice.vendor_name, search)
-            | ilike_contains(Invoice.invoice_number, search)
-            | ilike_contains(Payment.reference, search)
-        )
-
-    # Count — rebuild the filter set against a plain Payment select (the list
-    # query's joins would inflate the count via fan-out).
-    count_base = apply_entity_scope(select(Payment), Payment, entity_id)
-    if status_filter:
-        statuses = [s.strip() for s in status_filter.split(",")]
-        count_base = count_base.where(Payment.status.in_(statuses))
-    if method:
-        count_base = count_base.where(Payment.method == method)
-    if invoice_id:
-        count_base = count_base.where(Payment.invoice_id == uuid.UUID(invoice_id))
-    if amount_min is not None:
-        count_base = count_base.where(Payment.amount >= Decimal(str(amount_min)))
-    if amount_max is not None:
-        count_base = count_base.where(Payment.amount <= Decimal(str(amount_max)))
-    if search:
-        count_base = count_base.outerjoin(Invoice, Payment.invoice_id == Invoice.id).where(
-            ilike_contains(Invoice.vendor_name, search)
-            | ilike_contains(Invoice.invoice_number, search)
-            | ilike_contains(Payment.reference, search)
-        )
+    # Count against a plain Payment select — the row query's joins would inflate
+    # it via fan-out — but through the SAME builder, so the two cannot drift.
+    count_base = _payment_list_filters(select(Payment), **_filters)
 
     total_q = select(func.count()).select_from(count_base.subquery())
     total = (await db.execute(total_q)).scalar() or 0
@@ -956,19 +986,43 @@ async def compare_corridor_quotes(
 
 @router.get("/counts")
 async def payment_status_counts(
+    method: str | None = None,
+    invoice_id: uuid.UUID | None = None,
+    search: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # Exactly the list's gate, not the older role set. A custom-role holder of
+    # only one of the two permissions could read the History list and got a 403
+    # here, at which point the page falls back to the page-scoped tally this
+    # endpoint exists to replace — reintroducing the undercount for that user.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Per-status payment tallies for the History-tab filter chips.
 
     Computed over the WHOLE entity-scoped payment set, not the loaded page, so
     the chip counts (and the "All" count) don't undercount once the history
-    list paginates. Mirrors GET /api/vendors/counts. Declared before the
-    `/{payment_id}` route so the literal path isn't parsed as a UUID.
+    list paginates. Declared before the `/{payment_id}` route so the literal
+    path isn't parsed as a UUID.
+
+    Takes the list's population filters through the SAME
+    `_payment_list_filters` builder as `GET /api/payments`, so the chips
+    describe exactly the rows the list would return. Without them a search for
+    one vendor left the chips reading the tenant's whole total over a one-row
+    table. Deliberately NOT `status`: status is the dimension being tallied, so
+    applying it would zero every other chip — the same rule
+    `invoices.py::invoice_counts` and `purchase_orders.py` state.
     """
-    query = apply_entity_scope(
-        select(Payment.status, func.count()).select_from(Payment), Payment, entity_id
+    query = _payment_list_filters(
+        select(Payment.status, func.count()).select_from(Payment),
+        entity_id=entity_id,
+        status=None,
+        method=method,
+        invoice_id=invoice_id,
+        search=search,
+        amount_min=amount_min,
+        amount_max=amount_max,
     ).group_by(Payment.status)
     rows = (await db.execute(query)).all()
     by_status = {str(s): int(n) for s, n in rows}

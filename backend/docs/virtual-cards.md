@@ -527,7 +527,7 @@ float.
 | `card.revealed_via_token` | vendor-facing single-use PAN reveal (`GET /portal/cards/{token}`) — written when the token is **claimed**, committed before the provider is called, `actor_id=None` (no internal user) | `last_four` |
 | `card.cancelled` | manual cancel (`POST /{id}/cancel`) | `last_four`, `from`, `to` |
 | `card.charged` | authorization webhook applies a charge | `last_four`, `from`, `to`, `amount_charged` (string Decimal) |
-| `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals), `rebate_created` (bool — `false` if the one-per-card unique index skipped a duplicate) |
+| `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate`, `rebate_base` (string Decimals), `rebate_base_source` (`settled` \| `charged` \| `unknown` — which figure the rebate priced off, see § Rebate base), `rebate_created` (bool — `false` if the one-per-card unique index skipped a duplicate) |
 | `card_rebate.confirmed` | `POST /rebates/{id}/confirm` (`pending` → `confirmed`) | `amount` (string Decimal), `from`, `to` |
 | `card_rebate.paid_out` | `POST /rebates/{id}/mark-paid` (`confirmed` → `paid_out`) | `amount` (string Decimal), `from`, `to` |
 
@@ -877,3 +877,18 @@ knowable through the card that earned it — so the rebate rollups join
 `VirtualCard` rather than guessing. Figures are filtered rather than converted:
 they are historical realised amounts, and an FX fetch during a dashboard read
 would make them non-deterministic.
+
+**And they are scoped to the selected entity — rebates included.** The rebate
+rollups (`rebates_this_month`, `rebates_ytd`, both status breakdowns and
+`excluded_rebate_count`) go through `apply_entity_scope` on the `VirtualCard`
+join, matching `GET /api/cards/rebates`, which has always scoped its list that
+way. They previously did not: `CardRebate` carries no `entity_id` of its own, so
+the entity was only reachable once the currency fix added that join, and until
+then the dashboard reported entity-scoped card figures beside org-wide rebate
+figures — a subsidiary's rebate showed as the parent entity's YTD, and the
+headline could not be reconciled against the list an operator drills into.
+
+A cross-entity rebate is excluded **silently**: the entity selector is itself
+the disclosure, so only *currency* exclusions get a count. With no
+`X-Entity-ID` (the consolidated read) `apply_entity_scope` is a no-op and every
+entity is included, which is what keeps the group view whole.

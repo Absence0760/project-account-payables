@@ -444,8 +444,8 @@ Full list in `backend/app/config.py`.
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
 | Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |
 | Supplier chat & collaboration | `backend/docs/supplier-chat.md` — per-invoice AP↔supplier thread, author polymorphism, attachment key scheme + cross-tenant gate, audit actions, `chat_message` notification + supplier portal-link email, `Organization.settings.supplier_chat.enabled` flag, static templates |
-| Roadmap (open work) | `docs/roadmap.md` — only the 8 areas that still have unshipped work; each carries an `**Open:**` line naming exactly what's left. **Prune on landing** — when a section's last open item ships, move the whole section to the archive in the same commit |
-| Roadmap (shipped archive) | `docs/roadmap_shipped.md` — the 43 completed sections, verbatim. **Check here for prior art before building** — most capabilities are already covered |
+| Roadmap (open work) | `docs/roadmap.md` — only the 7 areas that still have unshipped work; each carries an `**Open:**` line naming exactly what's left. **Prune on landing** — when a section's last open item ships, move the whole section to the archive in the same commit |
+| Roadmap (shipped archive) | `docs/roadmap_shipped.md` — the 44 completed sections, verbatim. **Check here for prior art before building** — most capabilities are already covered |
 | Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 
 Prefer reading docs over guessing. Update them when behavior changes.

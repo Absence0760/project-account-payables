@@ -72,12 +72,32 @@ def is_header_safe(value: str) -> bool:
 
 
 def looks_like_email(value: str) -> bool:
-    """True when ``value`` has the shape of an email address.
+    r"""True when ``value`` has the shape of an email address.
 
     Shape only — never deliverability, and never a claim the mailbox exists.
     Callers raise their own error (a 422 in the API layer, a ``ValueError`` in
     a pydantic validator) so the message can stay appropriate to the surface;
     the recipient-list validator in particular must not echo the offending
     value, which is third-party PII on an HTTP error body.
+
+    Composed over :func:`is_header_safe` because the shape pattern's character
+    classes are built on ``\s``, which excludes only whitespace — and Python's
+    ``\s`` is just ``\t\n\r\v\f`` plus ``\x1c-\x1f`` (and ``\x85``). So
+    the rest of the C0 range — NUL, ``\x01-\x08``, ``\x0e-\x1a`` — and DEL
+    passed the shape rule while the header-safety rule refused them, leaving
+    the two rules not strictly ordered.
+
+    That gap reached three surfaces that do not additionally call
+    ``is_header_safe``: the signup admin address (`api/signup`), a
+    partner-provisioned child tenant's admin login (`api/partner`), and the
+    scheduled-report recipient list (`schemas/scheduled_report`, whose
+    ``strip()`` removes whitespace only) — each a value that becomes both a
+    login and a mail destination.
+
+    CR and LF were already refused, so §50's header-injection fix was never
+    affected; this closes the wider class §60 introduced ``is_header_safe``
+    for. Composing rather than tightening the pattern keeps §60's deliberate
+    asymmetry intact: an SSO-asserted dotless ``user@intranet`` is still
+    header-safe, because the weaker rule is unchanged.
     """
-    return bool(EMAIL_SHAPE_PATTERN.match(value))
+    return is_header_safe(value) and bool(EMAIL_SHAPE_PATTERN.match(value))

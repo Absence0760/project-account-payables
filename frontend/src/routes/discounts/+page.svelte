@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
+	import { hasPartialRealisedSet, partialRealisedCount } from '$lib/utils/discountPartialSet';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
@@ -326,11 +327,13 @@
 		     currency — amounts in different currencies are not added together —
 		     so a non-zero count means the green and red KPIs above describe part
 		     of the set. Without this the page shows a partial figure as if it
-		     were the whole one, which is the defect the backend fix removed. -->
-		{#if dashboard && dashboard.excluded_captured_count + dashboard.excluded_missed_count > 0}
+		     were the whole one, which is the defect the backend fix removed.
+		     The rule lives in `utils/discountPartialSet.ts` so it has one owner
+		     and can be unit-tested without the test restating its own sum. -->
+		{#if dashboard && hasPartialRealisedSet(dashboard)}
 			<p class="disc-skipped" role="alert" data-testid="excluded-realised">
 				{m('discounts.excludedRealised', {
-					n: dashboard.excluded_captured_count + dashboard.excluded_missed_count,
+					n: partialRealisedCount(dashboard),
 					currency: dashboard.currency
 				})}
 			</p>

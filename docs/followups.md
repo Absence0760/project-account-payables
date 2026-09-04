@@ -34,8 +34,33 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-04 — the confirming pass the "unverified leads"
-section had been waiting for. All **eight** round-14 money-path leads were
+**Last reconciled:** 2026-09-04 (second pass) — a five-agent coverage pass over
+the work #321 records as complete, run after PR #356 merged (`71231ee3`). It
+added ~630 tests across nine files, and **found four real defects that the
+shipped code's own tests had not**, each fixed at the root here with a
+regression test that fails against the previous implementation:
+
+| Defect | Where | Why the existing tests missed it |
+|---|---|---|
+| The card dashboard's rebate rollups were org-wide while its card figures were entity-scoped | `api/cards.card_dashboard` | `CardRebate` carries no `entity_id`; the `VirtualCard` join that makes the subsidiary reachable only arrived with #356's currency fix, and `GET /rebates` had been scoping its list that way all along — so the two disagreed and nothing compared them |
+| `looks_like_email` admitted NUL / ESC / DEL and the rest of the C0 range | `utils/emails` | The shape pattern's classes are built on `\s`, which excludes only whitespace. CR and LF *were* refused, so §50's header-injection fix looked complete; the wider class §60 introduced `is_header_safe` for was reachable at signup, partner child-provisioning and the scheduled-report recipient list, none of which call the header rule |
+| `GET /api/payments/counts` declared no filters and tallied the whole set | `api/payments` | It ends in `/counts`, not `/summary`, so the OpenAPI-driven rollup guard never discovered it. The frontend sends a live `search` on the list and nothing here, so a one-vendor search left the chips reading the tenant's total over a one-row table — the #352 defect on a sibling surface |
+| `GET /api/vendors/counts` hand-rolled the search predicate and dropped `source` | `api/vendors` | The search columns coincided with the shared builder's, so nothing was visibly wrong; `source` was a live undercount waiting for the vendors page to gain that control |
+
+Two prose corrections went with them: the recurring monthly-equivalent is
+quantised **once per currency over exact quotients**, not per template (the
+values differ — three 100.00 annual templates are 25.00 a month, not 3 × 8.33 =
+24.99), and the roadmap section counts were off by one after the Cash-Flow
+Copilot section shipped into the archive (44 shipped / 7 open, not 43 / 8).
+
+The pass also extracted the discount partial-realised-set rule out of the page
+template into `utils/discountPartialSet.ts` so it could be unit-tested without
+the test restating its own sum — which closed a small robustness gap, since a
+negative count off the wire used to cancel a genuine exclusion and hide the
+banner.
+
+**Also reconciled 2026-09-04 (first pass)** — the confirming pass the
+"unverified leads" section had been waiting for. All **eight** round-14 money-path leads were
 probed against the real code; **all eight reproduced**, so none was discarded
 and the whole section is gone: they are findings now, fixed with regression
 tests that fail against the previous implementation. What they were:
@@ -57,7 +82,11 @@ stored row's currency through `resolve_reporting_currency`, and its two
 `invoice_defaults.currency` reads are the FormatterContext for the rendered
 file, not a rollup — no cross-currency sum exists there to fix.
 
-This file now carries **56** open checkbox entries (plus the 8 narrative round-15 findings), down from 64.
+This file now carries **57** open checkbox entries (plus the 8 narrative
+round-15 findings) — **65** items. The money-path pass took the checkbox count
+64 → 56; the coverage pass that followed it added one back (the `float` money
+filter bounds, below), which is the file working as intended: a sweep that
+closes nothing and opens nothing has usually not looked hard enough.
 
 The same pass replaced the list/rollup filter-parity guard with
 `test_whole_set_kpi_rollups.py`. The old one covered four surfaces and only
@@ -943,6 +972,37 @@ is a confirmed reading of the code, not a hypothesis.
       **Durable fix:** convert through the reporting-currency SQL helper and
       return 422 on an unparseable month.
       **Trigger:** the next slice touching forecast variance.
+
+### Surfaced by the #321 coverage pass (2026-09-04)
+
+The pass fixed four defects at the root (recorded in the reconciliation header
+above) and its review round closed six more quality findings in the same
+branch. One item is left open, because fixing it only where it was noticed
+would make the codebase less consistent rather than more.
+
+- [ ] **Money filter bounds on list endpoints are typed `float`, not `Decimal`.**
+      `amount_min` / `amount_max` are declared `float | None` and then converted
+      with `Decimal(str(value))` — in `api/payments.py` (`_payment_list_filters`,
+      the list, and now `/counts`) and `api/invoices.py`
+      (`_invoice_list_filters`), i.e. it is the house pattern rather than one
+      site's slip. `Decimal(str(f))` recovers the shortest repr, so ordinary
+      inputs round-trip, but a bound given to more precision than a float holds
+      is silently re-rounded before it reaches a `Numeric` column — so a payment
+      sitting exactly on the boundary can fall the wrong side of the filter.
+      These are query bounds rather than stored amounts, which is why it has not
+      bitten, but root `CLAUDE.md` § Project invariants states the money rule
+      without that carve-out.
+      **Durable fix:** type the params `Decimal | None` (pydantic/FastAPI parse
+      it natively) and drop the `Decimal(str(...))` hop, on **both** sides of
+      each shared filter builder at once.
+      **Why not folded into the coverage pass:** the two sides of a builder must
+      move together or the list and its rollup filter differently — and doing it
+      for payments alone would leave invoices (and any sibling that follows the
+      same pattern) on the old shape, which is the drift the shared builders
+      exist to prevent. It wants one sweep across every list surface that takes
+      a money bound.
+      **Trigger:** the next change touching a money filter bound on any list
+      endpoint, or the next money-exactness audit pass.
 
 ### Surfaced by the round-15 bug hunt
 

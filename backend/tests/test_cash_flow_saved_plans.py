@@ -38,6 +38,8 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.utils.dates import utc_today
+
 # ===========================================================================
 # Helpers (mirror the realdb seeding patterns in test_cash_flow_copilot.py).
 # ===========================================================================
@@ -78,7 +80,7 @@ async def _seed_invoice(
         amount=Decimal(str(amount)),
         currency=currency,
         status=status,
-        invoice_date=date.today(),
+        invoice_date=utc_today(),
         due_date=due_date,
     )
     session.add(inv)
@@ -312,7 +314,7 @@ async def test_save_freezes_the_plan_and_is_idempotent(realdb):
             number="SAVE-1",
             vendor_name="SaveCo",
             amount="900.00",
-            due_date=date.today() + timedelta(days=10),
+            due_date=utc_today() + timedelta(days=10),
         )
         await sa.commit()
 
@@ -370,7 +372,7 @@ async def test_save_does_not_restate_a_snapshot_when_the_data_moves(realdb):
             number="FROZEN-1",
             vendor_name="FrozenCo",
             amount="500.00",
-            due_date=date.today() + timedelta(days=5),
+            due_date=utc_today() + timedelta(days=5),
         )
         await sa.commit()
 
@@ -389,7 +391,7 @@ async def test_save_does_not_restate_a_snapshot_when_the_data_moves(realdb):
             number="FROZEN-2",
             vendor_name="FrozenCo",
             amount="9999.00",
-            due_date=date.today() + timedelta(days=5),
+            due_date=utc_today() + timedelta(days=5),
         )
         await sa.commit()
 
@@ -437,7 +439,7 @@ async def test_saving_never_moves_money(realdb):
             number="NOMOVE-1",
             vendor_name="NoMoveCo",
             amount="750.00",
-            due_date=date.today() + timedelta(days=3),
+            due_date=utc_today() + timedelta(days=3),
         )
         await sa.commit()
         inv_id = inv.id
@@ -629,7 +631,7 @@ async def test_consolidated_plan_is_discovered_while_an_entity_is_selected(reald
             number="CONS-1",
             vendor_name="ConsCo",
             amount="400.00",
-            due_date=date.today() + timedelta(days=6),
+            due_date=utc_today() + timedelta(days=6),
         )
         await sa.commit()
 
@@ -661,7 +663,7 @@ async def test_entity_scoped_plan_is_stored_and_listed_under_that_entity(realdb)
             number="ENT-1",
             vendor_name="EntCo",
             amount="620.00",
-            due_date=date.today() + timedelta(days=4),
+            due_date=utc_today() + timedelta(days=4),
         )
         await sa.commit()
         other_id = other.id
@@ -820,7 +822,7 @@ def _week(anchor: date, outflow: str):
 async def test_variance_scores_an_elapsed_period_against_real_settled_cash(realdb):
     a = realdb.info("a")
     mk_a = realdb.sessionmaker("a")
-    today = datetime.now(UTC).date()
+    today = utc_today()
     past_anchor = today - timedelta(days=21)
     plan_date = past_anchor
 
@@ -885,7 +887,7 @@ async def test_variance_excludes_and_counts_payments_it_cannot_place_or_express(
     face value. Both are excluded from the totals and COUNTED."""
     a = realdb.info("a")
     mk_a = realdb.sessionmaker("a")
-    today = datetime.now(UTC).date()
+    today = utc_today()
     past_anchor = today - timedelta(days=14)
 
     async with mk_a() as sa:
@@ -951,7 +953,7 @@ async def test_variance_runs_under_the_saved_plans_own_entity_scope(realdb):
     projection against another's actuals is not a variance."""
     a = realdb.info("a")
     mk_a = realdb.sessionmaker("a")
-    today = datetime.now(UTC).date()
+    today = utc_today()
     past_anchor = today - timedelta(days=14)
 
     async with mk_a() as sa:
@@ -1008,7 +1010,7 @@ async def test_variance_reports_discount_follow_through(realdb):
 
     a = realdb.info("a")
     mk_a = realdb.sessionmaker("a")
-    today = datetime.now(UTC).date()
+    today = utc_today()
 
     async with mk_a() as sa:
         ent = await _default_entity_id(sa, a.org_id)
@@ -1076,7 +1078,7 @@ async def test_save_then_variance_end_to_end(realdb):
             number="E2E-1",
             vendor_name="E2ECo",
             amount="333.00",
-            due_date=date.today() + timedelta(days=9),
+            due_date=utc_today() + timedelta(days=9),
         )
         await sa.commit()
 
@@ -1129,7 +1131,7 @@ async def test_consolidated_plan_stages_across_entities_from_a_scoped_view(reald
             number="ENACT-DEFAULT",
             vendor_name="DefaultCo",
             amount="300.00",
-            due_date=date.today() + timedelta(days=5),
+            due_date=utc_today() + timedelta(days=5),
         )
         await _seed_invoice(
             sa,
@@ -1138,7 +1140,7 @@ async def test_consolidated_plan_stages_across_entities_from_a_scoped_view(reald
             number="ENACT-OTHER",
             vendor_name="OtherCo",
             amount="700.00",
-            due_date=date.today() + timedelta(days=6),
+            due_date=utc_today() + timedelta(days=6),
         )
         await sa.commit()
         other_id = other.id
@@ -1211,7 +1213,7 @@ async def test_draft_run_refuses_an_entity_plan_id_from_another_entity(realdb):
             number="REFUSE-1",
             vendor_name="RefuseCo",
             amount="250.00",
-            due_date=date.today() + timedelta(days=4),
+            due_date=utc_today() + timedelta(days=4),
         )
         await sa.commit()
         other_id = other.id

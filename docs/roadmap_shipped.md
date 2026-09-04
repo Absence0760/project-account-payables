@@ -6,7 +6,7 @@ is summarized — the full original entry, its checkbox detail, and its competit
 notes are preserved, because that detail is what makes the archive useful when
 someone asks "does the platform already do X?".
 
-**Read this before building.** 43 of 51 roadmap sections are here. Prior art for
+**Read this before building.** 44 of 51 roadmap sections are here. Prior art for
 most capabilities — matching, payments, e-invoicing, procurement, RBAC — lives in
 this file and in `backend/docs/`.
 

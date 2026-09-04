@@ -259,6 +259,9 @@
 	// `applyVendorUpdate` marks in-flight fetches stale the same way, so a
 	// response issued before a local edit can't overwrite it either.
 	const fetchSequence = createRequestSequencer();
+	// The chip counts fire alongside every list fetch, so they need their own
+	// sequencer for the same reason — see `fetchCounts`.
+	const countsSequence = createRequestSequencer();
 
 	async function fetchVendors(opts: { append?: boolean; nextPage?: number } = {}) {
 		const token = fetchSequence.start();
@@ -451,6 +454,11 @@
 	}
 
 	async function fetchCounts() {
+		// Sequenced for the same reason the payments History chips are: this
+		// fires from the debounced-search path, so a slow response for an older
+		// term can otherwise land after a faster newer one and leave the chips
+		// describing a search the table is no longer showing.
+		const token = countsSequence.start();
 		try {
 			const params = new URLSearchParams();
 			if (search.trim()) params.set('search', search.trim());
@@ -458,10 +466,12 @@
 			const data = await api.get<{ total: number; by_status: Record<string, number> }>(
 				`/api/vendors/counts${qs ? `?${qs}` : ''}`
 			);
+			if (!countsSequence.canCommit(token)) return;
 			statusCounts = data.by_status ?? {};
 			countsTotal = data.total ?? 0;
 		} catch {
 			// Non-fatal: chips fall back to the loaded-page tallies below.
+			if (!countsSequence.isCurrentRequest(token)) return;
 			statusCounts = {};
 			countsTotal = 0;
 		}
