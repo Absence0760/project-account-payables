@@ -2537,10 +2537,28 @@ Both assert discovery non-emptiness, per the `_KNOWN_ROLLUP_COUNT` lesson.
 
 The same rounding reaches a JSON **body** differently, and needs a different fix:
 pydantic parses a JSON number into `Decimal('100')` from `100.00000000000000001`,
-so only the string form round-trips. `POST /api/discounts/optimize` now takes a real
-request model accepting an exact decimal string or a JSON integer and refusing a
-float, with the frontend caller moved in the same change — a wire-contract change,
-not a retype.
+so only the string form round-trips. The shared parse lives on
+`backend/app/schemas/money.py` (`ExactMoneyInput` / `OptionalExactMoneyInput`) —
+it accepts an exact decimal string or a JSON integer and refuses a float — and
+backs `POST /api/discounts/optimize` (with the frontend caller moved in the same
+change, a wire-contract change rather than a retype) and the cash-flow copilot's
+plan tools and plan bodies.
+
+The copilot case adds one rung the endpoint case does not have. Its budget arrives
+as an **LLM-produced tool argument**, and `ToolSpec.anthropic_spec` derives each
+tool's `input_schema` from `model_json_schema()` — so a bare `Decimal` advertised
+`number`, instructing the model to send the exact shape the validator refuses. The
+annotation now carries a `WithJsonSchema` declaring `string`: the refusal is the
+backstop, the advertised schema is the fix. It matters beyond tidiness because
+`propose_payment_plan` hashes `str(cash_budget)` into `plan_id` and
+`POST /plans/{plan_id}/draft-run` stages a real `PaymentRun` from the plan that id
+certifies — so a rounded budget is two wrongs: a different selection, and an id
+asserting the rounded figure is what was approved. For the same reason the parse
+covers `min_balance_threshold` (also in the `plan_id` preimage) and
+`opening_balance` (persisted money), not the budget alone — hardening one leg
+leaves the hash half-exact. Neither side normalises the value, because the
+preimage is `str()` and rescaling `"8.00"` to `"8"` anywhere would fail a plan's
+own stale-plan check without its parameters having changed.
 
 ---
 
