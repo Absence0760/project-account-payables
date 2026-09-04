@@ -344,11 +344,12 @@ def _counts_pairs():
         parent = path[: -len("/counts")]
         if _openapi_query_params(spec, parent) is None:
             continue  # no GET list parent — not a list's chip tally
-        assert _openapi_query_params(spec, path) is not None, (
-            f"{path} was discovered as a chip tally but has no GET operation. The "
-            "contract axes below read its query parameters, so this has to be a "
-            "named failure rather than a TypeError from `set() - None`."
-        )
+        if _openapi_query_params(spec, path) is None:
+            # No GET on the tally itself. Skipped rather than asserted here:
+            # discovery feeds `@pytest.mark.parametrize`, so raising would be a
+            # COLLECTION error taking this module's other axes down with it.
+            # `test_a_counts_surface_without_a_get_is_reported` owns the failure.
+            continue
         pairs.append((parent, path))
     return spec, pairs
 
@@ -451,8 +452,9 @@ def _auth_gates(module_source: str, fn_name: str) -> tuple[str, ...] | None:
     spelling difference between endpoints that must agree. Sorted so parameter
     ORDER is not mistaken for a difference.
 
-    Returns `None` when the function is not found at all, which the caller
-    distinguishes from an ungated `()`.
+    Returns `None` when the function is not found at all — distinct from `()`
+    for a function that exists but declares no gate; the caller reports those
+    as different problems.
     """
     tree = ast.parse(module_source)
     for node in ast.walk(tree):
@@ -520,8 +522,21 @@ def test_a_counts_endpoint_is_gated_exactly_like_its_list(pair):
     list_gates = _auth_gates(source, list_fn)
     counts_gates = _auth_gates(source, counts_fn)
 
-    assert list_gates, f"{module.name}::{list_fn} has no recognisable auth dependency"
-    assert counts_gates, f"{module.name}::{counts_fn} has no recognisable auth dependency"
+    # `None` (function not found) and `()` (found, ungated) are different
+    # problems: the first is a bug in this guard's own lookup, the second is an
+    # auth violation on the endpoint. Reported separately so the message names
+    # the right one.
+    for fn, gates in ((list_fn, list_gates), (counts_fn, counts_gates)):
+        assert gates is not None, (
+            f"{module.name}::{fn} was not found — this guard's handler lookup is "
+            "resolving a name that does not exist, so the comparison below would "
+            "be meaningless"
+        )
+        assert gates, (
+            f"{module.name}::{fn} declares no gating dependency at all. Every "
+            "route under /api is behind auth unless documented public-by-design "
+            "(root CLAUDE.md § Auth before everything)."
+        )
     assert counts_gates == list_gates, (
         f"{counts_path} is gated {list(counts_gates)} while {list_path} is gated "
         f"{list(list_gates)}. decisions §48 requires them to match exactly: a tally "
@@ -657,4 +672,130 @@ def test_no_filters_to_share_exemptions_are_still_true():
             f"but {by_counts[counts_path]} now offers {sorted(list_params)}. The "
             "pair needs a shared filter builder and an entry in "
             "_COUNTS_BUILDER_MODULES."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The guard's own machinery, pinned
+# ---------------------------------------------------------------------------
+#
+# Every real surface today declares exactly ONE gating dependency, so
+# first-match and collect-all agree on all five — which means reverting
+# `_auth_gates` to return on the first hit leaves every assertion above green.
+# The bug it fixes is a silent PASS, so the helper is exercised directly
+# against source fixtures rather than only through the five live pairs.
+
+_GATE_FIXTURE = """
+def list_one(db=Depends(get_tenant_db), user=Depends(get_current_user)):
+    pass
+
+
+def counts_extra_gate(
+    db=Depends(get_tenant_db),
+    user=Depends(get_current_user),
+    _guard=Depends(require_roles(ROLE_ADMIN)),
+):
+    pass
+
+
+def counts_matching(db=Depends(get_tenant_db), user=Depends(get_current_user)):
+    pass
+
+
+def counts_reordered(user=Depends(get_current_user), db=Depends(get_tenant_db)):
+    pass
+
+
+def counts_ungated(db=Depends(get_tenant_db)):
+    pass
+
+
+def counts_entitlement(
+    db=Depends(get_tenant_db),
+    user=Depends(get_current_user),
+    _plan=Depends(require_entitlement("public_api")),
+):
+    pass
+"""
+
+
+def test_auth_gates_sees_a_second_gate_beside_the_first():
+    """The false-pass this helper was rewritten to close.
+
+    An endpoint carrying an extra `require_roles(...)` alongside the same
+    `get_current_user` its list uses is a DIFFERENT gate. Returning on the
+    first match reported the two as identical.
+    """
+    listed = _auth_gates(_GATE_FIXTURE, "list_one")
+    extra = _auth_gates(_GATE_FIXTURE, "counts_extra_gate")
+    assert listed == ("Depends(get_current_user)",)
+    assert extra == (
+        "Depends(get_current_user)",
+        "Depends(require_roles(ROLE_ADMIN))",
+    )
+    assert extra != listed, "an extra gate must not compare equal to its absence"
+
+
+def test_auth_gates_covers_the_whole_gate_vocabulary():
+    """A gate arriving as an entitlement check counts too — a plan gate is a
+    reason a caller is refused, so it is part of what must match."""
+    gates = _auth_gates(_GATE_FIXTURE, "counts_entitlement")
+    # `ast.unparse` normalises string quoting, so the expected form is the
+    # single-quoted one it emits — not the double quotes in the source.
+    assert "Depends(require_entitlement('public_api'))" in gates
+    assert gates != _auth_gates(_GATE_FIXTURE, "list_one")
+
+
+def test_auth_gates_does_not_treat_parameter_order_as_a_difference():
+    """Sorting is what stops a spurious failure from a reshuffled signature.
+
+    It masks ORDER only — sorted-tuple equality is still multiset equality, so
+    a differing gate cannot hide behind it (the test above proves that half).
+    """
+    assert _auth_gates(_GATE_FIXTURE, "counts_reordered") == _auth_gates(_GATE_FIXTURE, "list_one")
+    assert _auth_gates(_GATE_FIXTURE, "counts_matching") == _auth_gates(_GATE_FIXTURE, "list_one")
+
+
+def test_auth_gates_separates_not_found_from_ungated():
+    """The two failures the RBAC axis reports differently: a lookup that
+    resolved nothing (a bug in this guard) versus a handler with no gate at all
+    (an auth violation)."""
+    assert _auth_gates(_GATE_FIXTURE, "no_such_function") is None
+    assert _auth_gates(_GATE_FIXTURE, "counts_ungated") == ()
+
+
+def test_handler_name_matches_fastapis_own_operation_id_derivation():
+    """`_handler_name` strips a suffix it reconstructs itself, so it has to
+    reproduce FastAPI's `generate_unique_id` (`re.sub(r"\\W", "_", name + path)`)
+    exactly — including a path with a hyphen and several segments."""
+    spec = app.openapi()
+    for path, expected in (
+        ("/api/invoices/counts", "invoice_counts"),
+        ("/api/payments/counts", "payment_status_counts"),
+        ("/api/purchase-orders/counts", "purchase_order_status_counts"),
+        ("/api/vendors/counts", "vendor_status_counts"),
+        ("/api/vendors/change-requests/counts", "change_request_counts"),
+    ):
+        assert _handler_name(spec, path) == expected, path
+
+
+def test_a_counts_surface_without_a_get_is_reported():
+    """Discovery SKIPS a `/counts` path with no GET, because it feeds a
+    parametrisation and raising there is a collection error that takes this
+    module's other axes with it. The failure belongs here instead, so the skip
+    cannot quietly hide a surface.
+    """
+    spec = app.openapi()
+    _, pairs = _counts_pairs()
+    discovered = {counts for _, counts in pairs}
+    for path in sorted(spec["paths"]):
+        if not path.endswith("/counts") or "{" in path:
+            continue
+        parent = path[: -len("/counts")]
+        if _openapi_query_params(spec, parent) is None:
+            continue
+        assert path in discovered, (
+            f"{path} has a GET list parent but was skipped by discovery, which "
+            "happens when the tally itself has no GET operation. The contract "
+            "axes cannot check it, so it needs a GET or an explicit exemption."
         )
