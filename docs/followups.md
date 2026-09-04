@@ -34,8 +34,33 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-04 — the confirming pass the "unverified leads"
-section had been waiting for. All **eight** round-14 money-path leads were
+**Last reconciled:** 2026-09-04 (second pass) — a five-agent coverage pass over
+the work #321 records as complete, run after PR #356 merged (`71231ee3`). It
+added ~630 tests across nine files, and **found four real defects that the
+shipped code's own tests had not**, each fixed at the root here with a
+regression test that fails against the previous implementation:
+
+| Defect | Where | Why the existing tests missed it |
+|---|---|---|
+| The card dashboard's rebate rollups were org-wide while its card figures were entity-scoped | `api/cards.card_dashboard` | `CardRebate` carries no `entity_id`; the `VirtualCard` join that makes the subsidiary reachable only arrived with #356's currency fix, and `GET /rebates` had been scoping its list that way all along — so the two disagreed and nothing compared them |
+| `looks_like_email` admitted NUL / ESC / DEL and the rest of the C0 range | `utils/emails` | The shape pattern's classes are built on `\s`, which excludes only whitespace. CR and LF *were* refused, so §50's header-injection fix looked complete; the wider class §60 introduced `is_header_safe` for was reachable at signup, partner child-provisioning and the scheduled-report recipient list, none of which call the header rule |
+| `GET /api/payments/counts` declared no filters and tallied the whole set | `api/payments` | It ends in `/counts`, not `/summary`, so the OpenAPI-driven rollup guard never discovered it. The frontend sends a live `search` on the list and nothing here, so a one-vendor search left the chips reading the tenant's total over a one-row table — the #352 defect on a sibling surface |
+| `GET /api/vendors/counts` hand-rolled the search predicate and dropped `source` | `api/vendors` | The search columns coincided with the shared builder's, so nothing was visibly wrong; `source` was a live undercount waiting for the vendors page to gain that control |
+
+Two prose corrections went with them: the recurring monthly-equivalent is
+quantised **once per currency over exact quotients**, not per template (the
+values differ — three 100.00 annual templates are 25.00 a month, not 3 × 8.33 =
+24.99), and the roadmap section counts were off by one after the Cash-Flow
+Copilot section shipped into the archive (44 shipped / 7 open, not 43 / 8).
+
+The pass also extracted the discount partial-realised-set rule out of the page
+template into `utils/discountPartialSet.ts` so it could be unit-tested without
+the test restating its own sum — which closed a small robustness gap, since a
+negative count off the wire used to cancel a genuine exclusion and hide the
+banner.
+
+**Also reconciled 2026-09-04 (first pass)** — the confirming pass the
+"unverified leads" section had been waiting for. All **eight** round-14 money-path leads were
 probed against the real code; **all eight reproduced**, so none was discarded
 and the whole section is gone: they are findings now, fixed with regression
 tests that fail against the previous implementation. What they were:
