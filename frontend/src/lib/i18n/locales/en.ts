@@ -3437,6 +3437,8 @@ export const en = {
 	'discounts.toast.declineFailed': 'Could not decline offer',
 	'discounts.toast.declined': 'Discount offer declined',
 	'discounts.toast.optimizeFailed': 'Optimization failed',
+	'discounts.excludedRealised':
+		'Realised totals cover {currency} only: {n, plural, one {# offer} other {# offers}} in another currency are not counted in captured or missed. Amounts in different currencies are not added together, so the two figures above describe part of the picture.',
 	'discounts.unconvertibleOffers':
 		'Excluded: {n, plural, one {# offer} other {# offers}} with no exchange rate into {currency}, left out of the savings totals — so the figures shown understate what is on the table. Book the missing rate before acting on them.',
 	'experiments.chip.concluded': 'Concluded',

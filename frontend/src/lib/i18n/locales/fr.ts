@@ -3355,6 +3355,8 @@ export const messages = {
 	'discounts.toast.declineFailed': 'Impossible de refuser l\'offre',
 	'discounts.toast.declined': 'Offre d\'escompte refusée',
 	'discounts.toast.optimizeFailed': 'Échec de l\'optimisation',
+	'discounts.excludedRealised':
+		'Les totaux réalisés ne couvrent que {currency} : {n, plural, one {# offre} other {# offres}} dans une autre devise ne sont comptées ni dans le capturé ni dans le manqué. Les montants en devises différentes ne s’additionnent pas, les deux chiffres ci-dessus ne décrivent donc qu’une partie du tableau.',
 	'discounts.unconvertibleOffers':
 		'Non converti : {n, plural, one {# offre} other {# offres}} sans taux de change vers {currency}, hors des totaux d’économies — les chiffres affichés sous-estiment donc le gain possible. Enregistrez le taux manquant avant d’agir sur ces chiffres.',
 	'experiments.chip.concluded': 'Conclue',

@@ -65,6 +65,14 @@ export interface DiscountDashboard {
 	 *  is honest only because they were excluded, so the page must say so —
 	 *  otherwise a multi-currency tenant reads a quietly-low number. */
 	unconvertible_offer_count: number;
+	/** Captured / declined+expired offers left OUT of `captured_amount` /
+	 *  `missed_amount` for being denominated in something other than
+	 *  `currency`. Amounts in different currencies are not added together, so
+	 *  a non-zero count means those two realised figures describe part of the
+	 *  set — the same honesty `unconvertible_offer_count` provides for
+	 *  `projected_savings`. */
+	excluded_captured_count: number;
+	excluded_missed_count: number;
 }
 
 /** Per-invoice ROI / cost-of-capital comparison for accepting early payment. */

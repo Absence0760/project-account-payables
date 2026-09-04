@@ -3354,6 +3354,8 @@ export const messages = {
 	'discounts.toast.declineFailed': 'Angebot konnte nicht abgelehnt werden',
 	'discounts.toast.declined': 'Skonto-Angebot abgelehnt',
 	'discounts.toast.optimizeFailed': 'Optimierung fehlgeschlagen',
+	'discounts.excludedRealised':
+		'Die realisierten Summen umfassen nur {currency}: {n, plural, one {# Angebot} other {# Angebote}} in einer anderen Währung sind weder in „erfasst“ noch in „verpasst“ enthalten. Beträge in verschiedenen Währungen werden nicht addiert, daher beschreiben die beiden Zahlen oben nur einen Teil des Bildes.',
 	'discounts.unconvertibleOffers':
 		'Ausgeschlossen: {n, plural, one {# Angebot} other {# Angebote}} ohne Wechselkurs in {currency}, nicht in den Einsparungssummen enthalten — die angezeigten Zahlen unterschätzen daher das tatsächliche Potenzial. Erfassen Sie den fehlenden Kurs, bevor Sie auf Basis dieser Zahlen handeln.',
 	'experiments.chip.concluded': 'Abgeschlossen',

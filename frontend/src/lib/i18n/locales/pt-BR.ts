@@ -3384,6 +3384,8 @@ export const messages = {
 	'discounts.toast.declineFailed': 'Não foi possível recusar a oferta',
 	'discounts.toast.declined': 'Oferta de desconto recusada',
 	'discounts.toast.optimizeFailed': 'Falha na otimização',
+	'discounts.excludedRealised':
+		'Os totais realizados cobrem apenas {currency}: {n, plural, one {# oferta} other {# ofertas}} em outra moeda não entram em capturado nem em perdido. Valores em moedas diferentes não são somados, portanto os dois números acima descrevem apenas parte do quadro.',
 	'discounts.unconvertibleOffers':
 		'Não convertido: {n, plural, one {# oferta} other {# ofertas}} sem taxa de câmbio para {currency}, fora dos totais de economia — então os números exibidos subestimam o ganho possível. Registre a taxa que falta antes de agir com base neles.',
 	'experiments.chip.concluded': 'Concluído',
