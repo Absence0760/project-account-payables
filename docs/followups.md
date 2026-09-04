@@ -82,8 +82,8 @@ stored row's currency through `resolve_reporting_currency`, and its two
 `invoice_defaults.currency` reads are the FormatterContext for the rendered
 file, not a rollup — no cross-currency sum exists there to fix.
 
-This file now carries **57** open checkbox entries (plus the 8 narrative
-round-15 findings) — **65** items. The money-path pass took the checkbox count
+This file now carries **56** open checkbox entries (plus the 8 narrative
+round-15 findings) — **64** items. The money-path pass took the checkbox count
 64 → 56; the coverage pass that followed it added one back (the `float` money
 filter bounds, below), which is the file working as intended: a sweep that
 closes nothing and opens nothing has usually not looked hard enough.
@@ -836,21 +836,27 @@ none is a hypothesis.
       `rec.unconvertible` on the card rather than only in the page banner.
       **Trigger:** the next slice touching `/cfo` or `/discounts`.
 
-- [ ] **Two backend rollups are bare cross-currency `SUM`s presented as one
-      figure.** `GET /api/payments/summary`'s `total_rebates`
-      (`app/api/payments.py:562-564`) is `func.sum(CardRebate.amount)` with no
-      currency grouping, yet ships under the response's `"currency":
-      reporting_currency` which documents itself as "what the money figures above
-      are denominated in". The billing usage rollup does the same for
-      `card_rebate_total` (`services/billing/usage_rollup.py:93-100`), and
-      `/billing` renders it with no currency at all — `DEFAULT_CURRENCY`, so a
-      GBP tenant reads `$` on that one card and `£` on every other. Distinct from
-      the frontend labelling above: the *number* is wrong, not just its label.
-      **Durable fix:** group by currency and convert through
-      `currency_conversion` like `total_paid`/`total_pending` already do, or
-      return per-currency buckets and render them side by side the way
-      `formatCurrencyTotals` does elsewhere.
-      **Trigger:** the next slice touching the payments summary or billing usage.
+- [x] **DONE.** Two backend rollups were bare cross-currency `SUM`s presented as
+      one figure. `GET /api/payments/summary`'s `total_rebates` was
+      `func.sum(CardRebate.amount)` with no currency grouping, shipped under the
+      response's own `"currency": reporting_currency`; the billing usage rollup
+      did the same for `card_rebate_total`, and `/billing` rendered it with no
+      currency at all. `CardRebate` carries no currency column, so both now join
+      `VirtualCard` — the only place a rebate's denomination lives, and the same
+      indirection `GET /api/cards/dashboard` needed. The payments summary
+      filters to the reporting currency and discloses `excluded_rebate_count`
+      (counted apart from `unconverted_payment_count`: one is a figure that
+      could not be ESTABLISHED, the other a currency that is simply not this
+      one). The billing meter groups per currency and puts the code in the
+      meter NAME (`card_rebate_total.USD`) — it is a meter a later slice
+      prices, and no rate turns a mixed scalar into a charge; an org with no
+      rebates emits no rebate key rather than a zero in an unstated currency.
+      Two calls recorded while doing it: the payments figure is entity-scoped
+      (it sits beside entity-scoped outflows) while the billing meter stays
+      org-wide (the platform bills the ORG) — same table, different question;
+      and the payments query's bare `except Exception` returning `"0"` is gone,
+      since it was scaffolding for a fixed wrong-DB bug and only turned any
+      other failure into a confidently wrong money figure.
 
 - [ ] **`/vendors/screening`'s "Payments blocked" KPI structurally cannot see a
       manually blocked vendor.** `blockedCount` (`:90`) filters `items`, which is
