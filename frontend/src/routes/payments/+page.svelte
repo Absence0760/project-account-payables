@@ -778,6 +778,8 @@
 			if (activeTab === 'history') {
 				syncUrl();
 				paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
+				// The chips share the list's population, so they re-tally with it.
+				fetchPaymentCounts();
 			}
 		}, 300);
 	}
@@ -1070,15 +1072,28 @@
 	// loaded one. Falls back to the loaded-page tally if the fetch fails.
 	let paymentCounts = $state<Record<string, number>>({});
 	let paymentCountsTotal = $state(0);
+	// Own sequencer, same reason as the invoice store's: this fires alongside
+	// every list fetch, so without one a slow response for an older filter can
+	// land after a faster newer one and leave the chips lying.
+	const paymentCountsSequence = createRequestSequencer();
 
 	async function fetchPaymentCounts() {
+		const token = paymentCountsSequence.start();
 		try {
+			// Carries the list's own params so the chips describe the same rows
+			// the table shows — a search for one vendor used to leave them
+			// reading the tenant's whole total over a one-row table.
+			// `status`/`sort`/`order` ride along and are ignored by the endpoint,
+			// which must NOT filter by status: that's the dimension it tallies.
+			const query = '?' + new URLSearchParams(buildParams()).toString();
 			const data = await api.get<{ total: number; by_status: Record<string, number> }>(
-				'/api/payments/counts'
+				`/api/payments/counts${query}`
 			);
+			if (!paymentCountsSequence.canCommit(token)) return;
 			paymentCounts = data.by_status ?? {};
 			paymentCountsTotal = data.total ?? 0;
 		} catch {
+			if (!paymentCountsSequence.isCurrentRequest(token)) return;
 			paymentCounts = {};
 			paymentCountsTotal = 0;
 		}
