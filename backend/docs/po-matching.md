@@ -67,6 +67,20 @@ return the *other* entity's newer `PO-1001`, and the invoice read `matched` — 
 amount control having silently passed against a different subsidiary's order.
 `no_po` is the correct answer there, and it is one a clerk can act on.
 
+**`po_number` being non-unique across subsidiaries binds every other reader of
+that column too.** `GET /api/purchase-orders/{id}` builds its `linked_invoices`
+panel by joining on the number, and did so unscoped — so a US-scoped viewer saw
+the UK subsidiary's invoices (number, vendor, amount) on the PO detail. It now
+scopes that join to the **PO's own** `entity_id` ∪ unstamped rows (NULL on
+`invoices` means *never stamped*, not "shared", and dropping those would hide a
+real invoice from the one page that links it to its PO). The scope is the PO's
+entity rather than the caller's `X-Entity-ID`, because the panel describes one
+PO whichever view the reader has selected. The sync-erp upsert matched the same
+way and is likewise scoped to the entity being synced into — unscoped, a sync
+run under subsidiary B found A's PO by number and overwrote its `total`, which
+silently re-prices the very amount control described above. Covered by
+`backend/tests/test_purchase_order_entity_scope.py`.
+
 A PO may have **several** goods receipts (a PO filled by multiple shipments);
 the 3-way leg sums `quantity_received` across **every** GR for the PO, so a PO
 fully received over two deliveries reads as `matched`, not `partial`. The most
@@ -74,6 +88,46 @@ recent GR is the representative row (`gr_id`) for the 4-way inspection lookup.
 The PO lookup and the GR lookup both pick a single deterministic row when a
 `po_number` / `gr_number` is non-unique — neither column is unique, so they
 cannot crash on a duplicate.
+
+### Cancelled receipts do not count as delivered goods
+
+The GR query excludes any receipt whose `status` is in
+`po_matching.CANCELLED_GR_STATUSES` (`cancelled` / `canceled` / `void` /
+`voided` / `reversed`, compared case-folded). `GoodsReceipt.status` is a
+free-form `String(30)` written by the receiving side, so this is an **exclusion
+list, not an allowlist**: an unrecognised-but-live status such as
+`partially_received` must keep counting, whereas silently counting a cancelled
+one is the failure this closes.
+
+The sum used to ignore `status` entirely, so a delivery the business had
+explicitly cancelled still filled the receipt leg — the invoice read a full
+`3-way` `matched` for goods that were never received, which is precisely what
+the 3-way control exists to prevent. The subtler shape is a *partial* delivery
+whose shortfall is "covered" by a cancelled GR: the downgrade to `partial`
+never fired, so no `po_mismatch` info exception was raised on the part that
+never arrived.
+
+A PO whose only receipt is cancelled falls back to a **2-way** match — the
+honest answer, since there is no receipt evidence at all. The representative
+`gr_id` and the 4-way inspection lookup follow the same filter, so a cancelled
+receipt's inspection can't stand in for a live one either.
+
+### Over-receipt
+
+Only `received < ordered` was ever reported. More units booked in than were
+ordered passed the leg in silence — and an over-delivery is how an invoice for
+quantities nobody authorised acquires its supporting receipt. `received >
+ordered` now sets the additive `over_receipt` flag, mirrors it into `details`,
+and appends an issue (`Over-receipt: 14 received against 10 ordered (+4)`) that
+the invoice modal renders verbatim.
+
+`status` is deliberately **unchanged** by an over-receipt and keeps its four
+values. `mismatch` is owned by the amount control, which is the gate that
+decides whether the invoice is payable; an over-receipt with an in-tolerance
+amount is a receiving discrepancy, not a billing one, and folding it into
+`mismatch` would emit a message about an amount variance that isn't there.
+
+Covered by `backend/tests/test_po_matching_cancelled_receipts.py`.
 
 The 4-way leg runs **after** the 3-way GR block. It looks up the most recent
 `QualityInspection` in two steps: the matched receipt's own (`gr_id == gr.id`),
@@ -126,9 +180,14 @@ MatchResult:
     inspection_result: "pass" | "fail" | "partial" | None
     inspection_accepted_quantity: float | None  # partial acceptance qty
     inspection_required: bool              # require_inspection on + inspection missing
+    over_receipt: bool          # 3-way: received quantity EXCEEDS ordered
     issues: list[str]           # human-readable issues
     details: dict               # full match data for audit (has_inspection, inspection_result)
 ```
+
+`over_receipt` is **additive** on the persisted `invoice.po_match` JSONB shape —
+every pre-existing key keeps its meaning, and a row written before it landed
+simply lacks the key.
 
 `match_invoice_to_po(db, invoice, tolerance_pct=5.0, require_inspection=False)`
 takes both knobs; `invoice_warnings._refresh_po_match` resolves them per-invoice

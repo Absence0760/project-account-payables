@@ -77,6 +77,26 @@ doubles the spend. Converting a non-approved (and not-yet-converted) requisition
 is a **422**. The derived PO number is `PO-<requisition_number>` for
 traceability. The conversion is audited (`requisition.converted_to_po`).
 
+### A converted requisition cannot be deleted
+
+`DELETE /requisitions/{id}` refuses with a **409** in two cases — the shape
+`DELETE /api/recurring/{id}` uses once a template has generated invoices:
+
+- **`converted_po_id` is set** (or the status is `converted`). Deleting the
+  requisition does **not** delete the `PurchaseOrder`: it stranded committed
+  spend with nothing recording where it came from, and left the requisition's
+  own audit trail describing a row that no longer existed.
+- **an `IntakeRequest` points at it** via `converted_requisition_id`. That FK
+  RESTRICTs, so the delete came back as an `IntegrityError` — a `500` for a
+  state the API should simply name. It is also the only thing standing between
+  the intake convert route's "dangling link → rebuild" branch and a
+  double-spend: delete the requisition, re-convert the intake, and one ask has
+  bought twice. Guarding it here closes that at the application layer instead
+  of relying on the FK's `ON DELETE` mode never changing.
+
+An ordinary `draft` (or rejected / cancelled) requisition still deletes
+normally — the guard is narrow by design.
+
 ## Endpoints
 
 All under `/api/requisitions`. Money is `Decimal` in / `float` out. Entity scope
@@ -89,7 +109,7 @@ via `X-Entity-ID`; tenant scope via `X-Tenant-Slug` (the per-tenant DB session).
 | `POST /requisitions` | Create with line items (computes `total`) | admin, ap_manager, ap_clerk |
 | `GET /requisitions/{id}` | Detail + line items | admin, ap_manager, ap_clerk, cfo |
 | `PATCH /requisitions/{id}` | Edit (**draft only**; `line_items` fully replaces lines, recomputes total) | admin, ap_manager, ap_clerk |
-| `DELETE /requisitions/{id}` | Delete | admin, ap_manager, ap_clerk |
+| `DELETE /requisitions/{id}` | Delete — **409 once converted, or once an intake points at it** (see below) | admin, ap_manager, ap_clerk |
 | `POST /requisitions/{id}/submit` | `draft → pending_approval` | admin, ap_manager, ap_clerk |
 | `POST /requisitions/{id}/approve` | `pending_approval → approved` (SoD enforced) | admin, ap_manager, cfo |
 | `POST /requisitions/{id}/reject` | `pending_approval → rejected` (reason) | admin, ap_manager, cfo |
@@ -148,3 +168,7 @@ delete / submit / cancel): `admin` / `ap_manager` / `ap_clerk`. Approve / reject
 `Numeric` total recompute, the full approval state machine incl. invalid-state
 422s, SoD self-approval 403, convert-to-PO + idempotency (second call returns the
 same PO, no second PO row), RBAC, and tenant isolation.
+
+`backend/tests/test_procurement_delete_guards.py`: the two `409` delete guards
+(converted-to-PO, and converted-from-an-intake — which used to be a `500`),
+plus proof an unconverted draft still deletes.
