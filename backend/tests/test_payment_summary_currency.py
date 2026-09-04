@@ -23,6 +23,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
@@ -212,3 +213,176 @@ async def test_queue_totals_are_reporting_currency_and_flag_the_rest(realdb):
     # Each row keeps its own currency for display.
     currencies = {i["currency"] for i in result["items"]}
     assert {"USD", "EUR"} <= currencies
+
+
+# ---------------------------------------------------------------------------
+# `total_rebates` is denominated, and scoped, like every other figure here
+# ---------------------------------------------------------------------------
+
+
+async def _seed_card_rebate(
+    mk,
+    org_id,
+    *,
+    card_currency: str,
+    rebate_amount: str,
+    entity_id=None,
+) -> uuid.UUID:
+    """One `VirtualCard` + its `CardRebate`, written directly.
+
+    `CardRebate` carries no currency column, so the card's currency is the
+    only place a rebate's denomination lives — which is why the rollup has to
+    join, and why this seeds the pair rather than a bare rebate row.
+    """
+    from app.models.virtual_card import CardRebate, VirtualCard
+
+    inv_id = await _seed_invoice_with_payment(
+        mk,
+        org_id,
+        invoice_currency=card_currency,
+        amount=rebate_amount,
+        status="completed",
+    )
+    async with mk() as s:
+        card = VirtualCard(
+            id=uuid.uuid4(),
+            invoice_id=inv_id,
+            organization_id=org_id,
+            card_provider="mock",
+            provider_card_id=f"card_{uuid.uuid4().hex[:10]}",
+            amount_limit=Decimal(rebate_amount),
+            status="active",
+            currency=card_currency,
+        )
+        if entity_id is not None:
+            card.entity_id = entity_id
+        s.add(card)
+        await s.flush()
+        s.add(
+            CardRebate(
+                virtual_card_id=card.id,
+                organization_id=org_id,
+                amount=Decimal(rebate_amount),
+                rate=Decimal("0.0100"),
+                status="confirmed",
+                period=datetime.now(UTC).strftime("%Y-%m"),
+            )
+        )
+        await s.commit()
+        return card.id
+
+
+async def _summary(realdb, org_id, *, reporting_currency="USD", entity_id=None):
+    from app.api.payments import payment_summary
+
+    async with realdb.sessionmaker(TENANT)() as s:
+        return await payment_summary(
+            db=s,
+            org=_org(org_id, reporting_currency=reporting_currency),
+            user=_user(uuid.uuid4()),
+            entity_id=entity_id,
+        )
+
+
+async def test_total_rebates_reports_one_currency_and_discloses_the_rest(realdb):
+    """It was a bare cross-currency `SUM(CardRebate.amount)` shipped under the
+    `currency` this same response declares — a quantity in no currency at all.
+
+    A rebate's currency is only knowable through its card, so this is the same
+    `VirtualCard` join `GET /api/cards/dashboard` needs for the same reason.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    await _seed_card_rebate(mk, org_id, card_currency="USD", rebate_amount="10.00")
+    await _seed_card_rebate(mk, org_id, card_currency="EUR", rebate_amount="7.00")
+    await _seed_card_rebate(mk, org_id, card_currency="GBP", rebate_amount="5.00")
+
+    res = await _summary(realdb, org_id)
+
+    # 10.00 under USD — never 22.00, which is the pre-fix figure.
+    assert Decimal(res["total_rebates"]) == Decimal("10.00")
+    assert res["currency"] == "USD"
+    assert res["excluded_rebate_count"] == 2
+
+
+async def test_the_rebate_exclusion_count_is_separate_from_the_payment_one(realdb):
+    """Two different claims, tracked independently.
+
+    `unconverted_payment_count` is a payment whose reporting-currency figure
+    could not be ESTABLISHED; `excluded_rebate_count` is a rebate whose
+    currency is known and simply is not this one. Folding them into one number
+    would describe neither — so an unconvertible PAYMENT must not inflate the
+    rebate count, which is the direction that would mislead (the rebate figure
+    would look partial when it is complete).
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    # An unconvertible payment with no card behind it at all.
+    await _seed_invoice_with_payment(
+        mk, org_id, invoice_currency="EUR", amount="60.00", status="completed"
+    )
+    # A rebate that IS in the reporting currency.
+    await _seed_card_rebate(mk, org_id, card_currency="USD", rebate_amount="4.00")
+
+    res = await _summary(realdb, org_id)
+    assert res["unconverted_payment_count"] == 1, "the EUR payment is unconvertible"
+    assert res["excluded_rebate_count"] == 0, (
+        "the only rebate is in the reporting currency — a payment exclusion "
+        "must not make the rebate figure look partial"
+    )
+    assert Decimal(res["total_rebates"]) == Decimal("4.00")
+
+
+async def test_a_lowercase_card_currency_still_counts(realdb):
+    """`usd` is USD.
+
+    `resolve_reporting_currency` always returns an uppercase code, so an
+    un-normalised comparison would exclude every row rather than fail loudly —
+    which is why `card_currency_sql` uppercases.
+
+    It does NOT also assert the `COALESCE` half. `virtual_cards.currency` is
+    `nullable=False` with a Python-side `default="USD"`, so a card seeded with
+    `currency=None` persists `'USD'` and the coalesce branch is never reached —
+    a test of it here would pass with the coalesce deleted. The coalesce stays
+    for parity with `api/cards.py`'s identical expression, but it is not
+    load-bearing and is not claimed to be.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    await _seed_card_rebate(mk, org_id, card_currency="usd", rebate_amount="3.00")
+    await _seed_card_rebate(mk, org_id, card_currency="USD", rebate_amount="2.00")
+
+    res = await _summary(realdb, org_id)
+    assert Decimal(res["total_rebates"]) == Decimal("5.00")
+    assert res["excluded_rebate_count"] == 0
+
+
+async def test_total_rebates_is_scoped_to_the_selected_entity(realdb):
+    """The rest of this response is entity-scoped, so a summary mixing an
+    entity-scoped outflow with an org-wide rebate can't be reconciled against
+    either. The comment this replaced claimed to match an org-wide dashboard
+    KPI; that dashboard is entity-scoped now, so the claim had inverted."""
+    from app.models.entity import Entity
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    async with mk() as s:
+        other = Entity(organization_id=org_id, name="Sub B", slug=f"sub-{uuid.uuid4().hex[:6]}")
+        s.add(other)
+        await s.commit()
+        other_id = other.id
+        default_id = (await s.execute(select(Entity.id).where(Entity.is_default))).scalar_one()
+
+    await _seed_card_rebate(
+        mk, org_id, card_currency="USD", rebate_amount="9.00", entity_id=other_id
+    )
+    await _seed_card_rebate(
+        mk, org_id, card_currency="USD", rebate_amount="1.00", entity_id=default_id
+    )
+
+    scoped = await _summary(realdb, org_id, entity_id=default_id)
+    assert Decimal(scoped["total_rebates"]) == Decimal("1.00")
+
+    # No entity selected is the consolidated read — every entity included.
+    consolidated = await _summary(realdb, org_id, entity_id=None)
+    assert Decimal(consolidated["total_rebates"]) == Decimal("10.00")

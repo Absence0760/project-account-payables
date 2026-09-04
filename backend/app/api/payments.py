@@ -50,6 +50,7 @@ from app.schemas.payment import (
 )
 from app.services.audit_access import log_access
 from app.services.currency_conversion import (
+    card_currency_sql,
     payment_reporting_amount_sql,
     reporting_amount_at_locked_rate,
     resolve_reporting_currency,
@@ -820,16 +821,37 @@ async def payment_summary(
     payment_count = (await db.execute(count_q)).scalar() or 0
 
     # CardRebate is a TENANT-scoped table (it lives in the per-tenant DB, not the
-    # control plane — the "control plane" comment here was wrong and made this
-    # query run against control_db, where the table doesn't exist, so it silently
-    # caught the error and always reported $0 rebates). Query the tenant db,
-    # org-wide within the tenant — matching the dashboard KPI.
-    try:
-        rebate_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
-        total_rebates = str((await db.execute(rebate_q)).scalar() or Decimal("0"))
-    except Exception:
-        await db.rollback()
-        total_rebates = "0"
+    # control plane — an earlier "control plane" comment here was wrong and made
+    # this query run against control_db, where the table doesn't exist).
+    #
+    # Denominated like every other figure in this response. `CardRebate` carries
+    # no currency column of its own, so a rebate's currency is only knowable
+    # through its card — the same indirection `GET /api/cards/dashboard` uses,
+    # and the reason this is a join rather than a bare SUM. It was a
+    # cross-currency `func.sum(CardRebate.amount)` shipped under the
+    # `"currency": reporting_currency` this response declares two keys below,
+    # which is a quantity in no currency at all.
+    #
+    # Entity-scoped for the same reason the paid/pending/queue figures are: a
+    # summary that mixes an entity-scoped outflow with an org-wide rebate can't
+    # be reconciled against either. (The comment this replaces claimed to match
+    # "the dashboard KPI" org-wide; that dashboard is itself entity-scoped now,
+    # so the claim had stopped being true in the direction it was arguing.)
+    _rebate_ccy = card_currency_sql(reporting_currency)
+    rebate_q = apply_entity_scope(
+        select(
+            func.coalesce(
+                func.sum(case((_rebate_ccy == reporting_currency, CardRebate.amount))), 0
+            ),
+            func.count(case((_rebate_ccy != reporting_currency, CardRebate.id))),
+        )
+        .select_from(CardRebate)
+        .join(VirtualCard, VirtualCard.id == CardRebate.virtual_card_id),
+        VirtualCard,
+        entity_id,
+    )
+    rebate_amount, rebates_excluded = (await db.execute(rebate_q)).one()
+    total_rebates = str(Decimal(str(rebate_amount or 0)))
 
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
     # Match the workflow state machine: only statuses that can directly
@@ -864,6 +886,12 @@ async def payment_summary(
         # as the 1099 report surfaces `unconverted_payment_count`.
         "currency": reporting_currency,
         "unconverted_payment_count": paid_excluded + pending_excluded,
+        # Rebates left out of `total_rebates` for being denominated in another
+        # currency. Counted separately from `unconverted_payment_count`: that
+        # one is a payment whose reporting-currency figure could not be
+        # ESTABLISHED, this one is a rebate whose currency is known and simply
+        # is not this one. Folding them together would describe neither.
+        "excluded_rebate_count": int(rebates_excluded or 0),
     }
 
 

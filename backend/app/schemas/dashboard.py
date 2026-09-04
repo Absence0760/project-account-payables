@@ -107,6 +107,13 @@ class DashboardResponse(BaseModel):
     total_paid_unconverted_count: int
     total_pending_unconverted_count: int
     total_rebates: MoneyAmount
+    # Rebates left out of `total_rebates` for being denominated in another
+    # currency, so the KPI can say it describes part of the set. The handler
+    # returned this key before the field existed here, and `response_model`
+    # silently DROPPED it (Pydantic's default `extra="ignore"`) — the figure
+    # went from wrong-but-complete to right-but-silently-partial over HTTP,
+    # which is the worse of the two. See decisions §62.
+    excluded_rebate_count: int = 0
     open_exceptions: int
     touchless_rate: float
     stale_approvals: int

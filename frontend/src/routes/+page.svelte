@@ -6,7 +6,12 @@
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import {
+		formatMoney,
+		isPositiveAmount,
+		parseMoneyForLayout,
+		type MoneyAmount
+	} from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -28,37 +33,41 @@
 		// renders from this instead.
 		reporting: {
 			reporting_currency: string;
-			total_amount: number;
+			total_amount: MoneyAmount;
 			total_count: number;
 			unconverted_count: number;
 		};
-		total_paid: number;
-		total_pending: number;
+		total_paid: MoneyAmount;
+		total_pending: MoneyAmount;
 		// Reporting-currency counterparts of `total_paid` / `total_pending`.
-		total_paid_reporting: number;
-		total_pending_reporting: number;
+		total_paid_reporting: MoneyAmount;
+		total_pending_reporting: MoneyAmount;
 		total_paid_unconverted_count: number;
 		total_pending_unconverted_count: number;
-		total_rebates: number;
+		total_rebates: MoneyAmount;
+		// Rebates left out of `total_rebates` for being denominated in another
+		// currency — a DIFFERENT fact from the unconverted counts above, which
+		// are rows whose reporting figure could not be established at all.
+		excluded_rebate_count?: number;
 		touchless_rate: number;
 		stale_approvals: number;
 		open_exceptions: number;
 		pipeline: Record<string, number>;
-		vendor_spend: Array<{ vendor: string; amount: number }>;
+		vendor_spend: Array<{ vendor: string; amount: MoneyAmount }>;
 		aging: AgingBuckets;
 		// Reporting-currency counterpart of `aging`.
 		aging_reporting: AgingBuckets;
 		monthly_trend: Array<{
 			month: string;
 			count: number;
-			amount: number;
-			reporting_amount: number;
+			amount: MoneyAmount;
+			reporting_amount: MoneyAmount;
 		}>;
 		upcoming_payments: Array<{
 			id: string;
 			invoice_number: string;
 			vendor_name: string;
-			amount: number;
+			amount: MoneyAmount;
 			due_date: string | null;
 			is_overdue: boolean;
 		}>;
@@ -89,12 +98,12 @@
 
 	// Dashboard figures are tenant-wide roll-ups with no per-row currency,
 	// so they render in the org's configured default currency.
-	function fmt(n: number): string {
-		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
+	function fmt(amount: MoneyAmount): string {
+		return formatMoney(amount, { currency: orgCurrency.currency, whole: true });
 	}
 
-	function fmtFull(n: number): string {
-		return formatMoney(n, { currency: orgCurrency.currency });
+	function fmtFull(amount: MoneyAmount): string {
+		return formatMoney(amount, { currency: orgCurrency.currency });
 	}
 
 	// Due-date cell: locale-aware short date, no year (the shared helper drives
@@ -141,13 +150,20 @@
 
 	let agingTotal = $derived(agingBuckets.reduce((sum, b) => sum + b.value, 0));
 
+	// Chart SCALES, not figures. `parseMoneyForLayout` is the one sanctioned
+	// money -> number hop and is named so the call site refuses the wrong use:
+	// the result drives a bar width and must never be rendered, summed, or
+	// compared as a business fact. `Math.max` over raw money is exactly the
+	// float arithmetic on currency `frontend/CLAUDE.md` forbids.
 	let maxVendorSpend = $derived(
-		data && data.vendor_spend.length > 0 ? Math.max(...data.vendor_spend.map(v => v.amount)) : 1
+		data && data.vendor_spend.length > 0
+			? Math.max(...data.vendor_spend.map((v) => parseMoneyForLayout(v.amount)))
+			: 1
 	);
 
 	let maxTrendAmount = $derived(
 		data && data.monthly_trend.length > 0
-			? Math.max(...data.monthly_trend.map((t) => t.reporting_amount))
+			? Math.max(...data.monthly_trend.map((t) => parseMoneyForLayout(t.reporting_amount)))
 			: 1
 	);
 
@@ -201,8 +217,18 @@
 			{#if data.stale_approvals > 0}
 				<KpiCard value={data.stale_approvals} label={m('dashboard.kpi.staleApprovals')} highlight="red" />
 			{/if}
-			{#if data.total_rebates > 0}
-				<KpiCard value={fmt(data.total_rebates)} label={m('dashboard.kpi.rebatesEarned')} highlight="green" />
+			{#if isPositiveAmount(data.total_rebates)}
+				<KpiCard
+					value={fmt(data.total_rebates)}
+					label={m('dashboard.kpi.rebatesEarned')}
+					highlight="green"
+					sub={(data.excluded_rebate_count ?? 0) > 0
+						? m('dashboard.kpi.rebatesExcluded', {
+								n: data.excluded_rebate_count ?? 0,
+								currency: data.reporting.reporting_currency
+							})
+						: null}
+				/>
 			{/if}
 		</div>
 
@@ -240,7 +266,10 @@
 							<div class="vendor-row">
 								<span class="vendor-name" title={v.vendor}>{v.vendor}</span>
 								<div class="vendor-bar-bg">
-									<div class="vendor-bar" style="width:{(v.amount / maxVendorSpend * 100)}%"></div>
+									<div
+										class="vendor-bar"
+										style="width:{(parseMoneyForLayout(v.amount) / maxVendorSpend) * 100}%"
+									></div>
 								</div>
 								<span class="vendor-amount">{fmt(v.amount)}</span>
 							</div>
@@ -316,7 +345,9 @@
 								<div class="trend-bar-wrap">
 									<div
 										class="trend-bar"
-										style="height:{maxTrendAmount > 0 ? (month.reporting_amount / maxTrendAmount * 100) : 0}%"
+										style="height:{maxTrendAmount > 0
+											? (parseMoneyForLayout(month.reporting_amount) / maxTrendAmount) * 100
+											: 0}%"
 										title="{fmt(month.reporting_amount)} ({month.count} invoices)"
 									></div>
 								</div>

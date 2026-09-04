@@ -107,6 +107,8 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Reembolsos obtenidos',
 	'dashboard.reporting.unconverted':
 		'Algunos totales anteriores excluyen filas sin tipo de cambio fijado a {currency}; considérelos un mínimo, no una cifra exacta.',
+	'dashboard.kpi.rebatesExcluded':
+		'{n, plural, one {# reembolso} other {# reembolsos}} en otra moneda excluidos: esta cifra es solo {currency}.',
 	'dashboard.chart.pipeline': 'Flujo de facturas',
 	'dashboard.chart.topVendors': 'Principales proveedores por gasto',
 	'dashboard.chart.aging': 'Antigüedad de facturas',
@@ -183,6 +185,8 @@ export const messages = {
 	'payments.summary.totalPaid': 'Total pagado',
 	'payments.summary.unconvertedPayments':
 		'Excluidos: {n, plural, one {# pago} other {# pagos}} sin tipo de cambio a {currency}, fuera de los totales anteriores, por lo que las cifras mostradas subestiman lo que realmente se movió. Registre el tipo de cambio que falta para ver el panorama completo.',
+	'payments.summary.excludedRebates':
+		'Excluidos: {n, plural, one {# reembolso de tarjeta} other {# reembolsos de tarjeta}} denominados en otra moneda, fuera de la cifra de reembolsos anterior, que solo corresponde a {currency}.',
 	'payments.queue.unconvertedRows':
 		'{n, plural, one {# factura no tiene} other {# facturas no tienen}} tipo de cambio a la moneda de reporte, por lo que los totales de la cola las omiten. Las filas siguen listadas y son pagaderas, cada una en su propia moneda.',
 	'payments.summary.pending': 'Pendiente',

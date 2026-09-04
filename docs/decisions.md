@@ -2389,3 +2389,77 @@ with the vendor gate rather than introducing a new posture.
 Confirmed one of the eight "unverified leads" recorded in `docs/followups.md`
 from the round-14 money-path hunt, which the tracker (#321) carried as a
 hypothesis rather than a finding.
+
+## 62. A rebate figure names its currency; the entity scope depends on who is asking
+
+**Decided:** 2026-09-04 · `backend/app/services/currency_conversion.py`, `app/api/dashboard.py`, `app/api/payments.py`, `app/api/cards.py`, `app/api/analytics.py`, `app/services/billing/usage_rollup.py`
+
+`card_rebates` carries **no currency column**. A rebate's denomination is only
+knowable through the `virtual_cards` row it accrued on, and six rollups needed
+it — five of them shipped as bare cross-currency `SUM(CardRebate.amount)`:
+
+| Rollup | What the mixed figure was |
+|---|---|
+| `GET /api/dashboard` | the "Rebates Earned" KPI on the main page |
+| `GET /api/payments/summary` | `total_rebates`, under the `"currency"` the same response declares two keys below |
+| `GET /api/cards/dashboard` | the rebate cards + YTD breakdown (fixed earlier; the join it needed is what made the rest reachable) |
+| `GET /api/cards/rebates` | the list's `total`, above per-row amounts that each state their own card's currency |
+| `GET /api/analytics/cfo` | the rebate-yield **numerator**, divided by a reporting-currency denominator and then annualised |
+| `services/billing/usage_rollup` | `card_rebate_total`, a billing meter a later slice prices |
+
+`currency_conversion.card_currency_sql` is the one owner of the expression. It
+is named for the *card*, not the rebate, because card figures (`amount_limit` /
+`amount_charged`) read it directly while rebate figures reach it through the
+join — one expression, two jobs.
+
+**Filter, don't convert.** `total_paid` / `total_pending` convert through
+`payment_reporting_amount_sql`; a rebate cannot, because there is no rate on the
+row to convert with. So each single-figure rollup keeps the matching rows and
+counts the rest onto an `excluded_rebate_count` — all four of them, including
+the analytics rebate-yield leg, where it matters most: a numerator missing most
+of the rebates yields a silently understated `yield_pct` that is then
+*annualised*. That is the same "be honest about what could not be combined"
+rule §18 established for read-time FX.
+
+The disclosure has to reach the wire, not just the handler.
+`DashboardResponse` had no `excluded_rebate_count` field, so `response_model`'s
+default `extra="ignore"` dropped the key the handler returned and the dashboard
+KPI was right-but-silently-partial for every real caller — the state this whole
+entry argues is worse than the original wrong-but-complete figure. A test that
+calls the handler and reads its dict cannot see that; the guard is an
+HTTP-level assertion. Converting on a read would make a historical figure move under the reader.
+
+**Two things that look inconsistent and are not.**
+
+*The entity scope differs by caller.* `GET /api/payments/summary` and the
+dashboard KPI are entity-scoped; the billing meter is deliberately org-wide.
+Same table, different question: the first two sit beside entity-scoped outflows
+an operator reconciles them against, while the platform bills the customer
+**org**, so a subsidiary breakdown there would be the wrong unit. A future
+reader "fixing" the billing meter to match its siblings would be introducing a
+bug.
+
+*The billing meter groups where the endpoints filter.* An endpoint reports one
+headline figure, so it picks a currency and discloses the remainder. A meter
+cannot: there is no rate that turns a mixed scalar into a charge, and dropping
+the non-reporting currencies would silently drop billable activity. So the
+currency goes in the meter **name** — `card_rebate_total.USD` — one key per
+currency, always, and **no key at all** for an org with no rebates. Zero rebates
+in an unstated currency is not a fact, and one shape beats two: a consumer reads
+every key prefixed `card_rebate_total.` without having to know whether it is
+looking at a single- or multi-currency org. `report_usage` iterates the meter
+map generically, so no adapter changed.
+
+**Two error swallows went with it.** The payments-summary and analytics rebate
+queries each wrapped themselves in a bare `except Exception` returning `0`.
+That was scaffolding for a since-fixed bug where the query ran against the
+control plane, where `card_rebates` does not exist (§57 records that cause).
+The table is absent from `CONTROL_TABLES`, so the case is unreachable — leaving
+a swallow that turned any *other* failure into a confidently wrong money figure
+under a response declaring a currency. Zero rebates and "we could not read the
+rebates" are different claims, and no sibling figure on either surface swallows.
+
+`tests/test_rebate_currency_denomination.py` guards the class rather than the
+six instances: an AST scan fails any statement summing `CardRebate.amount` that
+neither filters nor groups by currency, and a source scan fails any module that
+re-derives the expression inline instead of calling the shared helper.

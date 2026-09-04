@@ -34,7 +34,10 @@ from app.schemas.virtual_card import (
     RebateResponse,
     RebateStatusBreakdown,
 )
-from app.services.currency_conversion import resolve_reporting_currency
+from app.services.currency_conversion import (
+    card_currency_sql,
+    resolve_reporting_currency,
+)
 from app.services.payment_adapters.base import minor_units_to_decimal
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -352,7 +355,7 @@ async def card_dashboard(
     # rollups: these are historical realised figures and an FX fetch on a
     # dashboard read would make them non-deterministic.
     reporting_currency = resolve_reporting_currency(org.settings)
-    _card_ccy = func.upper(func.coalesce(VirtualCard.currency, reporting_currency))
+    _card_ccy = card_currency_sql(reporting_currency)
 
     # Every aggregate below is entity-scoped, rebates included — `CardRebate` is
     # tenant-scoped (decisions §57) and reaches its entity through the
@@ -1039,6 +1042,7 @@ async def card_webhook(provider: str, request: Request):
 async def list_rebates(
     period: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -1054,16 +1058,30 @@ async def list_rebates(
     result = await db.execute(query)
     rebates = result.scalars().all()
 
+    # Denominated like the dashboard's rebate figures: `card_rebates` carries no
+    # currency column, so the join that scopes the entity also supplies the
+    # currency (`card_currency_sql` owns that expression). It was a bare
+    # cross-currency SUM presented as one `total` beside per-row amounts that
+    # each state their own card's currency — so the total could be denominated
+    # in nothing the rows below it showed.
+    reporting_currency = resolve_reporting_currency(org.settings)
+    _rebate_ccy = card_currency_sql(reporting_currency)
     total_q = apply_entity_scope(
-        select(func.coalesce(func.sum(CardRebate.amount), 0)).join(
-            VirtualCard, CardRebate.virtual_card_id == VirtualCard.id
-        ),
+        select(
+            func.coalesce(
+                func.sum(case((_rebate_ccy == reporting_currency, CardRebate.amount))), 0
+            ),
+            func.count(case((_rebate_ccy != reporting_currency, CardRebate.id))),
+        )
+        .select_from(CardRebate)
+        .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id),
         VirtualCard,
         entity_id,
     )
     if period:
         total_q = total_q.where(CardRebate.period == period)
-    total = (await db.execute(total_q)).scalar() or 0
+    total, excluded_rebate_count = (await db.execute(total_q)).one()
+    total = total or 0
 
     return RebateListResponse(
         items=[
@@ -1079,6 +1097,8 @@ async def list_rebates(
             for r in rebates
         ],
         total=total,
+        currency=reporting_currency,
+        excluded_rebate_count=int(excluded_rebate_count or 0),
     )
 
 

@@ -107,6 +107,8 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Remises obtenues',
 	'dashboard.reporting.unconverted':
 		'Certains totaux ci-dessus excluent les lignes sans taux de change verrouillé vers {currency} — à considérer comme un plancher, pas un montant exact.',
+	'dashboard.kpi.rebatesExcluded':
+		'{n, plural, one {# remise} other {# remises}} dans une autre devise exclue — ce montant ne concerne que {currency}.',
 	'dashboard.chart.pipeline': 'Pipeline des factures',
 	'dashboard.chart.topVendors': 'Principaux fournisseurs par dépense',
 	'dashboard.chart.aging': 'Ancienneté des factures',
@@ -183,6 +185,8 @@ export const messages = {
 	'payments.summary.totalPaid': 'Total payé',
 	'payments.summary.unconvertedPayments':
 		'Exclu : {n, plural, one {# paiement} other {# paiements}} sans taux de change vers {currency}, non compté dans les totaux ci-dessus — les chiffres affichés sous-estiment donc les mouvements réels. Enregistrez le taux manquant pour avoir une vue complète.',
+	'payments.summary.excludedRebates':
+		'Exclu : {n, plural, one {# remise sur carte} other {# remises sur carte}} libellée dans une autre devise, non comptée dans le montant de remises ci-dessus — celui-ci ne concerne que {currency}.',
 	'payments.queue.unconvertedRows':
 		'{n, plural, one {# facture n\'a} other {# factures n\'ont}} pas de taux de change vers la devise de reporting ; les totaux de la file les excluent donc. Les lignes restent affichées et payables, chacune dans sa propre devise.',
 	'payments.summary.pending': 'En attente',
