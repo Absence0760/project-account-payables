@@ -61,7 +61,23 @@
 	let downloading = $state(false);
 	let tinResult = $state<TinValidationResult | null>(null);
 
-	let canDownloadPdf = $derived(isPositiveAmount(row.ytd_paid));
+	// A vendor's reportable total is split across boxes by GL account, and the
+	// PDF route 400s when the requested form has no box on this row. So offer the
+	// forms this row actually has money on, rather than assuming 1099-NEC. A row
+	// with no allocations at all (a tenant with no mapping configured) keeps the
+	// prior behaviour: NEC, gated on the reportable total.
+	let availableForms = $derived.by(() => {
+		const withMoney = (row.box_allocations ?? []).filter((a) => isPositiveAmount(a.amount));
+		if (withMoney.length === 0) return isPositiveAmount(row.ytd_paid) ? ['1099-NEC'] : [];
+		return [...new Set(withMoney.map((a) => a.form_type))].sort();
+	});
+	let selectedForm = $state('1099-NEC');
+	$effect(() => {
+		if (availableForms.length > 0 && !availableForms.includes(selectedForm)) {
+			selectedForm = availableForms[0];
+		}
+	});
+	let canDownloadPdf = $derived(availableForms.length > 0);
 
 	function pickFile() {
 		fileInput?.click();
@@ -165,8 +181,8 @@
 	async function downloadPdf() {
 		downloading = true;
 		try {
-			const blob = await downloadVendor1099Pdf(row.vendor_id, year);
-			triggerDownload(blob, `1099-NEC-${year}-${row.vendor_name}.pdf`);
+			const blob = await downloadVendor1099Pdf(row.vendor_id, year, selectedForm);
+			triggerDownload(blob, `${selectedForm}-${year}-${row.vendor_name}.pdf`);
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('tax.vendorModal.toast.pdfFailed'), 'error');
 		} finally {
@@ -261,6 +277,17 @@
 
 		<div class="pdf-section">
 			<span class="section-title">{m('tax.vendorModal.section.pdf')}</span>
+			{#if availableForms.length > 1}
+				<select
+					class="pdf-form-select"
+					bind:value={selectedForm}
+					aria-label={m('tax.fileModal.formType')}
+				>
+					{#each availableForms as form (form)}
+						<option value={form}>{form}</option>
+					{/each}
+				</select>
+			{/if}
 			<button
 				type="button"
 				class="btn-outline"
@@ -384,6 +411,16 @@
 	.pdf-section {
 		padding: 12px 0;
 		border-top: 1px solid var(--border);
+	}
+
+	.pdf-form-select {
+		margin-right: 8px;
+		padding: 6px 8px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--surface);
+		color: var(--text);
+		font-size: 13px;
 	}
 
 	.w9-row {

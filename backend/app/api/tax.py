@@ -513,6 +513,11 @@ async def file_1099_batch(
             recipient_name=r.vendor_name,
             recipient_tin=r.tax_id or "",
             box_amount=amount,
+            box_amounts={
+                a.box: a.amount
+                for a in r.box_allocations
+                if a.form_type == body.form_type and a.amount > 0
+            },
             tax_year=body.year,
         )
         for r, amount in filable_forms

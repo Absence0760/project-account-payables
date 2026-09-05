@@ -27,6 +27,7 @@ counts + confirmation, never a TIN.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol
@@ -45,8 +46,15 @@ class FilingFormPayload:
     form_type: str  # "1099-NEC" | "1099-MISC"
     recipient_name: str
     recipient_tin: str  # required by the IRS on the form; never logged
-    box_amount: Decimal  # NEC box 1 / MISC box-of-record total
+    box_amount: Decimal  # the form's total — sum of `box_amounts` when present
     tax_year: int
+    # Per-box detail behind `box_amount`, keyed by box code ("MISC-1", "MISC-6").
+    # A 1099-MISC carrying both rent and medical payments is TWO boxes on ONE
+    # form; transmitting only the total files the whole figure in whichever box
+    # the partner defaults to. Empty means "no split available" (a hand-built
+    # row, or a tenant with no mapping configured) — a consumer then files
+    # `box_amount` against its own box of record, which is the prior behaviour.
+    box_amounts: Mapping[str, Decimal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

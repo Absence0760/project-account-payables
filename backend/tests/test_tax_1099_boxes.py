@@ -39,6 +39,7 @@ from app.services.tax_1099 import (
     resolve_box_mapping,
 )
 from app.services.tax_1099_forms import FORM_MISC, FORM_NEC, build_form_context, render_1099_pdf
+from app.services.tax_filing_adapters.base import FilingFormPayload
 
 YEAR = 2029
 
@@ -546,3 +547,85 @@ def test_every_catalog_box_is_allocatable(code):
             fallback=False,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Filing payload — the per-box split the transmission carries
+# ---------------------------------------------------------------------------
+
+
+def _row(*, ytd_paid: str, allocations) -> VendorReportRow:
+    return VendorReportRow(
+        vendor_id=uuid.uuid4(),
+        vendor_name="Split Co",
+        tax_id="12-3456789",
+        tax_classification=None,
+        is_1099_eligible=True,
+        w9_received_date=None,
+        w9_on_file=True,
+        ytd_paid=Decimal(ytd_paid),
+        over_threshold=True,
+        payment_count=len(allocations) or 1,
+        box_allocations=tuple(
+            BoxAllocation(
+                box=code,
+                form_type=form_type,
+                box_number=BOX_CATALOG[code].number,
+                label=BOX_CATALOG[code].label,
+                amount=Decimal(amount),
+                payment_count=1,
+            )
+            for code, form_type, amount in allocations
+        ),
+    )
+
+
+def _payload_for(row: VendorReportRow, form_type: str) -> FilingFormPayload:
+    """Build the payload exactly as `api/tax.py::file_1099_batch` does."""
+    return FilingFormPayload(
+        vendor_id=str(row.vendor_id),
+        form_type=form_type,
+        recipient_name=row.vendor_name,
+        recipient_tin=row.tax_id or "",
+        box_amount=box_total_for_form(row, form_type),
+        box_amounts={
+            a.box: a.amount
+            for a in row.box_allocations
+            if a.form_type == form_type and a.amount > 0
+        },
+        tax_year=YEAR,
+    )
+
+
+def test_filing_payload_carries_the_per_box_split_for_its_own_form():
+    """A MISC form with rent AND medical payments is two boxes on one form.
+
+    `box_amount` alone cannot express that, so the partner would file the whole
+    figure in whichever box it defaults to. `box_amounts` carries the split, and
+    it must sum to `box_amount` — the same reconciliation guarantee the
+    allocation itself makes."""
+    row = _row(
+        ytd_paid="5000.00",
+        allocations=[
+            ("MISC-1", FORM_MISC, "3000.00"),
+            ("MISC-6", FORM_MISC, "1200.00"),
+            ("NEC-1", FORM_NEC, "800.00"),
+        ],
+    )
+    misc = _payload_for(row, FORM_MISC)
+    assert misc.box_amounts == {"MISC-1": Decimal("3000.00"), "MISC-6": Decimal("1200.00")}
+    assert sum(misc.box_amounts.values()) == misc.box_amount == Decimal("4200.00")
+    # The NEC form sees only its own box — never the MISC money.
+    nec = _payload_for(row, FORM_NEC)
+    assert nec.box_amounts == {"NEC-1": Decimal("800.00")}
+    assert sum(nec.box_amounts.values()) == nec.box_amount == Decimal("800.00")
+
+
+def test_filing_payload_split_is_empty_when_no_allocation_exists():
+    """An unmapped tenant / hand-built row has no split to send. The mapping is
+    empty rather than invented, and a consumer falls back to `box_amount` —
+    exactly the prior behaviour."""
+    bare = _row(ytd_paid="500.00", allocations=[])
+    payload = _payload_for(bare, FORM_NEC)
+    assert payload.box_amounts == {}
+    assert payload.box_amount == Decimal("500.00")
