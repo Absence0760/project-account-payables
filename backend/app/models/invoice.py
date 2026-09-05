@@ -112,7 +112,10 @@ class Invoice(Base, EntityMixin, TimestampMixin):
     gl_account: Mapped[str | None] = mapped_column(String(100))
     cost_center: Mapped[str | None] = mapped_column(String(100))
     # Budget-dimension attributes (procurement budgets match realised invoice
-    # spend by these columns — see services.budget_service._actual_invoice_total).
+    # spend by these columns — see services.budget_service._actual_invoice_legs).
+    # NOTE: `department` and `project` are indexed; `cost_center` and
+    # `gl_account` are not, so a budget on either of those dimensions
+    # seq-scans when no entity narrows the set. Tracked in docs/followups.md.
     department: Mapped[str | None] = mapped_column(String(100), index=True)
     project: Mapped[str | None] = mapped_column(String(100), index=True)
     file_url: Mapped[str | None] = mapped_column(String(1024))

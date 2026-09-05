@@ -283,11 +283,19 @@ async def budget_rollup(
     had no consolidated view and had to open budgets one at a time.
 
     Compute-on-read, like everything else in this router — ``compute_budget_
-    rollup`` folds ``compute_budget_spend`` over the matching budgets; there is
+    rollup`` folds ``compute_budget_spends`` over the matching budgets; there is
     no stored running total to drift. Same ``dimension`` / ``period`` /
     ``search`` filters as the list, through the SAME ``_budget_list_filters``,
     and the same ``X-Entity-ID`` scope, so the rollup and the table can never
     describe different sets.
+
+    Whole-set by design (a paged rollup presented as an org-wide total is the
+    dishonesty this endpoint exists to avoid), so the cost has to scale with
+    something other than the budget count: each spend leg runs as ONE grouped
+    query keyed on ``Budget.id`` (the invoice leg, one per distinct dimension).
+    ``GET /{id}/spend`` reads that same function with a single-budget filter,
+    which is what keeps its figures — and its ``excluded_row_count`` — provably
+    identical to this endpoint's rather than merely intended to be.
 
     Money is grouped BY CURRENCY and serialised as exact decimal strings —
     never added across currencies, never FX-converted on a read. Anything the

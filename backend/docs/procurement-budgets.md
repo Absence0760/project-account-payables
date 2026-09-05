@@ -15,7 +15,7 @@ the underlying activity.
 - Schemas: `app/schemas/budget.py`
 - Frontend: `routes/budgets/+page.svelte`, `lib/api/budgets.ts`,
   `lib/types/budget.ts`, `lib/components/modals/BudgetModal.svelte`
-- Tests: `tests/test_budgets.py`
+- Tests: `tests/test_budgets.py`, `tests/test_budget_rollup.py`
 
 ## Budget dimensions
 
@@ -32,6 +32,31 @@ a nullable `entity_id` (subsidiary scope, `EntityMixin`).
 `BudgetSpend` (exact `Decimal`). Every aggregate is a Postgres `SUM` over a
 `Numeric` column coerced to `Decimal`; the API serialises to `float` for display
 only (mirrors `api/expenses.py::report_summary`).
+
+**One implementation, two scopes.** `compute_budget_spends(db, budgets)` is the
+only place the spend model is written: each leg is a **grouped** query keyed on
+`Budget.id` (the invoice leg, one query per distinct dimension present), so a
+whole set of budgets costs a bounded number of round trips rather than three per
+budget. `compute_budget_spend(db, budget)` is that same call narrowed to one
+budget — deliberately *not* a second SQL shape. The two endpoints reading it
+(`GET /{id}/spend` and `GET /rollup`) carry an `excluded_row_count` disclosure
+that is worse than useless if they can disagree about it, so the anti-drift test
+`tests/test_budget_rollup.py::test_rollup_agrees_exactly_with_every_per_budget_spend`
+folds every per-budget response and compares it to the rollup, figure for
+figure. The currency rule lives in one expression pair (`_leg_columns`), written
+against `Budget.currency` as a **column** rather than a Python literal — that is
+what lets one query answer for many budgets while staying literally the same
+predicate a single-budget query applies.
+
+The correlated join conditions (entity scope, the period window, the dimension
+match) are each restated once more as **set-level narrowing** predicates
+(`_invoice_scan_narrowing`) — logically redundant, provably implied, and load
+bearing: without them the planner can only filter `invoices` by `status`, which
+matches nearly every row, so it reads the table and does the real work in a join
+filter. Measured on one budget over 40 000 invoices: 0.11 ms with them, 4.3 ms
+without, on the path `GET /budgets/check` sits in before every requisition
+submit. Because they are derived from the budget set, the SAME code emits
+`= 'CC-1'` for one budget and `IN ('CC-1', …)` for a whole tenant.
 
 | Term | Definition |
 |------|-----------|
@@ -116,11 +141,17 @@ GET /api/budgets/rollup?dimension=&period=&search=
 ```
 
 - **Computed on read**, like the rest of this router: `compute_budget_rollup`
-  folds `compute_budget_spend` over the matching budgets. There is no stored
-  running total to drift, and the cost is three aggregate queries per budget.
-  The set is deliberately the **whole filtered set**, not a page — a partial
-  rollup presented as an org-wide total is exactly the dishonesty the
-  per-currency grouping exists to prevent.
+  folds `compute_budget_spends` over the matching budgets. There is no stored
+  running total to drift. The set is deliberately the **whole filtered set**,
+  not a page — a partial rollup presented as an org-wide total is exactly the
+  dishonesty the per-currency grouping exists to prevent — so the cost has to
+  scale with something other than the budget count: each leg is one grouped
+  query (the invoice leg, one per distinct dimension), **6 queries for the whole
+  tenant** rather than 3 per budget. Measured at 200 budgets / 3 currencies /
+  4 dimensions: 600 queries and 297 ms before, 6 queries and 8.6 ms after.
+  `GET /{id}/spend` still issues 3 (1.4 ms → 1.7 ms — the extra join against
+  `budgets`), and reads the same function, which is what keeps the two
+  endpoints' figures provably identical rather than merely intended to be.
 - **Money is grouped by currency and serialised as exact decimal strings.**
   Unlike the per-budget `BudgetSpendResponse` (which predates the string
   convention and stays `float` for API back-compat), these are org-wide totals
@@ -149,7 +180,8 @@ reads exactly like a complete one.
 
 `BudgetSpend.excluded_row_count` counts them, across all three legs, using a
 Postgres `FILTER` clause on the same aggregate query (so it costs no extra
-round trip). A currency that is NULL counts as excluded too — `(currency = 'X')
+round trip) — and, since the legs are grouped by `Budget.id`, on the same query
+whether one budget or the whole tenant is being asked about. A currency that is NULL counts as excluded too — `(currency = 'X')
 IS NOT TRUE`, not `<> 'X'`, which would swallow the NULL. The count surfaces on
 BOTH `GET /{id}/spend` and `GET /rollup` (per currency and whole-set), and
 `/cfo` renders it as a `role="alert"` line above the table naming the figures
