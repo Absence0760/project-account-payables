@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import String
+from sqlalchemy import Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,6 +11,45 @@ from app.models.base import Base, EntityMixin, TimestampMixin
 
 class GLAccount(Base, EntityMixin, TimestampMixin):
     __tablename__ = "gl_accounts"
+
+    # A GL code must resolve to exactly ONE account in any chart that uses it —
+    # two rows answering to one code makes "which account was this invoice
+    # coded to?" unanswerable, and `gl_recode._ActiveChart` / the extraction
+    # catalog both treat a code as a set member, so the second row is invisible
+    # right up until someone reconciles the GL.
+    #
+    # It takes TWO partial indexes, not one `UNIQUE (organization_id,
+    # entity_id, code)`, because `entity_id` NULL is *meaningful* here (the
+    # SHARED chart — unlike every other business table, where NULL is an
+    # unstamped legacy row) and NULLs never compare equal in a unique index:
+    # a plain 3-column unique would let the shared chart hold "6000" any
+    # number of times, which is precisely the duplicate this exists to stop.
+    #
+    #   * shared rows  → unique on (organization_id, code) WHERE entity_id IS NULL
+    #   * entity rows  → unique on (organization_id, entity_id, code) WHERE NOT NULL
+    #
+    # A shared "6000" and an entity's own "6000" therefore coexist by design —
+    # that is an entity OVERRIDING the shared account, and the effective chart
+    # `shared ∪ own` still resolves it to one row per entity because
+    # `api/gl_accounts._sync_match_query` prefers the entity's own.
+    # Migration 0088 installs both on existing tenants.
+    __table_args__ = (
+        Index(
+            "uq_gl_accounts_org_shared_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("entity_id IS NULL"),
+        ),
+        Index(
+            "uq_gl_accounts_org_entity_code",
+            "organization_id",
+            "entity_id",
+            "code",
+            unique=True,
+            postgresql_where=text("entity_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(50), nullable=False)

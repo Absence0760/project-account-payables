@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -22,6 +23,76 @@ from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant
 from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/gl-accounts", tags=["gl-accounts"])
+
+
+def _code_in_effective_chart(code: str, org_id: uuid.UUID, entity_id: uuid.UUID | None):
+    """Is ``code`` already visible in the chart this caller is looking at?
+
+    The guard on create, and deliberately BROADER than the two partial unique
+    indexes migration ``0088`` installs. Those enforce what the data layer can:
+    one row per code in the shared chart, and one per code in each entity's own
+    chart. This asks the question the user actually cares about — would a second
+    row with this code appear in `GET /api/gl-accounts` for whoever creates it —
+    which is the *effective* chart, ``shared ∪ the selected entity`` (the same
+    union `list_gl_accounts`, the AI extraction catalog and
+    ``gl_recode._ActiveChart`` all read). Two rows answering to one code there
+    is unresolvable: nothing implements override semantics, and an invoice
+    records the code as a STRING, so which account it was coded to becomes
+    unanswerable.
+
+    Two entities may still each hold their own ``6000`` — neither is in the
+    other's effective chart, and separate subsidiaries running the same standard
+    code is normal. In the consolidated view the union is the whole tenant, so
+    creating a SHARED code that some entity already defines is refused: a shared
+    row lands in every entity's chart, including that one's.
+    """
+    return apply_entity_scope(
+        select(GLAccount.id).where(
+            GLAccount.code == code,
+            GLAccount.organization_id == org_id,
+        ),
+        GLAccount,
+        entity_id,
+        include_shared=True,
+    )
+
+
+def _duplicate_detail(code: str, entity_id: uuid.UUID | None) -> str:
+    """409 body. Names the code (org configuration, not PII) and the chart."""
+    where = "the selected entity's chart" if entity_id else "this tenant's chart of accounts"
+    return f"GL account code '{code}' already exists in {where}."
+
+
+def _sync_match_query(code: str, org_id: uuid.UUID, entity_id: uuid.UUID | None):
+    """Find the account an ERP code should update, in the chart being synced.
+
+    Candidates are ``shared (NULL) ∪ the selected entity`` — the invoice-side
+    rule ``services/gl_recode._ActiveChart.is_valid_for`` already applies, so
+    the sync resolves a code exactly the way validation does. Matching on
+    ``(code, organization_id)`` alone (the pre-fix behaviour) meant a sync run
+    while subsidiary B was selected UPDATED subsidiary A's row instead of
+    creating B's, contradicting this route's own "same rule as manual create".
+
+    Ordering encodes which row wins when a code exists in both scopes:
+
+    * an entity is selected → **its own** row outranks the shared one (an
+      entity-specific account overrides the shared chart for that entity);
+    * consolidated → the **shared** row wins, because that is the chart a
+      consolidated sync creates into. Ties break oldest-first so the pick is
+      deterministic rather than whatever Postgres returns first.
+    """
+    is_shared = GLAccount.entity_id.is_(None)
+    query = apply_entity_scope(
+        select(GLAccount).where(
+            GLAccount.code == code,
+            GLAccount.organization_id == org_id,
+        ),
+        GLAccount,
+        entity_id,
+        include_shared=True,
+    )
+    preference = is_shared.desc() if entity_id is None else is_shared.asc()
+    return query.order_by(preference, GLAccount.created_at.asc(), GLAccount.id.asc())
 
 
 @router.get("")
@@ -76,6 +147,14 @@ async def create_gl_account(
     # (not get_write_entity_id) — creating an account while an entity is
     # selected makes it entity-specific; creating it in the consolidated view
     # leaves it shared (NULL). See docs/multi-entity.md § Chart of accounts.
+    #
+    # A GL code must resolve to exactly one account in the chart it lands in.
+    # Checked here for a clean 409; the partial unique indexes (migration 0088)
+    # are the real guard, so a concurrent create can't slip past this read.
+    existing = (await db.execute(_code_in_effective_chart(body.code, org_id, entity_id))).first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=_duplicate_detail(body.code, entity_id))
+
     account = GLAccount(
         code=body.code,
         name=body.name,
@@ -85,7 +164,15 @@ async def create_gl_account(
         entity_id=entity_id,
     )
     db.add(account)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # The read above lost a race with a concurrent create. The index is the
+        # real guard; this turns its error into the same 409.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail=_duplicate_detail(body.code, entity_id)
+        ) from exc
 
     # A GL account is what invoice lines are coded to, so adding one is a
     # chart-of-accounts change that belongs on the append-only trail. PII-free:
@@ -125,6 +212,11 @@ async def sync_gl_accounts_from_erp(
 
     New accounts land shared (NULL entity_id) in the consolidated view, or
     entity-specific when an entity is selected — same rule as manual create.
+
+    An ERP code is matched against the chart it is being synced INTO (shared ∪
+    the selected entity, via ``_sync_match_query``), not against every account
+    in the tenant: a sync run under subsidiary B used to update subsidiary A's
+    row rather than create B's, which is the opposite of the rule above.
     """
     erp_config = (org.settings or {}).get("erp")
     if not erp_config:
@@ -160,14 +252,19 @@ async def sync_gl_accounts_from_erp(
 
     created = 0
     updated = 0
+    # Accounts created earlier in THIS run, keyed by code. They are not visible
+    # to the match query until flush, so without this an ERP catalogue that
+    # lists a code twice would insert two rows and trip the unique index at
+    # commit — a 500 after the audit row was already written.
+    pending: dict[str, GLAccount] = {}
     for acct in erp_accounts:
-        result = await db.execute(
-            select(GLAccount).where(
-                GLAccount.code == acct.code,
-                GLAccount.organization_id == org_id,
+        existing = pending.get(acct.code)
+        if existing is None:
+            existing = (
+                (await db.execute(_sync_match_query(acct.code, org_id, entity_id)))
+                .scalars()
+                .first()
             )
-        )
-        existing = result.scalar_one_or_none()
 
         if existing:
             # Only count as updated when something actually changes —
@@ -185,17 +282,17 @@ async def sync_gl_accounts_from_erp(
             if changed:
                 updated += 1
         else:
-            db.add(
-                GLAccount(
-                    code=acct.code,
-                    name=acct.name,
-                    account_type=acct.account_type,
-                    parent_code=acct.parent_code,
-                    organization_id=org_id,
-                    entity_id=entity_id,
-                    erp_account_id=acct.erp_account_id or acct.code,
-                )
+            account = GLAccount(
+                code=acct.code,
+                name=acct.name,
+                account_type=acct.account_type,
+                parent_code=acct.parent_code,
+                organization_id=org_id,
+                entity_id=entity_id,
+                erp_account_id=acct.erp_account_id or acct.code,
             )
+            db.add(account)
+            pending[acct.code] = account
             created += 1
 
     # One PII-free summary row per sync, not one per account — the trail records

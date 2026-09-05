@@ -60,6 +60,52 @@ behavior), and a set `entity_id` makes it entity-specific. So an entity's
 effective chart is `shared (NULL) ∪ its own`. Phase 3 wires this into the
 extraction catalog and bulk-recode validation.
 
+#### A code is unique within the chart it belongs to
+
+An invoice records its GL as a **string**, not an FK, and every consumer
+(`list_gl_accounts`, the AI extraction catalog, `gl_recode._ActiveChart`) treats
+a code as a set member — so two rows answering to one code make "which account
+was this coded to?" unanswerable, and the second row stays invisible until
+someone reconciles the GL. Two guards, at different widths:
+
+- **Data layer** — two *partial* unique indexes (migration `0088`, declared on
+  the model so fresh tenants get them from `create_all`):
+  `uq_gl_accounts_org_shared_code` on `(organization_id, code) WHERE entity_id
+  IS NULL`, and `uq_gl_accounts_org_entity_code` on `(organization_id,
+  entity_id, code) WHERE entity_id IS NOT NULL`. It takes two, because NULLs
+  never compare equal in a unique index: a plain `UNIQUE (organization_id,
+  entity_id, code)` would enforce nothing on the shared chart — the one place a
+  duplicate hurts most, since a shared account is in *every* entity's effective
+  chart.
+- **API** — `POST /api/gl-accounts` refuses (409) a code already visible in the
+  caller's **effective** chart (`shared ∪ selected entity`), which is broader
+  than the index: it also stops a shared row shadowing a code some entity
+  already defines. Two entities may still each hold their own `6000` — neither
+  is in the other's chart, and separate subsidiaries running the same standard
+  code is normal.
+
+A shared row and an entity's own row with the same code can still coexist at the
+data layer (a tenant predating the constraint may have them). Reads union the
+two; `api/gl_accounts._sync_match_query` resolves them deterministically,
+preferring the entity's own.
+
+**The migration refuses to run over pre-existing duplicates**, naming the
+offending `(org, entity, code)` groups and changing nothing. There is no
+conservative automatic repair: the rows differ in `name` / `account_type` /
+`is_active`, invoices already reference the code as free text, and choosing a
+survivor is a chart-of-accounts decision an operator makes. Reconcile the
+tenant, then re-run `scripts/migrate_all_tenants.py`.
+
+#### ERP sync writes into the chart it was invoked for
+
+`POST /api/gl-accounts/sync-erp` matches an ERP code against `shared ∪ the
+selected entity`, not against every account in the tenant. It used to match on
+`(code, organization_id)` alone, so a sync run while subsidiary B was selected
+**updated subsidiary A's row** instead of creating B's — the opposite of the
+route's own "same rule as manual create". New accounts still land shared in the
+consolidated view and entity-specific when an entity is selected. Guards:
+`backend/tests/test_gl_account_entity_uniqueness.py`.
+
 ### Vendor matching: entity ∪ NULL, for a different reason
 
 `services/vendor_matching.match_vendor` is the second consumer of
