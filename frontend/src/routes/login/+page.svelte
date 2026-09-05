@@ -3,8 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
-	import { getTenantSlug } from '$lib/tenant';
-	import { PUBLIC_API_URL } from '$env/static/public';
+	import { getApiBase, getTenantSlug } from '$lib/tenant';
 	import { m } from '$lib/i18n/store.svelte';
 
 	interface SSOConfigPublic {
@@ -34,15 +33,25 @@
 		onelogin: 'OneLogin',
 	};
 
-	onMount(async () => {
+	// `?slug=` is now OPTIONAL on every SSO/SAML entry point: on a customer's
+	// vanity host there is no slug in the hostname (`$lib/hostRouting.ts`
+	// classifies it and `getTenantSlug()` returns null so no `X-Tenant-Slug`
+	// header suppresses the backend's lookup), and the backend resolves the
+	// tenant from the request `Host` against its registered custom domains
+	// instead. Omitting the param is therefore the correct call there — a
+	// guessed slug would be wrong, and returning early hid the buttons entirely.
+	function ssoQuery(): string {
 		const slug = getTenantSlug();
-		if (!slug) return;
+		return slug ? `?slug=${encodeURIComponent(slug)}` : '';
+	}
+
+	onMount(async () => {
 		// A tenant is configured for at most one protocol; query both and render
 		// whichever is enabled. Both are non-fatal — password login still works.
+		// On the platform apex (marketing / signup host) there is neither a slug
+		// nor a matching custom domain, so both calls 404 and are swallowed.
 		try {
-			const cfg = await api.get<SSOConfigPublic>(
-				`/api/auth/sso/config?slug=${encodeURIComponent(slug)}`
-			);
+			const cfg = await api.get<SSOConfigPublic>(`/api/auth/sso/config${ssoQuery()}`);
 			ssoEnabled = cfg.enabled;
 			ssoProviderLabel = PROVIDER_LABELS[cfg.provider ?? 'oidc'] ?? 'SSO';
 			if (cfg.enabled && cfg.sso_only) ssoOnly = true;
@@ -50,9 +59,7 @@
 			// Non-fatal
 		}
 		try {
-			const cfg = await api.get<SSOConfigPublic>(
-				`/api/auth/saml/config?slug=${encodeURIComponent(slug)}`
-			);
+			const cfg = await api.get<SSOConfigPublic>(`/api/auth/saml/config${ssoQuery()}`);
 			samlEnabled = cfg.enabled;
 			samlProviderLabel = PROVIDER_LABELS[cfg.provider ?? 'saml'] ?? 'SSO';
 			if (cfg.enabled && cfg.sso_only) ssoOnly = true;
@@ -62,22 +69,20 @@
 	});
 
 	function signInWithSSO() {
-		const slug = getTenantSlug();
-		if (!slug) return;
 		// 302 directly to the backend authorize endpoint — it builds the IdP
 		// URL and redirects the browser onward. Full page nav, not fetch,
 		// because we need the browser to follow the IdP's redirects.
-		const base = PUBLIC_API_URL.replace(/\/+$/, '');
-		window.location.href = `${base}/api/auth/sso/authorize?slug=${encodeURIComponent(slug)}`;
+		//
+		// `getApiBase()`, not the build-time `PUBLIC_API_URL`: on a vanity host
+		// it resolves to same-origin, which is the ONLY way the vanity hostname
+		// reaches the backend in the `Host` header it resolves the tenant from.
+		window.location.href = `${getApiBase()}/api/auth/sso/authorize${ssoQuery()}`;
 	}
 
 	function signInWithSAML() {
-		const slug = getTenantSlug();
-		if (!slug) return;
 		// Full page nav to the backend SAML login endpoint — it builds the
 		// AuthnRequest and 302s onward to the IdP (same reason as OIDC).
-		const base = PUBLIC_API_URL.replace(/\/+$/, '');
-		window.location.href = `${base}/api/auth/saml/login?slug=${encodeURIComponent(slug)}`;
+		window.location.href = `${getApiBase()}/api/auth/saml/login${ssoQuery()}`;
 	}
 
 	async function handleSubmit(e: Event) {

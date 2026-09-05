@@ -25,7 +25,11 @@ depending on which deployment shape you are running.
   /api/organization/branding/custom-domains`
   (`backend/app/api/organization.py`), the **Custom Domains** panel on
   `/organization`, and partner provisioning
-  (`POST /api/partner/children/provision`).
+  (`POST /api/partner/children/provision`). Also: **SSO on a vanity
+  host** — `?slug=` is optional on the SSO/SAML config, authorize and
+  login endpoints, with the tenant resolved from the request `Host`
+  through that same resolver, plus the opt-in
+  `settings.brand.sso_callback_base_url` this runbook's Step 7 sets.
 - **Does not ship**: any DNS or certificate automation. `infra/` today
   is **KMS + S3 buckets only** (`infra/main.tf`, `kms.tf`, `s3.tf`) —
   there is no Terraform for CloudFront, ALB, or ACM. Everything in the
@@ -374,22 +378,106 @@ curl -sS https://acme.acmecorp.com/ | grep -i '<title'
 
 ---
 
+## Step 7 — Re-register SSO at the customer's IdP
+
+**Skip this if the tenant does not use SSO.** For a tenant that does, the
+SSO/SAML buttons on `https://acme.acmecorp.com/login` already work as soon as
+Step 4 lands — `?slug=` is optional on the entry points and the backend
+resolves the tenant from the `Host` header. What does *not* follow
+automatically is where the IdP sends the user **back**: the OIDC `redirect_uri`
+and the SAML bridge URL are values registered inside the customer's own Okta /
+Entra / Keycloak app, so until this step the login round-trips through
+`acme.app.feohledger.com` and lands the user there. It works; it just isn't
+white-label.
+
+This is an **operator-sequenced migration, not a config flip**, and the order
+below is what keeps SSO working the whole way through. Doing it backwards —
+setting the app-side value before the IdP knows the new URI — breaks every SSO
+login for that tenant with an `invalid redirect_uri` from the IdP.
+
+1. **Customer ADDS the new callback URI at their IdP, keeping the old one.**
+   Every mainstream IdP allows a list. The two values are:
+
+   | Protocol | Value to add |
+   |---|---|
+   | OIDC | `https://acme.acmecorp.com/login/sso-callback` |
+   | SAML | `https://acme.acmecorp.com/login/saml-callback` |
+
+   (Those paths are `FEOH_SSO_REDIRECT_PATH` / `FEOH_SAML_ACS_PATH`; confirm
+   against your deployment if you have changed them. The SAML **SP EntityID**
+   and **ACS URL** are *not* affected — both stay derived from
+   `FEOH_API_PUBLIC_URL` — so the SAML app's trust config needs no other edit.)
+
+2. **Confirm with the customer that the change is live at the IdP.** Not "was
+   submitted" — live. This is the one step you cannot verify from your side.
+
+3. **Set the app-side override.** As a tenant admin, `PUT` the branding config
+   with the new base URL. This is an API-only field today — the `/organization`
+   Branding panel does not yet render it, and because `PUT /branding` replaces
+   the whole block, **a save from that panel will clear this value**. Set it
+   after any branding work, and re-check it if an admin edits branding later:
+
+   ```bash
+   curl -sS -X PUT https://api.feohledger.com/api/organization/branding \
+     -H "Authorization: Bearer <tenant-admin-jwt>" \
+     -H "X-Tenant-Slug: acme" -H 'Content-Type: application/json' \
+     -d '{"sso_callback_base_url": "https://acme.acmecorp.com"}'
+   ```
+
+   `sso_callback_base_url` is a **base URL**, not a full callback URL — the
+   protocol-specific path is appended. It is admin-only, validated as an
+   http(s) URL, and audited PII-free. Empty (the default) means the global
+   `FEOH_TENANT_URL_TEMPLATE`, so *not* setting it is a supported end state.
+
+   ⚠️ Send the whole branding object if the tenant has other branding set —
+   `PUT /branding` replaces the block, so a partial body blanks the rest of it.
+   `GET /api/organization/branding` first, edit the one field, `PUT` it back.
+
+   ⚠️ It is deliberately **separate** from `tenant_url_template` (the field that
+   re-points invite / password-reset / portal links). Setting that one must
+   never silently move an IdP-registered callback, which is exactly why there
+   are two fields — see `docs/decisions.md` §91.
+
+4. **Verify a real login.** Fresh private window →
+   `https://acme.acmecorp.com/login` → the SSO button → authenticate → you must
+   land back on `acme.acmecorp.com`, signed in. If the IdP shows an
+   `invalid redirect_uri` / `AuthnRequest` destination error, step 1 has not
+   actually gone live: clear the override (send `null`) to fall straight back
+   to the platform subdomain, and retry when it has.
+
+5. **Only then, customer removes the old callback URI** from the IdP app — and
+   only if they want to. Leaving it registered costs nothing and keeps
+   `acme.app.feohledger.com` working as a fallback, which is the same posture
+   Step 6.8 takes for the rest of the app.
+
+Reference: [`../authentication.md`](../authentication.md) § SSO on a white-label
+vanity host.
+
+---
+
 ## Known limitations — tell the customer up front
 
 These are properties of the shipped code, not oversights in this
 procedure. Say them during the sale, not after go-live.
 
-- **Emails and deep links point at the platform subdomain.**
-  Notification emails, SSO redirects, supplier portal links and virtual-card
-  reveal links are all built from the single global
-  `FEOH_TENANT_URL_TEMPLATE` (`https://{slug}.app.feohledger.com`), so
-  they will say `acme.app.feohledger.com` even for a customer living on
-  `acme.acmecorp.com`. There is no per-tenant override today.
-- **Passkeys don't follow the vanity host.** WebAuthn binds a credential
-  to a Relying Party ID, and `FEOH_WEBAUTHN_RP_ID` /
-  `FEOH_WEBAUTHN_ORIGINS` are single global settings pointing at your
-  domain. A passkey registered on `acme.app.feohledger.com` will not
-  work on `acme.acmecorp.com`. On a vanity host, use **TOTP** MFA.
+- **Emails and deep links need one more opt-in.** Notification emails,
+  supplier-portal links, approval deep links and virtual-card reveal links are
+  built from `settings.brand.tenant_url_template` when the tenant sets it and
+  the global `FEOH_TENANT_URL_TEMPLATE` when it does not — so they keep saying
+  `acme.app.feohledger.com` until an admin sets that field (the
+  `/organization` Branding panel). Left unset, that is a supported end state,
+  not a bug.
+- **SSO callbacks need the IdP re-registration in Step 7.** Same shape, a
+  different field (`sso_callback_base_url`) and a different reason: the value
+  lives in the *customer's* IdP app, so it cannot be moved from our side alone.
+  Until Step 7 the SSO buttons work on the vanity host but the round-trip lands
+  the user on the platform subdomain.
+- **A passkey is bound to the host it was registered on.** WebAuthn binds a
+  credential to a Relying Party ID, and the RP is now resolved per request from
+  the tenant's own registered custom domains — so passkeys *do* work on
+  `acme.acmecorp.com`, but one registered on `acme.app.feohledger.com` is a
+  different RP and will not work here (and vice versa). Users on both hosts
+  register once per host, or use **TOTP**.
 - **The API is not served under the vanity host.** `PUBLIC_API_URL` is
   baked into the frontend at build time, one value for all hosts, so
   the vanity host serves the SPA only. Anyone integrating against the
@@ -459,8 +547,12 @@ resolves to nothing while DNS still points at you.
 - [ ] Logged in as a tenant user; real data loads
 - [ ] Platform subdomain still works
 - [ ] Cross-tenant negative check returns `403` (once, on your first one)
-- [ ] Customer told: validation record is permanent; emails link to the
-      platform subdomain; passkeys are TOTP-only here
+- [ ] SSO tenants only: new callback URI added at the customer's IdP **and
+      confirmed live**, then `sso_callback_base_url` set, then a real SSO login
+      verified end to end (Step 7 — in that order)
+- [ ] Customer told: validation record is permanent; outbound links stay on the
+      platform subdomain until `tenant_url_template` is set; a passkey is bound
+      to the host it was registered on
 
 Time: ~30 minutes of your work per customer, plus however long the
 customer's DNS team takes (usually the long pole). First time on the

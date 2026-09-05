@@ -51,8 +51,12 @@ RESOLVER_MODULE = "utils/tenant_urls.py"
 #:   values REGISTERED WITH THE CUSTOMER'S IdP. Silently re-pointing them at a
 #:   vanity host would break every SSO login until the operator re-registered
 #:   the app at the IdP, so moving these is an operator-sequenced migration,
-#:   not a config read. Deliberately left on the global template; tracked as
-#:   the remaining half of the vanity-domain follow-up.
+#:   not a config read. They keep the global template as their FALLBACK and
+#:   take their per-tenant value from a separate, explicitly opt-in
+#:   `settings.brand.sso_callback_base_url` (see `services/sso.sso_callback_base`
+#:   and `tests/test_sso_custom_domain.py`) — deliberately NOT the per-org
+#:   `tenant_url_template` this resolver reads, so fixing invite links can never
+#:   silently break SSO.
 TEMPLATE_READ_EXEMPT = ("main.py", "services/sso.py")
 
 #: Modules allowed to spell a `{slug}` substitution. Same two, same reasons.

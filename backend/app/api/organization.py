@@ -445,6 +445,18 @@ async def update_branding(
     new_brand = body.model_dump()
     if isinstance(prior_brand, dict) and "custom_domains" in prior_brand:
         new_brand["custom_domains"] = prior_brand["custom_domains"]
+    # `sso_callback_base_url` IS a BrandConfig field, so `model_dump()` always
+    # emits it — as `""` when the caller never mentioned it. That makes a
+    # routine branding save (the `/organization` panel PUTs the whole config)
+    # silently clear a value that is REGISTERED AT THE CUSTOMER'S IdP, taking
+    # SSO logins with it. `custom_domains` above is protected by not being a
+    # BrandConfig field at all; this one needs the omitted-vs-explicitly-cleared
+    # distinction, which is what `model_fields_set` carries. Sending `null` or
+    # `""` still clears it — that is the documented rollback.
+    if "sso_callback_base_url" not in body.model_fields_set and isinstance(prior_brand, dict):
+        preserved_callback = prior_brand.get("sso_callback_base_url")
+        if preserved_callback:
+            new_brand["sso_callback_base_url"] = preserved_callback
     existing["brand"] = new_brand
     org.settings = existing
     flag_modified(org, "settings")
@@ -469,10 +481,20 @@ async def update_branding(
             # config, kept out of the trail for the same reason the hostnames
             # in `organization.custom_domains_updated` are.
             "tenant_url_template_set": bool(body.tenant_url_template),
+            # Separate from the line above on purpose: this one is registered at
+            # the customer's IdP, so a change to it is an operator-sequenced
+            # migration rather than a preference. The trail records THAT it
+            # changed; the value stays out for the same reason as its siblings.
+            "sso_callback_base_url_set": bool(new_brand.get("sso_callback_base_url")),
         },
     )
 
-    return body
+    # Echo what was STORED, not what was sent: a caller that omitted
+    # `sso_callback_base_url` had its existing value carried forward above, and
+    # returning the request body verbatim would tell it the field is now empty.
+    return body.model_copy(
+        update={"sso_callback_base_url": new_brand.get("sso_callback_base_url") or ""}
+    )
 
 
 def _resolve_custom_domains(org: Organization) -> list[str]:

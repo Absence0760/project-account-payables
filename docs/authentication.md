@@ -343,9 +343,12 @@ SAML), and the same identity tail: JIT provisioning + JWT mint + session
 registration (`app/services/identity_provisioning.py`). Only *verification*
 differs. Local testing: [`local-sso-saml.md`](local-sso-saml.md).
 
-**SP-initiated flow.** `GET /auth/saml/login?slug=` builds the AuthnRequest and
+**SP-initiated flow.** `GET /auth/saml/login[?slug=]` builds the AuthnRequest and
 302s to the IdP, binding a single-use Redis **RelayState** to `{tenant,
-AuthnRequest-ID}`. The IdP HTTP-POSTs the signed `SAMLResponse` to
+AuthnRequest-ID}`. `slug` is optional: on a white-label vanity host the tenant is
+resolved from the request `Host` instead (see *SSO on a white-label vanity host*
+under [SSO (OIDC…)](#sso-oidc-via-okta--microsoft-entra) — the SP EntityID and
+ACS URL are unaffected, both stay derived from `FEOH_API_PUBLIC_URL`). The IdP HTTP-POSTs the signed `SAMLResponse` to
 `POST /auth/saml/acs`; the handler recovers the tenant from the RelayState
 (**never** the assertion or a header), verifies the response, JIT-provisions, and
 303-redirects to the SPA bridge `/login/saml-callback?code=<once>`. The bridge
@@ -748,8 +751,8 @@ A single OIDC flow supports both Okta and Entra because they're both OIDC-compli
 
 ### Flow
 
-1. User clicks **Sign in with Okta/Microsoft** on `/login` (button renders only when `GET /api/auth/sso/config?slug=<tenant>` returns `enabled: true`).
-2. Browser navigates to `GET /api/auth/sso/authorize?slug=<tenant>` on the backend.
+1. User clicks **Sign in with Okta/Microsoft** on `/login` (button renders only when `GET /api/auth/sso/config?slug=<tenant>` returns `enabled: true`). `slug` is optional — on a vanity host it is omitted and the tenant comes from the request `Host` (see *SSO on a white-label vanity host* below).
+2. Browser navigates to `GET /api/auth/sso/authorize?slug=<tenant>` on the backend (same optional-`slug` rule).
 3. Backend fetches the discovery doc (cached in Redis for 24h), mints a one-shot `state` + `nonce` into Redis (keyed to the tenant slug), and **302-redirects** to the IdP's `authorization_endpoint` with `redirect_uri` pointing to the *tenant's own subdomain* (built from `FEOH_TENANT_URL_TEMPLATE`).
 4. User authenticates on the IdP.
 5. IdP redirects back to `<tenant>.app.com/login/sso-callback?code=...&state=...`.
@@ -766,6 +769,68 @@ A single OIDC flow supports both Okta and Entra because they're both OIDC-compli
 ### Why callback URLs are per-tenant
 
 Each customer registers their own Okta/Entra app with `redirect_uri = https://<theirtenant>.app.com/login/sso-callback`. That way the IdP redirects directly to the tenant origin and our localStorage JWT works without cross-origin hops. In dev, `FEOH_TENANT_URL_TEMPLATE=http://{slug}.localhost:7777` gives each tenant their own callback URL for free.
+
+### SSO on a white-label vanity host
+
+A tenant served on its own hostname (`sso.acmecorp.com`, registered in
+`settings.brand.custom_domains` — see [white-label.md](white-label.md) § Custom
+domains) has **no slug anywhere in its URL**. Two separate things follow, and
+they are deliberately decoupled.
+
+**1. The entry points accept a `Host`-resolved tenant.** `slug` is *optional* on
+`GET /api/auth/sso/config`, `GET /api/auth/sso/authorize`,
+`GET /api/auth/saml/config` and `GET /api/auth/saml/login`. When it is absent
+the tenant is resolved from the request `Host` against the tenant's registered
+custom domains, through the **same** `app/tenant.py` resolver
+(`normalize_custom_domain` / `resolve_tenant_slug_by_custom_domain`) every other
+host lookup uses — wrapped once as `services/sso.resolve_sso_tenant_slug`, so a
+hostname can never resolve one way for a page load and another way for a login.
+The SPA omits `?slug=` on a vanity host and calls the API same-origin
+(`getApiBase()`), which is what puts the vanity hostname in the `Host` header at
+all. This is why `routes/login/+page.svelte` no longer appears on the
+`BUILD_TIME_API_URL_BASELINE` ratchet in `frontend/src/lib/tenantSlugUsage.test.ts`.
+
+*The failure posture is unchanged.* A `Host` that resolves to nothing produces
+the **identical** `404 {"detail": "Unknown tenant."}` an unknown `?slug=` has
+always produced — same status, same body — so probing hostnames tells an
+attacker exactly what probing slugs already told them, and nothing new
+distinguishes "no such tenant" from "SSO is not configured" (that pre-existing
+404-vs-400 split on the slug path is untouched). These endpoints are
+pre-authentication by definition, so there is no JWT to cross-check; that is
+safe because a forged `Host` can only select a tenant that *registered that
+exact hostname* — the same choice `?slug=` already gives anyone — and the
+handshake's state/nonce (OIDC) or RelayState (SAML) is minted against that
+tenant and consumed against it.
+
+**2. The callback URL is a separate, explicit opt-in.**
+`settings.brand.sso_callback_base_url` (managed on `PUT /api/organization/branding`,
+admin-only, validated as an http(s) URL, audited PII-free) sets the origin the
+OIDC `redirect_uri` and the SAML bridge URL are built from. Empty — the default
+— means the global `FEOH_TENANT_URL_TEMPLATE`, byte-for-byte the behaviour that
+shipped before the field existed. `services/sso.sso_callback_base` is the one
+resolver both protocols read; `{slug}` in the value is optional (substituted
+when present, used verbatim when not).
+
+It is **not** the per-org `settings.brand.tenant_url_template` that outbound
+links use, and that separation is the whole point: both values are *registered
+at the customer's IdP*, so inferring them from a vanity host — or folding them
+into the setting an admin flips to fix invite and password-reset links — would
+break every SSO login for that tenant until the operator re-registered the app.
+Setting it is therefore the **last** step of an operator-sequenced migration,
+not a config read. See [decisions.md](decisions.md) §91 and the step-by-step
+procedure in
+[founder-runbooks/custom-domain-provisioning.md](founder-runbooks/custom-domain-provisioning.md)
+§ Re-registering SSO at the customer's IdP.
+
+A persisted value that is malformed (edited straight into the database, so never
+validated by the endpoint) is re-checked on read and degrades to the global
+template — a broken row must not take a tenant's SSO offline. And because
+`GET /portal/branding` is public-by-design and returns a whole `BrandConfig`,
+the field is **blanked there** alongside `tenant_url_template`: it is not a
+theming value, nothing on the supplier-portal login page consumes it, and an
+admin may have staged it before the IdP re-registration.
+
+Regression coverage: `backend/tests/test_sso_custom_domain.py`.
 
 ### Local testing with Keycloak (no cloud account)
 

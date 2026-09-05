@@ -7,8 +7,10 @@ delegated to python3-saml (in-process XML-DSig via python-xmlsec), pinned to
 the tenant's pre-registered signing cert.
 
 Flow (SP-initiated, HTTP-POST ACS binding):
-    1. GET /api/auth/saml/login?slug=<tenant>  (public)
-       Resolve the tenant's IdP config, build the AuthnRequest, mint a
+    1. GET /api/auth/saml/login[?slug=<tenant>]  (public)
+       Resolve the tenant — by `?slug=`, or from the request `Host` against
+       `settings.brand.custom_domains` when the tenant is served on its own
+       white-label vanity hostname — then its IdP config, build the AuthnRequest, mint a
        RelayState bound to {tenant, AuthnRequest-ID} in Redis (single-use),
        302 the browser to the IdP.
     2. IdP authenticates the user (IdP owns MFA — we skip our own challenge).
@@ -35,7 +37,7 @@ import logging
 import secrets
 from urllib.parse import urlencode, urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from onelogin.saml2.errors import OneLogin_Saml2_Error
@@ -68,6 +70,7 @@ from app.services.sso import (
     create_saml_handoff,
     is_sso_only,
     resolve_saml_config,
+    resolve_sso_tenant_slug,
     saml_acs_url,
     saml_bridge_url,
     store_saml_relay_state,
@@ -137,6 +140,27 @@ async def _fetch_org_by_slug(slug: str, db: AsyncSession) -> Organization:
     if org is None:
         raise HTTPException(status_code=404, detail="Unknown tenant.")
     return org
+
+
+async def _resolve_org(
+    slug: str | None, host: str | None, db: AsyncSession
+) -> tuple[Organization, str]:
+    """Resolve the tenant for a PUBLIC SAML entry point, by `?slug=` or `Host`.
+
+    The OIDC twin of this lives in `auth_sso.py` and both call the one shared
+    `services/sso.resolve_sso_tenant_slug`, which is itself a thin wrapper over
+    the `app/tenant.py` custom-domain resolver — so a vanity hostname resolves
+    identically for a page load, an OIDC login and a SAML login.
+
+    **The failure posture is deliberately unchanged.** An unresolvable `Host`
+    raises the *identical* 404 `_fetch_org_by_slug` already raises for an
+    unknown `?slug=`, so nothing new distinguishes "no such tenant" from "SAML
+    is not configured".
+    """
+    resolved = await resolve_sso_tenant_slug(slug, host, db)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Unknown tenant.")
+    return await _fetch_org_by_slug(resolved, db), resolved
 
 
 def _build_saml_settings(config: ResolvedSAMLConfig) -> dict:
@@ -265,10 +289,17 @@ def _response_in_response_to(auth: OneLogin_Saml2_Auth) -> str | None:
 
 
 @router.get("/config", response_model=SAMLConfigPublic)
-async def saml_config(slug: str, db: AsyncSession = Depends(get_control_db)):
+async def saml_config(
+    slug: str | None = None,
+    host: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_control_db),
+):
     """Public — lets the login page decide whether to render the SAML button.
-    Returns only the non-secret {enabled, provider}."""
-    org = await _fetch_org_by_slug(slug, db)
+    Returns only the non-secret {enabled, provider}.
+
+    `slug` is optional: on a tenant's vanity host the SPA has no slug, so the
+    tenant is resolved from the request `Host` instead."""
+    org, slug = await _resolve_org(slug, host, db)
     try:
         config = resolve_saml_config(org.settings, slug)
     except SSOConfigError:
@@ -281,10 +312,24 @@ async def saml_config(slug: str, db: AsyncSession = Depends(get_control_db)):
 
 
 @router.get("/login")
-async def saml_login(slug: str, db: AsyncSession = Depends(get_control_db)):
+async def saml_login(
+    slug: str | None = None,
+    host: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_control_db),
+):
     """SP-initiated entry: build the AuthnRequest, bind RelayState to
-    {tenant, request_id}, 302 to the IdP."""
-    org = await _fetch_org_by_slug(slug, db)
+    {tenant, request_id}, 302 to the IdP.
+
+    `slug` is optional. When it is absent the tenant is resolved from the
+    request `Host` against its registered custom domains — that is what lets
+    the SAML button work at all on a white-label vanity hostname, which has no
+    slug anywhere in the URL. An unresolvable tenant gets the same 404 an
+    unknown slug has always produced (see `_resolve_org`).
+
+    The SP EntityID and ACS URL are unaffected: both are derived from
+    `FEOH_API_PUBLIC_URL` and registered at the IdP, so a vanity `Host` never
+    re-points them."""
+    org, slug = await _resolve_org(slug, host, db)
     config = resolve_saml_config(org.settings, slug)
     if config is None:
         raise HTTPException(status_code=400, detail="SAML SSO is not configured for this tenant.")
@@ -440,7 +485,7 @@ async def saml_acs(request: Request, db: AsyncSession = Depends(get_control_db))
 
     # Hand the JWT off via a one-time code so it never transits the URL.
     code = await create_saml_handoff(token, user.must_change_password, tenant_slug)
-    bridge = saml_bridge_url(tenant_slug)
+    bridge = saml_bridge_url(tenant_slug, org.settings)
     return RedirectResponse(f"{bridge}?{urlencode({'code': code})}", status_code=303)
 
 

@@ -92,6 +92,21 @@ class BrandConfig(BaseModel):
     # present, used verbatim when not. Read by `app/utils/tenant_urls.py`,
     # which is the only place that substitution happens.
     tenant_url_template: str = Field(default="", max_length=_MAX_URL)
+    # Where this tenant's SSO callbacks land. Empty = the platform's global
+    # `FEOH_TENANT_URL_TEMPLATE`, byte-for-byte the behaviour that shipped
+    # before this field existed.
+    #
+    # Deliberately SEPARATE from `tenant_url_template` even though a vanity
+    # tenant will usually set both to the same host: the OIDC `redirect_uri`
+    # and the SAML bridge URL are values *registered at the customer's IdP*
+    # (`docs/decisions.md` §91). Folding them into `tenant_url_template` would
+    # mean that setting a vanity base URL for invite emails silently re-points
+    # the callback too, breaking every SSO login until the operator
+    # re-registers the app at the IdP. So this one is opt-in on its own, and is
+    # set only as the last step of the IdP re-registration runbook.
+    # `{slug}` is OPTIONAL: substituted when present, used verbatim when not
+    # (same rule as `tenant_url_template`). Read by `app/services/sso.py`.
+    sso_callback_base_url: str = Field(default="", max_length=_MAX_URL)
 
     @field_validator("accent_color", "accent_strong_color")
     @classmethod
@@ -101,7 +116,7 @@ class BrandConfig(BaseModel):
             raise ValueError("must be a 3- or 6-digit hex color (e.g. #638cff)")
         return v
 
-    @field_validator("tenant_url_template", mode="before")
+    @field_validator("tenant_url_template", "sso_callback_base_url", mode="before")
     @classmethod
     def _null_to_empty(cls, v: object) -> object:
         # The field is "nullable" on the wire — an admin clearing the override
@@ -110,7 +125,9 @@ class BrandConfig(BaseModel):
         # cleared with `""`; both spellings land on `""` here.
         return "" if v is None else v
 
-    @field_validator("logo_url", "support_url", "legal_url", "tenant_url_template")
+    @field_validator(
+        "logo_url", "support_url", "legal_url", "tenant_url_template", "sso_callback_base_url"
+    )
     @classmethod
     def _validate_url(cls, v: str) -> str:
         v = (v or "").strip()

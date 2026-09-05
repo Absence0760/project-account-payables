@@ -89,16 +89,16 @@ describe('no file re-derives a tenant slug from the hostname', () => {
  * **Only ever remove an entry — never add one.** Each remaining file needs the
  * same one-line swap the shared clients got; they are listed here rather than
  * left invisible.
+ *
+ * The list is now EMPTY, and that is the point of the ratchet: the last entry
+ * was `routes/login/+page.svelte`, whose full-page navigations to the SSO /
+ * SAML authorize endpoints could not move off the build-time origin while
+ * those routes took the tenant as a REQUIRED `?slug=` a vanity host does not
+ * have. That is fixed backend-side — `?slug=` is optional and an absent one is
+ * resolved from the request `Host` against the tenant's registered custom
+ * domains — so the login page now uses `getApiBase()` and omits the param.
  */
-const BUILD_TIME_API_URL_BASELINE = [
-	// Full-page navigations to the backend's SSO / SAML authorize endpoints.
-	// These stay build-time for now because both routes take the tenant as a
-	// REQUIRED `?slug=` query param, which a vanity host does not have — moving
-	// the base alone would send the request without a resolvable tenant. The
-	// durable fix is backend-side (accept a `Host`-resolved tenant when `slug`
-	// is absent); tracked in docs/followups.md.
-	'routes/login/+page.svelte',
-];
+const BUILD_TIME_API_URL_BASELINE: string[] = [];
 
 describe('API origin is resolved at runtime, not baked at build time', () => {
 	it('only the baselined files still read PUBLIC_API_URL directly', () => {

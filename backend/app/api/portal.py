@@ -139,11 +139,13 @@ async def portal_branding(org: Organization = Depends(get_tenant)):
     already targets. An unset / malformed brand block degrades to all-empty
     (= platform defaults), so the portal always themes (fail-soft).
 
-    **`tenant_url_template` is blanked here**, and this is the one field the
-    portal deliberately drops rather than inherits. It is not a theming value —
-    it is the tenant's own vanity base URL, which an admin may have configured
-    while the DNS cutover is still staged. Nothing on the portal login page
-    consumes it, so returning it on an UNAUTHENTICATED endpoint would widen this
+    **`tenant_url_template` and `sso_callback_base_url` are blanked here**, and
+    they are the fields the portal deliberately drops rather than inherits.
+    Neither is a theming value: the first is the tenant's own vanity base URL
+    and the second the origin its employee SSO callbacks land on — both of
+    which an admin may have configured while the DNS cutover (or the IdP
+    re-registration) is still staged. Nothing on the portal login page consumes
+    either, so returning them on an UNAUTHENTICATED endpoint would widen this
     surface for no gain. Adding a field to `BrandConfig` silently widens what
     this route publishes; anything new lands here for the same judgement call.
 
@@ -157,7 +159,9 @@ async def portal_branding(org: Organization = Depends(get_tenant)):
     # helper that re-validates `settings.brand` into a `BrandConfig`.
     from app.api.organization import _resolve_brand
 
-    return _resolve_brand(org).model_copy(update={"tenant_url_template": ""})
+    return _resolve_brand(org).model_copy(
+        update={"tenant_url_template": "", "sso_callback_base_url": ""}
+    )
 
 
 # ---------- Invoices ----------
