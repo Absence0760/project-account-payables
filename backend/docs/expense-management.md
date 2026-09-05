@@ -148,9 +148,9 @@ mutating handler can't reopen the hole.
 | POST | `/api/corporate-card-transactions/sync-virtual-cards` | **(item 5)** Create card-transaction rows from this tenant's charged `VirtualCard` rows (`status in (charged, completed)` with `amount_charged`). Idempotent via the synthetic `external_txn_id = vc:<provider_card_id>`; already-synced cards are skipped. `virtual_card_id`/`amount`/`merchant`/`entity_id` carried over. Returns `{created, skipped}`. Audited `card_txn.virtual_cards_synced`. Mutate `admin`/`ap_manager`. Declared before `/{txn_id}`. |
 | GET | `/api/corporate-card-transactions/{id}/match-suggestions` | Ranked candidate expenses: `amount` exact (`Decimal ==`) + **`currency` equal** + `card_transaction_id IS NULL` + `expense_date` within ±5d of `txn_date`, ranked by fuzzy merchant similarity (token Jaccard) then date proximity. Returns `[{expense, score}]`. Read all roles. |
 | POST | `/api/corporate-card-transactions/{id}/match` | Body `{ expense_id }`. Reconcile: sets `txn.matched_expense_id` + `reconciliation_status=matched` AND `expense.card_transaction_id` + `expense.payment_method` (`virtual_card` when `txn.virtual_card_id` set, else `corporate_card`). **409** if either side already matched, or on a **currency mismatch**. Audited both sides (`card_txn.matched` + `expense.card_matched`). Mutate `admin`/`ap_manager`. |
-| POST | `/api/corporate-card-transactions/{id}/unmatch` | Clear both sides; `reconciliation_status=unmatched`. Audited both sides. Mutate `admin`/`ap_manager`. |
+| POST | `/api/corporate-card-transactions/{id}/unmatch` | Clear both sides; `reconciliation_status=unmatched`; **restore `expense.payment_method` from `payment_method_before_match`**. Audited both sides (`expense.card_unmatched` records the restored value, PII-free). Mutate `admin`/`ap_manager`. |
 | POST | `/api/corporate-card-transactions/{id}/ignore` | `reconciliation_status=ignored` (deliberately not reconciled — refunds/fees). **409** on a matched transaction (unmatch it first). Audited `card_txn.ignored`. Mutate `admin`/`ap_manager`. |
-| POST | `/api/corporate-card-transactions/{id}/create-expense` | Mint an `Expense` from the txn (`expense_date=txn_date`, merchant, amount, currency, `payment_method` per `virtual_card_id`, entity carried over), then match it both sides. **409** if the txn is already matched. Audited `expense.created` + the match pair. Mutate `admin`/`ap_manager`/`ap_clerk`. |
+| POST | `/api/corporate-card-transactions/{id}/create-expense` | Mint an `Expense` from the txn (`expense_date=txn_date`, merchant, amount, currency, `payment_method` per `virtual_card_id`, entity carried over), **refresh its `policy_violations`** (best-effort, same as every other expense write path), then match it both sides. **409** if the txn is already matched. Audited `expense.created` + the match pair. Mutate `admin`/`ap_manager`/`ap_clerk`. |
 
 #### Reconciliation strategy
 
@@ -159,6 +159,35 @@ Match-suggestion mirrors `services/bank_reconciliation.py`'s amount-exact + date
 **Currency is a filter, not a conversion.** Multi-currency card reconciliation is deferred, but the safe form of not supporting it is excluding the candidate — not offering a false match. Without the predicate a €100.00 expense was ranked as an *exact-amount* suggestion for a $100.00 card line and one click linked them, stamping a `payment_method` onto an expense that card never paid. `/match` re-checks rather than trusting the suggestion query, since the client sends an arbitrary `expense_id`. Every other comparison in this area is currency-scoped the same way (CFO gate → reporting currency, policy thresholds → `threshold_currency`, pre-approval cover → currency-matched SQL).
 
 **`ignore` declares its source state.** It refuses (409) a matched transaction. Flipping one to `ignored` left both FK legs set while the status no longer said "matched", stranding the pair — `/unmatch` 409s ("not matched") and `/match` / `/create-expense` 409 ("already matched"), with no route back. Unmatch, then ignore.
+
+**`unmatch` puts back the payment method the match overwrote.** Matching stamps
+`Expense.payment_method` (`virtual_card` when the txn carries a
+`virtual_card_id`, else `corporate_card`); unmatch cleared both FK legs but left
+that stamp, so an expense reconciled against the wrong card line read as
+card-funded forever. Resetting to `out_of_pocket` would be a *different* wrong
+guess — an employee can legitimately mark an expense card-funded before its feed
+row is imported — so `_link_both_sides` records the prior value on
+`expenses.payment_method_before_match` (migration
+`0089_expense_pm_before_match`) and unmatch restores it, then clears the column.
+A NON-NULL value therefore means "currently matched, and this is what to put
+back".
+
+**A NULL `payment_method_before_match` on a matched row means the match predates
+the column, and unmatch then leaves `payment_method` alone.** Nothing in the
+schema can recover the original — `payment_method` already holds the match's own
+stamp — and there is no honest backfill, so the migration writes none: the
+column is nullable with NULL given a defined meaning (*unknown, therefore do not
+change it*) rather than a guessed `out_of_pocket`. Those rows keep exactly the
+state they are in today; the next match/unmatch cycle records and restores
+normally.
+
+**`create-expense` evaluates policy on the row it mints.** It never called
+`_refresh_policy_violations`, so a card-derived line carried no policy flags
+until something else happened to PATCH it — on the one kind of expense that is,
+by construction, already spent money. It now runs the same best-effort refresh
+the sibling write paths use (create, PATCH, receipt upload): a failure leaves
+the stored value untouched and never breaks the mint, because the violations are
+advisory.
 
 Virtual-card sync (`sync_virtual_cards`) carries charged virtual-card spend into the same feed so virtual cards reconcile through one surface. Dedupe is the synthetic `external_txn_id = vc:<provider_card_id>` backed by the `uq_corporate_card_txn_external` partial-unique index (no new webhook — the card-charge webhook already exists). Each synced txn keeps the card's own `entity_id`.
 
@@ -528,6 +557,20 @@ Rules that keep the numbers honest:
   understate the total the CFO gate reads) is still refused, the same-currency
   line locks at 1 and proceeds. Refusing a conversion nobody asked for isn't
   fail-closed, it's an outage.
+- **Both levels ask the pair first, through one shared predicate.** Only the
+  *line* lock was taught that rule; the **report** lock still demanded an
+  adapter before asking, so the same tenant submitted a report already
+  denominated in the org's reporting currency with all four
+  `expense_reports.reporting_*` columns NULL and `"reporting_total": null` in
+  its own `expense_report.submitted` audit row. That was never a control failure
+  — `report_amount_for_gate` falls back to `total_amount` for exactly that pair,
+  so the CFO gate read the right figure — but it left the *stored snapshot*
+  empty on tenants that never needed a rate. `expense_currency.
+  conversion_requires_rate_source` is now the single predicate both levels call
+  (`lock_report_reporting_amount` takes `FXAdapter | None` like its line-level
+  twin), so the two cannot drift again. The fail-closed direction is untouched:
+  a genuinely cross-currency report with no usable provider still leaves the
+  figure NULL, and the gate still escalates to CFO/admin.
 - **Local-first**: the FX provider comes from `Organization.settings.fx` via the
   existing `fx_adapters` registry, defaulting to the deterministic `mock`
   adapter — multi-currency reports work with no cloud account.
@@ -563,6 +606,21 @@ reporting currency", resolved at evaluation time; see § Threshold currency for
 why writing a value here would be both impossible (the reporting currency is
 control-plane state) and wrong (the only in-table candidate is a defaulted
 `'USD'`).
+
+### Migration 0089
+
+`backend/alembic/versions/0089_expense_payment_method_before_match.py`
+(revision `0089_expense_pm_before_match`) adds
+`expenses.payment_method_before_match` (`varchar(20)`, nullable) — what the row
+carried immediately BEFORE a corporate-card match overwrote `payment_method`,
+so `/unmatch` can put it back instead of guessing. Tenant-DB only (`expenses`
+is not in `tenant_provisioning.CONTROL_TABLES`; the upgrade is gated on the
+table existing, so it no-ops on the control plane), idempotent `ADD COLUMN IF
+NOT EXISTS` / `DROP COLUMN IF EXISTS`, fanned out by
+`scripts/migrate_all_tenants.py`. **No backfill** — a row matched before the
+column existed has no recoverable prior value, so NULL is given the meaning
+*unknown, therefore do not change it*; see § Corporate-card reconciliation
+routes.
 
 ## Tests
 
@@ -651,6 +709,27 @@ rows on the trail. It also pins the three currency/state guards: a cross-currenc
 expense is neither suggested nor accepted by `/match` (409), `/ignore` refuses a
 matched transaction and stays reversible via `/unmatch`, and a negative refund
 row survives the CSV import (only an unparseable amount is a row error).
+
+`backend/tests/test_expense_card_unmatch_restore.py` (`realdb`) — the
+record/restore cycle for `payment_method`: an out-of-pocket expense mis-matched
+to a card line is out-of-pocket again after `/unmatch`, an expense the employee
+had already marked card-funded keeps ITS OWN marking (not the one the match
+stamped over it), a row with no recorded pre-match value (the pre-migration-0089
+shape) has `payment_method` left untouched — asserted explicitly, including the
+PII-free `payment_method_restored: null` on the `expense.card_unmatched` audit
+row — and a re-match records what the previous unmatch put back. Plus
+`/create-expense` carrying its policy violations immediately (and a clean line
+staying unflagged, so the refresh is a real evaluation rather than a blanket
+stamp).
+
+`backend/tests/test_expense_report_same_currency_lock.py` (`realdb` + pure) —
+the report-level pair-first lock for a tenant whose `settings.fx.provider` names
+no registered adapter: a same-currency report stores a complete
+`reporting_*` snapshot (rate 1) and a non-null `reporting_total` in its audit
+row, a genuinely cross-currency one still refuses to lock, and the CFO gate
+returns the right verdict in both — under/over threshold on the same-currency
+report, fail-closed escalation on the cross-currency one. The shared
+`conversion_requires_rate_source` predicate is covered directly.
 
 The frontend `/expenses` workspace is covered by the Playwright specs
 `frontend/tests-e2e/expenses/expenses.spec.ts` (create an expense with a
