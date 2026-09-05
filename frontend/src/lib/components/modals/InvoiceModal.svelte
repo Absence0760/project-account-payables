@@ -2,7 +2,7 @@
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import type { Invoice, AuditSummary } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, isNegativeAmount, isPositiveAmount } from '$lib/utils/money';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
@@ -385,7 +385,9 @@
 		const missing: string[] = [];
 		if (!vendor.trim()) missing.push(m('invoices.modal.field.vendor'));
 		if (!invoice_number.trim()) missing.push(m('invoices.modal.field.invoiceNumber'));
-		if (!amount || amount <= 0) missing.push(m('invoices.modal.field.amount'));
+		// `amount` is money, so "is there a usable figure here?" is a predicate —
+		// `isPositiveAmount`, not `<= 0` on a value that may be an exact string.
+		if (!isPositiveAmount(amount)) missing.push(m('invoices.modal.field.amount'));
 		return missing;
 	});
 
@@ -1405,7 +1407,7 @@
 							<span>{m('invoices.modal.field.invoiceNumber')} <em class="required">*</em> {#if dot('invoice_number', invoice_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.invoice_number)}" data-tip="{Math.round(fieldConfidence.invoice_number * 100)}% — {confidenceLabel(fieldConfidence.invoice_number)}"></span>{/if}</span>
 							<input type="text" bind:value={invoice_number} required />
 						</label>
-						<label class:field-error={canSubmitStatus && (!amount || amount <= 0)}>
+						<label class:field-error={canSubmitStatus && !isPositiveAmount(amount)}>
 							<span>{m('invoices.modal.field.amount')} <em class="required">*</em> {#if dot('amount', amount)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.amount)}" data-tip="{Math.round(fieldConfidence.amount * 100)}% — {confidenceLabel(fieldConfidence.amount)}"></span>{/if}</span>
 							<input type="number" step="0.01" bind:value={amount} required />
 						</label>
@@ -1645,15 +1647,15 @@
 											<span class="po-match-value mono">{formatMoney(pm.po_total, { currency: invoice.currency })}</span>
 										</div>
 									{/if}
-									{#if pm.amount_variance !== 0}
+									{#if isPositiveAmount(pm.amount_variance) || isNegativeAmount(pm.amount_variance)}
 										<div>
 											<span class="po-match-label">{m('invoices.modal.poMatch.variance')}</span>
 											<span
 												class="po-match-value mono"
-												class:variance-pos={pm.amount_variance > 0}
-												class:variance-neg={pm.amount_variance < 0}
+												class:variance-pos={isPositiveAmount(pm.amount_variance)}
+												class:variance-neg={isNegativeAmount(pm.amount_variance)}
 											>
-												{pm.amount_variance > 0 ? '+' : ''}{formatMoney(pm.amount_variance, { currency: invoice.currency })}
+												{isPositiveAmount(pm.amount_variance) ? '+' : ''}{formatMoney(pm.amount_variance, { currency: invoice.currency })}
 												({pm.amount_variance_pct > 0 ? '+' : ''}{pm.amount_variance_pct.toFixed(1)}%)
 											</span>
 										</div>

@@ -79,6 +79,7 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
 	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
@@ -803,7 +804,10 @@
 	let showNewPreapproval = $state(false);
 	let paBusy = $state(false);
 	let paTitle = $state('');
-	let paAmount = $state<number | null>(null);
+	// Raw decimal text to the wire: `schemas/expense.py::ExpensePreapprovalBase`
+	// declares `estimated_amount` a `Decimal`, and `json.loads` collapses a
+	// fractional JSON number to a float before pydantic can intervene.
+	let paAmount = $state<string | null>(null);
 	let paCategory = $state('');
 	let paJustification = $state('');
 	let paRejectArmedId = $state<string | null>(null);
@@ -846,19 +850,18 @@
 		}
 	});
 
-	function paNumOrNull(v: unknown): number | null {
-		if (v === '' || v === null || v === undefined) return null;
-		const n = parseFloat(String(v));
-		return Number.isFinite(n) ? n : null;
-	}
-
 	async function handleNewPreapproval() {
 		if (!paTitle.trim() || paAmount == null) return;
+		const exactAmount = normalizeMoneyInput(paAmount);
+		if (exactAmount === null) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		paBusy = true;
 		try {
 			await createPreapproval({
 				title: paTitle.trim(),
-				estimated_amount: paAmount,
+				estimated_amount: exactAmount,
 				currency: orgCurrency.currency,
 				category: paCategory.trim() || null,
 				justification: paJustification.trim() || null
@@ -1668,7 +1671,7 @@
 						step="0.01"
 						min="0"
 						value={paAmount ?? ''}
-						oninput={(e) => (paAmount = paNumOrNull(e.currentTarget.value))}
+						oninput={(e) => (paAmount = e.currentTarget.value.trim() || null)}
 					/>
 				</label>
 				<label>

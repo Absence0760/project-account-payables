@@ -4,6 +4,7 @@
 import { api } from '$lib/api';
 import type { MatchingIdsResponse } from '$lib/utils/pagination';
 import { triggerDownload } from '$lib/utils/download';
+import type { MoneyString } from '$lib/utils/money';
 import type {
 	Contract,
 	ContractCreate,
@@ -121,8 +122,11 @@ export function cancelContract(id: string): Promise<Contract> {
 
 export interface RenewContractBody {
 	end_date: string;
-	total_value?: number | null;
-	spend_limit?: number | null;
+	// Request-side money — the exact decimal text typed. `schemas/contract.py`
+	// declares both `Decimal`, and a fractional JSON number is already a float
+	// by the time pydantic sees it.
+	total_value?: MoneyString | null;
+	spend_limit?: MoneyString | null;
 }
 
 export function renewContract(id: string, body: RenewContractBody): Promise<Contract> {
@@ -131,7 +135,8 @@ export function renewContract(id: string, body: RenewContractBody): Promise<Cont
 
 export interface CreatePoBody {
 	po_number?: string;
-	total?: number | null;
+	/** Request-side money — the exact decimal text typed. */
+	total?: MoneyString | null;
 }
 
 export interface CreatedPo {

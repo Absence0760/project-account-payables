@@ -6,6 +6,8 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { createPolicy, updatePolicy } from '$lib/api/expenses';
+	import type { MoneyAmount } from '$lib/utils/money';
+	import { isMoneyInput } from '$lib/utils/moneyInput';
 
 	let {
 		policy,
@@ -30,28 +32,52 @@
 	// reporting currency", which the backend resolves at evaluation time — the
 	// meaning a bare threshold number always implicitly had.
 	let threshold_currency = $state(policy?.threshold_currency ?? '');
-	let category_limit = $state<number | null>(policy?.category_limit ?? null);
-	let requires_receipt_above = $state<number | null>(policy?.requires_receipt_above ?? null);
-	let requires_preapproval_above = $state<number | null>(
-		policy?.requires_preapproval_above ?? null
+	let category_limit = $state<string | null>(moneyText(policy?.category_limit));
+	let requires_receipt_above = $state<string | null>(moneyText(policy?.requires_receipt_above));
+	let requires_preapproval_above = $state<string | null>(
+		moneyText(policy?.requires_preapproval_above)
 	);
-	let per_diem_amount = $state<number | null>(policy?.per_diem_amount ?? null);
+	let per_diem_amount = $state<string | null>(moneyText(policy?.per_diem_amount));
 	let mileage_rate = $state<number | null>(policy?.mileage_rate ?? null);
 	/* eslint-enable svelte/state-referenced-locally */
 
 	let saving = $state(false);
 
-	// Money / rate inputs use value={x ?? ''} + oninput numOrNull (NOT bind:value)
-	// so an empty field stays null — the Decimal-safe pattern (ExpenseModal:58-62).
-	// A null limit means "no limit", which the backend engine must not read as 0.
+	// Money / rate inputs use value={x ?? ''} + oninput (NOT bind:value) so an
+	// empty field stays null — a null limit means "no limit", which the backend
+	// engine must not read as 0.
+	//
+	// The four MONEY thresholds hold the raw decimal text all the way to the
+	// wire (`schemas/expense.py` declares each a `Decimal`; a fractional JSON
+	// number is already a float by the time pydantic sees it). `mileage_rate`
+	// stays numeric — it is a rate the engine multiplies by miles, not an
+	// amount rendered as currency.
 	function numOrNull(v: unknown): number | null {
 		if (v === '' || v === null || v === undefined) return null;
 		const n = parseFloat(String(v));
 		return Number.isFinite(n) ? n : null;
 	}
 
+	/** Seed a text money field from whatever shape the response carried. */
+	function moneyText(value: MoneyAmount): string | null {
+		return value === null || value === undefined || value === '' ? null : String(value);
+	}
+
 	async function handleSave() {
 		if (!name.trim()) return;
+		// A threshold we cannot read is REFUSED, never sent as `null` — the
+		// engine reads a null threshold as "no limit", so a mistyped cap would
+		// silently switch the rule off rather than fail.
+		const thresholds = [
+			category_limit,
+			requires_receipt_above,
+			requires_preapproval_above,
+			per_diem_amount
+		];
+		if (thresholds.some((t) => t !== null && !isMoneyInput(t))) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		saving = true;
 		try {
 			const payload: ExpensePolicyCreate = {
@@ -120,7 +146,7 @@
 					step="0.01"
 					min="0"
 					value={category_limit ?? ''}
-					oninput={(e) => (category_limit = numOrNull(e.currentTarget.value))}
+					oninput={(e) => (category_limit = e.currentTarget.value.trim() || null)}
 					disabled={!canEdit}
 				/>
 			</label>
@@ -131,7 +157,7 @@
 					step="0.01"
 					min="0"
 					value={requires_receipt_above ?? ''}
-					oninput={(e) => (requires_receipt_above = numOrNull(e.currentTarget.value))}
+					oninput={(e) => (requires_receipt_above = e.currentTarget.value.trim() || null)}
 					disabled={!canEdit}
 				/>
 			</label>
@@ -142,7 +168,7 @@
 					step="0.01"
 					min="0"
 					value={requires_preapproval_above ?? ''}
-					oninput={(e) => (requires_preapproval_above = numOrNull(e.currentTarget.value))}
+					oninput={(e) => (requires_preapproval_above = e.currentTarget.value.trim() || null)}
 					disabled={!canEdit}
 				/>
 			</label>
@@ -153,7 +179,7 @@
 					step="0.01"
 					min="0"
 					value={per_diem_amount ?? ''}
-					oninput={(e) => (per_diem_amount = numOrNull(e.currentTarget.value))}
+					oninput={(e) => (per_diem_amount = e.currentTarget.value.trim() || null)}
 					disabled={!canEdit}
 				/>
 			</label>

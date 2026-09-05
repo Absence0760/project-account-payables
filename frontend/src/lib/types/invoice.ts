@@ -1,3 +1,5 @@
+import type { MoneyAmount } from '$lib/utils/money';
+
 export type InvoiceStatus =
 	| 'new'
 	| 'pending'
@@ -141,9 +143,13 @@ export interface PoMatch {
 	match_type: 'none' | '2-way' | '3-way' | '4-way';
 	po_id: string | null;
 	po_number: string | null;
-	po_total: number | null;
+	// `services/po_matching.py::_json_safe` renders every Decimal on the
+	// persisted `invoices.po_match` JSONB down to a JSON number, so these
+	// arrive numeric — but they are money, and the variance in particular is a
+	// figure a reviewer reads, never one to recompute client-side.
+	po_total: MoneyAmount;
 	gr_id: string | null;
-	amount_variance: number;
+	amount_variance: MoneyAmount;
 	amount_variance_pct: number;
 	within_tolerance: boolean;
 	inspection_id: string | null;
@@ -166,7 +172,7 @@ export interface Invoice {
 	 */
 	vendor_id: string | null;
 	invoice_number: string;
-	amount: number;
+	amount: MoneyAmount;
 	currency: string;
 	invoice_date: string | null;
 	received_date: string | null;
@@ -174,10 +180,10 @@ export interface Invoice {
 	payment_terms: string | null;
 	status: InvoiceStatus;
 	po_number: string;
-	subtotal: number | null;
-	tax_amount: number | null;
-	discount_amount: number | null;
-	shipping_amount: number | null;
+	subtotal: MoneyAmount;
+	tax_amount: MoneyAmount;
+	discount_amount: MoneyAmount;
+	shipping_amount: MoneyAmount;
 	remit_to_address: string | null;
 	bill_to_address: string | null;
 	vendor_address: string | null;

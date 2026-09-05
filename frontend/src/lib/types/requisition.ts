@@ -1,3 +1,5 @@
+import type { MoneyAmount } from '$lib/utils/money';
+
 // Types for the Procurement / Requisitions surface. Mirrors the JSON returned
 // by the `/api/requisitions` endpoints (backend `RequisitionResponse` /
 // `RequisitionLineItemResponse`). Money fields arrive as numbers (backend
@@ -83,8 +85,14 @@ export interface RequisitionLineItem {
 	item_code: string | null;
 	description: string | null;
 	quantity: number | null;
+	// NOT YET `MoneyAmount`: `RequisitionModal`'s per-line preview multiplies
+	// `quantity * unit_price`, and there is no exact multiply helper in
+	// `utils/money.ts` (only `sumMoney`). Retyping the price without one would
+	// force either a cast or a `parseMoneyForLayout` used outside its stated
+	// geometry-only contract. See the follow-up note in the round report.
 	unit_price: number | null;
-	total: number | null;
+	/** Server-computed line total (`float` on the wire — `schemas/requisition.py`). */
+	total: MoneyAmount;
 	gl_account_id: string | null;
 	uom: string | null;
 }
@@ -101,7 +109,8 @@ export interface Requisition {
 	vendor_id: string | null;
 	contract_id: string | null;
 	budget_id: string | null;
-	total: number;
+	/** Header total, derived server-side as `sum(quantity * unit_price)`. */
+	total: MoneyAmount;
 	currency: string;
 	notes: string | null;
 	submitted_at: string | null;
@@ -150,7 +159,8 @@ export interface ConvertToPoResult {
 	requisition_id: string;
 	po_id: string;
 	po_number: string;
-	total: number;
+	/** The created PO's money total. */
+	total: MoneyAmount;
 	created: boolean;
 }
 

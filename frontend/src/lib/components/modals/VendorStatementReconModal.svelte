@@ -26,6 +26,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import {
 		createReconciliation,
 		uploadReconciliation,
@@ -89,12 +90,6 @@
 
 	let saving = $state(false);
 	let busyLineId = $state<string | null>(null);
-
-	function numOrNull(v: unknown): number | null {
-		if (v === '' || v === null || v === undefined) return null;
-		const n = parseFloat(String(v));
-		return Number.isFinite(n) ? n : null;
-	}
 
 	function addLine() {
 		lines = [...lines, { invoice_number: '', amount: null, invoice_date: '' }];
@@ -161,6 +156,14 @@
 
 	async function handleCreate() {
 		if (!canSubmit) return;
+		// A typed statement amount goes to the wire as the exact decimal text —
+		// it is the figure a mismatch is classified against, so an amount we
+		// cannot read is REFUSED, never quietly sent as `null` (which the
+		// reconciler reads as a line with no amount and matches on nothing).
+		if (payloadLines.some((l) => l.amount !== null && normalizeMoneyInput(l.amount) === null)) {
+			intakeError = m('common.amountInvalid');
+			return;
+		}
 		saving = true;
 		intakeError = null;
 		try {
@@ -358,7 +361,7 @@
 								step="0.01"
 								min="0"
 								value={line.amount ?? ''}
-								oninput={(e) => (line.amount = numOrNull(e.currentTarget.value))}
+								oninput={(e) => (line.amount = e.currentTarget.value.trim() || null)}
 								placeholder="0.00"
 								aria-label={m('vendorStatements.modal.lineAmountAria', { n: idx + 1 })}
 								disabled={!canEdit}

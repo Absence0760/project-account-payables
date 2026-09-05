@@ -16,6 +16,8 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import type { MoneyAmount } from '$lib/utils/money';
+	import { isMoneyInput } from '$lib/utils/moneyInput';
 	import {
 		createContract,
 		updateContract,
@@ -58,8 +60,8 @@
 	let description = $state(contract?.description ?? '');
 	let contract_type = $state<ContractType>(contract?.contract_type ?? 'service');
 	let currency = $state(contract?.currency ?? 'USD');
-	let total_value = $state<number | null>(contract?.total_value ?? null);
-	let spend_limit = $state<number | null>(contract?.spend_limit ?? null);
+	let total_value = $state<string | null>(moneyText(contract?.total_value));
+	let spend_limit = $state<string | null>(moneyText(contract?.spend_limit));
 	let not_to_exceed = $state(contract?.not_to_exceed ?? false);
 	let start_date = $state(contract?.start_date ?? '');
 	let end_date = $state(contract?.end_date ?? '');
@@ -123,6 +125,34 @@
 		return Number.isFinite(n) ? n : null;
 	}
 
+	/**
+	 * Every money field this modal EDITS holds the raw decimal text the user
+	 * typed, all the way to the wire.
+	 *
+	 * `schemas/contract.py` declares each of them `Decimal`, and `json.loads`
+	 * has already collapsed a fractional JSON number to a float by the time
+	 * pydantic sees it — the rounding cannot be undone server-side. The
+	 * contract's `total_value` / `spend_limit` are what the not-to-exceed gate
+	 * measures spend against, so this is a control value, not a display one.
+	 */
+	function moneyText(value: MoneyAmount): string | null {
+		return value === null || value === undefined || value === '' ? null : String(value);
+	}
+
+	/**
+	 * Every editable money field on the form, for the one save-time shape check.
+	 *
+	 * `String(...)` because a line item's `unit_price` / `total` arrive from the
+	 * server (as pydantic's exact decimal string) rather than from this form —
+	 * the money grammar reads text, and coercing keeps a numeric wire value
+	 * from throwing inside the guard.
+	 */
+	function unreadableMoney(...values: MoneyAmount[]): boolean {
+		return values.some(
+			(v) => v !== null && v !== undefined && v !== '' && !isMoneyInput(String(v))
+		);
+	}
+
 	function buildPayload() {
 		return {
 			contract_number: contract_number.trim(),
@@ -161,6 +191,16 @@
 
 	async function handleSave() {
 		if (!contract_number.trim() || !vendor_id) return;
+		if (
+			unreadableMoney(
+				total_value,
+				spend_limit,
+				...lineItems.flatMap((li) => [li.unit_price, li.total])
+			)
+		) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		saving = true;
 		try {
 			const saved = isCreate
@@ -225,11 +265,15 @@
 	// --- Renew form ---
 	let showRenew = $state(false);
 	let renewEndDate = $state('');
-	let renewTotalValue = $state<number | null>(null);
-	let renewSpendLimit = $state<number | null>(null);
+	let renewTotalValue = $state<string | null>(null);
+	let renewSpendLimit = $state<string | null>(null);
 
 	async function handleRenew() {
 		if (!contract || !renewEndDate) return;
+		if (unreadableMoney(renewTotalValue, renewSpendLimit)) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		busy = true;
 		try {
 			const updated = await renewContract(contract.id, {
@@ -250,10 +294,14 @@
 	// --- Create PO form ---
 	let showCreatePo = $state(false);
 	let poNumber = $state('');
-	let poTotal = $state<number | null>(null);
+	let poTotal = $state<string | null>(null);
 
 	async function handleCreatePo() {
 		if (!contract) return;
+		if (unreadableMoney(poTotal)) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		busy = true;
 		try {
 			const po = await createPoFromContract(contract.id, {
@@ -327,7 +375,7 @@
 					step="0.01"
 					min="0"
 					value={total_value ?? ''}
-					oninput={(e) => (total_value = numOrNull(e.currentTarget.value))}
+					oninput={(e) => (total_value = e.currentTarget.value.trim() || null)}
 					disabled={!canEdit}
 				/>
 			</label>
@@ -338,7 +386,7 @@
 					step="0.01"
 					min="0"
 					value={spend_limit ?? ''}
-					oninput={(e) => (spend_limit = numOrNull(e.currentTarget.value))}
+					oninput={(e) => (spend_limit = e.currentTarget.value.trim() || null)}
 					disabled={!canEdit}
 				/>
 			</label>
@@ -445,8 +493,8 @@
 								<td class="li-num">{idx + 1}</td>
 								<td><input type="text" class="li-input" aria-label={m('contracts.modal.line.descriptionAria', { n: idx + 1 })} value={li.description ?? ''} oninput={(e) => updateLine(idx, 'description', e.currentTarget.value)} disabled={!canEdit} /></td>
 								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.quantityAria', { n: idx + 1 })} value={li.quantity ?? ''} oninput={(e) => updateLine(idx, 'quantity', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.unitPriceAria', { n: idx + 1 })} value={li.unit_price ?? ''} oninput={(e) => updateLine(idx, 'unit_price', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.totalAria', { n: idx + 1 })} value={li.total ?? ''} oninput={(e) => updateLine(idx, 'total', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.unitPriceAria', { n: idx + 1 })} value={li.unit_price ?? ''} oninput={(e) => updateLine(idx, 'unit_price', e.currentTarget.value.trim() || null)} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.totalAria', { n: idx + 1 })} value={li.total ?? ''} oninput={(e) => updateLine(idx, 'total', e.currentTarget.value.trim() || null)} disabled={!canEdit} /></td>
 								<td><input type="text" class="li-input li-gl" aria-label={m('contracts.modal.line.glAria', { n: idx + 1 })} value={li.gl_account ?? ''} oninput={(e) => updateLine(idx, 'gl_account', e.currentTarget.value)} disabled={!canEdit} /></td>
 								{#if canEdit}
 									<td><button type="button" class="li-delete" aria-label={m('contracts.modal.line.removeAria', { n: idx + 1 })} onclick={() => removeLine(idx)}>&times;</button></td>
@@ -489,11 +537,11 @@
 					</label>
 					<label>
 						<span>{m('contracts.modal.renew.totalValue')}</span>
-						<input type="number" step="0.01" min="0" value={renewTotalValue ?? ''} oninput={(e) => (renewTotalValue = numOrNull(e.currentTarget.value))} />
+						<input type="number" step="0.01" min="0" value={renewTotalValue ?? ''} oninput={(e) => (renewTotalValue = e.currentTarget.value.trim() || null)} />
 					</label>
 					<label>
 						<span>{m('contracts.modal.renew.spendLimit')}</span>
-						<input type="number" step="0.01" min="0" value={renewSpendLimit ?? ''} oninput={(e) => (renewSpendLimit = numOrNull(e.currentTarget.value))} />
+						<input type="number" step="0.01" min="0" value={renewSpendLimit ?? ''} oninput={(e) => (renewSpendLimit = e.currentTarget.value.trim() || null)} />
 					</label>
 				</div>
 				<div class="sub-form-actions">
@@ -516,7 +564,7 @@
 					</label>
 					<label>
 						<span>{m('contracts.modal.createPo.total')}</span>
-						<input type="number" step="0.01" min="0" value={poTotal ?? ''} oninput={(e) => (poTotal = numOrNull(e.currentTarget.value))} />
+						<input type="number" step="0.01" min="0" value={poTotal ?? ''} oninput={(e) => (poTotal = e.currentTarget.value.trim() || null)} />
 					</label>
 				</div>
 				<div class="sub-form-actions">

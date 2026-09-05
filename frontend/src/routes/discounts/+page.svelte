@@ -11,6 +11,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import type { MoneyAmount } from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -102,7 +103,7 @@
 	// `orgCurrency` remains the fallback for the pre-load render, where every
 	// figure is still 0.
 	function aggMoney(
-		n: number | null | undefined,
+		n: MoneyAmount,
 		currency: string | null | undefined
 	): string {
 		return formatMoney(n ?? 0, { currency: currency || orgCurrency.currency, whole: true });

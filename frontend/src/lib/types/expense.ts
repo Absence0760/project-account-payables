@@ -3,7 +3,7 @@
 // `ExpenseResponse` / `ExpenseReportResponse`). Money fields arrive as
 // numbers (backend `float(...)`); date/datetime fields are ISO strings.
 
-import type { MoneyString } from '$lib/utils/money';
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type ExpenseStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'reimbursed';
 
@@ -140,7 +140,7 @@ export interface Expense {
 	merchant: string | null;
 	category: string | null;
 	description: string | null;
-	amount: number;
+	amount: MoneyAmount;
 	currency: string;
 	// Rate-locked expression of `amount` in the owning report's currency
 	// (issue #157). Exact decimal STRINGS — never parse into a float for
@@ -202,7 +202,7 @@ export interface ExpenseReport {
 	submitted_at: string | null;
 	approved_at: string | null;
 	approved_by: string | null;
-	total_amount: number;
+	total_amount: MoneyAmount;
 	// Exact `total_amount` (in `currency`) as a decimal string.
 	total_amount_exact: string;
 	currency: string;
@@ -230,7 +230,7 @@ export interface ExpenseReportListResponse {
 export interface ExpenseSummaryBucket {
 	category?: string | null;
 	status?: string | null;
-	total: number;
+	total: MoneyAmount;
 	// Exact `total` as a decimal string.
 	total_exact: string;
 	// Lines with no usable rate lock — EXCLUDED from `total`.
@@ -250,7 +250,7 @@ export interface ExpenseCurrencyBucket {
 }
 
 export interface ExpenseReportSummary {
-	total: number;
+	total: MoneyAmount;
 	// Exact `total`, denominated in `currency` — the report's own currency.
 	// Every figure here is converted at each line's LOCKED rate, never a naive
 	// cross-currency sum (issue #157).
@@ -279,7 +279,8 @@ export interface ExpenseCreate {
 	merchant: string | null;
 	category: string | null;
 	description: string | null;
-	amount: number;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	amount: MoneyString;
 	currency: string;
 	gl_account_id: string | null;
 	payment_method: string;
@@ -313,12 +314,15 @@ export interface ExpensePolicy {
 	 * time) — the unit a bare threshold number has always implicitly had.
 	 */
 	threshold_currency: string | null;
-	per_diem_amount: number | null;
+	per_diem_amount: MoneyAmount;
 	per_diem_currency: string | null;
+	// A money-PER-MILE rate, not an amount: the policy engine flags a claim
+	// that isn't `miles x rate`, so this is a factor in that product rather
+	// than a figure the UI renders as currency.
 	mileage_rate: number | null;
-	category_limit: number | null;
-	requires_preapproval_above: number | null;
-	requires_receipt_above: number | null;
+	category_limit: MoneyAmount;
+	requires_preapproval_above: MoneyAmount;
+	requires_receipt_above: MoneyAmount;
 	rules: unknown | null;
 	created_at: string;
 	updated_at: string;
@@ -329,10 +333,11 @@ export interface ExpensePolicyCreate {
 	active: boolean;
 	category: string | null;
 	threshold_currency: string | null;
-	category_limit: number | null;
-	requires_receipt_above: number | null;
-	requires_preapproval_above: number | null;
-	per_diem_amount: number | null;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	category_limit: MoneyString | null;
+	requires_receipt_above: MoneyString | null;
+	requires_preapproval_above: MoneyString | null;
+	per_diem_amount: MoneyString | null;
 	mileage_rate: number | null;
 }
 
@@ -356,7 +361,7 @@ export interface ExpensePreapproval {
 	id: string;
 	requester_user_id: string;
 	title: string;
-	estimated_amount: number;
+	estimated_amount: MoneyAmount;
 	currency: string;
 	category: string | null;
 	justification: string | null;
@@ -370,7 +375,8 @@ export interface ExpensePreapproval {
 
 export interface ExpensePreapprovalCreate {
 	title: string;
-	estimated_amount: number;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	estimated_amount: MoneyString;
 	currency: string;
 	category: string | null;
 	justification: string | null;
@@ -403,7 +409,7 @@ export interface CorporateCardTransaction {
 	txn_date: string;
 	posted_date: string | null;
 	merchant: string | null;
-	amount: number;
+	amount: MoneyAmount;
 	currency: string;
 	external_txn_id: string | null;
 	matched_expense_id: string | null;

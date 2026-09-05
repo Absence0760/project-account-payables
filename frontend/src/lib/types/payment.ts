@@ -1,3 +1,5 @@
+import type { MoneyAmount } from '$lib/utils/money';
+
 // Mirrors the statuses the backend actually persists on `payments.status`.
 // `pending_compliance` is the parking state the sanctions/KYC gate
 // (`services/compliance.check_payment_compliance`) leaves a payment in — it
@@ -75,7 +77,8 @@ export interface Payment {
 	correlation_id: string | null;
 	invoice_id: string;
 	payment_run_id: string | null;
-	amount: number;
+	/** `schemas/payment.py::PaymentResponse.amount` is `MoneyAmount` — a JSON number on the wire. */
+	amount: MoneyAmount;
 	method: PaymentMethod | null;
 	status: PaymentStatus;
 	reference: string | null;
@@ -91,7 +94,7 @@ export interface Payment {
 export interface PaymentRun {
 	id: string;
 	status: string;
-	total_amount: number | null;
+	total_amount: MoneyAmount;
 	initiated_by: string | null;
 	executed_at: string | null;
 	created_at: string;
