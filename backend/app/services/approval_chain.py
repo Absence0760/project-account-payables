@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -145,6 +146,97 @@ def _to_decimal(value) -> Decimal | None:
         return None
 
 
+# ------------------------------------------------------------------
+# What a money threshold is measured against
+# ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GateAmount:
+    """An amount as a money GATE must see it — in the currency the thresholds
+    are denominated in, or an explicit declaration that it could not be.
+
+    Every approval money control in this codebase (``max_invoice_amount``,
+    ``require_cfo_above``, ``auto_approve_below``, and the approval chain's
+    per-level ``min_amount`` / ``max_amount`` bands) is a **bare number** on a
+    JSONB config with no currency of its own. It is denominated in the org's
+    **reporting currency** — the same convention
+    ``payments.cfo_approval_above`` follows (see
+    ``services/payment_controls.cfo_approval_decision``) and
+    ``settings.expense_approval.cfo_threshold`` follows. Comparing one against
+    a raw ``Invoice.amount`` billed in another currency is not a comparison at
+    all: a GBP 9,000 invoice reads as under a 10,000 gate it is USD 11,400
+    above.
+
+    ``expressible=False`` says the amount could NOT be put into that currency
+    (no FX rate locked on the invoice row, or a lock that provably describes a
+    different currency pair). Every consumer treats it as **fail closed** — the
+    gate fires, the chain level applies, the auto-approve floor does not — never
+    as a licence to compare bare numbers. It exists as a value rather than a
+    convention because there are five of these comparisons and a convention is
+    what the sixth one forgets.
+
+    Build it with ``reporting_gate_amount``; a plain ``Decimal`` is still
+    accepted everywhere and means "already in the gate currency", which is what
+    a single-currency tenant and a pre-converted total (the expense-report
+    path) both are.
+    """
+
+    amount: Decimal
+    currency: str = ""
+    expressible: bool = True
+
+
+def _coerce_gate_amount(value) -> GateAmount:
+    """Normalise a gate operand to ``GateAmount``.
+
+    A bare number is taken at face value in the gate currency — the correct and
+    unchanged reading for a single-currency tenant, and for a caller that has
+    already converted. ``None`` / unparseable reads as 0, matching
+    ``resolve_applicable_levels``'s long-standing behaviour."""
+    if isinstance(value, GateAmount):
+        return value
+    return GateAmount(amount=_to_decimal(value) or Decimal(0))
+
+
+def reporting_gate_amount(invoice, *, amount=None, org_settings: dict | None) -> GateAmount:
+    """Express ``amount`` (default: ``invoice.amount``) in the org's reporting
+    currency, at the rate already **locked on the invoice row**.
+
+    ``amount`` is whatever figure the gate is really about — the bare invoice
+    amount, the structuring aggregate (``structuring.vendor_recent_spend`` is
+    scoped to the invoice's own currency, so the sum is single-currency and one
+    rate prices all of it), or a reconciled PO total. It must be denominated in
+    the INVOICE's currency; this converts it once.
+
+    No FX call is made. The rate comes from
+    ``invoice_warnings._refresh_reporting_amount``, which every write path runs
+    through ``refresh_warnings``. Fetching a rate here instead would make the
+    same invoice pass or fail a control depending on the minute it was
+    evaluated, and would let a market move retroactively change a decision
+    already recorded on the audit trail.
+
+    Never raises: an invoice with no usable lock comes back
+    ``expressible=False``, which every gate reads as fail-closed.
+    """
+    from app.services.currency_conversion import (
+        reporting_amount_at_locked_rate,
+        resolve_reporting_currency,
+    )
+
+    reporting_currency = resolve_reporting_currency(org_settings)
+    raw = _to_decimal(getattr(invoice, "amount", None) if amount is None else amount) or Decimal(0)
+    converted, unconverted = reporting_amount_at_locked_rate(
+        amount=raw,
+        currency=getattr(invoice, "currency", None),
+        reporting_currency=reporting_currency,
+        persisted_reporting_currency=getattr(invoice, "reporting_currency", None),
+        persisted_reporting_source_currency=getattr(invoice, "reporting_source_currency", None),
+        persisted_fx_rate=getattr(invoice, "reporting_fx_rate", None),
+    )
+    return GateAmount(amount=converted, currency=reporting_currency, expressible=not unconverted)
+
+
 def finite_money_threshold(value) -> Decimal | None:
     """The usable Decimal a configured money threshold denotes, or ``None``.
 
@@ -165,19 +257,25 @@ def finite_money_threshold(value) -> Decimal | None:
     return threshold
 
 
-def _money_gate_applies(threshold_raw, amount: Decimal, *, gate: str, consequence: str) -> bool:
+def _money_gate_applies(threshold_raw, amount, *, gate: str, consequence: str) -> bool:
     """Shared fail-CLOSED body behind ``cfo_gate_applies`` / ``max_amount_gate_applies``.
 
     - threshold explicitly unset (``None``) → ``False`` (no gate configured).
-    - threshold usable and ``amount > threshold`` → ``True``.
     - threshold present but unusable (see ``finite_money_threshold``) → ``True``.
       A configured-but-malformed money control must fire, never silently skip
       itself — the only safe direction. The malformed value is logged PII-free
       (it is a money threshold, not a secret) so an admin can fix it, and we
       never raise, so one bad settings write can't brick the approval queue with
       a 500.
+    - amount not expressible in the gate's currency (see ``GateAmount``) →
+      ``True``. There is no comparison to make, and the two ways of having no
+      comparison — a broken threshold and an unpriceable amount — must fail the
+      same direction. Comparing the raw figures instead is how a JPY 1,000,000
+      invoice clears a 10,000 gate.
+    - otherwise ``amount > threshold``.
 
-    Amount comparison is exact-Decimal (money is never float).
+    ``amount`` is a ``GateAmount`` or a bare number meaning "already in the gate
+    currency". Comparison is exact-Decimal (money is never float).
     """
     if threshold_raw is None:
         return False
@@ -190,7 +288,17 @@ def _money_gate_applies(threshold_raw, amount: Decimal, *, gate: str, consequenc
             consequence,
         )
         return True
-    return amount > threshold
+    gate_amount = _coerce_gate_amount(amount)
+    if not gate_amount.expressible:
+        logger.warning(
+            "%s money threshold cannot be compared — the amount is not expressible in %s "
+            "(no locked FX rate for this row); %s (fail-closed)",
+            gate,
+            gate_amount.currency or "the reporting currency",
+            consequence,
+        )
+        return True
+    return gate_amount.amount > threshold
 
 
 def cfo_gate_applies(threshold_raw, amount: Decimal) -> bool:
@@ -233,7 +341,7 @@ def max_amount_gate_applies(threshold_raw, amount: Decimal) -> bool:
 
 def resolve_applicable_levels(
     chain: list[dict],
-    amount: Decimal | int | float | str,
+    amount: GateAmount | Decimal | int | float | str,
     *,
     invoice_attrs: dict | None = None,
 ) -> list[dict]:
@@ -249,21 +357,39 @@ def resolve_applicable_levels(
     Decimal, so a boundary invoice never mis-routes to the wrong approver tier
     on binary-float drift.
 
+    The band bounds are bare numbers denominated in the org's **reporting
+    currency**, like every other approval money threshold — so ``amount`` should
+    be a ``GateAmount`` from ``reporting_gate_amount``. When it reports
+    ``expressible=False`` the bands are **not applied at all** and every
+    routing-rule-matching level is returned: fail closed for a chain means MORE
+    approvers, since an empty result means no chain requirement. Filtering on
+    unpriceable figures could instead drop the senior level a large foreign
+    invoice was supposed to route to — the silent version of skipping the CFO.
+
     `invoice_attrs` keys map onto RoutingField (gl_account, cost_center,
     department, vendor_id). Callers should populate it from the Invoice
     row; missing keys behave like None and only match `ne` / `not_in`
     rules.
     """
     attrs = invoice_attrs or {}
-    amt = _to_decimal(amount) or Decimal(0)
+    gate_amount = _coerce_gate_amount(amount)
+    amt = gate_amount.amount
+    if not gate_amount.expressible:
+        logger.warning(
+            "approval-chain amount bands cannot be applied — the amount is not expressible "
+            "in %s (no locked FX rate for this row); every routing-matched level applies "
+            "(fail-closed)",
+            gate_amount.currency or "the reporting currency",
+        )
     applicable = []
     for level in chain:
-        min_amt = _to_decimal(level.get("min_amount"))
-        max_amt = _to_decimal(level.get("max_amount"))
-        if min_amt is not None and amt < min_amt:
-            continue
-        if max_amt is not None and amt > max_amt:
-            continue
+        if gate_amount.expressible:
+            min_amt = _to_decimal(level.get("min_amount"))
+            max_amt = _to_decimal(level.get("max_amount"))
+            if min_amt is not None and amt < min_amt:
+                continue
+            if max_amt is not None and amt > max_amt:
+                continue
         if not _level_routing_matches(level, attrs):
             continue
         applicable.append(level)

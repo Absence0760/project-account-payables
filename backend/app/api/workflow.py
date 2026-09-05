@@ -489,13 +489,12 @@ async def complete_invoice(
         # the invoice was silently approved. Handing in `{}` makes the code match
         # the rule this branch documents: on the manual-complete path the amount
         # floor is the only trigger that means anything.
-        from app.services.approval_chain import finite_money_threshold, violates_segregation
-        from app.services.currency_conversion import resolve_reporting_currency
-        from app.services.extraction import (
-            auto_approve_floor_amount,
-            decide_auto_approve,
-            resolve_gate_aggregate,
+        from app.services.approval_chain import (
+            finite_money_threshold,
+            reporting_gate_amount,
+            violates_segregation,
         )
+        from app.services.extraction import decide_auto_approve, resolve_gate_aggregate
 
         # The parsed floor: also what the success message formats, so the figure
         # shown can never diverge from the one compared against (and an unusable
@@ -513,20 +512,21 @@ async def complete_invoice(
         # uses (the structuring guard), so splitting a payable can't slip each
         # piece past the controls unattended.
         gate_aggregate = await resolve_gate_aggregate(db, invoice, org_settings=org.settings)
-        # `auto_approve_below` is a bare number denominated in the org's REPORTING
-        # currency (like `payments.cfo_approval_above`), so the floor is compared
-        # against the invoice expressed there — at the rate `refresh_warnings`
-        # above just locked onto the row, never one fetched now. An invoice we
-        # can't express there fails closed: the floor doesn't fire, a human reviews.
-        floor_amount, floor_unconverted = auto_approve_floor_amount(invoice, org.settings)
+        # `auto_approve_below` / `require_cfo_above` / `max_invoice_amount` are
+        # bare numbers denominated in the org's REPORTING currency (like
+        # `payments.cfo_approval_above`), so both operands are expressed there —
+        # at the rate `refresh_warnings` above just locked onto the row, never
+        # one fetched now. An invoice we can't express there fails closed: the
+        # floor doesn't fire and the CFO / max gates do. Either way, a human.
+        gate_amount = reporting_gate_amount(invoice, org_settings=org.settings)
         if decide_auto_approve(
             {},  # no extraction result here — see the note above
             approval_config,
             overall_confidence=0.0,
-            amount=invoice.amount,
-            aggregate_amount=gate_aggregate,
-            reporting_amount=floor_amount,
-            reporting_unconverted=floor_unconverted,
+            amount=gate_amount,
+            aggregate_amount=reporting_gate_amount(
+                invoice, amount=gate_aggregate, org_settings=org.settings
+            ),
         ) and not violates_segregation(invoice, user.id, approval_config):
             invoice.approval_date = utc_today()
             invoice.approved_by = "system (below threshold)"
@@ -562,7 +562,7 @@ async def complete_invoice(
                     # rather than assumed to be dollars: the threshold is
                     # denominated in the org's reporting currency.
                     f"Auto-approved (amount below the {auto_below:,.2f} "
-                    f"{resolve_reporting_currency(org.settings)} threshold)."
+                    f"{gate_amount.currency} threshold)."
                 ),
             }
 

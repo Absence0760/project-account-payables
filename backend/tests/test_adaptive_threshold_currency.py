@@ -12,6 +12,8 @@ two different, unstated ways:
     worth roughly 650 of the org's own currency; and
   * ``services/extraction.decide_auto_approve`` compared the same raw amount
     against the same bare number, so a ¥1,000,000 invoice read as "below 5,000".
+    (Its operands are now ``approval_chain.GateAmount``s — see
+    ``test_approval_gate_currency.py`` for the rest of that family.)
 
 Both now express the amount in the reporting currency at the rate already
 LOCKED on the invoice row (never one fetched at gate time), matching the
@@ -42,8 +44,9 @@ from app.services.adaptive_workflows import (
     derive_suggestions,
     recommend_auto_approve_threshold,
 )
+from app.services.approval_chain import GateAmount, reporting_gate_amount
 from app.services.currency_conversion import resolve_reporting_currency
-from app.services.extraction import auto_approve_floor_amount, decide_auto_approve
+from app.services.extraction import decide_auto_approve
 
 # JPY -> USD, the rate the invoice row locked at approval time.
 _JPY_USD = Decimal("0.0065")
@@ -221,15 +224,13 @@ def test_gate_fails_closed_when_the_amount_is_not_expressible():
     can't be expressed in the currency the floor is denominated in."""
     approval_cfg = {"auto_approve_below": "5000"}
 
-    # Same numbers, convertible: the floor fires.
+    # Expressible: the floor fires on the converted figure.
     assert (
         decide_auto_approve(
             {},
             approval_cfg,
             overall_confidence=0.0,
-            amount=Decimal("1000000"),
-            reporting_amount=Decimal("650.00"),
-            reporting_unconverted=False,
+            amount=GateAmount(Decimal("650.00"), "USD", True),
         )
         is True
     )
@@ -240,9 +241,7 @@ def test_gate_fails_closed_when_the_amount_is_not_expressible():
             {},
             approval_cfg,
             overall_confidence=0.0,
-            amount=Decimal("1000000"),
-            reporting_amount=Decimal("1000000"),
-            reporting_unconverted=True,
+            amount=GateAmount(Decimal("1000000"), "USD", False),
         )
         is False
     )
@@ -259,9 +258,7 @@ def test_gate_compares_the_reporting_amount_not_the_billed_amount():
             {},
             approval_cfg,
             overall_confidence=0.0,
-            amount=Decimal("1000000"),
-            reporting_amount=Decimal("6500.00"),
-            reporting_unconverted=False,
+            amount=GateAmount(Decimal("6500.00"), "USD", True),
         )
         is False
     )
@@ -287,8 +284,8 @@ def test_floor_amount_and_recommendation_share_one_reporting_currency():
         reporting_source_currency="JPY",
         reporting_fx_rate=Decimal("0.0060"),
     )
-    floor_amount, unconverted = auto_approve_floor_amount(invoice, org_settings)
-    assert (floor_amount, unconverted) == (Decimal("600.00"), False)
+    gate = reporting_gate_amount(invoice, org_settings=org_settings)
+    assert (gate.amount, gate.currency, gate.expressible) == (Decimal("600.00"), "EUR", True)
 
     # The recommendation the admin applies is denominated in the same currency
     # the gate just compared in — so applying it can't silently change units.
@@ -309,8 +306,8 @@ def test_floor_amount_fails_closed_when_the_row_lock_does_not_match():
         reporting_source_currency="GBP",  # stale: locked for GBP, not JPY
         reporting_fx_rate=Decimal("1.27"),
     )
-    _amount, unconverted = auto_approve_floor_amount(invoice, {"reporting_currency": "USD"})
-    assert unconverted is True
+    gate = reporting_gate_amount(invoice, org_settings={"reporting_currency": "USD"})
+    assert gate.expressible is False
 
 
 def test_same_currency_invoice_needs_no_lock():
@@ -322,7 +319,5 @@ def test_same_currency_invoice_needs_no_lock():
         reporting_source_currency=None,
         reporting_fx_rate=None,
     )
-    assert auto_approve_floor_amount(invoice, {"reporting_currency": "USD"}) == (
-        Decimal("1234.50"),
-        False,
-    )
+    gate = reporting_gate_amount(invoice, org_settings={"reporting_currency": "USD"})
+    assert (gate.amount, gate.expressible) == (Decimal("1234.50"), True)

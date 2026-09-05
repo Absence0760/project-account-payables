@@ -229,6 +229,14 @@ a stringified `Infinity`/`NaN` an insider tampered in to defeat the control)
 threshold auto-approve). The same fail-closed body backs the human-approval and
 expense-report CFO gates.
 
+All four resolvers express the gated figure in the org's **reporting currency**
+first, via `approval_chain.reporting_gate_amount` — the thresholds are bare
+numbers denominated there (see `workflow-design.md` § Approval Thresholds), so a
+foreign-currency invoice must not be gated on its billed figure. An invoice with
+no locked FX rate comes back `expressible=False`, which the shared gate body
+reads as fail-closed: the resolver escalates instead of self-approving past a
+control it could not evaluate.
+
 Each cap is read through **its own** named wrapper —
 `approval_chain.max_amount_gate_applies` for `max_invoice_amount`,
 `approval_chain.cfo_gate_applies` for `require_cfo_above`. The two share that
