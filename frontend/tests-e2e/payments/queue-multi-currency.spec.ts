@@ -3,6 +3,7 @@ import {
 	authedTenantHeaders,
 	deleteInvoicesWhere,
 	expect,
+	loadMoreUntilRow,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -75,6 +76,8 @@ test.describe('/payments queue — mixed-currency selection', () => {
 
 			const usdRow = page.locator('table tbody tr', { hasText: usdNumber });
 			const eurRow = page.locator('table tbody tr', { hasText: eurNumber });
+			await loadMoreUntilRow(page, usdRow);
+			await loadMoreUntilRow(page, eurRow);
 			await expect(usdRow).toBeVisible();
 			await expect(eurRow).toBeVisible();
 
@@ -129,14 +132,12 @@ test.describe('/payments queue — mixed-currency selection', () => {
 			await page.goto('/payments');
 			await page.locator('.tab', { hasText: 'Queue' }).click();
 
-			await page
-				.locator('table tbody tr', { hasText: a })
-				.locator('input[type="checkbox"]')
-				.check();
-			await page
-				.locator('table tbody tr', { hasText: b })
-				.locator('input[type="checkbox"]')
-				.check();
+			const rowA = page.locator('table tbody tr', { hasText: a });
+			const rowB = page.locator('table tbody tr', { hasText: b });
+			await loadMoreUntilRow(page, rowA);
+			await loadMoreUntilRow(page, rowB);
+			await rowA.locator('input[type="checkbox"]').check();
+			await rowB.locator('input[type="checkbox"]').check();
 
 			const count = page.getByTestId('pay-bar-count');
 			await expect(count).toContainText('2 selected');

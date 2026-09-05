@@ -3,6 +3,7 @@ import {
 	authedTenantHeaders,
 	deleteInvoicesWhere,
 	expect,
+	loadMoreUntilRow,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -223,6 +224,10 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 
 			const blockedRow = page.locator('table tbody tr', { hasText: blockedNumber });
 			const payableRow = page.locator('table tbody tr', { hasText: payableNumber });
+			// Page to them rather than assume page 1 — select-all below only ever
+			// covers LOADED rows, so the counts stay self-consistent either way.
+			await loadMoreUntilRow(page, blockedRow);
+			await loadMoreUntilRow(page, payableRow);
 			await expect(blockedRow).toBeVisible();
 			await expect(payableRow).toBeVisible();
 
@@ -271,6 +276,7 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 			await page.locator('.tab', { hasText: 'Queue' }).click();
 
 			const row = page.locator('table tbody tr', { hasText: number });
+			await loadMoreUntilRow(page, row);
 			await expect(row).toBeVisible();
 			await expect(row.getByTestId('queue-blocked-chip')).toContainText(
 				'Unresolved exception blocks payment'
@@ -304,6 +310,7 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 			await page.locator('.tab', { hasText: 'Queue' }).click();
 
 			const row = page.locator('table tbody tr', { hasText: number });
+			await loadMoreUntilRow(page, row);
 			await expect(row).toBeVisible();
 			const chip = row.getByTestId('queue-blocked-chip');
 			await expect(chip).toContainText('Earlier payment unreconciled');
@@ -345,6 +352,7 @@ test.describe('/payments queue — payment-blocking exceptions', () => {
 			await page.locator('.tab', { hasText: 'Queue' }).click();
 
 			const row = page.locator('table tbody tr', { hasText: number });
+			await loadMoreUntilRow(page, row);
 			await expect(row).toBeVisible();
 			const box = row.locator('input[type="checkbox"]');
 			// It must be selectable right now — that IS the stale view.

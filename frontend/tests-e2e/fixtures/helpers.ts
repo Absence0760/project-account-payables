@@ -3,7 +3,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { expect, test as base, type Browser, type Page } from '@playwright/test';
+import {
+	expect,
+	test as base,
+	type Browser,
+	type Locator,
+	type Page
+} from '@playwright/test';
 
 // `frontend/package.json` is `"type": "module"`, so the CommonJS
 // `__dirname` global isn't defined here. Recover it from
@@ -510,6 +516,41 @@ export function deleteInvoicesWhere(predicate: string, slug?: string): void {
 	);
 
 	tenantPsql(`DELETE FROM invoices WHERE ${predicate}`, slug);
+}
+
+/**
+ * Page a Load-more list until `row` is present, then leave it to the caller's
+ * own assertion.
+ *
+ * A spec that creates a row and asserts `expect(row).toBeVisible()` straight
+ * after the list loads is asserting something it never meant to: that the row
+ * landed in the FIRST page. That holds only while the tenant is nearly empty.
+ * The payments queue orders by `due_date ASC NULLS LAST, id` and pages at 20,
+ * and the full local seed (`pnpm seed`, no `--lean`) already leaves ~23
+ * payable invoices — so an API-created invoice with no due date sorts last and
+ * lands on page 2. CI runs `seed.py --lean` (10 invoices/tenant), which is why
+ * this only ever bit locally.
+ *
+ * The fix is to navigate to the row rather than assume its position: drive the
+ * list's own "Load more" control until the row appears or the list is
+ * exhausted. This is NOT a retry or a wait-longer — every step waits on a real
+ * signal (the row count growing), and a genuinely absent row still fails the
+ * caller's assertion, with the whole list loaded.
+ */
+export async function loadMoreUntilRow(page: Page, row: Locator): Promise<void> {
+	const rows = page.locator('table tbody tr');
+	const loadMore = page.locator('.btn-load-more');
+
+	// The first page has to be on screen before "is there more?" means anything.
+	await expect.poll(() => rows.count()).toBeGreaterThan(0);
+
+	// Terminates on any finite list: each click consumes one page and the
+	// control disappears once every row is loaded.
+	while ((await row.count()) === 0 && (await loadMore.count()) > 0) {
+		const before = await rows.count();
+		await loadMore.click();
+		await expect.poll(() => rows.count()).toBeGreaterThan(before);
+	}
 }
 
 /** Per-worker API origin. Specs that hit `${API_BASE}/api/...` directly

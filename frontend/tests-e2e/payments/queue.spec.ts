@@ -3,6 +3,7 @@ import {
 	authedTenantHeaders,
 	deleteInvoicesWhere,
 	expect,
+	loadMoreUntilRow,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -199,6 +200,10 @@ test.describe('/payments queue selection', () => {
 
 			const rowA = page.locator('table tbody tr', { hasText: `E2E-SUM-${stamp}-A` });
 			const rowB = page.locator('table tbody tr', { hasText: `E2E-SUM-${stamp}-B` });
+			// Page to the rows rather than assume they landed on page 1 — the
+			// queue orders by due date and pages at 20, and these carry none.
+			await loadMoreUntilRow(page, rowA);
+			await loadMoreUntilRow(page, rowB);
 			await expect(rowA).toBeVisible();
 			await expect(rowB).toBeVisible();
 
@@ -233,6 +238,8 @@ test.describe('/payments queue selection', () => {
 
 			const rowA = page.locator('table tbody tr', { hasText: `E2E-PAY-${stamp}-A` });
 			const rowB = page.locator('table tbody tr', { hasText: `E2E-PAY-${stamp}-B` });
+			await loadMoreUntilRow(page, rowA);
+			await loadMoreUntilRow(page, rowB);
 			await expect(rowA).toBeVisible();
 			await expect(rowB).toBeVisible();
 
