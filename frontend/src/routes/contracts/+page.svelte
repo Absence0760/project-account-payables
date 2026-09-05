@@ -31,7 +31,11 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { pruneSelection } from '$lib/utils/selection';
 	import { toggleSort, type SortOrder } from '$lib/utils/sort';
-	import type { MatchingIdsResponse } from '$lib/utils/pagination';
+	import {
+		fetchAllPages,
+		type MatchingIdsResponse,
+		type PagedResponse
+	} from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
@@ -274,10 +278,19 @@
 		loadVendors();
 	});
 
+	// These options ARE the set of valid choices, so a truncated fetch is not a
+	// shorter list — it is a supplier the operator cannot pick, with no search
+	// inside a native `<select>` to reach it. A bare `api.get('/api/vendors')`
+	// returns the server's DEFAULT_PAGE_SIZE of 20; the acme demo tenant alone
+	// has ~39 active vendors. Raising `page_size` only moves the cliff (the
+	// server caps it at MAX_PAGE_SIZE), so walk the envelope's own `total`.
 	async function loadVendors() {
 		try {
-			const data = await api.get<{ items: VendorOption[] }>('/api/vendors');
-			vendors = data.items;
+			vendors = await fetchAllPages<VendorOption>((page, pageSize) =>
+				api.get<PagedResponse<VendorOption>>(
+					`/api/vendors?page=${page}&page_size=${pageSize}`
+				)
+			);
 		} catch {
 			/* non-critical for the list view */
 		}
