@@ -270,6 +270,7 @@
 
 	$effect(() => {
 		loadOrg();
+		loadPlatformTenantUrl();
 		loadCustomDomains();
 		loadResidency();
 		loadChat();
@@ -392,6 +393,7 @@
 				brandAccentStrongColor = (brandCfg.accent_strong_color as string) || '';
 				brandSupportUrl = (brandCfg.support_url as string) || '';
 				brandLegalUrl = (brandCfg.legal_url as string) || '';
+				brandTenantUrlTemplate = (brandCfg.tenant_url_template as string) || '';
 			}
 		} catch {
 			toast(m('org.toast.loadFailed'), 'error');
@@ -663,7 +665,40 @@
 	let brandAccentStrongColor = $state('');
 	let brandSupportUrl = $state('');
 	let brandLegalUrl = $state('');
+	// Per-tenant base URL stamped into outbound emails (approval links, portal
+	// invites, signup confirmations). Empty ⇒ the platform default below.
+	// `{slug}` in the value is optional: substituted when present, used
+	// verbatim when not. See docs/white-label.md § Tenant URL.
+	let brandTenantUrlTemplate = $state('');
 	let savingBranding = $state(false);
+
+	// The PLATFORM default (`FEOH_TENANT_URL_TEMPLATE`), read from the public
+	// config route so the panel can show an admin what "leave this blank"
+	// actually resolves to rather than describing it in the abstract. The org
+	// override is what we save; this is only ever displayed.
+	let platformTenantUrlTemplate = $state('');
+
+	/** Resolve a `{slug}` template against this tenant. */
+	function resolveTenantUrl(template: string): string {
+		const t = (template || '').trim();
+		if (!t) return '';
+		return t.replace(/\{slug\}/g, org?.slug ?? '');
+	}
+
+	const defaultTenantUrl = $derived(resolveTenantUrl(platformTenantUrlTemplate));
+	const effectiveTenantUrl = $derived(
+		resolveTenantUrl(brandTenantUrlTemplate) || defaultTenantUrl
+	);
+
+	async function loadPlatformTenantUrl() {
+		try {
+			const cfg = await api.get<{ tenant_url_template?: string }>('/api/public-config');
+			platformTenantUrlTemplate = cfg.tenant_url_template ?? '';
+		} catch {
+			// Non-fatal: the field still saves, we just can't show the default.
+			platformTenantUrlTemplate = '';
+		}
+	}
 
 	const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 	// Default accent tokens (mirror src/app.css :root) so the color pickers show
@@ -695,6 +730,7 @@
 			[m('org.branding.label.logoUrl'), brandLogoUrl],
 			[m('org.branding.label.supportUrl'), brandSupportUrl],
 			[m('org.branding.label.legalUrl'), brandLegalUrl],
+			[m('org.branding.label.tenantUrl'), brandTenantUrlTemplate],
 		] as const) {
 			if (val.trim() && !/^https?:\/\//i.test(val.trim())) {
 				toast(m('org.branding.toast.urlInvalid', { label }), 'error');
@@ -710,6 +746,7 @@
 				accent_strong_color: brandAccentStrongColor.trim(),
 				support_url: brandSupportUrl.trim(),
 				legal_url: brandLegalUrl.trim(),
+				tenant_url_template: brandTenantUrlTemplate.trim(),
 			});
 			// Refresh the live brand store so the sidebar logo/name + theme update
 			// without a reload.
@@ -734,6 +771,12 @@
 	let savingDomains = $state(false);
 	// The host being removed is armed for a confirm-on-second-click.
 	let confirmRemoveDomain = $state<string | null>(null);
+	// A REFUSED add/remove, rendered as a persistent inline alert rather than a
+	// toast that fades. The backend's refusals are specific and actionable — a
+	// host already claimed by another tenant (409), or a host under the
+	// platform's own domain — and that message is the whole value of the
+	// response, so it stays on screen next to the field that caused it.
+	let domainSaveError = $state('');
 
 	// Mirror of the backend normalize_custom_domain: bare, lowercase hostname,
 	// no scheme / path / port / spaces. Returns null when there's nothing usable.
@@ -776,6 +819,7 @@
 	// re-reads the normalized result, and refreshes local state.
 	async function saveCustomDomains(next: string[]) {
 		savingDomains = true;
+		domainSaveError = '';
 		try {
 			const data = await api.put<{ custom_domains: string[] }>(
 				'/api/organization/branding/custom-domains',
@@ -784,7 +828,14 @@
 			customDomains = data.custom_domains ?? [];
 			return true;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : m('org.customDomains.toast.saveFailed'), 'error');
+			// `ApiError.message` is already `formatApiDetail`'d, so a 409
+			// ("already registered to another organization") or the
+			// platform-domain refusal reads as itself instead of a generic
+			// "Failed to save".
+			domainSaveError =
+				err instanceof Error && err.message
+					? err.message
+					: m('org.customDomains.toast.saveFailed');
 			return false;
 		} finally {
 			savingDomains = false;
@@ -794,11 +845,11 @@
 	async function addCustomDomain() {
 		const host = normalizeDomain(newDomain);
 		if (!host) {
-			toast(m('org.customDomains.toast.invalid'), 'error');
+			domainSaveError = m('org.customDomains.toast.invalid');
 			return;
 		}
 		if (customDomains.includes(host)) {
-			toast(m('org.customDomains.toast.duplicate'), 'error');
+			domainSaveError = m('org.customDomains.toast.duplicate');
 			return;
 		}
 		const ok = await saveCustomDomains([...customDomains, host]);
@@ -1241,6 +1292,31 @@
 							placeholder={m('org.branding.legalUrlPlaceholder')}
 						/>
 					</label>
+					<div class="full-width">
+						<label>
+							<span>{m('org.branding.tenantUrl')}</span>
+							<input
+								type="text"
+								bind:value={brandTenantUrlTemplate}
+								placeholder={defaultTenantUrl || m('org.branding.tenantUrlPlaceholder')}
+								autocomplete="off"
+								spellcheck="false"
+								aria-describedby="brand-tenant-url-hint"
+							/>
+						</label>
+						<p class="field-hint" id="brand-tenant-url-hint">
+							{m('org.branding.tenantUrlHint')}
+							<span class="tenant-url-effective" data-testid="tenant-url-effective">
+								{#if brandTenantUrlTemplate.trim()}
+									{m('org.branding.tenantUrlEffective', { url: effectiveTenantUrl })}
+								{:else if defaultTenantUrl}
+									{m('org.branding.tenantUrlDefault', { url: defaultTenantUrl })}
+								{:else}
+									{m('org.branding.tenantUrlDefaultUnknown')}
+								{/if}
+							</span>
+						</p>
+					</div>
 				</div>
 				<p class="card-hint">
 					{m('org.branding.strongHint')}
@@ -1257,12 +1333,22 @@
 				<p class="card-hint">
 					{m('org.customDomains.hint', { example: 'ap.acmecorp.com', slug: org?.slug ?? 'tenant' })}
 				</p>
+				<p class="card-hint">
+					{m('org.customDomains.setupHint', {
+						runbook: 'docs/founder-runbooks/custom-domain-provisioning.md'
+					})}
+				</p>
 
 				{#if loadingDomains}
 					<p class="card-hint">{m('org.customDomains.loading')}</p>
 				{:else if domainsError}
 					<p class="domain-error" role="alert">{domainsError}</p>
 				{:else}
+					{#if domainSaveError}
+						<p class="domain-error" role="alert" data-testid="custom-domain-error">
+							{domainSaveError}
+						</p>
+					{/if}
 					{#if customDomains.length === 0}
 						<p class="card-hint domain-empty">{m('org.customDomains.empty')}</p>
 					{:else}
@@ -2184,6 +2270,21 @@
 
 	.full-width {
 		grid-column: 1 / -1;
+	}
+
+	/* Per-field explanation sitting OUTSIDE the <label> (it is referenced by
+	   aria-describedby instead), so it describes the control without being
+	   swallowed into its accessible name. */
+	.field-hint {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		margin: 6px 0 0;
+		line-height: 1.5;
+	}
+
+	.tenant-url-effective {
+		display: block;
+		color: var(--text);
 	}
 
 	label {
