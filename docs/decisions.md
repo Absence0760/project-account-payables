@@ -2773,3 +2773,151 @@ up, at which point the manifest stops on its own. `audit_rows_overdue` is still
 
 The pair is the general rule: **an evidence trail must keep moving past one bad row,
 and must stop writing when it has nothing to say.**
+
+---
+
+## 70. The login-failure audit row is written off the response path
+
+**Decided:** 2026-09-04 · `backend/app/api/auth.py`, `backend/app/api/portal_auth.py`, `backend/app/services/audit_dispatch.py`
+
+`/api/auth/login` equalised the bcrypt cost with `dummy_verify()` on the
+unknown-address path, then reintroduced the same oracle one line later: a
+**known** address additionally `await`ed `dispatch_auth_audit`, which resolves
+the tenant DB from the control plane, opens a session, and commits an
+`auth.login.failure` row. An unknown address has no org, so it skipped all of
+it. Two rejections differing by a whole DB round trip:
+
+```
+KNOWN  : [check_rate_limit, check_auth_failures, password_hash_cost, record_auth_failure, dispatch_auth_audit]
+UNKNOWN: [check_rate_limit, check_auth_failures, password_hash_cost, record_auth_failure]
+```
+
+The supplier portal carried the same defect and **worse**: that request already
+holds a tenant session from `get_tenant_db`, but the audit helper opens its own
+*second* one to commit through. A third timing signature existed there too — a
+legacy vendor-user row with no `organization_id` returned from *inside* the
+helper, after the `await` had been entered, so it was neither the fast path nor
+the slow one.
+
+Both obvious fixes were unavailable: dropping the audit is worse, and padding
+the fast path is masking (guard rail 4). So the write moved **off the response
+path**, and both rejections were collapsed onto one shared tail — `_reject_login`
+/ `_reject_portal_login` — so they are identical *by construction* rather than
+by inspection: one awaited `record_auth_failure`, one non-awaited
+`queue_auth_audit`, one 401. `organization_id=None` is **passed**, not branched
+on, so an unknown address reaches the same call site.
+
+**`post_commit` is the wrong mechanism here, and that is the load-bearing
+detail.** It fires from SQLAlchemy's `after_commit`; a failed login raises
+`HTTPException`, so `get_control_db` rolls back and `after_rollback` drains and
+discards the queue *by design*. A row queued there would silently never be
+written. The trigger is `loop.create_task` — the same spawn mode `post_commit`
+itself uses — with a strong reference held so a running task cannot be collected
+mid-await.
+
+The guarantee is therefore weaker on purpose, and is stated rather than hidden:
+"written shortly after the response, **or reported at ERROR**". ERROR, not
+WARNING, because an auth audit row is SOX evidence and nothing retries it. A
+bounded 5-second drain runs in the lifespan's `finally`, **before**
+`dispose_all_engines()` — the queued write commits through the tenant engine
+that call disposes, so the reverse order would silently break every in-flight
+row. Bounded rather than unbounded because one hung write would otherwise block
+shutdown until an orchestrator SIGKILLs the process, losing every *other* queued
+row too; on expiry the abandoned **count** is logged PII-free.
+
+The rate-limit ordering is untouched: `check_auth_failures` still runs on the
+SHA-256 of the *submitted* identifier **before** the DB lookup, which is what
+makes an unknown address throttle identically.
+
+Only *failure* rows moved. `auth.login.success`, `auth.mfa.challenge_issued` and
+the SSO-only refusal all sit after a correct password, so none is an existence
+oracle; they still await.
+
+---
+
+## 71. Every approval threshold is denominated in the reporting currency, and they share one value
+
+**Decided:** 2026-09-04 · `backend/app/services/approval_chain.py`, `review.py`, `extraction.py`
+
+`auto_approve_below`, `require_cfo_above`, `max_invoice_amount` and the approval
+matrix's per-level amount bands were bare JSONB numbers that never declared a
+currency, compared against raw `Invoice.amount` in whatever currency the invoice
+was billed in.
+
+Measured against the pre-fix code: a **GBP 9,000 invoice — USD 11,403 at the
+rate locked on its own row — was approved by an `ap_manager` with no CFO
+signature** under a USD 10,000 `require_cfo_above`, and `resolve_applicable_levels`
+routed it to the manager tier of a chain whose senior level starts at 10,000.
+Separately, three spotless JPY 100,000 vendors (≈USD 650) pushed the
+auto-approve recommendation toward the USD 25,000 cap, so a ¥1,000,000 invoice
+read as "below 5,000" and auto-approved unattended.
+
+The denomination is the org's **reporting currency** — not a new convention, the
+one `payment_controls.cfo_approval_decision` and `expense_approval.cfo_threshold`
+already use. Both sides of every comparison convert through
+`currency_conversion.reporting_amount_at_locked_rate` at the rate already on the
+invoice row, never one fetched at read time (which would make the gate
+non-deterministic).
+
+**Converting one side alone is worse than converting neither**, so all five
+sites moved in one commit. They now share a *value* — `approval_chain.GateAmount`,
+carrying the figure in the gate currency **and** whether it could be established
+at all — rather than a shared spelling. A plain `Decimal` still means "already in
+the gate currency". The distinction matters because a convention is what the
+sixth comparison forgets; an AST drift guard fails any gate site that reverts to
+a raw amount.
+
+**Fail-closed is a different direction at each site, all pointing at a human:**
+the gates **fire**; the auto-approve floor does **not** fire; and the chain
+**skips its amount bands** so every routing-matched level applies. That last one
+is the trap — an empty chain result is *no chain requirement at all*, so
+filtering on unpriceable figures could drop the senior level, which is the silent
+version of skipping the CFO.
+
+The adaptive **anomaly baseline** made the opposite call deliberately: it
+**abstains** (emits `amount_comparison_unavailable`, still runs the approver and
+timing rules) because it is advisory and writes no warning or Exception row —
+there is nothing to fail closed *on*. `detect_invoice_anomaly`'s `amount` is now
+a required keyword-only argument with no default, so nothing can forget it.
+
+The UI followed in the same round: an admin typing `10000` into "Require CFO
+approval above" had no way to see which currency that was. Before the
+denomination was settled the number was merely ambiguous; afterwards it had a
+definite meaning the operator could not see, which is worse. Labels and hints
+now name the code, resolved at runtime from the org's reporting currency.
+
+---
+
+## 72. GL code uniqueness needs two partial indexes, and a dirty tenant fails loudly
+
+**Decided:** 2026-09-04 · `backend/alembic/versions/0088_gl_account_code_unique.py`
+
+`gl_accounts.entity_id` is multi-entity's deliberate exception: NULL means the
+account is **shared** across every entity, not "unstamped legacy row" as it does
+on invoices and vendors. NULLs never compare equal in a unique index, so the
+obvious `UNIQUE (organization_id, entity_id, code)` would enforce nothing at all
+on the shared chart — the exact place a duplicate is most damaging, since a
+shared account sits in every entity's effective chart.
+
+Splitting on the NULL-ness states the two rules separately and enforces both:
+`(organization_id, code) WHERE entity_id IS NULL` plus
+`(organization_id, entity_id, code) WHERE entity_id IS NOT NULL`. Rejected: one
+`UNIQUE (organization_id, code)` across the tenant, which would forbid two
+subsidiaries each running the standard `6000` — normal practice, and it would
+fail against existing data.
+
+The API guard is deliberately **broader** than the index: create refuses a code
+already visible in the caller's *effective* chart (shared ∪ selected entity),
+because that is the list a clerk codes an invoice from, whereas an index can only
+speak per-chart. The ERP sync upsert was matching on `(code, organization_id)`
+with no entity filter, so a sync run under entity B updated entity A's row rather
+than creating B's — contradicting the route's own docstring.
+
+**A tenant with pre-existing duplicates fails the migration loudly and changes
+nothing**, naming up to 20 offending groups. Contrast migration 0081, which
+auto-repairs over-claimed bank transactions because clearing a claim back to
+"unmatched" is visibly conservative. There is no equivalent here: duplicate GL
+rows differ in `name` / `account_type` / `is_active`, invoices already reference
+the code as free text, and picking a survivor silently discards chart
+configuration or re-labels spend booked under the other row. GL codes are org
+configuration, not PII, so naming them in the error is safe.
