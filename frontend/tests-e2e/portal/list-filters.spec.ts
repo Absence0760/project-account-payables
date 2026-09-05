@@ -1,6 +1,13 @@
 import type { Page } from '@playwright/test';
 
-import { currentTenantSlug, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
+import {
+	acceptConsent,
+	currentTenantSlug,
+	deleteInvoicesWhere,
+	expect,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Supplier-portal invoice + payment lists — status + invoice-number filters.
@@ -27,13 +34,7 @@ const PREFIX = 'E2E-FILT';
 test.use({ storageState: { cookies: [], origins: [] } });
 
 async function portalSignIn(page: Page) {
-	await page.addInitScript(() => {
-		try {
-			localStorage.setItem('feoh_consent_choice', 'accepted');
-		} catch {
-			/* about:blank — ignore */
-		}
-	});
+	await acceptConsent(page);
 	await page.goto('/portal/login');
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);

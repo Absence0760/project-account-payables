@@ -1,6 +1,13 @@
 import type { Page } from '@playwright/test';
 
-import { currentTenantSlug, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
+import {
+	acceptConsent,
+	currentTenantSlug,
+	deleteInvoicesWhere,
+	expect,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Supplier portal — a rejected invoice is no longer a dead end (issue #328).
@@ -28,13 +35,7 @@ const REASON = 'PO number is missing from the invoice header';
 test.use({ storageState: { cookies: [], origins: [] } });
 
 async function portalSignIn(page: Page) {
-	await page.addInitScript(() => {
-		try {
-			localStorage.setItem('feoh_consent_choice', 'accepted');
-		} catch {
-			/* ignore */
-		}
-	});
+	await acceptConsent(page);
 	await page.goto('/portal/login');
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
