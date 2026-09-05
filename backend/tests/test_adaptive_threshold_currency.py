@@ -207,9 +207,7 @@ async def test_unconvertible_rows_are_flagged_and_excluded_from_the_evidence():
     # at a guessed rate, and not one at face value.
     assert all(p.max_approved_amount == Decimal("0.00") for p in patterns)
 
-    rec = recommend_auto_approve_threshold(
-        patterns, current_threshold=Decimal("0"), currency="USD"
-    )
+    rec = recommend_auto_approve_threshold(patterns, current_threshold=Decimal("0"), currency="USD")
     assert rec.should_raise is False
     assert rec.reason_code == "insufficient_evidence"
     assert rec.qualifying_vendor_count == 0
