@@ -60,6 +60,15 @@ class AuthStore extends ChangeNotifier {
   // (same as viewing payments). CFO sign-off on over-threshold runs is a
   // separate server-side gate surfaced via `requires_cfo_approval`.
   bool get canManagePayments => isAdmin || isManager || isCfo;
+  // CFO sign-off on an over-threshold payment run — mirrors the backend
+  // `require_roles(ROLE_CFO)` on POST /api/payments/runs/{id}/approve. This is
+  // deliberately the STRICT cfo role, not `canManagePayments` and not "admin
+  // counts as CFO": `require_roles` does not special-case admin, so an admin
+  // without the cfo role would see the control and get a 403 on every tap —
+  // and widening the backend isn't the fix, because a sign-off an admin can
+  // grant themselves is not a sign-off. Mirrors the web app's
+  // `auth.hasRole('cfo')` on the same button.
+  bool get canApprovePaymentRun => isCfo;
   // Invoice field editing — mirrors the backend PATCH /api/invoices/{id} gate
   // (admin / ap_manager / cfo). Clerks are read-only here.
   bool get canEditInvoice => isAdmin || isManager || isCfo;

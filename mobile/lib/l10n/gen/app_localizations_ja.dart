@@ -826,6 +826,30 @@ class AppLocalizationsJa extends AppLocalizations {
   String get payRunActionCancel => 'キャンセル';
 
   @override
+  String get payRunActionApprove => 'CFOとして承認';
+
+  @override
+  String get payRunApproveTitle => '支払実行を承認しますか？';
+
+  @override
+  String payRunApproveBody(String date, int count, String amount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count件の支払',
+    );
+    return '$date に作成された実行の承認 — $_temp0、合計 $amount。これは実行を承認するものであり、送金は行いません。';
+  }
+
+  @override
+  String get payRunApproveConfirm => '承認';
+
+  @override
+  String payRunApproveFailed(String error) {
+    return '承認に失敗しました: $error';
+  }
+
+  @override
   String get payRunCfoBlocked => 'この実行を行うにはCFOの承認が必要です。';
 
   @override

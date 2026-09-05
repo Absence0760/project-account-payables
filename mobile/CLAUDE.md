@@ -40,6 +40,7 @@ mobile/
 │   ├── models/
 │   │   ├── user.dart            # User model with role helpers
 │   │   ├── audit_entry.dart     # AuditEntry + AuditFieldChange (invoice activity timeline; details.changes diff)
+│   │   ├── contract.dart        # Contract + ContractStatus enum (draft/active/expired/terminated/cancelled; isActionable gate on the lifecycle buttons)
 │   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states); isEditable mirrors backend IMMUTABLE_STATUSES, isFinanciallyLocked mirrors the narrower _FINANCIALLY_LOCKED_STATUSES ({approved} ∪ immutable) + kFinancialInvoiceFields / stripFinancialFields
 │   │   ├── mfa_challenge.dart    # MFAChallenge (login MFA-challenge response) — challengeToken + offered methods (totp/email) + mustEnroll
 │   │   ├── exception.dart       # ApException, ApExceptionStatus + ApExceptionSeverity enums
@@ -63,6 +64,7 @@ mobile/
 │   │   ├── exception_store.dart # Exception list, filter, resolve/escalate/dismiss + getById (detail) + assign (in-place row patch) + multi-select state + bulkResolve (offline cached)
 │   │   ├── notification_store.dart # In-app notification center — list (All/Unread filter), unread badge count, optimistic mark-read + read-all (offline cached)
 │   │   ├── dashboard_store.dart # Dashboard KPI data (offline cached)
+│   │   ├── contract_store.dart  # Contract list, status filter + search, activate/terminate/cancel (offline cached)
 │   │   ├── cash_flow_store.dart # Predictive cash-flow forecast + cash position (CFO/admin); 30/60/90-day horizon; not offline-cached (privileged fast-moving read)
 │   │   ├── locale_store.dart    # Per-device display-language choice (i18n) → MaterialApp.locale; persisted via secure storage, never account-roamed
 │   │   ├── vendor_store.dart    # Vendor list, filter/search, verify/reject, ERP sync (offline cached)
@@ -75,6 +77,8 @@ mobile/
 │   │   ├── dashboard_screen.dart # KPIs, aging, top vendors (app-bar: CashFlowButton + NotificationBell)
 │   │   ├── cash_flow_screen.dart # Predictive cash-flow forecast (CFO/admin) — KPI summary (opening/projected-end balance, committed/pending outflow), per-period forecast + running cash-position list, low-balance alert, 30/60/90-day horizon chips, pull-to-refresh
 │   │   ├── invoices_screen.dart  # Invoice list — search + status filters + advanced-search (tune) + camera + multi-select bulk delete/status (admin/ap_manager/cfo)
+│   │   ├── contracts_screen.dart # Contract list — search + status filter chips; tap a row → detail
+│   │   ├── contract_detail_screen.dart # Contract detail — terms/dates/value fields, spend-to-contract summary, line items, activate / terminate lifecycle actions (admin/ap_manager)
 │   │   ├── admin_users_screen.dart # Admin — user management: list/search users, edit roles (system roles), activate/deactivate (admin-only)
 │   │   ├── org_settings_screen.dart # Admin — organization settings: company profile + invoice defaults form (admin-only; ERP/payment/SSO secrets NOT surfaced)
 │   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + warnings/fraud + PO match + ERP status + activity timeline + file preview (image thumbnail / PDF card) → full viewer
@@ -97,6 +101,8 @@ mobile/
 │       ├── erp_status_panel.dart # Detail-screen ERP status — ErpInfo.fromAuditLog derives ERP reference / document id / send error from the audit log; shown for ERP-bound + ERP-failed statuses
 │       ├── invoice_file_viewer.dart # Full-screen uploaded-file viewer — images via Image.network (auth headers), PDFs fetched as bytes via ApiClient.getBytes + rendered with pdfx; isPdf/absoluteUrl helpers; loading/error/Retry states
 │       ├── invoice_edit_sheet.dart # Modal bottom-sheet edit form (vendor, invoice #, amount, PO, GL, description, due date); returns the partial diff; amount sent as string-Decimal; vendor + amount render read-only (with a lock notice) and are stripped from the diff once the invoice is financially locked
+│       ├── contract_list_tile.dart    # Contract row with number/title, vendor, value, status
+│       ├── contract_status_badge.dart # Colored contract status chip (draft/active/expired/terminated/cancelled)
 │       ├── status_badge.dart    # Colored invoice status chip
 │       ├── exception_status_badge.dart # Colored exception status chip (open/escalated/resolved/dismissed)
 │       ├── exception_list_tile.dart    # Exception row with type, invoice, severity, status
@@ -227,10 +233,12 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Approvals | `GET /api/invoices?status=ready_for_review` — a **server-side** filter into `InvoiceStore._pending`, with its own `SequencedFetch` token. It used to slice the Invoices tab's already-fetched page client-side, so tapping the *Paid* chip on Invoices made Approvals read "All caught up" while invoices sat awaiting review — and because both live in one `IndexedStack`, `initState` never re-fired and pull-to-refresh re-applied the same filter, so it could not self-correct. |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss), `POST /api/exceptions/bulk/resolve` (`{ids, action, resolution}` → `{updated, skipped:[{id,reason}]}`) |
 | Exception Detail | `GET /api/exceptions/{id}` (full row + invoice), `POST /api/exceptions/{id}/assign` (`{user_id}`, null = unassign), plus the resolve/bulk routes above. The assignee picker reuses `GET /api/admin/users` (admin-only) |
+| Contracts | `GET /api/contracts` (`status` / `contract_type` / `search` / paginated) — read open to admin/ap_manager/ap_clerk/cfo |
+| Contract Detail | `GET /api/contracts/{id}` (fields + spend summary + line items), `POST /api/contracts/{id}/activate`, `POST /api/contracts/{id}/terminate`, `POST /api/contracts/{id}/cancel` (mutations admin/ap_manager). Document upload / repository / renew / create-PO stay web-only |
 | Notifications | `GET /api/notifications` (`unread_only` filter — envelope carries `items` + total `unread`), `GET /api/notifications/unread-count` (badge), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` |
 | Payments | `GET /api/payments` |
 | Vendors | `GET /api/vendors` (status/search filters), `POST /api/vendors/{id}/verify`, `POST /api/vendors/{id}/reject`, `POST /api/vendors/sync-erp` (mutations admin/ap_manager) |
-| Pay (queue) | `GET /api/payments/queue`, `GET /api/payments/summary`, `GET /api/payments/runs/`, `POST /api/payments/runs` (create draft), `POST /api/payments/runs/{id}/execute`, `POST /api/payments/runs/{id}/cancel` (admin/ap_manager/cfo) |
+| Pay (queue) | `GET /api/payments/queue`, `GET /api/payments/summary`, `GET /api/payments/runs/`, `POST /api/payments/runs` (create draft), `POST /api/payments/runs/{id}/execute`, `POST /api/payments/runs/{id}/cancel` (admin/ap_manager/cfo), `POST /api/payments/runs/{id}/approve` (CFO sign-off — **cfo role only**, mirroring the backend `require_roles(ROLE_CFO)`) |
 | Settings | Uses cached auth state |
 
 ## Role-based UI
@@ -241,6 +249,7 @@ Bottom navigation adapts based on user roles (same as web frontend):
 |-----|-----------|
 | Dashboard | All roles |
 | Invoices | All roles |
+| Contracts | All roles (activate / terminate: Admin, AP Manager only) |
 | Approvals | Admin, AP Manager |
 | Exceptions | Admin, AP Manager |
 | Vendors | Admin, AP Manager, CFO (verify/reject + ERP sync: Admin, AP Manager only) |
@@ -291,10 +300,32 @@ everyone else.
 - Approvals tab with swipe-to-approve
 - Exception queue (list + status filter + resolve / escalate / dismiss via swipe; admin / AP manager only). **Detail / assign / bulk-resolve** now shipped: tapping a row opens `ExceptionDetailScreen` (`GET /api/exceptions/{id}`) — full fields + linked invoice + SLA/due/overdue + current assignee, with resolve/escalate/dismiss reachable there and loading/error/empty states. An admin-gated assignee picker (`POST /api/exceptions/{id}/assign`, null = unassign) reuses the admin-only `/admin/users` list — `ap_manager` can act but doesn't get the picker (no org-user-list access); reassignment patches the row in place. Multi-select (long-press or the checklist app-bar action) drives the shared `BulkActionBar` (Status → resolve, Delete → dismiss) → `POST /api/exceptions/bulk/resolve`, whose `{updated, skipped:[{id,reason}]}` partial-success result is surfaced in a snackbar. The bottom-sheet picker is height-capped (60% of the viewport) so a long user list scrolls inside the sheet
 - In-app notification center — `NotificationsScreen` + `NotificationStore` over `GET /api/notifications` (+ `unread-count` / `{id}/read` / `read-all`). Reached from the `NotificationBell` app-bar action (live unread `Badge`) in the Dashboard app bar (all roles). All / Unread filter chips; tapping a row marks it read (optimistic — flips the row + decrements the badge instantly, reconciles via refetch on failure) and deep-links to the invoice detail when the row is an `invoice` with an `entity_id` (other entity types e.g. `contract` just mark read — no mobile detail yet); mark-all-read app-bar action shown only while something is unread; offline-cached list + empty / loading / error (Retry) states. The email/in-app backend (Priority 8) serves mobile with no new endpoints
+- Contract management (CLM) — `ContractsScreen` + `ContractStore` over
+  `GET /api/contracts` with status filter chips + debounced search; tapping a
+  row opens `ContractDetailScreen` (`GET /api/contracts/{id}`) with the terms /
+  dates / value fields, the spend-to-contract summary (invoiced vs
+  not-to-exceed, over-limit + remaining) and the line items. **Activate** and
+  **terminate** are confirm-then-act lifecycle actions gated to
+  admin/ap_manager (`AuthStore.canApprove`, mirroring the backend mutate gate)
+  and hidden once the contract is no longer actionable; success / failure is
+  toasted and live-region announced. Offline-cached list; loading / empty /
+  error states. The web-only remainder is document upload + the file
+  repository, renewal, and contract-based PO creation
 - Payment history list
 - Predictive cash-flow forecast (CFO/admin) — `CashFlowScreen` + `CashFlowStore` combine `GET /api/analytics/cashflow_forecast` + `GET /api/analytics/cash_position` (same `horizon_days` + `granularity` so the two legs line up). A KPI summary (opening balance + its source, projected end balance — red when a breach is projected, total committed vs pending outflow over the horizon), a low-balance alert banner when the cash position breaches the org's persisted threshold (names the worst period + shortfall), a per-period forecast list (scheduled / committed / pending + invoice count) and a running cash-position list (period closing balance, breached rows flagged red). 30 / 60 / 90-day horizon chips (`CashFlowStore.setHorizon`), pull-to-refresh, loading / error (Retry) / empty states. Reached from the `CashFlowButton` Dashboard app-bar action (CFO/admin only). **Money is rendered from server-supplied display strings — the device never does float arithmetic on currency** (every total, opening/closing balance and shortfall is server-computed; mirrors the payment-queue invariant). Not offline-cached (privileged, fast-moving CFO read)
 - Vendor management — `VendorsScreen` + `VendorStore` over `GET /api/vendors` with status filters + search; verify / reject an unverified vendor via swipe (verify ⟶ / reject ⟵) or the action sheet, and an ERP-sync app-bar action (`POST /api/vendors/sync-erp`). Read is admin/ap_manager/cfo; the mutating actions are gated to admin/ap_manager (mirrors `require_roles`) and simply hidden for CFO. Offline-cached list
-- Payment queue + runs — `PaymentQueueScreen` + `PaymentQueueStore`. Queue tab lists approved invoices (`GET /api/payments/queue`), each row a checkbox + per-row method picker; the selection creates a draft run (`POST /api/payments/runs`). Runs tab lists runs (`GET /api/payments/runs/`) and executes / cancels drafts. A KPI summary bar (total paid / pending / queue / card rebates) sits above both (`GET /api/payments/summary`). CFO-approval-required runs surface the gate before an execute attempt. Money is rendered as server-supplied display strings — the device never does float arithmetic on money (totals are server-computed)
+- Payment queue + runs — `PaymentQueueScreen` + `PaymentQueueStore`. Queue tab lists approved invoices (`GET /api/payments/queue`), each row a checkbox + per-row method picker; the selection creates a draft run (`POST /api/payments/runs`). Runs tab lists runs (`GET /api/payments/runs/`) and executes / cancels drafts. A KPI summary bar (total paid / pending / queue / card rebates) sits above both (`GET /api/payments/summary`). CFO-approval-required runs surface the gate before an execute attempt — **and a CFO can now clear it from the phone**: the run popup carries an "Approve as CFO" item
+  (`POST /api/payments/runs/{id}/approve`) whenever the run is a draft that
+  still needs sign-off. It is gated on the **strict `cfo` role**
+  (`AuthStore.canApprovePaymentRun`), not `canManagePayments` and not "admin
+  counts as CFO" — the backend gate is `require_roles(ROLE_CFO)`, which does
+  not special-case admin, and a sign-off an admin can grant themselves is not a
+  sign-off (same reasoning as the web `auth.hasRole('cfo')` on that button).
+  Authorizing a run is a money-path decision, so it confirms first and the
+  dialog names the run (created date + payment count) and its total; the
+  server's own refusal sentence (409 wrong state / 403 maker-checker) surfaces
+  verbatim. Approving moves no money — execution stays a separate action.
+  Money is rendered as server-supplied display strings — the device never does float arithmetic on money (totals are server-computed)
 - Role-based bottom navigation
 - Settings (profile, tenant info, logout)
 - JWT in secure storage (iOS Keychain / Android Keystore)
