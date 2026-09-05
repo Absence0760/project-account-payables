@@ -1,5 +1,4 @@
-import { PUBLIC_API_URL } from '$env/static/public';
-import { getTenantSlug } from '$lib/tenant';
+import { getApiBase, getTenantSlug } from '$lib/tenant';
 import { getSelectedEntityId } from '$lib/entity';
 import { formatApiDetail } from '$lib/utils/apiError';
 
@@ -7,7 +6,12 @@ import { formatApiDetail } from '$lib/utils/apiError';
 // hand-rolled fetch in `api/expenses.ts`) don't need a second import path.
 export { formatApiDetail };
 
-const BASE = PUBLIC_API_URL.replace(/\/+$/, '');
+// The API origin is resolved PER REQUEST, not frozen in a module-level const,
+// because it depends on the host the SPA is being served from: the build-time
+// `PUBLIC_API_URL` on a platform host, same-origin (`''`) on a tenant's vanity
+// custom domain, where only a same-origin request carries the vanity hostname
+// in `Host` for the backend to resolve the tenant from. One owner —
+// `$lib/tenant.ts::getApiBase` — so no call site re-derives it.
 
 /** Raised by `request()` on any non-OK HTTP response. Carries the status code
  *  so a caller can branch on a specific status (e.g. a 409 "stale state"
@@ -61,7 +65,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		headers['X-Entity-ID'] = entity;
 	}
 
-	const res = await fetch(`${BASE}${path}`, { ...init, headers });
+	const res = await fetch(`${getApiBase()}${path}`, { ...init, headers });
 
 	if (res.status === 401) {
 		// Auto-redirect only fires when an existing session went stale.
@@ -114,7 +118,7 @@ async function blobFromResponse(res: Response): Promise<Blob> {
 }
 
 async function downloadBlob(path: string): Promise<Blob> {
-	return blobFromResponse(await fetch(`${BASE}${path}`, { headers: authHeaders() }));
+	return blobFromResponse(await fetch(`${getApiBase()}${path}`, { headers: authHeaders() }));
 }
 
 /**
@@ -138,7 +142,7 @@ async function downloadBlob(path: string): Promise<Blob> {
  */
 async function downloadBlobPost(path: string, body: unknown): Promise<Blob> {
 	return blobFromResponse(
-		await fetch(`${BASE}${path}`, {
+		await fetch(`${getApiBase()}${path}`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', ...authHeaders() },
 			body: JSON.stringify(body)
@@ -239,7 +243,7 @@ async function streamChatTurn(
 	signal?: AbortSignal
 ): Promise<void> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeaders() };
-	const res = await fetch(`${BASE}${path}`, {
+	const res = await fetch(`${getApiBase()}${path}`, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify(body),

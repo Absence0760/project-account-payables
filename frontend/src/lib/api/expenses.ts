@@ -2,8 +2,7 @@
 // through the shared `api` client (Bearer + X-Tenant-Slug + X-Entity-ID +
 // 401-bounce). Mirrors the pattern of `src/lib/api/contracts.ts`.
 import { api, formatApiDetail } from '$lib/api';
-import { PUBLIC_API_URL } from '$env/static/public';
-import { getTenantSlug } from '$lib/tenant';
+import { getApiBase, getTenantSlug } from '$lib/tenant';
 import { getSelectedEntityId } from '$lib/entity';
 import type { MatchingIdsResponse } from '$lib/utils/pagination';
 import type {
@@ -345,7 +344,7 @@ function parseSubmitViolations(body: unknown): { violations: PolicyViolation[]; 
 }
 
 export async function submitReport(id: string): Promise<SubmitReportResult> {
-	const base = PUBLIC_API_URL.replace(/\/+$/, '');
+	const base = getApiBase();
 	const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	if (token) headers['Authorization'] = `Bearer ${token}`;

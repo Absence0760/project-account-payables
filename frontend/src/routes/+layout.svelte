@@ -11,11 +11,17 @@
 	import { notificationStore } from '$lib/stores/notifications.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { getTenantSlug } from '$lib/tenant';
+	import { hasTenantContext } from '$lib/tenant';
 	import { browser } from '$app/environment';
 	import { initLocale, m } from '$lib/i18n/store.svelte';
 
-	let tenant = $state<string | null | undefined>(undefined);
+	// Tri-state: `undefined` until the browser resolves it (render nothing, no
+	// flash), then true/false. This asks "does this host carry a tenant at all",
+	// NOT "what is its slug" — a white-label vanity host has a tenant but no
+	// slug in the URL (the backend resolves it from `Host`), so gating on the
+	// slug rendered the marketing Landing page to a customer on their own
+	// domain. The slug itself is never needed here; `$lib/api` attaches it.
+	let hasTenant = $state<boolean | undefined>(undefined);
 
 	// Detect + apply the visitor's UI language once on first client mount
 	// (stored choice → navigator.languages → English). This also sets the
@@ -35,12 +41,12 @@
 
 	$effect(() => {
 		if (browser) {
-			tenant = getTenantSlug();
+			hasTenant = hasTenantContext();
 		}
 	});
 
 	$effect(() => {
-		if (!tenant) return;
+		if (!hasTenant) return;
 
 		const path = $page.url.pathname;
 
@@ -88,7 +94,7 @@
 	// read needs auth, so it's gated on the same signed-in condition as the bell.
 	$effect(() => {
 		const active =
-			!!tenant &&
+			hasTenant === true &&
 			auth.loggedIn &&
 			!!auth.user &&
 			!auth.user.must_change_password &&
@@ -103,7 +109,7 @@
 	// logout so a stale timer doesn't fire 401s after the token is cleared.
 	$effect(() => {
 		const active =
-			!!tenant &&
+			hasTenant === true &&
 			auth.loggedIn &&
 			!!auth.user &&
 			!auth.user.must_change_password &&
@@ -120,13 +126,13 @@
 	<title>{brand.productName}</title>
 </svelte:head>
 
-{#if tenant === undefined}
+{#if hasTenant === undefined}
 	<!-- SSR / hydration: tenant not resolved yet, render nothing to avoid flash -->
 {:else if $page.url.pathname.startsWith(PORTAL_PREFIX)}
 	<slot />
 {:else if PUBLIC_PATHS.includes($page.url.pathname)}
 	<slot />
-{:else if tenant === null}
+{:else if hasTenant === false}
 	<Landing />
 {:else if $page.url.pathname.startsWith('/login') || $page.url.pathname === '/change-password'}
 	<slot />
