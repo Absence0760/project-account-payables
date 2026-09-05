@@ -4,13 +4,16 @@
 		RequisitionLineItemInput,
 		RequisitionStatus
 	} from '$lib/types/requisition';
-	import { REQUISITION_STATUS_LABELS } from '$lib/types/requisition';
+	import {
+		REQUISITION_STATUS_LABELS,
+		REQUISITION_STATUS_TONES
+	} from '$lib/types/requisition';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, scaleMoney, sumMoney, type MoneyString } from '$lib/utils/money';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { createRequisition, updateRequisition } from '$lib/api/requisitions';
@@ -29,30 +32,6 @@
 		onsaved: (r: Requisition) => void;
 	} = $props();
 
-	/**
-	 * Badge tone per requisition status — the same seven the list page paints,
-	 * at the colours they already had.
-	 *
-	 * `converted` takes the `erp` tone: it is the measured purple literal this
-	 * rule already spelled by hand, and it is doing the same job it does
-	 * mid-invoice-pipeline — "handed off downstream", here to a PO. Keeping it
-	 * distinct from `approved` (green) matters: approved is a decision,
-	 * converted is a decision someone has already acted on.
-	 *
-	 * Belongs beside `REQUISITION_STATUS_LABELS` in `types/requisition.ts`
-	 * (the shape `types/recurring.ts` uses) once the list page converts too —
-	 * that file is outside this tranche.
-	 */
-	const STATUS_TONES: Record<RequisitionStatus, BadgeTone> = {
-		draft: 'accent',
-		submitted: 'warning',
-		pending_approval: 'warning',
-		approved: 'success',
-		rejected: 'danger',
-		converted: 'erp',
-		cancelled: 'neutral'
-	};
-
 	const isCreate = $derived(requisition === null);
 	const canEdit = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	const status = $derived(requisition?.status ?? 'draft');
@@ -67,7 +46,10 @@
 	interface LineRow {
 		description: string;
 		quantity: number | null;
-		unit_price: number | null;
+		// Raw decimal TEXT, not a float. parseFloat-ing on every keystroke and
+		// sending the result is how an exact price reaches the wire rounded;
+		// it is validated once at save and refused, never repaired.
+		unit_price: string;
 		gl_account_id: string;
 		uom: string;
 	}
@@ -76,7 +58,7 @@
 		return {
 			description: li.description ?? '',
 			quantity: li.quantity ?? null,
-			unit_price: li.unit_price ?? null,
+			unit_price: li.unit_price == null ? '' : String(li.unit_price),
 			gl_account_id: li.gl_account_id ?? '',
 			uom: li.uom ?? ''
 		};
@@ -97,7 +79,7 @@
 
 	// Seed a create modal with one empty line so the user has somewhere to type.
 	if (isCreate && lines.length === 0) {
-		lines = [{ description: '', quantity: null, unit_price: null, gl_account_id: '', uom: '' }];
+		lines = [{ description: '', quantity: null, unit_price: '', gl_account_id: '', uom: '' }];
 	}
 
 	let saving = $state(false);
@@ -108,15 +90,18 @@
 		return Number.isFinite(n) ? n : null;
 	}
 
-	function lineTotal(l: LineRow): number {
-		if (l.quantity == null || l.unit_price == null) return 0;
-		return l.quantity * l.unit_price;
+	/** Exact `quantity * unit_price`, or `null` when either side is missing or
+	 *  unreadable — the cell then shows a dash rather than a wrong figure. The
+	 *  server recomputes this; the preview must not disagree with it. */
+	function lineTotal(l: LineRow): MoneyString | null {
+		if (l.quantity == null) return null;
+		return scaleMoney(l.unit_price, l.quantity);
 	}
 
-	const computedTotal = $derived(lines.reduce((sum, l) => sum + lineTotal(l), 0));
+	const computedTotal = $derived(sumMoney(lines.map(lineTotal)));
 
 	function addLine() {
-		lines = [...lines, { description: '', quantity: null, unit_price: null, gl_account_id: '', uom: '' }];
+		lines = [...lines, { description: '', quantity: null, unit_price: '', gl_account_id: '', uom: '' }];
 	}
 
 	function removeLine(idx: number) {
@@ -142,10 +127,20 @@
 					line_number: i + 1,
 					description: l.description.trim() || null,
 					quantity: l.quantity,
-					unit_price: l.unit_price,
+					unit_price: l.unit_price.trim() || null,
 					gl_account_id: l.gl_account_id || null,
 					uom: l.uom.trim() || null
 				}));
+			// Refuse, don't repair: a price the exact parser can't read must not
+			// be silently coerced or dropped on its way to the wire.
+			const badLine = lineItems.findIndex(
+				(li) => li.unit_price != null && scaleMoney(li.unit_price, 1) === null
+			);
+			if (badLine !== -1) {
+				toast(m('requisitions.modal.line.unitPriceInvalid', { n: badLine + 1 }), 'error');
+				saving = false;
+				return;
+			}
 			let saved: Requisition;
 			if (isCreate) {
 				saved = await createRequisition({
@@ -194,7 +189,7 @@
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<Badge tone={STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
+				<Badge tone={REQUISITION_STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
 					{REQUISITION_STATUS_LABELS[statusKey] ?? status}
 				</Badge>
 				{#if requisition?.converted_po_id}
@@ -299,11 +294,10 @@
 											min="0"
 											class="num"
 											aria-label={m('requisitions.modal.line.unitPriceAria', { n: i + 1 })}
-											value={l.unit_price ?? ''}
-											oninput={(e) => (l.unit_price = numOrNull(e.currentTarget.value))}
+											bind:value={l.unit_price}
 										/>
 									{:else}
-										{l.unit_price ?? '—'}
+										{l.unit_price || '—'}
 									{/if}
 								</td>
 								<td>
@@ -331,7 +325,9 @@
 										{glLabel(l.gl_account_id)}
 									{/if}
 								</td>
-								<td class="right mono">{formatMoney(lineTotal(l), { currency })}</td>
+								<td class="right mono">{lineTotal(l) === null
+										? '—'
+										: formatMoney(lineTotal(l), { currency })}</td>
 								{#if editable}
 									<td>
 										<button type="button" class="btn-remove-line" onclick={() => removeLine(i)} aria-label={m('requisitions.modal.line.removeAria')}>×</button>

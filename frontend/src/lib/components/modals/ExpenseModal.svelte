@@ -3,12 +3,15 @@
 	import {
 		EXPENSE_PAYMENT_METHODS,
 		EXPENSE_PAYMENT_METHOD_LABELS,
-		EXPENSE_STATUS_LABELS
+		EXPENSE_STATUS_LABELS,
+		EXPENSE_STATUS_TONES
 	} from '$lib/types/expense';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import type { MoneyAmount } from '$lib/utils/money';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import {
 		createExpense,
@@ -44,6 +47,11 @@
 		return local.toISOString().slice(0, 10);
 	}
 
+	/** Seed a text money field from whatever shape the response carried. */
+	function moneyText(value: MoneyAmount): string | null {
+		return value === null || value === undefined || value === '' ? null : String(value);
+	}
+
 	/* eslint-disable svelte/state-referenced-locally -- modal receives a snapshot */
 	// `expense_date` is REQUIRED (`ExpenseCreate.expense_date: date`, and the
 	// column is NOT NULL). Create mode seeds today so the field is never blank —
@@ -52,7 +60,11 @@
 	let expense_date = $state(expense?.expense_date ?? todayLocalIso());
 	let merchant = $state(expense?.merchant ?? '');
 	let category = $state(expense?.category ?? '');
-	let amount = $state<number | null>(expense?.amount ?? null);
+	// The typed amount stays RAW TEXT to the wire: `schemas/expense.py`
+	// declares `ExpenseCreate.amount` a `Decimal`, and `json.loads` has already
+	// collapsed a fractional JSON number to a float by the time pydantic sees
+	// it. `normalizeMoneyInput` decides shape with a regex, never `Number`.
+	let amount = $state<string | null>(moneyText(expense?.amount));
 	let currency = $state(expense?.currency ?? 'USD');
 	let payment_method = $state(expense?.payment_method ?? 'out_of_pocket');
 	let gl_account_id = $state(expense?.gl_account_id ?? '');
@@ -74,29 +86,6 @@
 	// `?? fallback` — a status this build doesn't know renders its raw value in
 	// a flat chip rather than blank.
 	const statusKey = $derived(status as ExpenseStatus);
-
-	/**
-	 * Badge tone per expense status, at the colours these five rules already
-	 * had. Total record: a status added to `ExpenseStatus` is a compile error
-	 * here rather than an untinted pill.
-	 *
-	 * `reimbursed` takes the `erp` tone — the measured purple this rule
-	 * spelled by hand, doing the job that tone does elsewhere: handed off
-	 * downstream. Green would have collapsed it into `approved`, and
-	 * "someone approved this" and "the money went back" are different answers
-	 * to the only question an employee asks of this pill.
-	 *
-	 * Belongs beside `EXPENSE_STATUS_LABELS` in `types/expense.ts` (the shape
-	 * `types/recurring.ts` uses) once the list page converts too — that file
-	 * is outside this tranche.
-	 */
-	const STATUS_TONES: Record<ExpenseStatus, BadgeTone> = {
-		draft: 'accent',
-		submitted: 'warning',
-		approved: 'success',
-		rejected: 'danger',
-		reimbursed: 'erp'
-	};
 
 	function numOrNull(v: unknown): number | null {
 		if (v === '' || v === null || v === undefined) return null;
@@ -138,13 +127,21 @@
 		// `expense_date` joins the guard: it is required by the API, and clearing
 		// it on an EDIT would PATCH an explicit null at a NOT NULL column.
 		if (!expense_date || !merchant.trim() || amount == null) return;
+		const exactAmount = normalizeMoneyInput(amount);
+		if (exactAmount === null) {
+			// Refused, never repaired: an expense whose amount we could not read
+			// must not be created amount-less (the column is NOT NULL and the
+			// policy engine judges the figure).
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		saving = true;
 		try {
 			const payload = {
 				expense_date,
 				merchant: merchant.trim(),
 				category: category.trim() || null,
-				amount,
+				amount: exactAmount,
 				currency: currency.trim() || 'USD',
 				payment_method,
 				gl_account_id: gl_account_id || null,
@@ -201,7 +198,7 @@
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<Badge tone={STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
+				<Badge tone={EXPENSE_STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
 					{EXPENSE_STATUS_LABELS[statusKey] ?? status}
 				</Badge>
 			</div>
@@ -223,7 +220,7 @@
 					step="0.01"
 					min="0"
 					value={amount ?? ''}
-					oninput={(e) => (amount = numOrNull(e.currentTarget.value))}
+					oninput={(e) => (amount = e.currentTarget.value.trim() || null)}
 					disabled={!canEdit}
 				/>
 			</label>

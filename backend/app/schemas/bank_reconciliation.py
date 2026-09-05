@@ -115,6 +115,11 @@ class UnclearedPaymentResponse(BaseModel):
     invoice_number: str | None = None
     vendor_name: str | None = None
     amount: MoneyAmount
+    # The currency `amount` is denominated in — the invoice's, since
+    # `Payment.amount` is invoice-currency. `unmatched_debits` and
+    # `discrepancies` both carried one; without it this bucket rendered in the
+    # org's reporting currency and a multi-currency tenant saw the wrong symbol.
+    currency: str | None = None
     method: str | None = None
     status: str
     # `submitted_at` → `completed_at` → `created_at`, the same fallback chain
@@ -167,6 +172,16 @@ class DiscrepancyResponse(BaseModel):
     counterparty_name: str | None = None
 
 
+class BankReconCurrencyTotal(BaseModel):
+    """One currency's slice of an outstanding-items total.
+
+    ``total`` is an EXACT decimal string, never a float — a money figure a user
+    reads, matching every other whole-set rollup in this codebase."""
+
+    currency: str
+    total: str
+
+
 class OutstandingItemsResponse(BaseModel):
     """Org-wide reconciliation state, computed on read across every imported
     statement — the period-close view the per-statement detail can't give."""
@@ -175,14 +190,22 @@ class OutstandingItemsResponse(BaseModel):
     older_than_days: int
     uncleared_payments: list[UnclearedPaymentResponse]
     uncleared_count: int
-    uncleared_total: MoneyAmount
+    # Grouped per currency, NEVER a cross-currency SUM. `Payment.amount` is
+    # invoice-currency, so totalling it across a multi-currency tenant produced
+    # a figure denominated in nothing real — the same rule
+    # `amount_mismatch_net_variance` below already states for subtraction.
+    uncleared_totals: list[BankReconCurrencyTotal]
     unmatched_debits: list[UnmatchedDebitResponse]
     unmatched_debit_count: int
-    unmatched_debit_total: MoneyAmount
+    # Same rule: a statement carries its own currency, and a tenant can import
+    # statements for accounts in different ones.
+    unmatched_debit_totals: list[BankReconCurrencyTotal]
     # Every identified-but-unreconciled line, whatever its class.
     discrepancies: list[DiscrepancyResponse]
     discrepancy_count: int
-    # Signed sum of the AMOUNT-mismatch subset's variances. Positive = the bank
-    # has taken more than we authorised in aggregate. Deliberately not summed
-    # over the other classes: a cross-currency subtraction isn't money.
-    amount_mismatch_net_variance: MoneyAmount
+    # Signed net of the AMOUNT-mismatch subset's variances, per currency.
+    # Positive = the bank has taken more than we authorised in aggregate.
+    # Deliberately not summed over the other classes (a cross-currency
+    # SUBTRACTION isn't money), and grouped rather than totalled for the same
+    # reason the other two buckets are (a cross-currency ADDITION isn't either).
+    amount_mismatch_net_variances: list[BankReconCurrencyTotal]

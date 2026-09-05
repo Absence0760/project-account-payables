@@ -4,15 +4,19 @@ Turns the per-vendor aggregation from ``tax_1099.build_1099_report`` into
 form-ready payloads and renders them as PDFs (reportlab, same pattern as
 ``remittance_pdf``).
 
-Scope + simplifications (documented in ``docs/tax-1099.md``):
+Scope (documented in ``docs/tax-1099.md``):
 
-  - **1099-NEC** is the default for AP contractor spend — the whole
-    reportable total lands in NEC box 1 (nonemployee compensation).
-  - **1099-MISC** is supported for the rarer AP cases (rent, attorney
-    gross proceeds). We don't yet split MISC across its many boxes — the
-    reportable total goes to the requested box (default box 3, "other
-    income"); per-box allocation is a future enhancement once we track the
-    spend category on the payment.
+  - **Boxes come from the aggregation, not from the caller.** A vendor's
+    reportable total is split across boxes by ``tax_1099.allocate_boxes``
+    (invoice GL account → box, via the per-org mapping), and this module
+    renders the boxes belonging to the requested form: NEC box 1, or the
+    populated MISC boxes (rents / royalties / other income / medical /
+    attorney gross proceeds) with a form total beneath them. Filing a
+    multi-category vendor's whole total in one box is the mis-report that
+    removed the previous single-box simplification.
+  - ``misc_box`` survives only as the box a *hand-built* row (one carrying
+    no allocation — every row the aggregation produces carries one) is
+    rendered into, and as the label shown when a form has no populated box.
   - We render the *information* on an IRS-styled form, not a pixel-perfect
     red-ink Copy A (which must be filed electronically or on official
     scannable stock anyway). The PDF is the payer's / recipient's working
@@ -48,20 +52,42 @@ from app.services.branding import (
     build_logo_flowable,
     get_brand_context,
 )
-from app.services.tax_1099 import VendorReportRow
+from app.services.tax_1099 import (
+    BOX_CATALOG,
+    FORM_MISC,
+    FORM_NEC,
+    VendorReportRow,
+    box_total_for_form,
+)
 from app.utils.dates import utc_today
 
-FORM_NEC = "1099-NEC"
-FORM_MISC = "1099-MISC"
+__all__ = [
+    "FORM_MISC",
+    "FORM_NEC",
+    "Form1099Box",
+    "Form1099Context",
+    "build_form_context",
+    "mask_tin",
+    "render_1099_pdf",
+]
+
 _VALID_FORMS = frozenset({FORM_NEC, FORM_MISC})
 
-# MISC box labels we support. NEC has a single relevant box (1).
+# MISC box labels, derived from the one catalog in ``tax_1099`` rather than
+# restated — a box that can be mapped to must be a box that can be printed.
 _MISC_BOX_LABELS = {
-    "1": "Box 1 — Rents",
-    "2": "Box 2 — Royalties",
-    "3": "Box 3 — Other income",
-    "10": "Box 10 — Gross proceeds paid to an attorney",
+    box.number: box.display_label for box in BOX_CATALOG.values() if box.form_type == FORM_MISC
 }
+_DEFAULT_MISC_BOX = "3"
+
+
+@dataclass(frozen=True)
+class Form1099Box:
+    """One printed box line: its label and the money in it. Decimal, never
+    float."""
+
+    label: str
+    amount: Decimal
 
 
 @dataclass(frozen=True)
@@ -81,9 +107,15 @@ class Form1099Context:
     recipient_name: str
     recipient_tin_masked: str | None
     recipient_address: str | None
+    # The single-box view, retained because it is what a caller building a
+    # context by hand supplies, and what the renderer prints when a form has
+    # no populated boxes. ``box_amount`` is the FORM's total.
     box_label: str
     box_amount: Decimal
     generated_at: date
+    # The per-box breakdown for this form. Empty means "render the single
+    # ``box_label`` / ``box_amount`` line" — the hand-built-row path.
+    boxes: tuple[Form1099Box, ...] = ()
     # Resolved tenant brand for the header. Defaults to the platform brand so a
     # call site that doesn't pass one still renders.
     brand: BrandContext = field(default_factory=lambda: get_brand_context(None))
@@ -126,20 +158,42 @@ def build_form_context(
     payer_tax_id: str | None,
     payer_address: str | None,
     recipient_address: str | None,
-    misc_box: str = "3",
+    misc_box: str = _DEFAULT_MISC_BOX,
     brand: BrandContext | None = None,
 ) -> Form1099Context:
     """Build a render context for one vendor's 1099.
 
     ``row`` is the aggregation row; ``full_tax_id`` is passed only so we can
-    mask it here (it is never stored on the context in full)."""
+    mask it here (it is never stored on the context in full).
+
+    The printed boxes come from ``row.box_allocations``, narrowed to the boxes
+    that belong on ``form_type`` — a vendor with rent and contractor spend gets
+    a MISC form showing only the rent and a NEC form showing only the
+    contractor money, never the whole reportable total on both. A row carrying
+    no allocation (hand-built, or produced before allocation existed) falls
+    back to the previous behaviour: the whole reportable total in the single
+    requested box."""
     if form_type not in _VALID_FORMS:
         raise ValueError(f"Unsupported form type: {form_type}")
 
     if form_type == FORM_NEC:
-        box_label = "Box 1 — Nonemployee compensation"
+        default_label = "Box 1 — Nonemployee compensation"
     else:
-        box_label = _MISC_BOX_LABELS.get(misc_box, _MISC_BOX_LABELS["3"])
+        default_label = _MISC_BOX_LABELS.get(misc_box, _MISC_BOX_LABELS[_DEFAULT_MISC_BOX])
+
+    boxes = tuple(
+        Form1099Box(
+            label=BOX_CATALOG[a.box].display_label if a.box in BOX_CATALOG else a.label,
+            amount=a.amount,
+        )
+        for a in row.box_allocations
+        if a.form_type == form_type
+    )
+    # Exact-Decimal sum of the printed boxes — the same figure
+    # ``box_total_for_form`` gives the filing path, so the working copy and the
+    # e-filed amount can never disagree.
+    box_amount = box_total_for_form(row, form_type)
+    box_label = boxes[0].label if len(boxes) == 1 else default_label
 
     return Form1099Context(
         tax_year=tax_year,
@@ -151,8 +205,9 @@ def build_form_context(
         recipient_tin_masked=mask_tin(full_tax_id if full_tax_id is not None else row.tax_id),
         recipient_address=recipient_address,
         box_label=box_label,
-        box_amount=row.ytd_paid,
+        box_amount=box_amount,
         generated_at=utc_today(),
+        boxes=boxes,
         brand=brand if brand is not None else get_brand_context(None),
     )
 
@@ -264,24 +319,51 @@ def render_1099_pdf(ctx: Form1099Context) -> bytes:
     story.append(parties)
     story.append(Spacer(1, 0.3 * inch))
 
-    amount_table = Table(
-        [[Paragraph(f"<b>{_escape(ctx.box_label)}</b>", body), _money(ctx.box_amount)]],
-        colWidths=[5.0 * inch, 1.8 * inch],
-    )
-    amount_table.setStyle(
-        TableStyle(
+    # One row per populated box, then a total row once there is more than one
+    # — a preparer signing the form has to see both the split and the figure
+    # it adds up to. A context with no boxes (hand-built row) keeps the
+    # single-line rendering.
+    if ctx.boxes:
+        data = [
+            [Paragraph(f"<b>{_escape(b.label)}</b>", body), _money(b.amount)] for b in ctx.boxes
+        ]
+    else:
+        data = [[Paragraph(f"<b>{_escape(ctx.box_label)}</b>", body), _money(ctx.box_amount)]]
+    total_row_index = None
+    if len(data) > 1:
+        total_row_index = len(data)
+        data.append(
             [
-                ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#cbd5e1")),
-                ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
-                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-                ("FONTSIZE", (0, 0), (-1, -1), 11),
-                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                Paragraph(f"<b>Total — Form {_escape(ctx.form_type)}</b>", body),
+                _money(ctx.box_amount),
             ]
         )
-    )
+
+    amount_table = Table(data, colWidths=[5.0 * inch, 1.8 * inch])
+    style = [
+        ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#cbd5e1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]
+    if total_row_index is not None:
+        style.append(
+            (
+                "LINEABOVE",
+                (0, total_row_index),
+                (-1, total_row_index),
+                0.9,
+                colors.HexColor("#94a3b8"),
+            )
+        )
+        style.append(
+            ("BACKGROUND", (0, total_row_index), (-1, total_row_index), colors.HexColor("#f8fafc"))
+        )
+    amount_table.setStyle(TableStyle(style))
     story.append(amount_table)
 
     doc.build(story)

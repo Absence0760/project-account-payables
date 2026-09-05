@@ -182,9 +182,7 @@
 						value={level.min_amount ?? ''}
 						oninput={(e) =>
 							patchLevel(levelIdx, {
-								min_amount: e.currentTarget.value
-									? parseFloat(e.currentTarget.value)
-									: null,
+								min_amount: e.currentTarget.value.trim() || null,
 							})}
 					/>
 				</label>
@@ -198,9 +196,7 @@
 						value={level.max_amount ?? ''}
 						oninput={(e) =>
 							patchLevel(levelIdx, {
-								max_amount: e.currentTarget.value
-									? parseFloat(e.currentTarget.value)
-									: null,
+								max_amount: e.currentTarget.value.trim() || null,
 							})}
 					/>
 				</label>

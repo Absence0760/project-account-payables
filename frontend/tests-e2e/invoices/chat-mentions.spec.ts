@@ -150,7 +150,10 @@ test.describe('/portal supplier chat — the vendor surface gets no roster', () 
 		await page.locator('input[type="email"]').fill('supplier@portal.test');
 		await page.locator('input[type="password"]').fill('demo');
 		await page.locator('button[type="submit"]').click();
-		await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+		// Sign-in lands on the portal home; this spec needs the invoice list.
+		await expect(page).toHaveURL(/\/portal\/?$/, { timeout: 15_000 });
+		await page.goto('/portal/invoices');
+		await page.waitForLoadState('networkidle');
 
 		const firstRow = page.locator('table tbody tr.clickable').first();
 		await expect(firstRow).toBeVisible({ timeout: 10_000 });

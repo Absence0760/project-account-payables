@@ -7,7 +7,7 @@ import { triggerDownload } from '$lib/utils/download';
 import type {
 	Vendor,
 	SanctionsCheck,
-	ScreeningReviewItem,
+	ScreeningReviewQueueResponse,
 	VendorRisk,
 	RiskSummaryBucket,
 	EnrichmentApplyField,
@@ -104,8 +104,25 @@ export function getScreeningHistory(id: string): Promise<SanctionsCheck[]> {
 }
 
 // Vendors needing screening review (potential matches / blocked / high risk).
-export function getScreeningReviewQueue(): Promise<ScreeningReviewItem[]> {
-	return api.get<ScreeningReviewItem[]>('/api/vendors/screening/review-queue');
+// Paginated on the canonical `page` / `page_size` envelope — the queue is
+// unbounded in principle (it grows with the tenant's flagged population), and
+// the page's headline counts deliberately do NOT come from it: they read
+// `by_screening_status` off `getVendorCounts()`, which asks the whole-set
+// question directly instead of filtering whatever happens to be loaded.
+export function getScreeningReviewQueue(
+	params: { page?: number; page_size?: number; search?: string } = {}
+): Promise<ScreeningReviewQueueResponse> {
+	const qs = new URLSearchParams();
+	if (params.page) qs.set('page', String(params.page));
+	if (params.page_size) qs.set('page_size', String(params.page_size));
+	// Server-side: a client-side filter over the loaded page would hide every
+	// match living on a later one. Matches vendor name + any matched list on
+	// the vendor's screening trail.
+	if (params.search?.trim()) qs.set('search', params.search.trim());
+	const query = qs.toString();
+	return api.get<ScreeningReviewQueueResponse>(
+		`/api/vendors/screening/review-queue${query ? `?${query}` : ''}`
+	);
 }
 
 // Whole-set vendor tallies (status chips + the payment-block figure), over the

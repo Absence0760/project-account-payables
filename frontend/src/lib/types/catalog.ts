@@ -2,8 +2,15 @@
 // `/api/catalogs` endpoints (backend `CatalogResponse` / `CatalogItemResponse`
 // / `GuidedBuyingSuggestion`). Money fields arrive as numbers (backend
 // `float(...)`); date/datetime fields are ISO strings.
+//
+// Response money is therefore `MoneyAmount` — honest about the JSON-number
+// wire shape while still making `a - b` / `.toFixed()` a type error. Money the
+// user TYPES is `MoneyString`: `schemas/catalog.py::CatalogItemCreate` declares
+// `unit_price` a `Decimal`, and `json.loads` turns a fractional JSON number
+// into a float before any validator can intervene.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type CatalogType = 'internal' | 'punchout';
 
@@ -20,7 +27,7 @@ export interface CatalogItem {
 	sku: string | null;
 	name: string;
 	description: string | null;
-	unit_price: number | null;
+	unit_price: MoneyAmount;
 	currency: string;
 	uom: string | null;
 	vendor_id: string | null;
@@ -68,7 +75,8 @@ export interface CatalogItemCreate {
 	sku: string | null;
 	name: string;
 	description: string | null;
-	unit_price: number | null;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	unit_price: MoneyString | null;
 	currency: string;
 	uom: string | null;
 	vendor_id: string | null;
@@ -95,7 +103,7 @@ export interface GuidedBuyingItem {
 	catalog_name: string;
 	sku: string | null;
 	name: string;
-	unit_price: number | null;
+	unit_price: MoneyAmount;
 	currency: string;
 	uom: string | null;
 	vendor_id: string | null;
@@ -163,7 +171,7 @@ export interface PunchoutCartItem {
 	description: string;
 	sku: string | null;
 	quantity: number | null;
-	unit_price: number | null;
+	unit_price: MoneyAmount;
 	uom: string | null;
 	currency: string;
 }
@@ -177,7 +185,7 @@ export interface PunchoutSession {
 	start_url: string | null;
 	provider: string | null;
 	cart_items: PunchoutCartItem[];
-	cart_total: number | null;
+	cart_total: MoneyAmount;
 	currency: string;
 	returned_at: string | null;
 	converted_requisition_id: string | null;
@@ -189,6 +197,7 @@ export interface PunchoutConvertResponse {
 	session_id: string;
 	requisition_id: string;
 	requisition_number: string;
-	total: number;
+	/** The created requisition's money total (`float` on the wire). */
+	total: MoneyAmount;
 	created: boolean;
 }

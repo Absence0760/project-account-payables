@@ -5,7 +5,9 @@
 		PORTAL_PAGE_SIZE,
 		type PortalPaymentListItem,
 	} from '$lib/portalApi';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
+	import { page } from '$app/stores';
+	import { replaceState } from '$app/navigation';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatDate } from '$lib/utils/time';
 	import { appendUnique } from '$lib/utils/pagination';
@@ -28,13 +30,31 @@
 
 	const hasMore = $derived(items.length < total);
 
+	/* URL-backed filter state. The portal home deep-links here (e.g.
+	 * `?phase=Rejected` from "these need your attention"), and a supplier who
+	 * bookmarks or reloads a filtered list keeps it — the same treatment
+	 * `/invoices`, `/payments` and `/vendors` already have. `phase` is validated
+	 * against the known chips so a hand-edited URL cannot select a bucket the
+	 * backend would not recognise. */
+	const seededPhase = (() => {
+		const raw = $page.url.searchParams.get('phase');
+		if (!raw) return null;
+		return PORTAL_PAYMENT_PHASES.some((c) => c.phase === raw) ? raw : null;
+	})();
+	const initialFilters = {
+		phase: seededPhase,
+		search: $page.url.searchParams.get('search') ?? '',
+		dateFrom: $page.url.searchParams.get('date_from') ?? '',
+		dateTo: $page.url.searchParams.get('date_to') ?? '',
+	};
+
 	// --- Filters. PortalListFilters owns the phase chips + debounced search
 	// (see the invoice list); a phase expands to the raw `payments.status`
 	// values behind it, sent as repeated `?status=`.
-	let activePhase = $state<string | null>(null);
-	let activeSearch = $state('');
-	let activeDateFrom = $state('');
-	let activeDateTo = $state('');
+	let activePhase = $state<string | null>(initialFilters.phase);
+	let activeSearch = $state(initialFilters.search);
+	let activeDateFrom = $state(initialFilters.dateFrom);
+	let activeDateTo = $state(initialFilters.dateTo);
 	let filtersEl = $state<{ reset: () => void } | undefined>();
 	const filtered = $derived(
 		activePhase !== null || activeSearch.trim() !== '' || activeDateFrom !== '' || activeDateTo !== ''
@@ -43,6 +63,19 @@
 	function phaseStatuses(p: string | null): string[] | undefined {
 		if (p === null) return undefined;
 		return PORTAL_PAYMENT_PHASES.find((c) => c.phase === p)?.statuses;
+	}
+
+	function syncUrl() {
+		untrack(() => {
+			const url = new URL($page.url);
+			const set = (k: string, v: string) =>
+				v ? url.searchParams.set(k, v) : url.searchParams.delete(k);
+			set('phase', activePhase ?? '');
+			set('search', activeSearch.trim());
+			set('date_from', activeDateFrom);
+			set('date_to', activeDateTo);
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
 	}
 
 	function applyFilters(f: {
@@ -55,6 +88,7 @@
 		activeSearch = f.search;
 		activeDateFrom = f.dateFrom;
 		activeDateTo = f.dateTo;
+		syncUrl();
 		load();
 	}
 
@@ -139,6 +173,7 @@
 		searchPlaceholder={m('portal.payments.searchPlaceholder')}
 		dateFromLabel={m('portal.payments.dateFromLabel')}
 		dateToLabel={m('portal.payments.dateToLabel')}
+		initial={initialFilters}
 		onchange={applyFilters}
 	/>
 

@@ -66,6 +66,12 @@ def _make_invoice(*, status_value="pending"):
         status=InvoiceStatus(status_value),
         amount=None,
         vendor_name="Acme Corp",
+        # `Invoice.vendor_id` is a real column on the ORM row this namespace
+        # stands in for, and `run_extraction` caches it before its `try` (the
+        # re-extraction `skip_vendor_match` guard restores it). A stand-in
+        # missing it fails with AttributeError before the failure path under
+        # test is ever reached. Mirrors `test_extraction_usage_placement.py`.
+        vendor_id=None,
         invoice_number="INV-001",
         warnings=None,
         po_match=None,

@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import type { MessageKey } from '$lib/i18n/messages';
@@ -2113,7 +2114,7 @@
 			<section class="card plan-card">
 				<h2>{m('org.section.plan')}</h2>
 				<div class="plan-info">
-					<span class="plan-badge">{planLabel(org.plan)}</span>
+					<Badge tone="accent" variant="plan-badge">{planLabel(org.plan)}</Badge>
 					<span class="plan-slug">{m('org.plan.tenant')} <code>{org.slug}</code></span>
 					<span class="plan-date">{m('org.plan.created', { date: formatDate(org.created_at, '—', { month: 'long', day: 'numeric', year: 'numeric' }) })}</span>
 				</div>
@@ -2432,16 +2433,6 @@
 		display: flex;
 		align-items: center;
 		gap: 16px;
-	}
-
-	.plan-badge {
-		display: inline-block;
-		padding: 4px 12px;
-		border-radius: 12px;
-		background: rgba(99, 140, 255, 0.12);
-		color: var(--accent);
-		font-size: 0.85rem;
-		font-weight: 600;
 	}
 
 	.plan-slug {

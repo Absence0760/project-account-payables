@@ -520,7 +520,10 @@ async def test_bank_change_stages_and_does_not_mutate_vendor(realdb):
 @pytest.mark.asyncio
 async def test_bank_change_rejects_a_malformed_routing_number(realdb):
     """Same structural gate as the AP-initiated staging path — a vendor
-    self-service submission is exactly as unvalidated otherwise."""
+    self-service submission is exactly as unvalidated otherwise.
+
+    400, not 422: the check moved out of the Pydantic field validator, whose
+    422 body echoed the submitted `bank_details` (account number included)."""
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
     vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
@@ -529,7 +532,7 @@ async def test_bank_change_rejects_a_malformed_routing_number(realdb):
             "/api/portal/company/bank-change",
             json={"bank_details": {"routing_number": "021000020", "account_number": "12345678"}},
         )
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code == 400, resp.text
 
     async with mk() as s:
         rows = (
@@ -557,7 +560,7 @@ async def test_bank_change_rejects_a_malformed_sort_code(realdb):
             "/api/portal/company/bank-change",
             json={"bank_details": {"sort_code": "1234567", "account_number": "12345678"}},
         )
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code == 400, resp.text
 
     async with mk() as s:
         rows = (
@@ -637,3 +640,58 @@ async def test_company_get_masks_bank_and_tax(realdb):
     assert body["has_bank_details"] is True
     # The full tax id must never appear in the payload.
     assert "12-3456789" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_portal_bank_change_names_the_field_without_echoing_banking_data(realdb):
+    """The 4xx must name the offending field and nothing else.
+
+    This ran as a Pydantic `field_validator`, and FastAPI renders a
+    ValidationError as a 422 whose body echoes the rejected `input` — here the
+    whole `bank_details` dict, account number included. So "your routing number
+    has a typo" answered with banking data. Invariant: PII/banking data stays
+    out of logs and error bodies."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id, name="Routing Echo Co")
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(
+            "/api/portal/company/bank-change",
+            json={
+                "bank_details": {
+                    "account_number": "987654321098",
+                    "routing_number": "123456789",  # fails the ABA checksum
+                    "bank_name": "Test Bank",
+                }
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    body = resp.text
+    assert "routing_number" in body
+    assert "987654321098" not in body
+    assert "123456789" not in body
+
+
+@pytest.mark.asyncio
+async def test_portal_bank_change_validates_the_wire_routing_number_too(realdb):
+    """The portal path was narrower than the AP one: it checked only
+    `routing_number`, so a malformed wire ABA reached staging unvalidated and
+    failed only at approve. Both paths now share one helper."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id, name="Wire Echo Co")
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(
+            "/api/portal/company/bank-change",
+            json={
+                "bank_details": {
+                    "account_number": "987654321098",
+                    "wire_routing_number": "123456789",  # fails the ABA checksum
+                }
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    assert "wire_routing_number" in resp.text
+    assert "987654321098" not in resp.text

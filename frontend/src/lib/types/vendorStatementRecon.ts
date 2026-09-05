@@ -1,3 +1,5 @@
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
+
 // Types for the Vendor Statement Reconciliation surface. Mirrors the JSON
 // returned by the `/api/vendor-statements` endpoints (the Pydantic contract in
 // `backend/app/schemas/vendor_statement_recon.py`). Money fields arrive as
@@ -76,12 +78,18 @@ export interface ReconLine {
 	resolution_status: ReconResolutionStatus;
 	statement_invoice_number: string | null;
 	statement_date: string | null;
-	statement_amount: number | null;
+	statement_amount: MoneyAmount;
 	statement_status: string | null;
 	matched_invoice_id: string | null;
 	matched_invoice_number: string | null;
-	ledger_amount: number | null;
-	amount_difference: number | null;
+	ledger_amount: MoneyAmount;
+	/**
+	 * The server's own statement-vs-ledger delta. Rendered, never recomputed:
+	 * subtracting the two amounts client-side is the float money math the
+	 * Decimal invariant exists to prevent, and this figure is what a clerk
+	 * chases.
+	 */
+	amount_difference: MoneyAmount;
 	match_method: string | null;
 	resolution_note: string | null;
 	resolved_at: string | null;
@@ -93,8 +101,8 @@ export interface ReconSummary {
 	amount_mismatch_count: number;
 	missing_our_side_count: number;
 	missing_their_side_count: number;
-	statement_total: number | null;
-	ledger_total: number | null;
+	statement_total: MoneyAmount;
+	ledger_total: MoneyAmount;
 }
 
 // Provenance for a run whose lines were MACHINE-READ off a PDF. Present only on
@@ -166,7 +174,8 @@ export interface ReconciliationSummary {
 export interface StatementLineInput {
 	invoice_number?: string | null;
 	invoice_date?: string | null;
-	amount?: number | null;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	amount?: MoneyString | null;
 	status?: string | null;
 }
 
@@ -195,13 +204,13 @@ export interface CloseReadinessVendor {
 	reconciliation_id: string;
 	statement_date: string;
 	currency: string;
-	unreconciled_amount: number;
+	unreconciled_amount: MoneyAmount;
 	missing_our_side_count: number;
 	amount_mismatch_count: number;
 }
 
 export interface CloseReadinessResponse {
-	materiality_threshold: number;
+	materiality_threshold: MoneyAmount;
 	blocking_vendors: CloseReadinessVendor[];
 	is_close_ready: boolean;
 }

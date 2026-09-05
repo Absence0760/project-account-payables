@@ -154,10 +154,23 @@ Disabled by default. Env vars:
 |----------|---------|---------|
 | `FEOH_CONTRACT_RENEWAL_ENABLED` | `false` | Master switch for the renewal sweep. Off in local dev/tests; flip on in deployed envs. |
 | `FEOH_CONTRACT_RENEWAL_INTERVAL_SECONDS` | `3600` | Sweep interval. |
-| `FEOH_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS` | `30` | Platform default lead window; per-contract `renewal_notice_days` overrides it. |
+| `FEOH_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS` | `30` | Platform default lead window; per-contract `renewal_notice_days` overrides it. Read by `contract_renewal.resolve_notice_days`, which is the single fallback both the SQL candidate query (`COALESCE`) and the under-lock Python re-check go through. |
+| `FEOH_CONTRACT_RENEWAL_BATCH_SIZE` | `200` | **Page** size for the keyset pagination in *both* passes — not a per-tick cap. Each pass carries its own cursor and pages (`WHERE id > :cursor ORDER BY id`) until the tenant is exhausted, locking one contract at a time. Capping is not available here: a contract outside its lead window stays un-alerted and one not yet over term stays `active`, so a `LIMIT` would re-serve the same lowest-id contracts every tick and never reach the tail. See `background-sweeps.md` § Locking. |
 
 `notify_renewals_once(today=…)` is callable directly (CLI / tests) for a single
 sweep.
+
+**The lead window in step 2 is a SQL predicate, not a Python filter.** It used to
+pre-filter coarsely on `end_date <= today + 3650 days` — effectively every active
+contract with an end date — and drop the out-of-window rows after loading them.
+It is now `end_date - today <= COALESCE(renewal_notice_days, <platform default>)`
+(`contract_renewal.lead_window_predicate`), evaluated in Postgres; the Python
+check that remains is the *under-lock re-check* the two-phase sweep shape
+requires, and it reads the same `resolve_notice_days` fallback, so the two cannot
+drift by a day. `tests/test_sweep_candidate_pagination.py` pins the agreement on
+every boundary (one day before the window, exactly on it, one day after) plus the
+NULL notice-days fallback, evaluating the real expression against real Postgres
+rather than re-implementing it.
 
 ### 4. Compliance monitoring
 

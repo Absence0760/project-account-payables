@@ -71,6 +71,14 @@ class Tax1099FilingAdapter:
                     "recipient_name": f.recipient_name,
                     "recipient_tin": f.recipient_tin,
                     "amount": str(f.box_amount),  # string-Decimal, never float
+                    # The per-box split, when the calculation produced one. A
+                    # MISC form with rent AND medical payments is two boxes;
+                    # sending only the total files it all in one.
+                    **(
+                        {"boxes": {b: str(a) for b, a in f.box_amounts.items()}}
+                        if f.box_amounts
+                        else {}
+                    ),
                     "external_id": f.vendor_id,
                 }
                 for f in forms

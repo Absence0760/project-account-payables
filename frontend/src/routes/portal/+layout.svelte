@@ -79,6 +79,9 @@
 				</div>
 			</div>
 			<nav aria-label={m('portal.shell.nav')}>
+				<a href="/portal" class:active={$page.url.pathname === '/portal'}
+					>{m('portal.nav.overview')}</a
+				>
 				<a href="/portal/invoices" class:active={$page.url.pathname.startsWith('/portal/invoices')}
 					>{m('portal.nav.invoices')}</a
 				>

@@ -70,7 +70,9 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		// the API grants — `GET /api/credit-memos` and `api/recurring.py`'s
 		// `_READ_ROLES` both include `ap_clerk`, and each page gates its own
 		// mutations. Positive Pay and Billing stay out (admin/manager/cfo and
-		// admin/cfo respectively).
+		// admin/cfo respectively). Bank Reconciliation is in for the same reason
+		// as Credit Memos and Recurring — `api/bank_reconciliation.py::_READ_ROLES`
+		// admits a clerk, and the page gates its own writes on `auth.isManager`.
 		expect(await sectionTabHrefs(page, '/contracts')).toEqual(
 			[
 				'/contracts',
@@ -78,7 +80,8 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 				'/credit-memos',
 				'/discounts',
 				'/recurring',
-				'/vendor-statements'
+				'/vendor-statements',
+				'/bank-reconciliation'
 			].sort()
 		);
 	});

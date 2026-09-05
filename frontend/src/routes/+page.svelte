@@ -13,6 +13,7 @@
 		type MoneyAmount
 	} from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
+	import type { DashboardDiscountCapture } from '$lib/types/analytics';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 
@@ -71,6 +72,12 @@
 			due_date: string | null;
 			is_overdue: boolean;
 		}>;
+		// Early-payment discount capture — a three-way captured / missed /
+		// PENDING fold with its own reporting currency and its own
+		// `unconverted_count`. The API has carried this since round 16 with no
+		// consumer at all; see `$lib/types/analytics.ts` for why the pending
+		// bucket and the `null` capture rate are not cosmetic.
+		discount_capture: DashboardDiscountCapture;
 	}
 
 	let data = $state<DashboardData | null>(null);
@@ -104,6 +111,19 @@
 
 	function fmtFull(amount: MoneyAmount): string {
 		return formatMoney(amount, { currency: orgCurrency.currency });
+	}
+
+	/** Format a figure in the currency the RESPONSE says it is denominated in.
+	 *
+	 *  The KPIs above are tenant-wide rollups with no per-row currency, so they
+	 *  render in the separately-fetched org default. `discount_capture` is not
+	 *  one of those: it carries its OWN `reporting_currency`, and labelling its
+	 *  amounts with the org-settings code would let the page print "3 rows with
+	 *  no exchange rate into GBP" directly above a column of `$`. A currency
+	 *  label has to come from the same payload as the number it labels — the
+	 *  same rule `/cfo`'s `fmtIn` follows. */
+	function fmtIn(amount: MoneyAmount, currency: string | undefined): string {
+		return formatMoney(amount, { currency: currency || orgCurrency.currency, whole: true });
 	}
 
 	// Due-date cell: locale-aware short date, no year (the shared helper drives
@@ -230,6 +250,31 @@
 						: null}
 				/>
 			{/if}
+			{#if data.discount_capture.eligible_count > 0}
+				<!-- The `sub` line is the qualifier on this headline figure, and
+				     the unconverted disclosure OUTRANKS the capture rate for it:
+				     a rate is context, an unconverted count means the number
+				     above it mixes currencies. The full fold + a `role="alert"`
+				     banner live in the card below. -->
+				<KpiCard
+					value={fmtIn(
+						data.discount_capture.captured_amount_reporting,
+						data.discount_capture.reporting_currency
+					)}
+					label={m('dashboard.kpi.discountsCaptured')}
+					highlight="green"
+					sub={data.discount_capture.unconverted_count > 0
+						? m('dashboard.discount.unconvertedShort', {
+								n: data.discount_capture.unconverted_count,
+								currency: data.discount_capture.reporting_currency
+							})
+						: data.discount_capture.insufficient_data
+							? m('dashboard.discount.rateUnknown')
+							: m('dashboard.discount.rate', {
+									pct: data.discount_capture.capture_rate_pct ?? 0
+								})}
+				/>
+			{/if}
 		</div>
 
 		{#if hasUnconvertedRows}
@@ -335,6 +380,66 @@
 				{/if}
 			</div>
 
+			<!-- Early-payment discounts. Three buckets, not two: a window that
+			     has not closed yet is PENDING — still capturable — and folding
+			     it into "missed" reports live opportunity as forgone savings.
+			     Amounts are the reporting-currency figures, labelled with the
+			     currency THIS payload names. -->
+			<div class="chart-card" data-testid="discount-capture">
+				<h2>{m('dashboard.chart.discountCapture')}</h2>
+				<!-- The disclosure sits with the figure, not in a tooltip: a
+				     non-zero count means some eligible rows entered the totals
+				     below at face value because no rate into the reporting
+				     currency could be established, so the amounts mix
+				     currencies (decisions §35). -->
+				{#if data.discount_capture.unconverted_count > 0}
+					<p class="dashboard-skipped" role="alert" data-testid="discount-capture-unconverted">
+						{m('dashboard.discount.unconverted', {
+							n: data.discount_capture.unconverted_count,
+							currency: data.discount_capture.reporting_currency
+						})}
+					</p>
+				{/if}
+				{#if data.discount_capture.eligible_count === 0}
+					<p class="empty">{m('dashboard.empty.discountCapture')}</p>
+				{:else}
+					{@const dc = data.discount_capture}
+					<div class="discount-fold">
+						<div class="discount-row">
+							<span class="discount-label">{m('dashboard.discount.captured')}</span>
+							<span class="discount-amount captured"
+								>{fmtIn(dc.captured_amount_reporting, dc.reporting_currency)}</span
+							>
+							<span class="discount-count">{m('dashboard.discount.count', { n: dc.captured_count })}</span>
+						</div>
+						<div class="discount-row">
+							<span class="discount-label">{m('dashboard.discount.missed')}</span>
+							<span class="discount-amount missed"
+								>{fmtIn(dc.missed_amount_reporting, dc.reporting_currency)}</span
+							>
+							<span class="discount-count">{m('dashboard.discount.count', { n: dc.missed_count })}</span>
+						</div>
+						<div class="discount-row">
+							<span class="discount-label">{m('dashboard.discount.pending')}</span>
+							<span class="discount-amount pending"
+								>{fmtIn(dc.pending_amount_reporting, dc.reporting_currency)}</span
+							>
+							<span class="discount-count">{m('dashboard.discount.count', { n: dc.pending_count })}</span>
+						</div>
+					</div>
+					<!-- `null`, never 0%, until something has actually been
+					     decided — 0% reads as "we captured none of them", the
+					     opposite of "nothing has come due yet". -->
+					<p class="discount-rate" data-testid="discount-capture-rate">
+						{#if dc.insufficient_data}
+							{m('dashboard.discount.rateUnknown')}
+						{:else}
+							{m('dashboard.discount.rate', { pct: dc.capture_rate_pct ?? 0 })}
+						{/if}
+					</p>
+				{/if}
+			</div>
+
 			<!-- Monthly Trend -->
 			{#if data.monthly_trend.length > 0}
 				<div class="chart-card wide">
@@ -396,6 +501,62 @@
 		font-size: 0.85rem;
 		font-weight: 600;
 		margin: -8px 0 16px;
+	}
+
+	/* Early-payment discount fold. The `.dashboard-skipped` disclosure inside
+	   this card re-uses the rule above, so its top margin is reset there. */
+	.chart-card .dashboard-skipped {
+		margin: 0 0 12px;
+	}
+
+	.discount-fold {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.discount-row {
+		display: grid;
+		grid-template-columns: 1fr auto auto;
+		align-items: baseline;
+		gap: 10px;
+	}
+
+	.discount-label {
+		color: var(--text-muted);
+		font-size: 0.85rem;
+	}
+
+	.discount-amount {
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+
+	/* Text on the card surface, so these are the base tokens — never their
+	   `-strong` companions, which are fills for white text. */
+	.discount-amount.captured {
+		color: var(--success);
+	}
+
+	.discount-amount.missed {
+		color: var(--danger);
+	}
+
+	.discount-amount.pending {
+		color: var(--text);
+	}
+
+	.discount-count {
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		min-width: 5.5ch;
+		text-align: right;
+	}
+
+	.discount-rate {
+		color: var(--text-muted);
+		font-size: 0.82rem;
+		margin: 14px 0 0;
 	}
 
 	/* Exceptions KPI renders as a link, so it stays inline markup using the

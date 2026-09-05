@@ -10,6 +10,7 @@
 	import IconCheck from '~icons/material-symbols/check-circle-outline';
 	import IconArrow from '~icons/material-symbols/arrow-forward';
 	import Pricing from '$lib/components/marketing/Pricing.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 
 	const features = [
 		{
@@ -109,7 +110,7 @@
 		<div class="hero-visual" aria-hidden="true">
 			<div class="mock-card">
 				<div class="mock-header">
-					<div class="mock-pill green">Ready for review</div>
+					<Badge tone="success">Ready for review</Badge>
 					<div class="mock-conf">Confidence <strong>96%</strong></div>
 				</div>
 				<div class="mock-title">INV-2026-00418</div>
@@ -427,18 +428,6 @@
 		justify-content: space-between;
 		align-items: center;
 		margin-bottom: 14px;
-	}
-	.mock-pill {
-		font-size: 0.72rem;
-		font-weight: 600;
-		padding: 3px 10px;
-		border-radius: 999px;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-	.mock-pill.green {
-		background: rgba(46, 153, 96, 0.15);
-		color: #5bd798;
 	}
 	.mock-conf {
 		font-size: 0.78rem;

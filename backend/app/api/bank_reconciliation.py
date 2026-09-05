@@ -55,6 +55,7 @@ from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.user import User
 from app.schemas.bank_reconciliation import (
+    BankReconCurrencyTotal,
     BankStatementListResponse,
     BankStatementResponse,
     BankTransactionResponse,
@@ -82,6 +83,7 @@ from app.services.bank_reconciliation import (
 from app.services.csv_import import MAX_CSV_IMPORT_SIZE
 from app.tenant import get_tenant, get_tenant_db
 from app.utils.dates import resolve_day_first_preference, utc_today
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/bank-reconciliation", tags=["bank-reconciliation"])
 
@@ -455,18 +457,76 @@ async def upload_statement(
 # --------------------------------------------------------------------------- #
 
 
+def _statement_list_filters(
+    query,
+    *,
+    account_identifier: str | None,
+    search: str | None = None,
+):
+    """Apply the statement-list ``account_identifier`` / free-text filters.
+
+    ONE builder, and the list's row query and its ``total`` are both built from
+    the object it returns — so a narrowed table can never be headed by a
+    whole-set count (`docs/decisions.md` §48;
+    ``tests/test_paginated_list_search_legs.py`` is the structural guard).
+    Org scope is applied by the caller.
+
+    ``account_identifier`` stays an EXACT match: it is the same value the
+    upload form posts and the idempotency key is built from, so a caller
+    holding an account label wants that account's statements and nothing else.
+    ``search`` is the free-text sibling, and matches:
+
+    * ``account_identifier`` — the row's primary rendered label, and the reason
+      this leg exists: a partial account term ("operating", "1234") is what a
+      reviewer actually types.
+    * ``source_format`` — not a column on the tab, but the statement's own kind
+      and part of the detail header the reviewer just came from. Direct
+      analogue of the ``file_type`` leg on ``/positive-pay``; lets a tenant
+      that mixes CSV and OFX imports narrow to one.
+    * ``period_start`` / ``period_end`` rendered ISO (``YYYY-MM-DD``) — the
+      honest half of the period column. The row renders a LOCALISED date, and
+      matching that in SQL would make the result set depend on the caller's
+      browser language (the same trap ``/positive-pay`` declined for its
+      localised label), so the ISO form is matched instead: "2026-08" narrows
+      to that month regardless of locale. Rendered with ``to_char`` rather than
+      a plain cast, which would resolve against the Postgres session
+      ``DateStyle`` and could hand back ``08-15-2026`` on a non-ISO server.
+
+    ``currency`` is deliberately NOT searched: it is never shown on this tab,
+    and a three-letter code is the highest-noise substring of the set — a
+    two-character term would silently pull in every row of a currency the user
+    never mentioned.
+    """
+    if account_identifier:
+        query = query.where(BankStatement.account_identifier == account_identifier)
+    if search and search.strip():
+        term = search.strip()
+        query = query.where(
+            or_(
+                ilike_contains(BankStatement.account_identifier, term),
+                ilike_contains(BankStatement.source_format, term),
+                ilike_contains(func.to_char(BankStatement.period_start, "YYYY-MM-DD"), term),
+                ilike_contains(func.to_char(BankStatement.period_end, "YYYY-MM-DD"), term),
+            )
+        )
+    return query
+
+
 @router.get("", response_model=BankStatementListResponse)
 async def list_statements(
     account_identifier: str | None = None,
+    search: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_READ_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    query = select(BankStatement).where(BankStatement.organization_id == org_id)
-    if account_identifier:
-        query = query.where(BankStatement.account_identifier == account_identifier)
+    query = _statement_list_filters(
+        select(BankStatement).where(BankStatement.organization_id == org_id),
+        account_identifier=account_identifier,
+        search=search,
+    )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
@@ -507,6 +567,21 @@ async def list_statements(
 # `status_conflict`. One list, so "outstanding" and "matchable" can't drift.
 
 
+def _currency_totals(rows) -> list[BankReconCurrencyTotal]:
+    """`(currency, count, sum)` rows → per-currency exact-decimal totals.
+
+    A row whose currency could not be established is reported under an empty
+    code rather than folded into another currency's figure or dropped — losing
+    it would make the buckets disagree with their own counts."""
+    return [
+        BankReconCurrencyTotal(
+            currency=currency or "",
+            total=str((total if total is not None else Decimal("0.00")).quantize(Decimal("0.01"))),
+        )
+        for currency, _count, total in sorted(rows, key=lambda r: r[0] or "")
+    ]
+
+
 @router.get("/outstanding", response_model=OutstandingItemsResponse)
 async def outstanding_items(
     older_than_days: int = Query(
@@ -516,6 +591,15 @@ async def outstanding_items(
         description="Only report payments sent at least this many days ago.",
     ),
     limit: int = Query(200, ge=1, le=1000),
+    search: str | None = Query(
+        None,
+        max_length=200,
+        description=(
+            "Free-text narrowing across all three buckets. Applied in SQL, on "
+            "the same WHERE the aggregates read, so counts and totals narrow "
+            "WITH the rows — a client-side filter cannot see a row past `limit`."
+        ),
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_READ_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
@@ -571,12 +655,43 @@ async def outstanding_items(
     # a local-calendar date against a UTC one and shift the boundary — and
     # `days_outstanding` with it — by a day.
     sent_on_expr = cast(func.timezone("UTC", sent_at_expr), Date)
+    # One term, three buckets, each searching the columns it actually renders.
+    # Folded into the shared WHERE tuples below, which the aggregates and the row
+    # queries BOTH read — so a narrowed list can never be headed by a whole-set
+    # count. `frontend/CLAUDE.md` § Search forbids the client-side alternative,
+    # and `tests/test_paginated_list_search_legs.py` enforces it.
+    term = (search or "").strip()
+    uncleared_search = (
+        (
+            or_(
+                ilike_contains(Invoice.vendor_name, term),
+                ilike_contains(Invoice.invoice_number, term),
+                ilike_contains(Payment.method, term),
+            ),
+        )
+        if term
+        else ()
+    )
+    bank_line_search = (
+        (
+            or_(
+                ilike_contains(BankTransaction.counterparty_name, term),
+                ilike_contains(BankTransaction.reference, term),
+                ilike_contains(BankTransaction.description, term),
+                ilike_contains(BankStatement.account_identifier, term),
+            ),
+        )
+        if term
+        else ()
+    )
+
     uncleared_where = (
         Payment.status.in_(EXPECTED_TO_CLEAR_STATUSES),
         Payment.id.not_in(claimed_subq),
         # A row with no usable timestamp at all can't be aged out — surface it
         # rather than hide it behind a filter it can never satisfy.
         or_(sent_at_expr.is_(None), sent_on_expr <= cutoff),
+        *uncleared_search,
     )
 
     # Counts + totals cover EVERY outstanding payment; only the row list below
@@ -585,19 +700,38 @@ async def outstanding_items(
     # reads no column from it: `Payment.invoice_id` is a NOT NULL FK so the join
     # cannot drop a row today, but two query shapes that disagree about which
     # rows qualify are how a count silently stops matching its own list.
-    uncleared_count, uncleared_sum = (
+    # Grouped by the invoice's currency, never one blended SUM: `Payment.amount`
+    # is invoice-currency, so a cross-currency total is denominated in nothing
+    # real — the rule `amount_mismatch_net_variance` already follows for
+    # subtraction, applied to addition.
+    # One expression object, selected AND grouped — Postgres matches GROUP BY
+    # terms by expression identity, so re-spelling the coalesce would error.
+    uncleared_currency_expr = func.coalesce(Invoice.currency, "")
+    uncleared_by_currency = (
         await db.execute(
-            select(func.count(), func.sum(Payment.amount))
+            select(
+                uncleared_currency_expr,
+                func.count(),
+                func.sum(Payment.amount),
+            )
             .select_from(Payment)
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(*uncleared_where)
+            .group_by(uncleared_currency_expr)
         )
-    ).one()
-    uncleared_total = uncleared_sum if uncleared_sum is not None else Decimal("0.00")
+    ).all()
+    uncleared_count = sum(row[1] for row in uncleared_by_currency)
+    uncleared_totals = _currency_totals(uncleared_by_currency)
 
     uncleared_rows = (
         await db.execute(
-            select(Payment, Invoice.invoice_number, Invoice.vendor_name, sent_on_expr)
+            select(
+                Payment,
+                Invoice.invoice_number,
+                Invoice.vendor_name,
+                sent_on_expr,
+                Invoice.currency,
+            )
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(*uncleared_where)
             .order_by(Payment.created_at)
@@ -612,12 +746,13 @@ async def outstanding_items(
             invoice_number=invoice_number,
             vendor_name=vendor_name,
             amount=payment.amount,
+            currency=currency,
             method=payment.method,
             status=payment.status,
             sent_on=sent_on.isoformat() if sent_on else None,
             days_outstanding=(today - sent_on).days if sent_on else None,
         )
-        for payment, invoice_number, vendor_name, sent_on in uncleared_rows
+        for payment, invoice_number, vendor_name, sent_on, currency in uncleared_rows
     ]
 
     # ---- Bucket 2: bank debits with no payment behind them ----------------
@@ -625,16 +760,26 @@ async def outstanding_items(
         BankStatement.organization_id == org_id,
         BankTransaction.direction == "debit",
         BankTransaction.matched_payment_id.is_(None),
+        *bank_line_search,
     )
-    unmatched_count, unmatched_sum = (
+    # A statement carries its own currency and a tenant can import statements
+    # for accounts in different ones, so this groups too.
+    unmatched_currency_expr = func.coalesce(BankStatement.currency, "")
+    unmatched_by_currency = (
         await db.execute(
-            select(func.count(), func.sum(BankTransaction.amount))
+            select(
+                unmatched_currency_expr,
+                func.count(),
+                func.sum(BankTransaction.amount),
+            )
             .select_from(BankTransaction)
             .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
             .where(*unmatched_where)
+            .group_by(unmatched_currency_expr)
         )
-    ).one()
-    unmatched_total = unmatched_sum if unmatched_sum is not None else Decimal("0.00")
+    ).all()
+    unmatched_count = sum(row[1] for row in unmatched_by_currency)
+    unmatched_totals = _currency_totals(unmatched_by_currency)
 
     unmatched_rows = (
         await db.execute(
@@ -673,15 +818,24 @@ async def outstanding_items(
         BankStatement.organization_id == org_id,
         BankTransaction.direction == "debit",
         BankTransaction.match_method.in_(UNRECONCILED_MATCH_METHODS),
+        *bank_line_search,
     )
     # Same join set as the row query below (Invoice included, though the
     # aggregate reads nothing from it) so the count can never disagree with the
     # list it heads. The net variance deliberately sums the AMOUNT-mismatch
     # subset only: a cross-currency subtraction isn't money, and a
     # `status_conflict` line agrees on the amount by definition.
-    discrepancy_count, variance_sum = (
+    # Grouped by the statement's currency, for the same reason buckets 1 and 2
+    # are: an `amount_mismatch` line is same-currency by construction (a currency
+    # difference is classified `currency_mismatch` and excluded from the
+    # subtraction), but TWO mismatch lines in two different currencies still
+    # cannot be added together. Leaving this bucket ungrouped would make it the
+    # one figure on a page that disclaims cross-currency summing everywhere else.
+    variance_currency_expr = func.coalesce(BankStatement.currency, "")
+    variance_by_currency = (
         await db.execute(
             select(
+                variance_currency_expr,
                 func.count(),
                 func.sum(
                     case(
@@ -698,9 +852,11 @@ async def outstanding_items(
             .join(Payment, Payment.id == BankTransaction.matched_payment_id)
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(*discrepancy_where)
+            .group_by(variance_currency_expr)
         )
-    ).one()
-    net_variance = variance_sum if variance_sum is not None else Decimal("0.00")
+    ).all()
+    discrepancy_count = sum(row[1] for row in variance_by_currency)
+    net_variances = _currency_totals(variance_by_currency)
 
     # The row query selects the Payment itself and derives the settlement pair
     # through the SAME pure helper the matcher used, so a listed row can never
@@ -756,13 +912,13 @@ async def outstanding_items(
         older_than_days=older_than_days,
         uncleared_payments=uncleared,
         uncleared_count=uncleared_count,
-        uncleared_total=uncleared_total,
+        uncleared_totals=uncleared_totals,
         unmatched_debits=unmatched,
         unmatched_debit_count=unmatched_count,
-        unmatched_debit_total=unmatched_total,
+        unmatched_debit_totals=unmatched_totals,
         discrepancies=discrepancies,
         discrepancy_count=discrepancy_count,
-        amount_mismatch_net_variance=net_variance,
+        amount_mismatch_net_variances=net_variances,
     )
 
 

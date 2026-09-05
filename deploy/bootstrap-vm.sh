@@ -10,7 +10,7 @@
 # the IMDSv2 hop limit to 2 (containers cannot reach instance-profile
 # credentials through Docker's NAT without it).
 # Node/pnpm are NOT needed on the VM — deploy.sh builds the frontend inside a
-# node:20 container.
+# node:24 container.
 set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 

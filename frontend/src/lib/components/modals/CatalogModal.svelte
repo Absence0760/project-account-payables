@@ -7,6 +7,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import {
 		createCatalog,
 		updateCatalog,
@@ -53,19 +54,19 @@
 	// New-item form (edit mode only).
 	let newName = $state('');
 	let newSku = $state('');
-	let newPrice = $state<number | null>(null);
+	// The typed unit price stays RAW TEXT all the way to the wire —
+	// `schemas/catalog.py::CatalogItemCreate.unit_price` is a `Decimal`, and
+	// `json.loads` has already collapsed a fractional JSON number to a float by
+	// the time pydantic sees it. `normalizeMoneyInput` decides shape with a
+	// regex and never touches `Number`; text it cannot read is refused below
+	// rather than silently added as a price-less item.
+	let newPrice = $state<string | null>(null);
 	let newCurrency = $state('USD');
 	let newUom = $state('');
 	let newCategory = $state('');
 	let newVendorId = $state('');
 	let newGlId = $state('');
 	let addingItem = $state(false);
-
-	function numOrNull(v: unknown): number | null {
-		if (v === '' || v === null || v === undefined) return null;
-		const n = parseFloat(String(v));
-		return Number.isFinite(n) ? n : null;
-	}
 
 	function handleError(err: unknown, fallback: string) {
 		toast(err instanceof Error ? err.message : fallback, 'error');
@@ -100,13 +101,18 @@
 
 	async function handleAddItem() {
 		if (!catalog || !newName.trim()) return;
+		const price = newPrice === null ? null : normalizeMoneyInput(newPrice);
+		if (newPrice !== null && price === null) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		addingItem = true;
 		try {
 			const created = await createCatalogItem(catalog.id, {
 				name: newName.trim(),
 				sku: newSku.trim() || null,
 				description: null,
-				unit_price: newPrice,
+				unit_price: price,
 				currency: newCurrency.trim() || 'USD',
 				uom: newUom.trim() || null,
 				vendor_id: newVendorId || null,
@@ -287,7 +293,7 @@
 						placeholder={m('catalogs.modal.add.pricePlaceholder')}
 						aria-label={m('catalogs.modal.add.priceAria')}
 						value={newPrice ?? ''}
-						oninput={(e) => (newPrice = numOrNull(e.currentTarget.value))}
+						oninput={(e) => (newPrice = e.currentTarget.value.trim() || null)}
 					/>
 					<input
 						class="cur"

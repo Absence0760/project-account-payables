@@ -160,6 +160,33 @@ Track Usage (ExtractionUsage record)
 Transition: pending → ready_for_review
 ```
 
+### Re-extraction options (`ExtractionOptions`)
+
+`dispatch_extraction` takes two keyword flags and carries them to
+`run_extraction` in **both** dispatch modes — on the local queue tuple's 4th
+slot and as flat keys in the SQS message body. Both default to `False`, i.e. to
+the unchanged ingest behaviour, so a message written by an older producer (or a
+3-tuple already sitting in the local queue across a dev auto-reload) decodes to
+exactly what it used to do; `ExtractionOptions.from_payload` reads an absent key
+as `False`.
+
+| Flag | Effect |
+|------|--------|
+| `skip_vendor_match` | Skips `vendor_matching.match_and_link_vendor` and pins the invoice's existing `vendor_id` **and** `vendor_name` — `vendor_name` too, because that is what `PATCH /api/invoices/{id}` re-resolves a stale link from. Everything else the document says (number, dates, money, line items) is still re-read. |
+| `suppress_auto_approve` | Forces the pass to land at `ready_for_review` even when the confidence / small-amount gates would fire. |
+
+Both exist for RE-extraction of an invoice that has already been triaged once.
+Today the only caller is the supplier-portal resubmit
+(`POST /api/portal/invoices/{id}/resubmit`), which sets both: the fuzzy matcher
+re-run over a corrected document can re-link the invoice to a **different**
+supplier — dropping it out of the vendor's own portal list and re-pointing the
+payee the payment run reads bank details from — and a human already rejected
+this document, so its replacement must not be approved unattended. See
+`docs/supplier-portal.md` § *Resubmission re-extracts, under two constraints*.
+
+A new option belongs on `ExtractionOptions` rather than as another positional
+tuple slot, so the queue tuple's shape stops changing.
+
 ### Which separator is the decimal point
 
 A vision model transcribes what the page says, and an invoice printed in most of
@@ -688,7 +715,7 @@ Default per-tenant: no invoice embeddings ever leak across tenants. The table li
 
 ## Duplicate detection (semantic)
 
-Built on top of the same `invoice_embeddings` table as RAG. Complements the rule-based check in `services/invoice_warnings.py` (which does exact `vendor_name + invoice_number` match). The semantic pass catches near-duplicates where text overlap is very high but strings differ slightly — re-uploads, vendor resends with one field tweaked, OCR whitespace drift.
+Built on top of the same `invoice_embeddings` table as RAG. Complements the rule-based check in `services/invoice_warnings.py` (which matches on `vendor_name`/`vendor_id` + a normalized `invoice_number` — see § Interaction with the rule-based check). The semantic pass catches near-duplicates where text overlap is very high but strings differ slightly — re-uploads, vendor resends with one field tweaked, OCR whitespace drift.
 
 ### How it runs
 
@@ -730,9 +757,39 @@ Adjust via `FEOH_DUPLICATE_SIMILARITY_THRESHOLD`. Lower → more sensitive (more
 
 ### Interaction with the rule-based check
 
-The existing exact-match check in `invoice_warnings.py` runs on every invoice (including manually created ones without extraction). The semantic check runs only on extracted invoices with a text layer. They're complementary:
+The rule-based check in `invoice_warnings.py` runs on every invoice (including manually created ones without extraction). The semantic check runs only on extracted invoices with a text layer, **and only when RAG is enabled** — which is off in the common configuration, so it is a backstop, not a substitute. They're complementary:
 
-- Exact match catches *deterministic* duplicates regardless of PDF quality.
-- Semantic match catches fuzzy duplicates but requires a readable text layer and a non-empty embedding store.
+- The rule-based match catches *deterministic* duplicates regardless of PDF quality, always.
+- Semantic match catches fuzzy duplicates but requires RAG on, a readable text layer and a non-empty embedding store.
 
 Both emit the same `duplicate` exception type, so the queue and filtering work uniformly.
+
+#### Invoice-number normalization
+
+`INV-001` and `INV-1` are one payable. A byte-exact comparison read them as two, and with RAG off nothing caught it — so the rule-based check compares the invoice number twice: exactly first (unchanged, unbounded), then, only if that missed, through the pure `invoice_warnings.normalize_invoice_number`.
+
+The rule, in order:
+
+| Step | Effect |
+|---|---|
+| case + trim | `INV-001 ` == `inv-001` |
+| separator **runs** → a single `-` | whitespace, `-`, `_`, `.`, `/`, `#`, `\` are interchangeable noise: `INV 001` == `INV--001` == `INV_001` |
+| leading zeros inside each digit run | `INV-001` → `inv-1`, `2026-0007` → `2026-7`, `000` → `0` |
+
+Where the line is drawn, and why:
+
+- **Separator runs collapse, they never vanish.** Deleting separators would make `INV-1-2` and `INV-12` the same string. They are not the same invoice.
+- **Only *leading* zeros go.** `INV-100` stays `inv-100` and can never collide with `INV-1`.
+- **Non-digit characters are never stripped.** `INV-1` and `PO-1` stay distinct — stripping to a bare integer would be guessing, not normalizing.
+- **A digit run never collapses to nothing.** `000` normalizes to `0`, not `""`.
+- Known limit: an invoice number where a leading zero is *significant* (a fixed-width external reference such as `0042` meaning something different from `42`) will be treated as the same number. Invoice numbering that relies on leading-zero significance within one supplier is not supported by this gate.
+
+**Scope is what keeps the widening safe.** Normalization only ever widens the match, so the candidate query keeps exactly the scope the exact check already used — the tenant DB the session is bound to, the same vendor (stable `vendor_id` OR the case-folded `vendor_name`), and `id != self`. A different vendor with the same number is never a candidate.
+
+**The bound.** There is no normalized column and no expression index (no migration), so the comparison is a narrowing pass in Python over a bounded candidate set, not a query expression:
+
+1. SQL narrows to the same vendor **and** an equal ASCII *letter skeleton* — `regexp_replace(lower(invoice_number), '[^a-z]', '', 'g')`. That is a superset invariant of the normalized form (normalization only lowers case, rewrites separators and drops leading zeros), so the prefilter can cost a match but can never invent one.
+2. The result is ordered newest-first and capped at `MAX_DUPLICATE_CANDIDATES` (500), selecting one short string per row — a safety valve for a very high-volume vendor, not the usual path. `ix_invoices_vendor_id_created_at` serves the ordering when `vendor_id` is set.
+3. `normalize_invoice_number` is applied to each candidate in Python. The rule therefore lives in exactly one testable place (`tests/test_duplicate_normalization.py` covers it directly).
+
+The widened hit raises the same `duplicate` warning and goes through the same `_ensure_exception` call, so it dedupes identically — a recompute does not pile up a second exception row.

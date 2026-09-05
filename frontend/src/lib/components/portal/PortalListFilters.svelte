@@ -33,6 +33,7 @@
 		searchPlaceholder,
 		dateFromLabel,
 		dateToLabel,
+		initial,
 		onchange,
 	}: {
 		chips: Chip[];
@@ -42,16 +43,22 @@
 		searchPlaceholder: string;
 		dateFromLabel: string;
 		dateToLabel: string;
+		/** Seed state, for a page that restores its filters from the URL. Read
+		 *  once at construction — this component owns the state afterwards, so a
+		 *  later change here does not (and must not) reset what the user typed. */
+		initial?: Partial<PortalListFilterState>;
 		onchange: (f: PortalListFilterState) => void;
 	} = $props();
 
-	let phase = $state<string | null>(null);
-	let search = $state('');
-	let dateFrom = $state('');
-	let dateTo = $state('');
+	/* eslint-disable svelte/state-referenced-locally -- seed read once by design */
+	let phase = $state<string | null>(initial?.phase ?? null);
+	let search = $state(initial?.search ?? '');
+	let dateFrom = $state(initial?.dateFrom ?? '');
+	let dateTo = $state(initial?.dateTo ?? '');
+	/* eslint-enable svelte/state-referenced-locally */
 	// The search term the newest `onchange` carried — so the debounce effect
 	// schedules nothing when a phase click already emitted with this term.
-	let lastEmitted = $state('');
+	let lastEmitted = $state(initial?.search ?? '');
 
 	const current = (): PortalListFilterState => ({ phase, search, dateFrom, dateTo });
 

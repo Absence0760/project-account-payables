@@ -1,3 +1,5 @@
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
+
 export type WorkflowStepType =
 	| 'extraction'
 	| 'approval'
@@ -60,8 +62,24 @@ export const ROUTING_OPERATOR_LABELS: Record<RoutingOperator, string> = {
 };
 
 export interface ApprovalLevelConfig {
-	min_amount: number | null;
-	max_amount: number | null;
+	// The chain's per-level amount band, and the three thresholds on
+	// `ApprovalStepConfig` below, are money the user TYPES and we send back.
+	// The builder now holds the raw decimal text: `json.loads` decodes the body
+	// before any validator runs, so a JSON number has already been through a
+	// float by the time `schemas/workflow.py`'s `Decimal | None` sees it, and
+	// no annotation can undo that.
+	//
+	// `MoneyAmount`, not `MoneyString`, because these live in the free-form
+	// `steps_config` JSONB: every workflow saved before this change persisted
+	// a `parseFloat`ed NUMBER there, and it is still what a load returns. The
+	// alias is honest about both shapes, and it is still what makes `>` on a
+	// threshold a compile error.
+	//
+	// The builder validates the shape at save and refuses text it cannot read,
+	// rather than repairing it or sending `null` — a silently-dropped
+	// `require_cfo_above` removes the CFO gate on every invoice it routes.
+	min_amount: MoneyAmount;
+	max_amount: MoneyAmount;
 	approver_ids: string[];
 	required_approvals: number;
 	name: string;
@@ -76,9 +94,9 @@ export interface ApprovalStepConfig {
 	approver_id: string | null;
 	approver_ids: string[];
 	approver_strategy: 'manual' | 'specific' | 'auto' | 'chain';
-	auto_approve_below: number | null;
-	require_cfo_above: number | null;
-	max_invoice_amount: number | null;
+	auto_approve_below: MoneyAmount;
+	require_cfo_above: MoneyAmount;
+	max_invoice_amount: MoneyAmount;
 	approval_chain: ApprovalLevelConfig[];
 	require_segregation: boolean;
 }
@@ -329,7 +347,13 @@ export interface WorkflowDiff {
 }
 
 export interface SimInvoice {
-	amount: number | string;
+	/**
+	 * Request-side money: `schemas/workflow.py::SimInvoice.amount` is a
+	 * `Decimal` that accepts a string-decimal precisely so the caller never
+	 * has to send a float. The modal already types it as text; the `number`
+	 * arm this used to carry was dead and only invited arithmetic.
+	 */
+	amount: MoneyString;
 	currency: string;
 	vendor_id: string | null;
 	gl_account: string | null;

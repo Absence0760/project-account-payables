@@ -2,7 +2,8 @@
 	import type { Requisition, RequisitionStatus } from '$lib/types/requisition';
 	import {
 		REQUISITION_FILTER_STATUSES,
-		REQUISITION_STATUS_LABELS
+		REQUISITION_STATUS_LABELS,
+		REQUISITION_STATUS_TONES
 	} from '$lib/types/requisition';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -21,6 +22,7 @@
 	import type { RequisitionSummary } from '$lib/types/requisition';
 	import { formatCurrencyTotals } from '$lib/utils/currencyGroups';
 	import { listGlAccounts, type GlAccountOption } from '$lib/api/expenses';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -433,7 +435,7 @@
 					<td class="muted">{formatDate(r.needed_by)}</td>
 					<td class="right mono"><Money amount={r.total} currency={r.currency} /></td>
 					<td>
-						<span class="badge {r.status}">{REQUISITION_STATUS_LABELS[r.status as keyof typeof REQUISITION_STATUS_LABELS] ?? r.status}</span>
+						<Badge tone={REQUISITION_STATUS_TONES[r.status as RequisitionStatus]} variant={r.status}>{REQUISITION_STATUS_LABELS[r.status as keyof typeof REQUISITION_STATUS_LABELS] ?? r.status}</Badge>
 					</td>
 					<td class="actions">
 						{#if canCreate && r.status === 'draft'}
@@ -513,18 +515,10 @@
 		flex-wrap: wrap;
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-	}
-	.badge.draft { background: rgba(99, 140, 255, 0.12); color: #638cff; }
-	.badge.submitted { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.pending_approval { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.approved { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: var(--danger); }
-	.badge.converted { background: rgba(140, 100, 240, 0.12); color: #a585f5; }
-	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
+	/* No status-badge rules here on purpose. The one pill on this page is
+	   `<Badge>`, and its tone comes from `REQUISITION_STATUS_TONES` beside the
+	   label map in `$lib/types/requisition` — shared with `RequisitionModal`,
+	   which badges the same union one click away and used to hold a second copy
+	   at a different alpha. The status class survives as `variant`: a selector
+	   hook, never colour (decisions.md §47). */
 </style>

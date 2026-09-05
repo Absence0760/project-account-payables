@@ -15,12 +15,17 @@ Public API:
     - ``build_1099_report(db, organization_id, year)`` — compute the list
     - ``build_1099_dashboard(db, organization_id, year)`` — readiness view
     - ``THRESHOLD_USD`` — $600, the IRS filing threshold
+    - ``BOX_CATALOG`` / ``resolve_box_mapping`` / ``allocate_boxes`` — the
+      per-box allocation of a vendor's reportable total (see the section
+      comment above ``BOX_CATALOG``)
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -35,10 +40,378 @@ from app.services.payment_methods import card_payment_method_clause
 from app.services.storage import tax_form_type_from_key
 from app.utils.dates import utc_today
 
+logger = logging.getLogger(__name__)
+
 # IRS 1099-NEC / 1099-MISC reporting threshold for the 2024+ tax years.
 # Lowered from $600 to $5000 for 1099-K specifically, but 1099-NEC
 # (contractor payments) remains $600 — that's the common AP case.
 THRESHOLD_USD = Decimal("600")
+
+
+# ---------------------------------------------------------------------------
+# 1099 box allocation
+# ---------------------------------------------------------------------------
+#
+# A 1099 is not one number in one box. 1099-NEC has a single relevant box
+# (1, nonemployee compensation) but 1099-MISC splits across several, and a
+# vendor whose spend spans categories — rent AND medical AND legal — is
+# mis-filed if the whole reportable total is dumped into whichever box the
+# caller happened to ask for. That was the shipped simplification this
+# section removes.
+#
+# The driver is the money's own coding: each completed payment settles an
+# invoice, and the invoice carries the GL account AP coded it to
+# (``Invoice.gl_account``). A per-org GL-account → box mapping on
+# ``Organization.settings.tax.boxes`` (JSON, no migration — the same place
+# every other per-org tax setting lives) turns that coding into a box.
+#
+# **The allocation reconciles by construction, not by rounding.** Nothing is
+# prorated or split by percentage: every payment lands WHOLE in exactly one
+# box, so the per-box Decimals sum to the vendor's reportable total to the
+# cent with no residual to lose. Spend no rule matches is not dropped and not
+# quietly folded — it lands in an explicit, named fallback box (default
+# ``NEC-1``, matching the prior NEC behaviour exactly) and is separately
+# surfaced as ``unmapped_paid`` / ``unmapped_payment_count`` so a preparer can
+# see precisely how much money is sitting in the fallback for want of a rule.
+
+FORM_NEC = "1099-NEC"
+FORM_MISC = "1099-MISC"
+
+
+@dataclass(frozen=True)
+class Box1099:
+    """One reportable box on a 1099 form.
+
+    ``code`` is the stable wire/config identifier (``NEC-1``, ``MISC-6``);
+    ``number`` + ``label`` are what the IRS form prints."""
+
+    code: str
+    form_type: str
+    number: str
+    label: str
+
+    @property
+    def display_label(self) -> str:
+        return f"Box {self.number} — {self.label}"
+
+
+# The AP-payable boxes. Deliberately not the whole IRS form: boxes an AP
+# system cannot originate (federal income tax withheld, fishing-boat
+# proceeds, 409A deferrals, FATCA) have no payment that could land in them,
+# and offering a box nothing can populate invites a mapping rule that
+# silently routes real money into a box the filing partner will reject.
+# Insertion order is display + serialization order.
+BOX_CATALOG: dict[str, Box1099] = {
+    b.code: b
+    for b in (
+        Box1099("NEC-1", FORM_NEC, "1", "Nonemployee compensation"),
+        Box1099("MISC-1", FORM_MISC, "1", "Rents"),
+        Box1099("MISC-2", FORM_MISC, "2", "Royalties"),
+        Box1099("MISC-3", FORM_MISC, "3", "Other income"),
+        Box1099("MISC-6", FORM_MISC, "6", "Medical and health care payments"),
+        Box1099("MISC-10", FORM_MISC, "10", "Gross proceeds paid to an attorney"),
+    )
+}
+
+# Where unmapped spend lands. NEC box 1 is the correct default for an AP
+# book — contractor payments are the overwhelming case — and it makes the
+# default configuration behave exactly as the pre-allocation code did.
+DEFAULT_FALLBACK_BOX = "NEC-1"
+
+
+def normalize_box_code(value: object) -> str | None:
+    """Canonicalise a configured box code (``"misc-6"`` → ``"MISC-6"``).
+
+    Returns ``None`` for anything that isn't a box in ``BOX_CATALOG`` — a
+    typo in admin-entered config must not resolve to *some* box."""
+    if not isinstance(value, str):
+        return None
+    code = value.strip().upper().replace("_", "-")
+    return code if code in BOX_CATALOG else None
+
+
+def _normalize_gl_key(value: object) -> str:
+    """GL codes are compared case-insensitively with surrounding space
+    stripped — the same code arrives from ERP sync, AI extraction and manual
+    entry with inconsistent casing."""
+    return str(value or "").strip().upper()
+
+
+@dataclass(frozen=True)
+class BoxMapping:
+    """Resolved per-org GL-account → 1099-box mapping.
+
+    Pure data + a pure resolver: built once per report from
+    ``Organization.settings.tax.boxes`` and consulted per GL bucket."""
+
+    fallback_box: str = DEFAULT_FALLBACK_BOX
+    # Exact GL-code rules, normalized key → box code.
+    gl_exact: Mapping[str, str] = field(default_factory=dict)
+    # Prefix rules (config key ended in ``*``), longest prefix first so the
+    # most specific rule wins deterministically.
+    gl_prefix: tuple[tuple[str, str], ...] = ()
+    # Per-vendor overrides, ``str(vendor_id)`` → box code. Beats every GL
+    # rule: an attorney's payments are gross proceeds however they're coded.
+    vendors: Mapping[str, str] = field(default_factory=dict)
+    # Configured box codes we could not resolve, kept so the report can say so
+    # instead of the money silently taking the fallback path. PII-free — these
+    # are admin-entered config strings.
+    invalid_box_codes: tuple[str, ...] = ()
+
+    def resolve(self, *, vendor_id: object, gl_account: str | None) -> tuple[str, bool]:
+        """Return ``(box_code, matched)`` for one GL bucket.
+
+        ``matched`` is False when no rule applied and the amount is taking the
+        fallback — that is what ``unmapped_paid`` counts."""
+        vendor_key = str(vendor_id)
+        override = self.vendors.get(vendor_key)
+        if override:
+            return override, True
+        key = _normalize_gl_key(gl_account)
+        if key:
+            exact = self.gl_exact.get(key)
+            if exact:
+                return exact, True
+            for prefix, box in self.gl_prefix:
+                if key.startswith(prefix):
+                    return box, True
+        return self.fallback_box, False
+
+
+def resolve_box_mapping(org_settings: Mapping | None) -> BoxMapping:
+    """Build the mapping from ``Organization.settings.tax.boxes``.
+
+    Shape (every key optional)::
+
+        {"tax": {"boxes": {
+            "fallback_box": "NEC-1",
+            "gl_accounts": {"6010": "MISC-1", "64*": "MISC-6"},
+            "vendors": {"<vendor uuid>": "MISC-10"}
+        }}}
+
+    A GL key ending in ``*`` is a prefix rule over the chart's hierarchy;
+    longest prefix wins and an exact code beats any prefix. An unrecognised
+    box code anywhere is DROPPED rather than guessed at — the affected spend
+    then takes the fallback and shows up in ``unmapped_paid``, which is the
+    visible symptom a preparer can act on. Never raises: a malformed settings
+    blob degrades to the platform default, it does not take the 1099 report
+    down in January."""
+    invalid: list[str] = []
+
+    raw: object = None
+    if isinstance(org_settings, Mapping):
+        tax_cfg = org_settings.get("tax")
+        if isinstance(tax_cfg, Mapping):
+            raw = tax_cfg.get("boxes")
+    cfg: Mapping = raw if isinstance(raw, Mapping) else {}
+
+    fallback = normalize_box_code(cfg.get("fallback_box"))
+    if fallback is None and cfg.get("fallback_box") is not None:
+        invalid.append(str(cfg.get("fallback_box")))
+    fallback = fallback or DEFAULT_FALLBACK_BOX
+
+    gl_exact: dict[str, str] = {}
+    gl_prefix: list[tuple[str, str]] = []
+    gl_cfg = cfg.get("gl_accounts")
+    if isinstance(gl_cfg, Mapping):
+        for key, value in gl_cfg.items():
+            box = normalize_box_code(value)
+            if box is None:
+                invalid.append(str(value))
+                continue
+            norm = _normalize_gl_key(key)
+            if not norm:
+                continue
+            if norm.endswith("*"):
+                stem = norm[:-1]
+                if stem:
+                    gl_prefix.append((stem, box))
+            else:
+                gl_exact[norm] = box
+
+    vendors: dict[str, str] = {}
+    vendor_cfg = cfg.get("vendors")
+    if isinstance(vendor_cfg, Mapping):
+        for key, value in vendor_cfg.items():
+            box = normalize_box_code(value)
+            if box is None:
+                invalid.append(str(value))
+                continue
+            vendors[str(key).strip()] = box
+
+    if invalid:
+        # Config, never PII — the box code an admin typed. Logged once per
+        # report build so a broken mapping is diagnosable without reading JSON.
+        logger.warning(
+            "[tax] 1099 box mapping contains %d unrecognised box code(s): %s",
+            len(invalid),
+            ", ".join(sorted(set(invalid))[:10]),
+        )
+
+    return BoxMapping(
+        fallback_box=fallback,
+        gl_exact=gl_exact,
+        # Longest prefix first — deterministic "most specific rule wins".
+        gl_prefix=tuple(sorted(gl_prefix, key=lambda p: (-len(p[0]), p[0]))),
+        vendors=vendors,
+        invalid_box_codes=tuple(sorted(set(invalid))),
+    )
+
+
+@dataclass(frozen=True)
+class BoxAllocation:
+    """One box's share of a vendor's reportable total. Money is Decimal."""
+
+    box: str
+    form_type: str
+    box_number: str
+    label: str
+    amount: Decimal
+    payment_count: int
+    # True when this box received spend no mapping rule matched (i.e. it is
+    # the fallback and absorbed unmapped money). Surfaced so "everything is in
+    # box 1" is distinguishable from "nothing was ever mapped".
+    fallback: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "box": self.box,
+            "form_type": self.form_type,
+            "box_number": self.box_number,
+            "label": self.label,
+            "amount": str(self.amount),
+            "payment_count": self.payment_count,
+            "fallback": self.fallback,
+        }
+
+
+@dataclass(frozen=True)
+class GLSpendBucket:
+    """Reportable spend for one vendor under one GL account, straight out of
+    the aggregation. ``gl_account`` is ``None`` for uncoded invoices."""
+
+    gl_account: str | None
+    amount: Decimal
+    payment_count: int
+
+
+@dataclass(frozen=True)
+class BoxAllocationResult:
+    allocations: tuple[BoxAllocation, ...]
+    unmapped_amount: Decimal
+    unmapped_payment_count: int
+
+
+def allocate_boxes(
+    buckets: Iterable[GLSpendBucket],
+    mapping: BoxMapping,
+    *,
+    vendor_id: object,
+) -> BoxAllocationResult:
+    """Attribute a vendor's per-GL reportable spend to 1099 boxes.
+
+    Whole-payment attribution — a bucket's Decimal moves intact into exactly
+    one box — so ``sum(a.amount for a in allocations) == sum(b.amount for b in
+    buckets)`` exactly, with no rounding step that could shed a cent. Buckets
+    with no money and no payments are dropped (an invoice that was never
+    paid)."""
+    totals: dict[str, list] = {}
+    unmapped = Decimal("0")
+    unmapped_count = 0
+    for bucket in buckets:
+        if not bucket.amount and not bucket.payment_count:
+            continue
+        box_code, matched = mapping.resolve(vendor_id=vendor_id, gl_account=bucket.gl_account)
+        if box_code not in BOX_CATALOG:  # pragma: no cover — mapping normalises
+            box_code = DEFAULT_FALLBACK_BOX
+        slot = totals.setdefault(box_code, [Decimal("0"), 0, False])
+        slot[0] += bucket.amount
+        slot[1] += bucket.payment_count
+        if not matched:
+            slot[2] = True
+            unmapped += bucket.amount
+            unmapped_count += bucket.payment_count
+
+    order = list(BOX_CATALOG)
+    allocations = tuple(
+        BoxAllocation(
+            box=code,
+            form_type=BOX_CATALOG[code].form_type,
+            box_number=BOX_CATALOG[code].number,
+            label=BOX_CATALOG[code].label,
+            amount=amount,
+            payment_count=count,
+            fallback=is_fallback,
+        )
+        for code, (amount, count, is_fallback) in sorted(
+            totals.items(), key=lambda kv: order.index(kv[0])
+        )
+    )
+    return BoxAllocationResult(
+        allocations=allocations,
+        unmapped_amount=unmapped,
+        unmapped_payment_count=unmapped_count,
+    )
+
+
+def box_total_for_form(row: VendorReportRow, form_type: str) -> Decimal:
+    """The part of a vendor's reportable total that belongs on ONE form.
+
+    A vendor with rent (MISC-1) and contractor spend (NEC-1) gets two forms
+    carrying two different figures; filing either one for the whole total is
+    the mis-report this exists to prevent. Falls back to the vendor's whole
+    reportable total when no allocation is present (a hand-built row)."""
+    if not row.box_allocations:
+        return row.ytd_paid
+    return sum((a.amount for a in row.box_allocations if a.form_type == form_type), Decimal("0"))
+
+
+def aggregate_box_allocations(rows: Sequence[VendorReportRow]) -> list[BoxAllocation]:
+    """Roll per-vendor allocations up into one per-box total for a population.
+
+    Exact-Decimal addition of figures already denominated in the reporting
+    currency — no conversion, no rounding."""
+    totals: dict[str, list] = {}
+    for row in rows:
+        for alloc in row.box_allocations:
+            slot = totals.setdefault(alloc.box, [Decimal("0"), 0, False])
+            slot[0] += alloc.amount
+            slot[1] += alloc.payment_count
+            slot[2] = slot[2] or alloc.fallback
+    order = list(BOX_CATALOG)
+    return [
+        BoxAllocation(
+            box=code,
+            form_type=BOX_CATALOG[code].form_type,
+            box_number=BOX_CATALOG[code].number,
+            label=BOX_CATALOG[code].label,
+            amount=amount,
+            payment_count=count,
+            fallback=is_fallback,
+        )
+        for code, (amount, count, is_fallback) in sorted(
+            totals.items(), key=lambda kv: order.index(kv[0])
+        )
+    ]
+
+
+def _box_summary(rows: Sequence[VendorReportRow], total_reportable: Decimal) -> dict:
+    """The summary-level box breakdown + its reconciliation proof.
+
+    ``box_unallocated`` is the residual between the filed total and the sum of
+    the boxes. It is zero by construction (whole-payment attribution), and it
+    is reported anyway — a reconciliation guarantee nobody can read is a
+    guarantee nobody can check."""
+    allocations = aggregate_box_allocations(rows)
+    allocated = sum((a.amount for a in allocations), Decimal("0"))
+    residual = total_reportable - allocated
+    return {
+        "box_allocations": [a.to_dict() for a in allocations],
+        "total_unmapped": str(sum((r.unmapped_paid for r in rows), Decimal("0"))),
+        "unmapped_payment_count": sum(r.unmapped_payment_count for r in rows),
+        "box_unallocated": str(residual),
+        "box_allocation_reconciled": residual == 0,
+    }
 
 
 @dataclass
@@ -72,6 +445,27 @@ class VendorReportRow:
     # vendor's box amount is UNDERSTATED and a human has to establish the
     # home-currency figure before filing.
     unconverted_payment_count: int = 0
+    # Per-box split of ``ytd_paid``. Whole-payment attribution, so these sum to
+    # ``ytd_paid`` exactly — see ``allocate_boxes``. Empty on a hand-built row
+    # (no aggregation ran), which ``box_unallocated`` then reports honestly
+    # rather than pretending the total is allocated.
+    box_allocations: tuple[BoxAllocation, ...] = ()
+    # The slice of ``ytd_paid`` that reached the fallback box because no
+    # mapping rule matched it. NOT money that went missing — it is filed, in
+    # the fallback box — but it is money nobody has told us the box for, which
+    # is the preparer's worklist before filing.
+    unmapped_paid: Decimal = Decimal("0")
+    unmapped_payment_count: int = 0
+
+    @property
+    def box_unallocated(self) -> Decimal:
+        """Reportable total minus the sum of the boxes.
+
+        Zero for any row the aggregation produced (whole-payment attribution
+        cannot lose a cent); equal to ``ytd_paid`` for a hand-built row that
+        carries no allocation. Reported either way — a reconciliation
+        guarantee that isn't published can't be checked."""
+        return self.ytd_paid - sum((a.amount for a in self.box_allocations), Decimal("0"))
 
     def to_dict(self) -> dict:
         return {
@@ -91,6 +485,10 @@ class VendorReportRow:
             "card_paid": str(self.card_paid),
             "card_payment_count": self.card_payment_count,
             "unconverted_payment_count": self.unconverted_payment_count,
+            "box_allocations": [a.to_dict() for a in self.box_allocations],
+            "unmapped_paid": str(self.unmapped_paid),
+            "unmapped_payment_count": self.unmapped_payment_count,
+            "box_unallocated": str(self.box_unallocated),
         }
 
 
@@ -131,7 +529,8 @@ class Report1099:
 
     def summary(self) -> dict:
         eligible_over = [r for r in self.rows if r.is_1099_eligible and r.over_threshold]
-        total_reportable = str(sum((r.ytd_paid for r in eligible_over), Decimal("0")))
+        total_reportable_dec = sum((r.ytd_paid for r in eligible_over), Decimal("0"))
+        total_reportable = str(total_reportable_dec)
         return {
             "year": self.year,
             "threshold_usd": str(self.threshold_usd),
@@ -149,6 +548,8 @@ class Report1099:
             "total_reportable_usd": total_reportable,
             "total_card_excluded": _total_card_excluded(self.rows),
             "unconverted_payment_count": _total_unconverted_payments(self.rows),
+            # Per-box split of exactly the population `total_reportable` covers.
+            **_box_summary(eligible_over, total_reportable_dec),
         }
 
     def to_dict(self) -> dict:
@@ -164,6 +565,7 @@ async def build_1099_report(
     organization_id: uuid.UUID,
     year: int,
     reporting_currency: str = "USD",
+    org_settings: Mapping | None = None,
 ) -> Report1099:
     """Aggregate completed payments per vendor for the given calendar year.
 
@@ -193,6 +595,14 @@ async def build_1099_report(
     counted on ``unconverted_payment_count`` instead. Nothing is converted at
     read time; a rate fetched on a read would make a filed historical total
     move under the reader.
+
+    ``org_settings`` carries the per-org GL-account → 1099-box mapping
+    (``settings.tax.boxes``). The aggregation groups by the paying invoice's
+    ``gl_account`` as well as by vendor, and every GL bucket is attributed
+    WHOLE to one box, so the per-box figures sum to ``ytd_paid`` to the cent.
+    Omit it and every vendor's spend lands in the default fallback box
+    (``NEC-1``) — exactly the pre-allocation behaviour — with the amount
+    surfaced on ``unmapped_paid`` rather than presented as a mapped figure.
     """
     # Conditional aggregation splits the joined payments in one pass. ``case``
     # with no ``else_`` yields NULL on the other branch, which ``sum``/``count``
@@ -208,6 +618,11 @@ async def build_1099_report(
         invoice_currency=Invoice.currency,
     )
     countable = reported.is_expressible
+    # The paying invoice's GL coding is the box driver. Grouping by it as well
+    # as by vendor keeps this ONE query: the per-vendor figures are recovered
+    # by adding the buckets back up, which is exact (same Decimals), while the
+    # buckets themselves are what the box mapping is applied to.
+    gl_key = Invoice.gl_account
     q = (
         select(
             Vendor.id.label("vendor_id"),
@@ -218,6 +633,7 @@ async def build_1099_report(
             Vendor.w9_received_date.label("w9_received_date"),
             Vendor.w9_file_key.label("w9_file_key"),
             Vendor.tin_verified_at.label("tin_verified_at"),
+            gl_key.label("gl_account"),
             func.coalesce(
                 func.sum(case((and_(~is_card, countable), reported.amount))), Decimal("0")
             ).label("ytd_paid"),
@@ -253,35 +669,78 @@ async def build_1099_report(
             Vendor.w9_received_date,
             Vendor.w9_file_key,
             Vendor.tin_verified_at,
+            gl_key,
         )
-        .order_by(Vendor.name)
+        .order_by(Vendor.name, gl_key)
     )
     result = await db.execute(q)
-    rows = []
+    mapping = resolve_box_mapping(org_settings)
+
+    # One vendor now spans several GL buckets; fold them back together in
+    # issue order (the query is ordered by vendor name) so the row list stays
+    # exactly what it was before allocation existed.
+    ordered_vendor_ids: list[uuid.UUID] = []
+    per_vendor: dict[uuid.UUID, dict] = {}
     for row in result.all():
-        ytd = Decimal(row.ytd_paid or Decimal("0"))
+        acc = per_vendor.get(row.vendor_id)
+        if acc is None:
+            ordered_vendor_ids.append(row.vendor_id)
+            acc = per_vendor[row.vendor_id] = {"first": row, "buckets": []}
+        acc["buckets"].append(
+            GLSpendBucket(
+                gl_account=row.gl_account,
+                amount=Decimal(row.ytd_paid or Decimal("0")),
+                payment_count=int(row.payment_count or 0),
+            )
+        )
+        acc["card_paid"] = acc.get("card_paid", Decimal("0")) + Decimal(
+            row.card_paid or Decimal("0")
+        )
+        acc["card_payment_count"] = acc.get("card_payment_count", 0) + int(
+            row.card_payment_count or 0
+        )
+        acc["unconverted_payment_count"] = acc.get("unconverted_payment_count", 0) + int(
+            row.unconverted_payment_count or 0
+        )
+
+    rows = []
+    for vendor_id in ordered_vendor_ids:
+        acc = per_vendor[vendor_id]
+        first = acc["first"]
+        buckets: list[GLSpendBucket] = acc["buckets"]
+        # Exact-Decimal re-sum of the buckets — never a float, never a rounded
+        # figure. This IS `ytd_paid`, and the box allocation partitions the
+        # same buckets, which is why the two can never disagree.
+        ytd = sum((b.amount for b in buckets), Decimal("0"))
+        # Card money is excluded from every box by construction: the buckets
+        # the allocation sees carry only the non-card population
+        # (`~is_card` in the aggregation), and `card_paid` is summed apart.
+        allocation = allocate_boxes(buckets, mapping, vendor_id=vendor_id)
         rows.append(
             VendorReportRow(
-                vendor_id=row.vendor_id,
-                vendor_name=row.vendor_name,
-                tax_id=row.tax_id,
-                tax_classification=row.tax_classification,
-                is_1099_eligible=bool(row.is_1099_eligible),
-                w9_received_date=row.w9_received_date,
+                vendor_id=first.vendor_id,
+                vendor_name=first.vendor_name,
+                tax_id=first.tax_id,
+                tax_classification=first.tax_classification,
+                is_1099_eligible=bool(first.is_1099_eligible),
+                w9_received_date=first.w9_received_date,
                 # `w9_file_key` is shared with W-8 uploads (no separate vendor
                 # column — see `storage.upload_tax_form_file`), so a bare
                 # not-None check reported a foreign vendor who filed a W-8 as
                 # "1099-ready", rolling them into the Tax1099 export as if
                 # they'd filed the domestic form. The form type is encoded in
                 # the key's path segment — only an actual W-9 counts here.
-                w9_on_file=tax_form_type_from_key(row.w9_file_key) == "w9",
+                w9_on_file=tax_form_type_from_key(first.w9_file_key) == "w9",
                 ytd_paid=ytd,
                 over_threshold=ytd >= THRESHOLD_USD,
-                payment_count=int(row.payment_count or 0),
-                tin_verified=row.tin_verified_at is not None,
-                card_paid=Decimal(row.card_paid or Decimal("0")),
-                card_payment_count=int(row.card_payment_count or 0),
-                unconverted_payment_count=int(row.unconverted_payment_count or 0),
+                payment_count=sum(b.payment_count for b in buckets),
+                tin_verified=first.tin_verified_at is not None,
+                card_paid=acc["card_paid"],
+                card_payment_count=acc["card_payment_count"],
+                unconverted_payment_count=acc["unconverted_payment_count"],
+                box_allocations=allocation.allocations,
+                unmapped_paid=allocation.unmapped_amount,
+                unmapped_payment_count=allocation.unmapped_payment_count,
             )
         )
 
@@ -337,7 +796,8 @@ class Dashboard1099:
     def summary(self) -> dict:
         eligible = [r for r in self.rows if r.is_1099_eligible]
         eligible_over = [r for r in eligible if r.over_threshold]
-        total_reportable = str(sum((r.ytd_paid for r in eligible_over), Decimal("0")))
+        total_reportable_dec = sum((r.ytd_paid for r in eligible_over), Decimal("0"))
+        total_reportable = str(total_reportable_dec)
         return {
             "year": self.year,
             "threshold_usd": str(self.threshold_usd),
@@ -357,6 +817,7 @@ class Dashboard1099:
             "total_reportable_usd": total_reportable,
             "total_card_excluded": _total_card_excluded(self.rows),
             "unconverted_payment_count": _total_unconverted_payments(self.rows),
+            **_box_summary(eligible_over, total_reportable_dec),
         }
 
     def to_dict(self) -> dict:
@@ -374,12 +835,13 @@ async def build_1099_dashboard(
     organization_id: uuid.UUID,
     year: int,
     reporting_currency: str = "USD",
+    org_settings: Mapping | None = None,
 ) -> Dashboard1099:
     """Build the 1099-eligible vendor dashboard for a year.
 
     Reuses ``build_1099_report``'s aggregation and re-frames it around filing
     readiness (W-9-on-file, TIN-verified, threshold, needs-attention)."""
-    report = await build_1099_report(db, organization_id, year, reporting_currency)
+    report = await build_1099_report(db, organization_id, year, reporting_currency, org_settings)
     return Dashboard1099(
         year=report.year,
         generated_at=report.generated_at,

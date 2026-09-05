@@ -1,3 +1,6 @@
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MoneyAmount } from '$lib/utils/money';
+
 // Types for the Procurement / Requisitions surface. Mirrors the JSON returned
 // by the `/api/requisitions` endpoints (backend `RequisitionResponse` /
 // `RequisitionLineItemResponse`). Money fields arrive as numbers (backend
@@ -76,6 +79,37 @@ export const REQUISITION_STATUS_LABELS: Record<RequisitionStatus, string> = {
 	cancelled: 'Cancelled'
 };
 
+/**
+ * Badge tone per requisition status. Hoisted out of `RequisitionModal`, which
+ * is where it was first written and where it left a note saying it belonged
+ * here once the list page converted — the shape `frontend/CLAUDE.md` § Badge
+ * asks for whenever a status is badged in more than one place.
+ *
+ * `converted` takes the `erp` tone: the measured purple literal the list page's
+ * rule already spelled by hand, doing the same job it does mid-invoice-pipeline
+ * — "handed off downstream", here to a PO. Keeping it distinct from `approved`
+ * (green) matters: approved is a decision, converted is a decision someone has
+ * already acted on.
+ *
+ * `submitted` and `pending_approval` share `warning` because the requisition is
+ * waiting on someone in both. They keep their own labels, so the states stay
+ * distinguishable in text (SC 1.4.1) — and `submitted` is unreachable by any
+ * backend transition anyway (see UNREACHABLE_REQUISITION_STATUSES), so the
+ * pairing collapses nothing a live row can show.
+ *
+ * `cancelled` is `neutral` (flat), not a grey tint: a withdrawn requisition is
+ * the absence of a signal rather than a weak one.
+ */
+export const REQUISITION_STATUS_TONES: Record<RequisitionStatus, BadgeTone> = {
+	draft: 'accent',
+	submitted: 'warning',
+	pending_approval: 'warning',
+	approved: 'success',
+	rejected: 'danger',
+	converted: 'erp',
+	cancelled: 'neutral'
+};
+
 export interface RequisitionLineItem {
 	id: string;
 	line_number: number | null;
@@ -83,8 +117,11 @@ export interface RequisitionLineItem {
 	item_code: string | null;
 	description: string | null;
 	quantity: number | null;
-	unit_price: number | null;
-	total: number | null;
+	/** Per-unit price — string-Decimal from the backend. The per-line preview
+	 *  scales it by `quantity` through `scaleMoney`, exactly. */
+	unit_price: MoneyAmount;
+	/** Server-computed line total (`float` on the wire — `schemas/requisition.py`). */
+	total: MoneyAmount;
 	gl_account_id: string | null;
 	uom: string | null;
 }
@@ -101,7 +138,8 @@ export interface Requisition {
 	vendor_id: string | null;
 	contract_id: string | null;
 	budget_id: string | null;
-	total: number;
+	/** Header total, derived server-side as `sum(quantity * unit_price)`. */
+	total: MoneyAmount;
 	currency: string;
 	notes: string | null;
 	submitted_at: string | null;
@@ -150,7 +188,8 @@ export interface ConvertToPoResult {
 	requisition_id: string;
 	po_id: string;
 	po_number: string;
-	total: number;
+	/** The created PO's money total. */
+	total: MoneyAmount;
 	created: boolean;
 }
 
@@ -162,7 +201,7 @@ export interface RequisitionLineItemInput {
 	item_code?: string | null;
 	description?: string | null;
 	quantity?: number | null;
-	unit_price?: number | null;
+	unit_price?: MoneyAmount;
 	gl_account_id?: string | null;
 	uom?: string | null;
 }

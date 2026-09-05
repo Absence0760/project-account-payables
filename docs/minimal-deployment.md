@@ -127,7 +127,7 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
   update never bounces the stack at a random hour — update those around a
   deploy window), 2 GB swap, the nightly backup cron, and the IMDS hop-limit
   fix. Node/pnpm are *not* needed on the VM — the frontend builds inside a
-  `node:20` container.
+  `node:24` container.
 - DNS: three records → the instance IP: `app.feohledger.com`, `api.feohledger.com`, and a
   **wildcard `*.app.feohledger.com`** so tenant onboarding never touches DNS again.
   (A DNS wildcard needs no wildcard *certificate* — Caddy still issues
@@ -196,7 +196,7 @@ tenants by CLI (`python scripts/create_tenant.py …`), leaving email on
 Copy the sops env onto the VM as `deploy/.env.sops`, then run
 `deploy/deploy.sh`: it preflights its own prerequisites and the required env
 keys (clear errors before any work happens), pulls main, decrypts secrets,
-builds the frontend in a `node:20` container (`PUBLIC_API_URL` baked from
+builds the frontend in a `node:24` container (`PUBLIC_API_URL` baked from
 `API_DOMAIN`; pnpm store cached in a volume) and the backend image, runs
 `alembic upgrade head && python scripts/migrate_all_tenants.py` **before**
 the new API serves traffic (same ordering contract as the future ECS

@@ -1,5 +1,32 @@
 # Environment Variables
 
+## Toolchain versions
+
+Not env vars, but the other half of "what environment does this run in" — and
+the place to check before raising either.
+
+| Tool | Pinned to | Where it is declared |
+|------|-----------|----------------------|
+| Node | **24** (Active LTS, EOL 2028-04-30) | `node-version:` on every `setup-node` step in `.github/workflows/` — `ci.yml` (×4), `sso-e2e`, `web-bundle-budget`, `compliance-drift`, `aws-deploy`, `audit` |
+| pnpm | **10.12.4** | `packageManager` in the root **and** `frontend/package.json`; no workflow passes a `version:` input |
+| Python | **3.12+** | `backend/pyproject.toml` |
+| Dart | **^3.11.4** | `environment.sdk` in `mobile/pubspec.yaml` (the Flutter 3.41+ floor in the root `CLAUDE.md` is not declared in the pubspec) |
+
+There is no `.nvmrc` and no `engines` block in either `package.json`, so the
+workflow pins are the whole story for CI — **plus** `deploy/deploy.sh`, which
+builds the production frontend inside a `NODE_IMAGE=node:24-alpine` container
+(see [minimal-deployment.md](minimal-deployment.md)). Both move together: Node
+20 reached end-of-life on 2026-04-30, and a deploy image behind the CI pin means
+production builds on a runtime CI never tested.
+
+The floor is not arbitrary: `jsdom` — vitest's test-environment peer — declares
+`engines: ^22.22.2 || ^24.15.0 || >=26.0.0`. pnpm does not enforce
+`engines` without `engine-strict`, so an under-floor runtime installs silently
+rather than failing — which is why this is written down here instead of being
+left to a tool to catch. Raise the Node pin in **every** site at once; a floor
+raised in one place and not another is worse than not raising it. See
+`frontend/CLAUDE.md` § The Node floor.
+
 ## Frontend (`frontend/.env.development`)
 
 | Variable         | Default                 | Description                         |
@@ -59,6 +86,8 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `FEOH_APPROVAL_ESCALATION_ENABLED` | `false`                                                      | Master switch for the approval-escalation sweeper. Disabled in local dev; flip on in deployed envs. |
 | `FEOH_APPROVAL_ESCALATION_INTERVAL_SECONDS` | `600`                                                 | How often the escalation sweeper scans every tenant's active workflow instances. |
 | `FEOH_APPROVAL_ESCALATION_BATCH_SIZE`       | `200`                                                 | Page size for that sweep's keyset pagination. A page, not a cap — it pages until each tenant is exhausted, locking one instance at a time so it never blocks the approval path. |
+| `FEOH_DISCOUNT_OPTIMIZATION_BATCH_SIZE`     | `200`                                                 | Page size for the dynamic-discounting auto-capture sweep's keyset pagination over a tenant's `offered` offers. A page, not a cap — an offer skipped for a below-threshold ROI stays `offered`, so a `LIMIT` would re-serve the same lowest-id offers every tick and never reach the tail. See `backend/docs/background-sweeps.md` § Locking. |
+| `FEOH_CONTRACT_RENEWAL_BATCH_SIZE`          | `200`                                                 | Page size for the contract-renewal sweep's keyset pagination, used by BOTH its passes (renewal alert, end-of-term expiry), each with its own cursor. A page, not a cap — a contract outside its lead window stays un-alerted and one not yet over term stays `active`, so neither leaves the candidate set. See `backend/docs/background-sweeps.md` § Locking. |
 | `FEOH_PAYMENT_RECONCILE_ENABLED` | `false`                                                        | Master switch for the payment-status reconciler (backstop polling for processors whose webhooks went missing). Pair with Modern Treasury / Stripe Treasury in prod. |
 | `FEOH_PAYMENT_RECONCILE_INTERVAL_SECONDS` | `300`                                                 | How often the reconciler sweeps for `submitted`/`processing` payments. |
 | `FEOH_PAYMENT_RECONCILE_AFTER_MINUTES` | `10`                                                     | Minimum age before a payment is re-checked against the processor. |

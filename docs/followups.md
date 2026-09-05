@@ -34,7 +34,105 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-04 (round 17) — a seven-agent sweep over what
+**Last reconciled:** 2026-09-05 (round 19) — a seven-agent sweep: six on this
+file, one an adversarial review of round 18's own 146-file diff.
+**Five entries closed, two opened**, 27 → 24.
+
+The review was the point of the round. Ten agents had landed round 18 in one
+shared working tree with no review pass, so it was aimed at the failure modes
+that process actually produces — seam defects, convention drift, and edits
+clobbered by a concurrent write. It found **one real seam defect**: the
+bank-reconciliation e2e spec still mocked `uncleared_total` as a scalar after a
+later commit in the same round renamed it to a per-currency array, and the page
+spreads that value, so the stub made the real page throw. It also **cleared**
+what mattered most — the BEC dual-control gate intact across all four
+bank-detail write paths, both extraction guards honoured in both dispatch modes,
+the 1099 reconciliation guarantee holding by construction — and diffed all 3,828
+keys across the six locale files, written concurrently by four agents, finding
+no lost translations.
+
+Two findings this round were things a follow-up had named but nobody had
+measured:
+
+- **An unused dependency was setting the runtime the whole project builds on.**
+  The entry asked to bump `isomorphic-dompurify` to 4.x and raise the Node floor
+  to match. It has **zero call sites** — the XSS defence here is that nothing
+  uses `{@html}` at all — so it was removed instead, and the floor now belongs to
+  `jsdom` as vitest's own peer. The floor moved at **nine** `setup-node` sites,
+  not the four the entry named, plus `deploy/deploy.sh`, which builds the
+  *production* frontend and was still on EOL Node 20
+  ([decisions.md](decisions.md) §85).
+- **The budget rollup's 3-queries-per-budget was worth 600 queries / 297 ms at
+  200 budgets.** Now 6 / 8.6 ms — and the interesting part is what it cost to get
+  there honestly: correlating the predicates lost the planner its index and
+  regressed the *single-budget* path (which `GET /budgets/check` sits on before
+  every requisition submit) from 0.6 ms to 10.4 ms, so the fix carries redundant
+  set-level narrowing predicates to restore it. The anti-drift guard is
+  mutation-tested ([decisions.md](decisions.md) §82).
+
+Two process notes worth keeping:
+
+| What happened | Why it matters |
+|---|---|
+| Both metric-definition halves are now closed, and both **move a reported number**. §73 stopped imported `done` rows inflating the touchless rate; §81 stops imported `rejected` rows deflating it. The second needed a *provenance* marker, because status cannot identify an import — `done`/`paid`/`rejected` are each reachable both ways | A metric fix that changes a figure leadership reads has to say so. `backend/docs/analytics.md` records the direction and the cause, so a dashboard delta is not misread as an automation regression |
+| An agent's `flutter analyze` generated CocoaPods scaffolding into the tree, and it nearly rode along in a commit | Tool-generated artifacts are not work. Check `git status` against what you actually changed before a path-scoped commit, not after |
+
+New this round: [decisions.md](decisions.md) §81–§85.
+
+**Previously reconciled:** 2026-09-05 (round 18) — a ten-agent parallel sweep.
+**Eleven entries closed, four opened**, 34 → 27. Two whole categories are gone:
+the frontend money-typing ratchet stands at **zero across every module in
+`src/lib/types/`**, and `/bank-reconciliation` — the last shipped backend with
+no UI at all — now has one.
+
+The round's sharpest finds were not in any entry, and three of them were
+*produced by* closing one:
+
+- **The touchless / automation rate was inflated for exactly the tenants with
+  the least automation to show.** `done` counted as "cleared review" on status
+  alone, but `new → done` skips approval outright *and* the Day-0 CSV importer
+  plants historical rows straight at `done` — its default — with the workflow
+  engine never running. A tenant migrating ten thousand historical invoices
+  reported near-100% automation on day one ([decisions.md](decisions.md) §73).
+- **Approval-gate thresholds went to the wire as floats.** `require_cfo_above`,
+  `auto_approve_below`, `max_invoice_amount` and the chain's `min`/`max_amount`
+  were `parseFloat`ed on every keystroke, and unreadable text was sent as
+  `null` — **silently removing the CFO gate**. Found by retyping the fields, not
+  by looking for it; the same defect was then found in six more forms.
+- **A "your routing number has a typo" 4xx answered with the account number.**
+  The checksum ran in a Pydantic `field_validator`, and FastAPI renders that as
+  a 422 whose body echoes the rejected `input` — the whole `bank_details` dict.
+  The supplier portal had the identical validator and the identical leak
+  ([decisions.md](decisions.md) §74).
+- **Re-extracting a resubmitted invoice needed a second guard nobody had
+  scoped.** The follow-up named `skip_vendor_match`; re-extraction also re-enters
+  `decide_auto_approve`, so a tenant with unattended approval would let a
+  supplier launder a human-rejected invoice past the reviewer who rejected it
+  ([decisions.md](decisions.md) §75).
+- **Two more silent-partial-figure defects**, both the same shape as the
+  disclosure work that surfaced them: budget spend legs *dropped* every
+  foreign-currency row while reporting `committed`/`actual` as complete
+  ([decisions.md](decisions.md) §79), and bank-rec's outstanding buckets summed
+  `Payment.amount` across currencies under one symbol.
+- **`/goods-receipts` badged every status green**, so a cancelled / voided /
+  reversed receipt read as a successful delivery — the same row backend PO
+  matching deliberately excludes from the 3-way quantity leg.
+
+Two process notes worth keeping:
+
+| What happened | Why it matters |
+|---|---|
+| An agent's broad sweep reported 8 failures in `test_vendor_portal_isolation.py`, which asserts against `inspect.getsource(...)`. The file had been rewritten **during** the 8-minute run. Stale `linecache` data, not a defect | A source-scanning test is not safe to read as a signal while the tree is moving. Re-run against a stable tree before believing a failure that only appears in a long sweep |
+| Closing "`positivePay.ts` parses money with `parseFloat`" last round set the pattern this round applied seven more times: a preview that **repairs** unreadable input is how a wrong figure reaches a field the user then trusts | The fix is a helper that returns `null` and a caller that renders a dash — `scaleMoney` ([decisions.md](decisions.md) §80) is that helper for the multiply case `sumMoney` never covered |
+
+One entry was closed as **stale rather than done**: "Positive Pay has no
+frontend" — the route, its API module, a role-gated nav entry and e2e coverage
+all already existed. Its parenthetical blamed the root `CLAUDE.md`, which in
+fact says that of `/bank-reconciliation`, and that one was true until this round.
+
+New this round: [decisions.md](decisions.md) §73–§80.
+
+**Previously reconciled:** 2026-09-04 (round 17) — a seven-agent sweep over what
 round 16 left. **Fifteen entries closed, none opened**, 41 → 34. The whole
 round-15 narrative section is gone: all eight of its findings were fixed, so
 that section no longer exists.
@@ -617,180 +715,85 @@ non-tinted: [decisions.md](decisions.md) §47.
       sentence where `nowrap` would break 320px reflow); both took the tokens.
       The dashboard's duplicate `.overdue-badge` — the same flag rendering at two
       sizes on two pages — is **closed**.
+      **Progress (rounds 18–19):** round 18 took **nine files to zero** —
+      `Landing`, `InvoiceModal`, `/credit-memos`, `/exceptions`,
+      `/goods-receipts`, `/organization`, `/purchase-orders`,
+      `/vendors/change-requests`, `/workflows`. Round 19 took the two tranches
+      this entry named next: `types/payment.ts` + `/payments` + `RunDetailModal`
+      **together** (the modal badges the same `PaymentStatus` union, so a local
+      tone map would have manufactured the drift the shared-map convention
+      prevents), then `/expenses` + `/requisitions` with the tone-map hoist into
+      `types/{expense,requisition}.ts`. The deliberate keeps are grouped under
+      their own divider, so what remains is legible: **12 rules in 5 files** —
+      `/discounts` 4, `/tax` 3, `/vendors` 3, `/invoices` 1,
+      `/vendor-statements` 1.
+      Two defects surfaced on the way, both fixed: `/goods-receipts` badged
+      **every** status green, so a cancelled / voided / reversed receipt read as
+      a successful delivery (the same row `po_matching.CANCELLED_GR_STATUSES`
+      excludes from the 3-way quantity leg); and `RunDetailModal` tinted a
+      **draft** run amber while `/payments` rendered the same run flat neutral,
+      one click apart. A third was structural: the audit's own self-check pointed
+      at `/expenses`, which the tranche made clean — it would have started
+      passing vacuously, and now names a file with a live baseline.
       **Durable fix:** convert the rest in attributable tranches, checking
-      collapsed distinctions as you go, editing the baseline down in the same
-      commit, and hoisting the two tone maps out of the modals into
-      `types/{requisition,expense}.ts` when their files convert.
+      collapsed distinctions as you go, and editing the baseline down in the same
+      commit.
       **Trigger:** the next slice touching any file the baseline names.
 
-### Surfaced by the round-14 frontend hunt
+### Surfaced by the round-19 parallel sweep (2026-09-05)
 
-- [x] **DONE (PR #349).** The same page-scoped-KPI bug `/expenses` fixed was
-      live on six sibling pages — a KPI reducing or filtering over the LOADED
-      page while labelled whole-set, usually beside a card that *is* whole-set:
-      `/requisitions` (`periodTotal`, `pendingCount`), `/budgets`
-      (`totalAllocated`), `/recurring` (the monthly-run-rate reduce, which also
-      divided floats), `/intake` (`openCount`/`reviewCount`),
-      `/vendor-statements` (`openCount`/`totalDiscrepancies`) and `/positive-pay`
-      (`itemsExported`/`returnsFlagged`); the money ones added across currencies.
-      Each now has a `GET …/summary` endpoint sharing the list's own filter
-      builder (`_<x>_list_filters`), returning whole-set `by_status` counts +
-      per-currency exact-decimal totals (grouped, never a cross-currency SUM,
-      never FX-converted on a read), rendered through
-      `utils/currencyGroups.formatCurrencyTotals`. `/recurring`'s monthly
-      normalisation moved to exact Postgres numeric + `ROUND_HALF_UP`.
-      `backend/app/api/expenses.py::expense_summary` was the reference.
+- [ ] **(c) `invoices.cost_center` and `invoices.gl_account` carry no index.**
+      `department` and `project` do. A budget on either unindexed dimension
+      seq-scans the invoice table when no entity narrows the set. The round-19
+      rollup rewrite left this **no worse than before** — its set-level narrowing
+      predicates restore the same index scan the old query used wherever an index
+      exists — so this is a pre-existing ceiling, not a regression.
+      **Durable fix:** an index on each, in a migration that fans out to every
+      tenant DB. Measure first: on the benchmark tenant the invoice leg is ~1 ms
+      at 40k invoices, so this is not yet costing anything.
+      **Trigger:** a tenant whose budgets are cost-center- or GL-dimensioned
+      showing the rollup or `GET /budgets/check` in latency traces.
 
-- [x] **DONE (PR #351).** `GET /api/invoices/counts` ignored the list's filters,
-      so the chips contradicted the table — search "acme", get 3 rows under chips
-      reading `All 1284 · New 402`. `invoice_counts` now takes the list's
-      population filters (`search` + the advanced filters + `assigned_to_id`)
-      through the **same** `_invoice_list_filters` builder as `list_invoices`
-      (with `status=None` — status is the dimension being tallied), and the
-      `/invoices` page re-fires `invoiceStore.fetchCounts(buildParams())` from
-      the filter effect + the debounced search (the store gained its own
-      `countsSequence` so a stale tally can't land over a fresh one). Matches the
-      rule already stated on `purchase_orders.py::purchase_order_status_counts`
-      and `/vendors/counts`.
+- [ ] **(c) The touchless metric has no backfill for pre-marker imports.**
+      Rows the CSV importer created before `Invoice.meta["imported"]` shipped
+      carry no marker and are therefore counted as native, so a tenant that
+      migrated history before 2026-09-05 still has those rows in the population
+      ([decisions.md](decisions.md) §81).
+      **Why there is no backfill:** stamping a historical row on an inference is
+      exactly the guessing the marker replaces. Status cannot identify them
+      (`done` / `paid` / `rejected` are each reachable both ways) and neither can
+      creation time on its own.
+      **Durable fix, if wanted:** an operator-run, opt-in, date-bounded stamping
+      tool where the **operator** asserts the cutover date — the assertion has to
+      come from someone who knows when the migration ran, not from the data.
+      **Trigger:** a tenant asking why its automation rate looks wrong for a
+      period predating the marker.
 
+### Surfaced by the round-18 parallel sweep (2026-09-05)
+
+Four items the round-18 agents traced to a file and line but correctly did not
+fold into their own slice. None is a defect that can bite today.
+
+- [ ] **(c) No live payment adapter consumes the wire ABA yet.**
+      `resolve_routing_number` picks the right routing number per rail, but every
+      shipped adapter identifies the payee by a processor **counterparty token**
+      and transmits no raw bank coordinates — so today the resolver's only live
+      consumers are the `mock` adapter and Positive Pay's ACH file (which reads
+      the ACH number and is correct unchanged). The wire number is stored,
+      staged under dual control, and surfaced; it is not yet transmitted.
+      **Why it is not a defect:** the field had to exist before a counterparty
+      provisioning path could send it, and the resolver is what makes the rail
+      distinction unambiguous when one arrives.
+      **Durable fix:** counterparty provisioning at the processor, which this
+      codebase does not model at all.
+      **Trigger:** wiring a payment adapter that hands a bank raw coordinates.
+      See [decisions.md](decisions.md) §74.
 
 ### Surfaced by the round-16 follow-up sweep (2026-09-04)
 
 Four items the round-16 agents traced to a file and line but correctly did not
 fold into their own slice. None is a defect that can bite today; each is either
 forward work or a population question with its own consequences.
-
-- [ ] **(c) Bound the candidate query in `discount_auto_trigger` and
-      `contract_renewal`.** Both now commit per item, so one bad row no longer
-      discards a tick's work — but both still load their whole candidate set for
-      a tenant in one unbounded `SELECT`. `discount_auto_trigger` selects every
-      `offered` `DiscountOffer` id; `contract_renewal`'s alert pass pre-filters
-      on `end_date <= today + 3650 days`, i.e. effectively every active contract
-      with an end date, and discards the out-of-window ones in Python. This is
-      now a memory/latency ceiling rather than a starvation hole.
-      **Why not folded in:** `background-sweeps.md` § Locking's rule is *page,
-      don't cap, unless the work removes itself from the candidate set* — and
-      neither qualifies. An offer skipped for a below-threshold ROI stays
-      `offered`, a contract outside its lead window stays un-alerted, so a
-      `LIMIT` would re-serve the same lowest-id rows every tick and never reach
-      the rest (the exact starvation `approval_escalation` was rewritten to
-      avoid). Doing it right needs a keyset cursor **plus** a page-size env var
-      per sweep — a config-surface change bundled onto a correctness diff.
-      **Durable fix:** two independent pieces, either shippable alone. (1)
-      Keyset-paginate both candidate queries as `approval_escalation._escalate_tenant`
-      does — the id ordering is already in place, so it is a `while True:`
-      wrapper plus `FEOH_DISCOUNT_OPTIMIZATION_BATCH_SIZE` /
-      `FEOH_CONTRACT_RENEWAL_BATCH_SIZE`; both sweeps already re-check their
-      predicate inside the leg, which is what makes a page boundary safe. (2)
-      Push `contract_renewal`'s alert pre-filter into SQL
-      (`end_date - today <= renewal_notice_days`), keeping the Python check as
-      the under-lock re-check — deliberately separate because it needs a per-row
-      interval expression whose type coercion wants its own test.
-      **Trigger:** either sweep's tick latency becoming visible on a real
-      tenant, or the next change touching these candidate queries. Neither moves
-      money, so neither is urgent.
-
-- [ ] **(c) `GET /api/vendors/screening/review-queue` is unpaginated, and two
-      KPIs depend on that.** The "Payments blocked" KPI was fixed this round by
-      counting from a query that asks its own question
-      ([decisions.md](decisions.md) §68), but `matchCount` and `reviewCount` on
-      the same page are still derived by filtering the loaded queue. They are
-      correct **only because** that endpoint returns every row and is selected on
-      exactly those two statuses — a construction accident, not a property the
-      code states.
-      **Durable fix:** if that endpoint ever gains pagination, both must move to
-      the `by_status` buckets on `GET /api/vendors/counts` in the same change;
-      they are already there and go unread. Cheaper alternative: move them now
-      and delete the client-side derivation, which removes the trap entirely.
-      **Trigger:** the first change that paginates the review queue — or any
-      slice touching those two KPIs.
-
-- [ ] **(c) Two analytics disclosures have no surface to render them.** Round 16
-      gave `discount_capture` a three-way captured / missed / **pending** fold
-      with `*_amount_reporting` + `unconverted_count`, and gave
-      `POST /api/analytics/forecast_variance` a per-row `unconverted_count` +
-      `reporting_currency`. Neither has a frontend consumer: the dashboard page
-      never rendered `discount_capture` at all, and the per-metric drill-through
-      endpoints are a documented pre-existing UI gap. So the honesty those
-      figures now carry is API-only.
-      **Why it matters:** the disclosure exists so a partial figure cannot read
-      as a complete one. A future slice that wires either surface up and renders
-      the bare number would reintroduce exactly the defect the backend fix
-      removed.
-      **Durable fix:** whoever surfaces either KPI renders `unconverted_count` /
-      `insufficient_data` alongside it, the way `/cfo`'s cash-position banners
-      already do.
-      **Trigger:** the slice that wires the analytics drill-throughs into the UI,
-      or that adds a discount-capture KPI to the dashboard.
-
-- [ ] **(c) `done` counts as "cleared review" in the touchless numerator.** It
-      always has, and round 16 left it alone while fixing the other three legs of
-      that metric. But `new → done` is a legal transition that skips approval
-      entirely, so an invoice that never went through review can be counted as
-      having cleared it — inflating a board-reported automation figure.
-      **Why not folded in:** it is a population question, not a bug in the
-      arithmetic, and it has consequences for a metric leadership already tracks
-      — changing it silently inside a correctness fix would move a reported
-      number with no one deciding to.
-      **Durable fix:** decide whether the numerator means "reached a terminal
-      state without human touch" or "passed review without human touch", then
-      state it in `backend/docs/analytics.md` and make the status sets say so.
-      `TOUCHLESS_CLEARED_STATUSES` is now a single named owner, so the change is
-      one edit plus its tests.
-      **Trigger:** the next review of the touchless / automation-rate metric.
-
-### Surfaced by the currency-denomination round (2026-09-04)
-
-- [ ] **Frontend money fields typed `number` outside the dashboard.**
-      `/api/dashboard`'s page has been converted (money fields now `MoneyAmount`,
-      the two `Math.max` chart scales and two bar-width divisions routed through
-      `parseMoneyForLayout`, the `> 0` check through `isPositiveAmount`), and a
-      planted `data.total_paid + data.total_pending` is now a **type error**
-      rather than a convention violation. Other type modules still carry
-      `number`-typed money — `frontend/src/lib/types/budget.ts` is the clearest
-      example (`amount` / `total` on several interfaces).
-      **Why it is not one sweep:** a grep for money-shaped names returns ~55
-      fields and most are NOT money — pagination `total`, `total_requests`,
-      `total_tokens`, `exception_count`. Each needs a per-field judgment, and
-      each *genuine* money field then needs its call sites checked, because
-      retyping it to `MoneyAmount` correctly turns any existing arithmetic into
-      a compile error that has to be resolved with the right helper
-      (`parseMoneyForLayout` for geometry, `isPositiveAmount` for a predicate)
-      rather than a cast.
-      **Durable fix:** convert per type module, smallest first, each with its
-      route's `pnpm check` green and its arithmetic moved onto the named
-      helpers; then add a ratchet in the shape of `a11y/badgeAudit.test.ts` (a
-      per-file baseline that only ever decreases) so the remainder can't grow.
-      A blanket scan can't land first — it would fail on the ~40 non-money
-      fields and there is no way to distinguish them by name alone.
-      **Progress (round 17):** the ratchet exists
-      (`frontend/src/lib/types/moneyTypeAudit.test.ts`) and **11 modules are
-      pinned at zero** — `budget`, `intake`, `recurring`, `positivePay` were
-      converted, and `accessReview`, `assistant`, `exceptionAgents`,
-      `notification`, `privacy`, `reports`, `vendor` carry no money at all and
-      are pinned so one cannot land untyped later. **81 fields remain** across
-      `expense` (16), `discounts` (14), `contract` (12), `vendorStatementRecon`
-      (10), `catalog` (7), `invoice` (7), `requisition` (7), `workflow` (6),
-      `payment` (2). Each non-money field the scan sees is recorded in
-      `JUDGED_NOT_MONEY` **with its reason** — `assistant.ts`'s `budget` /
-      `remaining` are TOKEN counts, `reports.ts`'s `limit` is a row cap, every
-      `*ListResponse.total` is pagination — so the judgments are not re-derived
-      next time. Converting `positivePay.ts` found a live defect on the way:
-      `parsePresented` used `Number.parseFloat`, which reads `1234.56abc` as
-      `1234.56` and degraded a genuinely unreadable amount to `null`, which
-      `classify_presented_items` reads as "no amount to disagree with" — i.e.
-      `matched_ok` on a cheque nobody checked.
-      **Still to do:** the nine modules above, and widening the scan past
-      `src/lib/types/*.ts` to the response types declared inline inside
-      `.svelte` files.
-      **Trigger:** the next slice touching a type module that carries a money
-      field, or the next money-exactness audit pass.
-      **Note:** the two docs on this contradicted each other until this round —
-      `frontend/CLAUDE.md` said the backend "serialises money as an exact
-      decimal string" while `backend/app/schemas/money.py` serialises `Decimal`
-      to a JSON **number** and its docstring cited the frontend's `amount:
-      number` as justification. Both now state the split and point at each
-      other; read them before converting anything.
 
 ### Surfaced by the persona-panel round-2 parallel fix batch (issue #328)
 
@@ -888,28 +891,6 @@ deferred-with-reason finding awaiting a product/architecture call.
       workflow instance was scoped down to the phase-bucket + age — enough to
       add information beyond the chip without touching workflow internals.)
 
-- [ ] **A resubmitted portal invoice isn't re-extracted from the corrected
-      document.** The resubmit path is **shipped** (**PR #343**) —
-      `POST /portal/invoices/{id}/resubmit` swaps the file on the same row (no
-      duplicate flag), resolves the `review_rejected` exception, and sends it
-      back to `ready_for_review`. It deliberately does **not** re-run
-      extraction, because a fresh pass calls `match_and_link_vendor` and can
-      re-link `Invoice.vendor_id` to a different supplier — which would drop
-      the invoice out of the `vendor_id ==`-scoped portal list, i.e. the
-      vendor loses sight of their own resubmission. So the AP reviewer has to
-      manually reconcile the new PDF against the (stale) extracted fields.
-      **Durable fix (scoped, not started):** thread a `skip_vendor_match: bool`
-      through `services/extraction_dispatch.dispatch_extraction` → the queue
-      tuple / lambda payload → `services/extraction.run_extraction`, guarding
-      the `match_and_link_vendor` call (`extraction.py` ~L590) so the resubmit
-      path can re-extract money/number fields while keeping the existing vendor
-      link. **Left deferred deliberately:** it changes the extraction dispatch
-      path in both local and lambda modes — a shared, money-adjacent surface
-      that warrants its own focused slice + tests, not a tail-end add to this
-      PR.
-      **Trigger:** the next slice touching portal resubmit or the extraction
-      dispatch path.
-
 **Volume surfaces:**
 
 - [x] **`GET /api/payments/queue` pagination — DONE (PR #343).** `?page=` /
@@ -986,79 +967,26 @@ decide.
       certificates. `Invoice.tax_rate` only records what the vendor charged. US
       AP table stakes above a certain company size. **`lean: keep`** (real US
       mid-market requirement; large, own epic).
-- [ ] **Positive Pay has no frontend** — `/api/positive-pay` is API-only (already
-      noted as known state in the root `CLAUDE.md` architecture table).
-      **`lean: keep`** (backend is done; a thin UI is a bounded slice, not an
-      epic — cheapest of the eight to close).
-- [ ] **`bank_details` has one generic `routing_number`** — no way to record a
-      separate wire vs ACH routing number, common at larger US banks.
-      **`lean: keep`** (small schema/UI change; blocks real payments at larger
-      banks).
-- [ ] **1099-MISC per-box allocation is not split** — the whole total goes to the
-      requested box (documented simplification in `tax_1099_forms.py`).
-      **`lean: keep`** (correctness for a shipped feature; medium).
-- [ ] **No consolidated org-wide budget-vs-actual rollup on the CFO dashboard** —
-      only the standalone `/budgets` page and per-budget `GET /budgets/{id}/spend`.
-      **`lean: ?`** (nice-to-have; depends on whether budgets is a headline
-      feature or a checkbox).
 - [ ] **No saved views / per-list default view, and no keyboard shortcuts or
       command palette** anywhere in the app. **`lean: ?`** (power-user polish;
       high effort, diffuse payoff — defer unless a design partner asks).
-- [ ] **No supplier-portal dashboard/home** — `/portal` redirects straight to
-      `/portal/invoices`; a vendor gets no at-a-glance "N need nothing from you,
-      M await your action". **`lean: keep`** (small; pairs naturally with the
-      portal work already in PR #343).
-- [ ] **Leading-zero / numeric invoice-number normalization** (`INV-001` vs
-      `INV-1`) is not handled by the rule-based duplicate check; the
-      semantic-similarity path is the intended backstop only when RAG is enabled.
-      **`lean: keep`** (small, real duplicate-detection hole; RAG-off is the
-      common config).
-
-_Two further gaps were considered and explicitly declined (recorded so they
-aren't re-raised): IR35 / contractor status (payroll/HR tooling, not AP), and a
-dedicated `country_code`/`is_foreign` column on `Vendor` (superseded by the
-filed W-8 finding, fixed in #330)._
-
 ### Surfaced while clearing the open-PR backlog (2026-09-02)
 
-- [ ] **`isomorphic-dompurify` sits on a deprecated 3.x line whose declared
-      Node floor excludes the Node 20 CI runs.** Every 3.2x release carries the
-      upstream notice "Raised the minimum Node.js version (breaking) without a
-      major bump. Use 4.x for the same code with correct semver, or pin 3.19.0
-      for Node < 22.22.2", and declares
-      `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`. All four `setup-node` steps
-      in `.github/workflows/ci.yml` pin `node-version: 20`. Nothing breaks today
-      — pnpm does not enforce `engines` without `engine-strict`, and this is
-      pre-existing (3.22.0 already declared the same range, so the #344 bump to
-      ^3.23.0 changed nothing) — but the dependency is unmaintained-by-policy
-      and the runtime it claims to need is not the runtime we build on.
-      **Durable fix:** move the declared range to `^4.1.0` (the maintainer's own
-      "same code, correct semver") *and* decide the supported Node floor in the
-      same change, raising the CI pin off Node 20 to a version the dependency
-      actually declares. Deliberately not done as part of the dependency-bump
-      pass: the Node floor is a project decision with a blast radius past this
-      one package, not a mechanical bump.
-      **Trigger:** the next time CI's Node version is revisited, or the first
-      time a transitive advisory lands on the 3.x line.
-
-- [ ] **Dependabot's `pip` group does not group, so backend bumps arrive one PR
-      per dependency.** `.github/dependabot.yml` declares
-      `backend-minor-patch` with `update-types: [minor, patch]`, the same shape
-      as the `npm` group's `frontend-minor-patch`. The npm group works — #344
-      arrived on `dependabot/npm_and_yarn/frontend/frontend-minor-patch-…` with
-      two dependencies in it. The pip group does not: #334, #335, #337, #339,
-      #346 and #347 each arrived on their own
-      `dependabot/pip/backend/<dep>-gte-…` branch. Because these locks have to
-      be regenerated by hand (§ (b), no lockfile-sync workflow), the multiplier
-      is the whole cost — six red PRs and six recompiles instead of one.
-      **Candidate fix (unverified):** add `patterns: ["*"]` alongside
-      `update-types` on the pip group, matching the two groups in this file that
-      demonstrably do group (`actions`, `fake-erp`), both of which specify
-      `patterns`. Not applied blind: a Dependabot config change cannot be
-      verified without waiting for its next scheduled run, and an unverifiable
-      guess committed as a fix is worse than a recorded observation.
-      **Trigger:** next Monday's Dependabot run — apply the candidate and see
-      whether the following week's pip bumps arrive as one PR.
+- [ ] **(b) The Dependabot pip-grouping fix is applied but UNVERIFIED.**
+      `patterns: ["*"]` was added alongside `update-types` on the
+      `backend-minor-patch` group on 2026-09-05, matching the two groups in that
+      file that demonstrably do group (`actions`, `fake-erp`). A Dependabot
+      config change cannot be verified without waiting for its next scheduled
+      run, so this is a candidate, not a fix.
+      **Note the hypothesis is already partly contradicted:** the `npm` group has
+      the identical no-`patterns` shape and groups anyway, so `patterns` may not
+      be the operative difference.
+      **Confirmed if** next Monday's pip bumps arrive on one
+      `dependabot/pip/backend/backend-minor-patch-…` branch; **refuted if** they
+      again arrive as separate `dependabot/pip/backend/<dep>-gte-…` branches.
+      **If confirmed:** apply the same one-liner to `terraform-minor-patch`,
+      which carries the same untested shape and was deliberately left alone.
+      **Trigger:** next Monday's Dependabot run.
 
 - [ ] **Confirm the `packageManager` pin stopped Dependabot dropping the pnpm
       overrides.** Two npm PRs in one day (#344, #351) arrived with the whole

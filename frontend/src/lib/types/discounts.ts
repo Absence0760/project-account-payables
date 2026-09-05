@@ -1,3 +1,5 @@
+import type { MoneyAmount } from '$lib/utils/money';
+
 // Types for the Dynamic Discounting & Early-Payment Optimization surface.
 // Mirrors the JSON the Phase-C `/api/discounts` router returns. Money fields
 // arrive as JSON numbers (not string-Decimals); percentages are numbers.
@@ -22,8 +24,15 @@ export interface DiscountOffer {
 	status: DiscountStatus;
 	/** Sliding-scale tiers, typically ordered soonest-deadline first. */
 	tiers: DiscountTier[];
-	/** Invoice (or projected) amount the discount applies to. */
-	base_amount: number;
+	/**
+	 * Invoice (or projected) amount the discount applies to.
+	 *
+	 * `/discounts` previews each tier's saving as `base_amount * percent / 100`
+	 * — the API exposes no per-tier savings figure — through `scaleMoney`'s
+	 * exact `divideBy`, so the preview cannot disagree with what the server
+	 * books on accept.
+	 */
+	base_amount: MoneyAmount;
 	currency: string;
 	valid_from: string | null;
 	valid_until: string | null;
@@ -31,7 +40,7 @@ export interface DiscountOffer {
 	accepted_tier: DiscountTier | null;
 	accepted_at: string | null;
 	/** Actual discount captured once paid; null until captured. */
-	captured_amount: number | null;
+	captured_amount: MoneyAmount;
 	captured_at: string | null;
 	financing_provider: string | null;
 	notes: string | null;
@@ -53,12 +62,12 @@ export interface DiscountOfferPage {
 /** Dashboard KPI roll-up. Tenant-wide totals carry one `currency`. */
 export interface DiscountDashboard {
 	captured_count: number;
-	captured_amount: number;
+	captured_amount: MoneyAmount;
 	missed_count: number;
-	missed_amount: number;
+	missed_amount: MoneyAmount;
 	capture_rate_pct: number;
 	open_offer_count: number;
-	projected_savings: number;
+	projected_savings: MoneyAmount;
 	currency: string;
 	/** Open offers left OUT of `projected_savings` because they are denominated
 	 *  in something other than `currency` and no rate bridges them. The figure
@@ -77,14 +86,18 @@ export interface DiscountDashboard {
 
 /** Per-invoice ROI / cost-of-capital comparison for accepting early payment. */
 export interface DiscountRoi {
-	base_amount: number;
+	base_amount: MoneyAmount;
 	discount_percent: number;
 	days_accelerated: number;
-	savings: number;
+	savings: MoneyAmount;
 	annualized_return_pct: number;
 	cost_of_capital_pct: number;
-	opportunity_cost: number;
-	net_benefit: number;
+	opportunity_cost: MoneyAmount;
+	/**
+	 * The server's own savings-minus-opportunity-cost verdict. Rendered, never
+	 * re-derived: `worthwhile` beside it is the boolean the UI branches on.
+	 */
+	net_benefit: MoneyAmount;
 	worthwhile: boolean;
 }
 
@@ -108,7 +121,7 @@ export interface DiscountRecommendation {
 	/** Whether the optimizer selected this offer under the cash budget. */
 	selected: boolean;
 	/** Running cash outlay through this recommendation in the ranked list. */
-	cumulative_outlay: number;
+	cumulative_outlay: MoneyAmount;
 	/** This offer's money is in a currency the totals are NOT in, so it is
 	 *  excluded from every total (and from selection when a budget binds). Its
 	 *  ROI percentages stay meaningful — a rate is currency-free. */
@@ -117,15 +130,15 @@ export interface DiscountRecommendation {
 
 /** Budget-constrained optimization result. */
 export interface DiscountOptimization {
-	cash_budget: number | null;
+	cash_budget: MoneyAmount;
 	/** The currency EVERY money total below is denominated in (the org's
 	 *  reporting currency) — stated by the API rather than assumed, because the
 	 *  totals sum across offers that carry their own currencies. */
 	currency: string;
 	cost_of_capital_pct: number;
-	total_savings_available: number;
-	total_savings_selected: number;
-	total_outlay_selected: number;
+	total_savings_available: MoneyAmount;
+	total_savings_selected: MoneyAmount;
+	total_outlay_selected: MoneyAmount;
 	/** Ranked offers left out of the totals because they are in another
 	 *  currency. Spelled differently from the dashboard's
 	 *  `unconvertible_offer_count` — two responses, two field names. */

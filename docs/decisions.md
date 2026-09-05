@@ -2921,3 +2921,410 @@ rows differ in `name` / `account_type` / `is_active`, invoices already reference
 the code as free text, and picking a survivor silently discards chart
 configuration or re-labels spend booked under the other row. GL codes are org
 configuration, not PII, so naming them in the error is safe.
+
+---
+
+## 73. Touchless rate means "passed review", not "reached a terminal state"
+
+**Decided:** 2026-09-04 · `backend/app/services/analytics.py`, `backend/app/api/dashboard.py`
+
+The straight-through-processing rate counted `done` — and `paid` — as having
+cleared review on status alone. Both are reachable *around* review: `new → done`
+is a legal `VALID_TRANSITIONS` edge that skips approval outright, and the Day-0
+CSV importer (`services/csv_import`) plants historical rows straight at `done`,
+its default, or `paid`, with the workflow engine never running. So a tenant that
+migrated ten thousand historical invoices on day one reported near-100%
+automation — inflating hardest for the tenant with the least automation to show.
+
+The code had already solved this once and not generalised it: the `failed` leg
+counted an invoice as cleared only with the durable `Invoice.approval_date`
+stamp, and an unstamped one sat in neither leg. `done` and `paid` are the same
+shape of problem, so they now sit in a named
+`TOUCHLESS_REVIEW_EVIDENCE_STATUSES` beside it.
+`approved`/`sending_to_erp`/`sent_to_erp`/`posted_in_erp`/`payment_scheduled`
+stay proof-by-status because every edge into them originates at `approved`, and
+every writer of `approved` stamps `approval_date`.
+
+The alternative reading — "reached a terminal state without human touch" — was
+rejected because the figure is quoted to leadership as evidence the platform is
+doing the approving, and an invoice that never entered review is not evidence of
+that. An unevidenced invoice leaves the **denominator** too, rather than being
+parked in the bounced leg: counting it as "finished review and did not clear"
+would deflate the rate exactly as dishonestly as the old rule inflated it.
+
+`compute_touchless_rate`'s optional kwargs collapse into one **required**
+`review_cleared_count`, so an un-updated caller raises `TypeError` rather than
+quietly re-publishing the old wider number. This moves a previously reported
+figure **downward** at deploy time for any tenant using the `new → done`
+shortcut or the importer; `backend/docs/analytics.md` records that so a
+dashboard delta is not misread as an automation regression.
+
+---
+
+## 74. Two routing numbers on a vendor, and why the checksum left Pydantic
+
+**Decided:** 2026-09-04 · `backend/app/schemas/vendor.py`, `backend/app/api/vendors.py`, `backend/app/api/portal.py`, `backend/app/services/payment_adapters/base.py`
+
+Larger US banks publish a different ABA for incoming Fedwires than for ACH, so
+one generic `routing_number` could not express a payable wire at those banks.
+Rather than reinterpret stored data, `routing_number` keeps its existing meaning
+(ACH) and `wire_routing_number` is added beside it — no backfill, no migration,
+`bank_details` is JSONB. `payment_adapters/base.resolve_routing_number` is the
+single resolver: wire rails prefer the wire ABA and fall back to the ACH one (a
+bank publishing one number uses it for both), while ACH rails **never** borrow
+the wire number, because a bank with two ABAs rejects an ACH file addressed to
+its Fedwire number — borrowing would convert a missing-data problem into a
+returned item at the vendor's expense. The new field travels the existing
+dual-control staging path, so it is not a BEC bypass.
+
+The checksum check was deliberately moved **out** of the field validator.
+FastAPI renders a Pydantic `ValidationError` as a 422 whose body echoes the
+rejected `input`, and that input is the whole `bank_details` dict including the
+account number — so "your routing number has a typo" was answering with banking
+data, against the invariant that PII/banking data stays out of error bodies. It
+now runs at the two chokepoints instead: `_stage_ap_bank_change` (which all
+three AP entry points share) and `approve_change_request` (where any staged
+change, AP- or portal-submitted, is applied), raising an `HTTPException` naming
+only the field.
+
+The supplier portal had the identical validator and kept the identical leak, so
+it moved the same way — and sharing one helper closed a second gap in passing:
+the portal validator checked only `routing_number`, so a malformed wire ABA
+reached staging unvalidated and failed only at approve.
+
+---
+
+## 75. Re-extracting a resubmitted supplier invoice needs two guards, not one
+
+**Decided:** 2026-09-04 · `backend/app/api/portal.py`, `backend/app/services/extraction.py`, `backend/app/services/extraction_dispatch.py`, `backend/app/services/extraction_lambda.py`
+
+`POST /portal/invoices/{id}/resubmit` shipped without re-extraction because a
+fresh pass calls `vendor_matching.match_and_link_vendor` and can re-link
+`Invoice.vendor_id` to a different supplier — dropping the invoice out of the
+`vendor_id ==`-scoped portal list, so the vendor loses sight of their own
+resubmission. The scoped fix was a `skip_vendor_match` flag.
+
+The code needed a second one. Re-extraction also re-enters
+`decide_auto_approve`, so a tenant with unattended approval configured would let
+a supplier launder a human-rejected invoice past the reviewer who rejected it:
+submit garbage, get rejected, resubmit a doctored PDF that extracts under the
+auto-approve floor. `suppress_auto_approve` is therefore not an extra — it is
+what makes re-extraction safe to enable at all.
+
+Both default `False` and travel together in one frozen `ExtractionOptions`, on
+the local queue tuple's fourth slot and as flat SQS keys, so the tuple's shape
+stops changing, a legacy 3-tuple still drains, and an absent key decodes to
+today's behaviour. `lambda` mode reads them too: carrying the flags without
+honouring them would have left the hole open in exactly one dispatch mode, which
+is worse than not shipping the flags.
+
+`skip_vendor_match` pins `vendor_name` as well as `vendor_id`, because
+`PATCH /api/invoices/{id}` re-resolves a stale link from the name — pinning only
+the id defers the re-link to the reviewer's next save rather than preventing it.
+`rejected → pending` is not in `VALID_TRANSITIONS`, so the route takes the
+documented `rejected → new → pending` rework loop rather than widening the state
+machine from an API handler; dispatching from `new` was rejected because
+`new → failed` is illegal and extraction's own error handler would raise inside
+its `except`.
+
+---
+
+## 76. Per-box 1099 allocation follows the GL account, and reconciles by construction
+
+**Decided:** 2026-09-04 · `backend/app/services/tax_1099.py`, `backend/app/services/tax_filing_adapters/base.py`
+
+A vendor's whole reportable YTD total was filed in one box, which is wrong for
+any vendor whose spend spans categories. The box for each payment is now
+resolved from `Invoice.gl_account` through a per-org mapping on
+`Organization.settings.tax.boxes` (exact + `prefix*` GL rules, per-vendor
+overrides, a named `fallback_box`) — the coding AP already does, rather than a
+new field nobody would fill in. The per-vendor override lives in that settings
+blob rather than on the `Vendor` row: there is no general-purpose vendor JSON
+column, and borrowing `bank_details` / `risk_factors` to carry a tax setting is
+how columns rot.
+
+**No proration.** Each payment lands whole in exactly one box, so the per-box
+`Decimal`s sum to the reportable total to the cent with no rounding step and no
+residual to lose. Splitting a vendor total by ratio needs largest-remainder
+correction, and a correction step is exactly the quiet-gap class this feature
+exists to remove. Spend no rule matches is not dropped: it goes to the named
+fallback (default `NEC-1`, so an unconfigured tenant behaves exactly as before)
+and is separately surfaced as `unmapped_paid`, alongside a published
+`box_unallocated` residual and a `box_allocation_reconciled` flag — a
+reconciliation guarantee nobody can read is one nobody can check. A configured
+box code outside `BOX_CATALOG` is dropped rather than resolved to some box, so
+the affected money shows up as unmapped instead of silently filing in the wrong
+place.
+
+`FilingFormPayload` carries the split (`box_amounts`) alongside the form total,
+because a 1099-MISC with rent *and* medical payments is two boxes on one form
+and transmitting only the total files the whole figure in whichever box the
+partner defaults to. It is empty when there is no split to send, and a consumer
+then files `box_amount` against its own box of record — the pre-allocation
+behaviour.
+
+---
+
+## 77. Invoice-number normalization widens a match, so the scope is what keeps it safe
+
+**Decided:** 2026-09-04 · `backend/app/services/invoice_warnings.py`
+
+The always-on duplicate gate compared `lower(trim(invoice_number))`, so one
+supplier's `INV-001` and `INV-1` were two distinct payables. The
+semantic-similarity pass was the only backstop and it is inert whenever RAG is
+off — the common configuration — so the same invoice could be paid twice.
+
+Normalization collapses leading zeros inside each digit run and treats separator
+*runs* as interchangeable noise. It collapses them to a single `-` rather than
+deleting them, because deleting would make `INV-1-2` and `INV-12` the same
+string; and it never strips non-digits, because reducing `INV-1` and `PO-1` to a
+bare `1` is guessing rather than normalizing. Only leading zeros go, so `INV-100`
+can never collide with `INV-1`.
+
+Because normalization only ever *widens* a match, the candidate query keeps
+precisely the scope the exact check already had — same tenant session, same
+vendor by stable `vendor_id` or case-folded name, `id != self`. The scope is the
+safety, not the string rule. With no migration available, the comparison is a
+bounded in-Python narrowing pass rather than a query expression: SQL prefilters
+on the ASCII letter skeleton (a superset invariant, so it can cost a match but
+never invent one) and caps at 500 rows newest-first, and the pass runs only when
+the exact match has already missed — so existing behaviour and the common-path
+cost are unchanged. The accepted limit is invoice numbering where a leading zero
+is significant within one supplier.
+
+---
+
+## 78. The last two sweeps page rather than cap, and a lead window belongs in SQL
+
+**Decided:** 2026-09-04 · `backend/app/services/discount_auto_trigger.py`, `backend/app/services/contract_renewal.py`
+
+Both sweeps loaded a tenant's whole candidate set in one unbounded `SELECT`. A
+`LIMIT` was unavailable to either, for the reason `background-sweeps.md`
+§ Locking already states: an offer skipped for a below-threshold ROI stays
+`offered`, and a contract outside its lead window stays un-alerted, so neither
+removes itself from the candidate set and a capped tick would re-serve the same
+lowest-id rows forever — the exact starvation `approval_escalation` was rewritten
+to avoid. Both now keyset-paginate until the tenant is exhausted; the per-item
+`FOR UPDATE` re-check each already performed is what makes a page boundary safe.
+
+`contract_renewal`'s `end_date <= today + 3650 days` pre-filter is replaced by
+the real per-row window in SQL, `end_date - CAST(:today AS DATE) <=
+COALESCE(renewal_notice_days, <default>)`. The old predicate matched effectively
+every active contract with an end date, so the "keeps the fetched set small" it
+claimed was false for any tenant whose contracts are not all decades out — it was
+the whole-candidate-set load wearing a `WHERE` clause. The explicit
+`CAST(:today AS DATE)` is load-bearing rather than cosmetic: a bare bind
+parameter leaves Postgres choosing between `date - integer`, `date - date` and
+`date - interval`, three overloads with three different result types. Because a
+per-row interval expression is precisely where SQL and Python coercion diverge,
+both halves resolve the NULL fallback through one `resolve_notice_days` helper
+and a test evaluates the real expression in real Postgres against every boundary
+and the NULL case — which also gave `FEOH_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS`
+its first reader, having been declared and documented but consumed by nothing.
+
+---
+
+## 79. Budget spend legs count what they refuse, and the rollup discloses it
+
+**Decided:** 2026-09-04 · `backend/app/services/budget_service.py`, `backend/app/api/budgets.py`
+
+Every leg of `compute_budget_spend` is scoped to the budget's own currency
+because the legs never convert — summing unlike face values would be worse than
+excluding the row. That was right, but the excluded rows were dropped
+**silently**, so `committed` / `actual` read exactly like complete figures
+whether or not a foreign-currency requisition or invoice had been left out.
+
+Each leg now returns its total *and* its excluded count, computed in one query
+via a Postgres `FILTER` clause so the count costs no extra round trip. A NULL
+currency counts as excluded — `(currency = 'X') IS NOT TRUE`, not `<> 'X'`,
+which would swallow it from both sides. The count rides onto both
+`GET /budgets/{id}/spend` and the new `GET /budgets/rollup`, and `/cfo` renders
+it as a `role="alert"` line naming the figures as a floor, the same treatment
+the cash-position card gives its unconverted outflows.
+
+Rejected: converting on read (an FX rate fetched on a read makes the figure
+non-deterministic) and a whole-set rollup total across currencies (denominated
+in nothing real). The rollup is whole-set by design — a paged rollup presented
+as an org-wide total is the exact dishonesty being avoided.
+
+---
+
+## 80. An exact multiply, and why a money preview refuses rather than repairs
+
+**Decided:** 2026-09-04 · `frontend/src/lib/utils/money.ts`
+
+`sumMoney` added exactly, but nothing multiplied exactly, and two previews scale
+money by a non-money factor — a requisition line's `quantity * unit_price` and a
+discount tier's `base_amount * percent / 100`. Those were the last three
+`number`-typed money fields on the frontend ratchet, and they were blocked on
+the missing primitive rather than on judgment.
+
+`scaleMoney` parses both operands as plain decimals, multiplies as `BigInt`s at
+their combined scale, and rounds HALF_UP to the target scale in **one** step —
+never two, which is where a half-cent goes missing (`1.004 * 1.004` rounded
+twice gives `1.00`; the exact product is `1.008016`, i.e. `1.01`). `divideBy`
+folds a constant divisor into the same step so a percentage needs no lossy
+`percent / 100` first.
+
+It returns `null` for input it cannot read, and callers render a dash. This is
+the same rule the round applied to seven forms that were `parseFloat`-ing money
+to the wire: a preview that silently repairs unreadable input is how a wrong
+figure reaches a field the user then trusts, and the sharpest instance was the
+approval-gate thresholds — `require_cfo_above` sent as `null` when the text
+didn't parse, silently removing the CFO gate.
+
+---
+
+## 81. Imported invoices leave the touchless rate by provenance, not status
+
+**Decided:** 2026-09-05 · `backend/app/services/csv_import.py`, `backend/app/services/analytics.py`, `backend/app/api/dashboard.py`
+
+§73 narrowed the touchless NUMERATOR to require positive evidence of review.
+The DENOMINATOR had the mirror of that hole: a CSV-imported `rejected` row sat
+in the bounced leg as though a reviewer *here* had sent it back, deflating the
+rate exactly as imported `done` rows used to inflate it.
+
+Evidence cannot close it — nothing ever writes an approval stamp on a
+rejection, so gating that leg would zero the bounced population outright rather
+than exclude the imports. Neither can status: `done`, `paid` and `rejected` are
+each reachable both by import and natively, so any status rule guesses. So the
+importer records the fact directly: `Invoice.meta["imported"] = {"at",
+"source"}`, one reserved key on an existing JSONB column, no migration.
+`compute_touchless_rate` subtracts marked rows from every leg via a **required**
+`imported_pipeline` kwarg — the §73 precedent, so an un-updated caller raises
+`TypeError` instead of quietly publishing a padded denominator.
+
+The NULL-jsonb trap is load-bearing rather than incidental. Postgres' `?`
+operator returns NULL, not false, on a SQL-NULL `meta`, so without an
+`IS NOT NULL` guard every meta-less legacy row silently left the numerator while
+staying in the denominator — 33.3% against a true 50.0% in the regression test.
+`native_invoice_clause` is written as the exact complement of
+`imported_invoice_clause` for that reason, and both live with the marker's
+writer so the reader cannot drift from it.
+
+An UNMARKED row is treated as native, because absence of the marker means "we do
+not know" and it is only ever written going forward. There is deliberately **no
+backfill**: stamping a historical row on an inference is precisely the guessing
+this replaces. Rows imported before the marker shipped therefore stay in the
+population, which `backend/docs/analytics.md` states rather than papers over.
+The marker also covers the CSV importer only — any future bulk path must stamp
+it with its own `source` or its rows read as native, and no guard can enforce
+that on code that does not exist yet.
+
+---
+
+## 82. The budget rollup is the per-budget spend query, widened
+
+**Decided:** 2026-09-05 · `backend/app/services/budget_service.py`
+
+`GET /api/budgets/rollup` is whole-set by design, so its cost had to stop
+scaling with the budget count: 600 queries / 297 ms at 200 budgets, now 6 /
+8.6 ms, with `GET /budgets/{id}/spend` unchanged at 3.
+
+The obvious fix — a second, grouped SQL shape for the rollup — was rejected.
+Both endpoints publish an `excluded_row_count` disclosure telling the reader the
+money figures are a floor (§79), and **a disclosure the org-wide view and the
+per-budget view can disagree about is worse than none.** Instead the grouped
+query became the *only* implementation and `compute_budget_spend` is it,
+narrowed to one budget. The currency rule is written once against
+`Budget.currency` as a **column** rather than a Python literal; that
+substitution is the whole trick, because the same predicate then answers for one
+budget or a thousand.
+
+Correlating the entity / period / dimension conditions cost the planner its
+index and regressed the *single-budget* invoice leg from 0.6 ms to 10.4 ms over
+40k invoices — on the path `GET /budgets/check` sits in before every requisition
+submit. So each is restated once more as a set-level narrowing predicate,
+logically redundant and provably implied by conditions already in the query, and
+derived from the same budget set — which restores the identical index scan at
+both scopes. That is one query shape, not a fork. The invoice leg batches by
+dimension rather than folding four columns into one `CASE`, which would have
+bought one query and cost every index.
+
+The standing guard is `test_rollup_agrees_exactly_with_every_per_budget_spend`,
+which folds every per-budget response by currency and compares figure for
+figure including `excluded_row_count`. It was mutation-tested: forking
+`compute_budget_spend` to under-report by one makes it fail, so the guard is not
+vacuous.
+
+---
+
+## 83. Two tabs, two search keys
+
+**Decided:** 2026-09-05 · `backend/app/api/bank_reconciliation.py`, `frontend/src/routes/bank-reconciliation/+page.svelte`
+
+`/bank-reconciliation` has two tabs backed by two different endpoints:
+Outstanding queries `/outstanding` over vendor names, invoice numbers, payment
+methods and bank-line references; Statements queries the paginated statement
+list over account identifiers, source formats and ISO period dates. A single
+`?search=` would be carried from one to the other on every tab switch, silently
+applying an account term to a vendor filter and rendering an empty tab the user
+never asked for. The Statements term therefore lives on `?statement_search=`,
+with its own debounce, its own applied-term guard and its own entry in the
+page's single `syncUrl()` writer. Clearing a shared term on tab switch was
+considered and rejected: it discards a filter the user set deliberately and
+makes the URL non-restorable for one of the two tabs.
+
+Both legs are server-side, and both are folded into the same filter object the
+endpoint's own `COUNT` reads, so a narrowed table can never be headed by a
+whole-set count (§48). Period dates match as ISO via `to_char`, **not**
+`CAST(... AS text)`, which resolves against the session `DateStyle`: the row
+renders a *localised* date, and matching that in SQL would make the result set
+depend on the caller's browser language. `currency` is deliberately excluded
+from the searched columns — it is never shown on that tab, and a three-letter
+code is the highest-noise substring in the set.
+
+---
+
+## 84. Forecast variance renders "not computable", not `0%`
+
+**Decided:** 2026-09-05 · `frontend/src/routes/cfo/forecastVarianceSummary.ts`
+
+`POST /api/analytics/forecast_variance` emits `variance_pct = 0` whenever the
+forecast is not positive, since a percentage of zero has no value. On a CFO's
+screen `0%` reads as "we landed exactly on plan" — the most reassuring statement
+available, over the one row carrying no information at all. That is the same
+failure §34 records for the fraud-rate trend and §79 for the budget rollup's
+utilization, and both fixed it at the API by emitting `null`.
+
+This surface fixed it client-side instead: `variance_pct` is a shipped field
+typed `number`, and this panel is its only consumer, so the honest render costs
+nothing while the wire change would need its own migration of every reader. If a
+later slice unifies the three, the API is the right place — the client guard is
+then redundant, not wrong.
+
+The entry form follows the round's other rule about money a user types: raw
+decimal text, validated once at submit, **refused** with a toast. A month typed
+without a readable amount refuses the whole submit rather than sending `0`,
+which would make the variance equal the entire actual outflow and report a fake
+0% — the same reassuring-wrong-answer this entry exists to prevent.
+
+---
+
+## 85. An unused dependency was setting the runtime the project builds on
+
+**Decided:** 2026-09-05 · `frontend/package.json`, `.github/workflows/`, `deploy/deploy.sh`
+
+`isomorphic-dompurify` declared `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`
+while every CI job ran Node 20. pnpm does not enforce `engines` without
+`engine-strict`, so it installed without complaint — which is precisely why it
+drifted unnoticed. The follow-up proposed bumping it to `^4.1.0`, the
+maintainer's own "same code under honest semver".
+
+It was **removed** instead. Nothing had ever imported it: the XSS defence in
+this tree is that no component uses `{@html}` at all, and every chat / assistant
+/ invoice bubble binds plain text and says so in a comment. A dependency with
+zero call sites was dictating the runtime the whole project builds on and
+dragging `jsdom` into the graph. The floor still exists, but it now belongs to
+`jsdom` as **vitest's** test-environment peer — something the project actually
+uses. If a case for user-supplied markup ever arrives, the sanitizer comes back
+*with* its call site in the same change, never ahead of one.
+
+Node moved to 24 (Active LTS to 2028-04-30; 20 reached end-of-life 2026-04-30)
+at **nine** `setup-node` sites across six workflows — not the four the follow-up
+named — plus `deploy/deploy.sh`, which builds the *production* frontend in a
+`node:*-alpine` container. Both halves move together: a deploy image behind the
+CI pin means production builds on a runtime CI never tested, and that
+disagreement is invisible until it breaks. Separately, the `# vN.N.N` comment
+beside `setup-node`'s SHA pin read `v6.0.0` at eight of nine sites against a SHA
+that is really `v7.0.0`; Scorecard reads the SHA, so nothing caught it.

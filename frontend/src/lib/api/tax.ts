@@ -58,8 +58,11 @@ export function verifyVendorTin(vendorId: string, taxId?: string): Promise<TinVe
 }
 
 /** Download a vendor's 1099-NEC / 1099-MISC working-copy PDF for a year.
- *  400s server-side when the vendor has no reportable payments for that
- *  year — callers should only offer this once `ytd_paid > 0`. Read by all
+ *  The form carries only the boxes belonging to `formType` (the vendor's
+ *  reportable total is split across boxes by GL account — see
+ *  `Vendor1099Row.box_allocations`), so it 400s both when the vendor has no
+ *  reportable payments at all AND when none of them land on the requested
+ *  form. Callers should only offer a form the row has a box on. Read by all
  *  three roles (admin/ap_manager/cfo). */
 export function downloadVendor1099Pdf(
 	vendorId: string,
@@ -71,6 +74,9 @@ export function downloadVendor1099Pdf(
 }
 
 /** Submit a year's 1099s for e-filing via the configured adapter.
+ *  Each vendor is filed for the part of its reportable total that belongs on
+ *  `formType` — a vendor with both rent and contractor spend is filed twice,
+ *  once per form, never once for the combined figure.
  *  Idempotent on `(org, idempotencyKey)` — a retried submit with the same
  *  key returns the stored confirmation (`already_filed: true`) instead of
  *  re-filing. This is genuinely irreversible once a real filing adapter is

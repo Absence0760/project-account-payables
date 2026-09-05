@@ -4,11 +4,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import BaseModel, Field, PlainSerializer, field_validator
+from pydantic import BaseModel, Field, PlainSerializer
 
 from app.api.pagination import PageMeta
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
-from app.utils.banking import validate_aba_routing, validate_uk_sort_code
 
 
 def _decimal_to_number(value: Decimal | None) -> float | None:
@@ -296,23 +295,14 @@ class PortalCompanyInfoUpdateRequest(BaseModel):
 
 
 class PortalBankChangeRequest(BaseModel):
+    # Structurally validated in `api/portal.request_bank_change`, NOT here.
+    # FastAPI renders a Pydantic ValidationError as a 422 whose body echoes the
+    # rejected `input` — and the input is this whole dict, account number
+    # included, so "your routing number has a typo" would answer with banking
+    # data. The route raises an HTTPException naming only the field; the
+    # approve chokepoint re-validates, so a payload that reached staging some
+    # other way still cannot be applied unvalidated.
     bank_details: dict
-
-    @field_validator("bank_details")
-    @classmethod
-    def _validate_routing_number(cls, v: dict) -> dict:
-        # Same structural gate as the AP-initiated staging path
-        # (`schemas.vendor.VendorBankChangeRequest`) — a vendor self-service
-        # submission is exactly as unvalidated otherwise.
-        routing = v.get("routing_number")
-        if routing and not validate_aba_routing(routing):
-            raise ValueError("routing_number is not a valid 9-digit ABA routing number")
-        # UK equivalent, same "only when present" posture — a US supplier's
-        # submission never carries a sort_code.
-        sort_code = v.get("sort_code")
-        if sort_code and not validate_uk_sort_code(sort_code):
-            raise ValueError("sort_code is not a valid 6-digit UK sort code")
-        return v
 
 
 class PortalTaxIdChangeRequest(BaseModel):
@@ -473,3 +463,52 @@ class PortalNotificationPreferencesUpdateRequest(BaseModel):
 
     email_on_payment: bool | None = None
     email_on_rejection: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# Portal home summary (`GET /api/portal/summary`)
+#
+# The at-a-glance figures a supplier lands on: what needs THEIR action, what is
+# sitting with the customer, what has been paid, and the two decisions waiting
+# on them elsewhere in the portal (an open early-payment offer, a staged
+# bank/tax change). PII-free by construction — counts, currency codes and money
+# only; never an AP employee's name and never an internal status string (the
+# buckets are vendor-facing, exactly like `PORTAL_INVOICE_STATUS_LABELS`).
+# ---------------------------------------------------------------------------
+
+
+class PortalCurrencyTotal(BaseModel):
+    """One currency's slice of a money rollup.
+
+    `total` is an EXACT decimal string, never a float and never added across
+    currencies: a cross-currency SUM is a number denominated in nothing, and an
+    FX rate fetched on a read would make the figure non-deterministic. Same
+    contract as `ExpenseCurrencyTotal` (`app/schemas/expense.py`).
+    """
+
+    currency: str
+    total: str
+    count: int
+
+
+class PortalSummaryResponse(BaseModel):
+    """Whole-set, vendor-scoped counts for the supplier-portal home.
+
+    Buckets collapse `InvoiceStatus` the same way the portal's status labels do
+    — a supplier never sees `sending_to_erp`. `invoices_action_required` is the
+    only bucket the supplier can move (a rejected invoice they can resubmit);
+    `invoices_in_progress` is with the customer.
+    """
+
+    invoices_total: int = 0
+    invoices_action_required: int = 0
+    invoices_in_progress: int = 0
+    invoices_paid: int = 0
+    invoices_completed: int = 0
+    # Value still owed on the in-progress bucket, per currency. Deliberately NOT
+    # a "paid" total: what was actually settled (net of credit memos, partial
+    # settlement, FX) is the payments page's figure, and restating it from
+    # invoice headers here would let the home page contradict it.
+    outstanding_by_currency: list[PortalCurrencyTotal] = []
+    open_discount_offers: int = 0
+    pending_change: PortalPendingChange | None = None

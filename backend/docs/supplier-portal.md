@@ -131,9 +131,46 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
 | GET    | `/portal/invoices`               | Vendor-scoped list. Optional filters: repeatable `status=` (raw `InvoiceStatus` values — the frontend's vendor-facing phase chips, `PORTAL_INVOICE_PHASES`, expand to the set behind each phase; an unrecognised value is dropped, never 422'd, so a stale portal build can't break the list) and `search=` (case-insensitive substring on the invoice number, LIKE metacharacters escaped). Both compose ON TOP of the `vendor_id ==` scope — a filter can only narrow. Each item carries `rejection_reason` (the latest `review_rejected` exception's description) **only while `status == "rejected"`** — so a supplier knows what to fix before resubmitting; never the rejecting employee's name. Optional `date_from`/`date_to` (`YYYY-MM-DD`, inclusive; `date_to` runs through end-of-day; inverted range → empty not 422) filter on `Invoice.created_at`. And each processing-phase item carries `waiting_on` (a PII-free bucket: `review` / `processing` / `erp`) + `waiting_on_days` — the vendor-facing "what is this waiting on" signal, NULL for `new`/`approved`/`paid`/`rejected`/`done`. |
 | GET    | `/portal/invoices/{id}`          | 404 for "doesn't exist" AND "belongs to another vendor" (no ID enumeration). Same `rejection_reason` field as the list. |
 | POST   | `/portal/invoices`               | Multipart PDF upload — routes into the same extraction pipeline as AP uploads |
-| POST   | `/portal/invoices/{id}/resubmit` | **Revise & resubmit** a `rejected` invoice (multipart; 409 for any other status). Swaps the file on the SAME row — so it never trips the duplicate check against its own prior version and stays this vendor's — resolves the open `review_rejected` exception, and lands it back at `ready_for_review`. **Deliberately does NOT re-extract**: a fresh extraction pass runs `match_and_link_vendor` and could re-link `Invoice.vendor_id` to a different supplier, dropping the invoice out of `vendor_id ==`-scoped portal list. Auto re-extract (constrained not to move the link) is a followup. |
+| POST   | `/portal/invoices/{id}/resubmit` | **Revise & resubmit** a `rejected` invoice (multipart; 409 for any other status). Swaps the file on the SAME row — so it never trips the duplicate check against its own prior version and stays this vendor's — resolves the open `review_rejected` exception, and **re-extracts the corrected document** so the reviewer isn't reconciling a new PDF against the fields from the version they rejected. See *Resubmission re-extracts, under two constraints* below. |
 | GET    | `/portal/payments`               | Payments joined to Invoice to filter on `vendor_id`. Same optional filters as the invoice list: repeatable `status=` (allow-listed against `_PORTAL_PAYMENT_STATUSES` — an unknown value is dropped, not 422'd) + `search=` on the paid invoice's number + `date_from`/`date_to` on `Payment.created_at`. Both compose on top of the `vendor_id ==` scope |
 | GET    | `/portal/payments/{id}/remittance` | Vendor-scoped remittance PDF; ownership via `Payment→Invoice.vendor_id`; 404 on a foreign payment |
+| GET    | `/portal/summary`                | **Portal home.** Whole-set, vendor-scoped counts + rollups: `invoices_total`, `invoices_action_required` (`rejected` — the only bucket the SUPPLIER can move), `invoices_in_progress` (with the customer), `invoices_paid`, `invoices_completed` (`done`, which is reachable from `approved` without a payment so it never inflates "paid"), `outstanding_by_currency` (in-progress value, per currency, exact decimal strings), `open_discount_offers` and the staged `pending_change`. Reuses the list's own `_portal_invoice_filters` + `_vendor_offer_filter` + `_pending_change`, so a figure can never describe a different set from the page it links to. PII-free: counts, currency codes and money only — never an AP actor's name, never a raw `InvoiceStatus` |
+
+#### Resubmission re-extracts, under two constraints
+
+A resubmit swaps the source document on an invoice that has already been
+triaged once. Re-reading it is the point — otherwise the reviewer compares a
+corrected PDF against the amount, number and dates extracted from the version
+they rejected. Two things must not happen on that pass, and both are carried by
+`dispatch_extraction` → `run_extraction` as keyword flags that default to
+today's ingest behaviour:
+
+- `skip_vendor_match=True` — `vendor_matching.match_and_link_vendor` is a fuzzy
+  matcher. Re-run over a re-typed vendor name it can land `Invoice.vendor_id` on
+  a **different** supplier, which (a) drops the invoice out of this
+  `vendor_id ==`-scoped portal, so the vendor loses sight of their own
+  resubmission, and (b) re-points the payee whose `Vendor.bank_details` the
+  payment run reads. The existing link **and** `vendor_name` are pinned —
+  `vendor_name` too, because that is what `PATCH /api/invoices/{id}`
+  re-resolves a stale link from, so leaving it rewritten would only move the
+  re-link to the reviewer's next save.
+- `suppress_auto_approve=True` — a human REJECTED this document. Letting the
+  unattended confidence / small-amount gates approve its replacement would let a
+  supplier launder a rejected invoice past the reviewer who rejected it.
+
+`rejected → pending` is not a legal transition, so the route takes the
+documented rework loop `rejected → new → pending` (two audit rows:
+`invoice.resubmitted_by_vendor`, then `invoice.extraction_dispatched`) and
+`run_extraction` performs the final `pending → ready_for_review` plus its usual
+`refresh_warnings` / PO-match / exception pass. Extraction is dispatched **after
+the commit**, since the worker opens its own session. When the invoice's frozen
+workflow snapshot has the extraction step disabled, the route goes straight to
+`ready_for_review` exactly as before.
+
+An extraction that fails leaves the invoice at `failed` with an
+`extraction_failed` exception in the AP queue — the same exposure any upload
+has; the vendor's own resubmit window (`rejected` only) has closed, so recovery
+is AP's retry, not another vendor upload.
 
 ### Purchase orders + PO flip (`portal.py`)
 
@@ -377,6 +414,7 @@ Routes:
 
 | Route                         | Purpose                                                |
 |-------------------------------|--------------------------------------------------------|
+| `/portal`                     | **Home / overview** — whole-set KPI cards (needs your attention / with your customer / paid / completed), per-currency outstanding value, and the decisions waiting on the supplier elsewhere (open early-payment offers, a staged bank/tax change). Reads `GET /portal/summary`; `EmptyState` for a supplier with no invoices yet |
 | `/portal/login`               | Sign-in form + MFA second-factor step (TOTP, with a "use email code instead" backup) |
 | `/portal/change-password`     | Forced first-login rotation                            |
 | `/portal/invoices`            | List (invoice-number search + vendor-facing phase chips) + upload + per-row "Revise & resubmit" on a rejected invoice |
@@ -404,6 +442,13 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] Virtual card viewing (secure, single-use reveal token) — `GET /portal/cards/{token}` consumes a one-time `CardRevealToken` atomically (`UPDATE … WHERE used_at IS NULL … RETURNING`), committed before the provider call; see *Single-use virtual-card reveal* above
 - [x] MFA (TOTP) for portal users (migration 0053; opt-in per vendor user, gated by `FEOH_MFA_ENABLED`)
 - [x] MFA email-OTP backup factor for portal users (Redis-only, no migration; on-demand via `POST /portal/auth/mfa/challenge/email`, sent through the email adapter, gated by `FEOH_MFA_ENABLED`)
+- [x] Portal home / overview (`GET /portal/summary` + `/portal`) — whole-set,
+  vendor-scoped counts of what needs the supplier vs what is with the customer,
+  per-currency outstanding value, and the open decisions (early-payment offers,
+  a staged bank/tax change)
+- [x] Resubmission re-extracts the corrected document, pinned to the existing
+  vendor link and with unattended auto-approve suppressed (see *Resubmission
+  re-extracts, under two constraints* above)
 
 ## Phase 3 (deferred)
 

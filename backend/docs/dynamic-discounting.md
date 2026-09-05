@@ -306,6 +306,7 @@ See `supplier-portal.md` § Early-payment discount offers.
 |-----|---------|---------|
 | `FEOH_DISCOUNT_OPTIMIZATION_ENABLED` | `false` | master switch for the auto-capture background sweep — keep `false` in local dev, flip on in deployed envs |
 | `FEOH_DISCOUNT_OPTIMIZATION_INTERVAL_SECONDS` | `3600` | sweep interval |
+| `FEOH_DISCOUNT_OPTIMIZATION_BATCH_SIZE` | `200` | **page** size for the sweep's keyset pagination over a tenant's `offered` offers — not a per-tick cap. The sweep pages (`WHERE id > :cursor ORDER BY id`) until the tenant is exhausted, locking one offer at a time. Capping is not available here: an offer skipped for a below-threshold ROI stays `offered`, so a `LIMIT` would re-serve the same lowest-id offers every tick and never reach the tail. See `background-sweeps.md` § Locking. |
 | `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD` | `12.0` | annualized return (APR %) an offer must clear for the sweep to auto-accept it |
 | `FEOH_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | platform-default annual cost of capital; per-org override `settings.discounting.cost_of_capital_pct` |
 
@@ -313,6 +314,13 @@ The ROI calculator, offer lifecycle, optimizer, and dashboard run
 unconditionally; only the *auto-accept sweep* is gated (and it never moves
 money). Local-first: the financing adapter defaults to `mock`, so `pnpm dev`
 needs no credential.
+
+The sweep reads a tenant's candidates a page at a time rather than in one
+unbounded `SELECT` — it used to select every `offered` offer id for the tenant
+up front, which is a memory/latency ceiling on any tenant with a large open
+offer book. Per-offer commits and the under-lock `status == offered` re-claim
+(§ The auto-capture sweep never overwrites a human decision) are what make a
+page boundary safe, and they are why the shape is a cursor rather than a cap.
 
 ## Frontend
 

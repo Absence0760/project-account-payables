@@ -167,7 +167,7 @@ Each synced vendor stores:
 | address | String | Full address |
 | tax_id | String | EIN / VAT number |
 | payment_terms | String | Default payment terms |
-| bank_details | JSONB | Bank account info (routing, account, SWIFT) |
+| bank_details | JSONB | Bank account info (routing, account, SWIFT) — see [Bank details: two routing numbers](#bank-details-two-routing-numbers) |
 | accepts_virtual_cards | Boolean | Whether vendor accepts card payments |
 | status | String | active / unverified / inactive / rejected |
 | source | String | manual / erp_sync / ai_extracted |
@@ -175,6 +175,86 @@ Each synced vendor stores:
 | verified_at | DateTime | When verified |
 | erp_vendor_id | String | Vendor ID in the external ERP |
 | erp_synced_at | DateTime | Last ERP sync timestamp |
+
+## Bank details: two routing numbers
+
+Larger US banks publish a **different ABA for incoming Fedwires than for ACH**.
+One generic routing number cannot express a payable wire at those banks, so
+`bank_details` carries both:
+
+| Key | Rail family | Notes |
+|---|---|---|
+| `routing_number` | ACH / domestic (`ach`, `international_ach`, `rtp`, `check`) | The ORIGINAL, generic key. Every row already stored under it means the ACH number, so it keeps that meaning — **no backfill, no reinterpretation of stored data**. |
+| `wire_routing_number` | Wire (`wire`, `international_wire`) | Optional. Recorded only when the bank publishes a separate Fedwire ABA. |
+| `routing_last4` / `wire_routing_last4` | — | Display-only last-4s, the shape the AP UI records (the full numbers live with the processor / are supplied by the vendor). |
+
+`bank_details` is a JSON column, so this needed **no migration**.
+
+### Which number a rail is instructed with
+
+`services/payment_adapters/base.resolve_routing_number(vendor_bank, method)` is
+the single resolver, surfaced on every payload as `PaymentPayload.routing`
+(`RoutingSelection(number, source)` — `source` is the PII-free label `wire` /
+`ach` / `none`, safe to log; `number` is banking data and goes only into the
+outbound processor request).
+
+* A **wire** rail prefers `wire_routing_number` and **falls back** to
+  `routing_number`. A bank publishing a single ABA uses it for both, so
+  refusing there would break every vendor at a smaller institution.
+* An **ACH** rail reads `routing_number` and deliberately does **not** fall back
+  to the wire number. The asymmetry is the point: a bank with two ABAs will not
+  accept an ACH file addressed to its Fedwire number, so borrowing it converts a
+  missing-data problem into a returned item days later at the vendor's expense.
+  Missing means missing.
+
+Adapters read `payload.routing`, never `vendor_bank["routing_number"]` — that
+key is the ACH number and would misroute a wire. Today every live adapter
+identifies the payee by a **processor counterparty token**
+(`vendor_bank["counterparty_id"]`) and never transmits raw coordinates, so the
+resolver's live consumers are the `mock` adapter (which reports the selected
+`routing_source` in its `raw_response` so the choice is observable in local dev
+and e2e) and any future adapter that hands a bank raw coordinates. The Positive
+Pay **ACH-authorization** file (`services/positive_pay.py`) reads
+`routing_number` directly and is correct unchanged — it is an ACH artefact.
+
+### Validation
+
+`schemas/vendor.validate_bank_routing_fields` structurally checks every
+routing-shaped key that is actually **present**: both ABA fields against the ABA
+checksum (`utils/banking.validate_aba_routing`) and `sort_code` against the UK
+6-digit shape. An international payee legitimately carries `iban` / `swift_bic`
+and no ABA at all — requiring one would refuse a whole class of real vendors —
+but a value that IS supplied and malformed is refused with a 422, because the
+alternative is a fat-fingered digit that surfaces days later as a returned or
+misdirected payment.
+
+It runs at two points, and the split matters:
+
+* `api/vendors._stage_ap_bank_change` — the single staging chokepoint all three
+  AP entry points (`POST /vendors`, `PATCH /vendors/{id}`,
+  `POST /vendors/{id}/bank-change`) go through.
+* `api/vendors.approve_change_request` — the single point where ANY staged
+  change is applied to the vendor row, AP- or supplier-portal-submitted. The
+  portal's schema takes a free-form dict, so re-validating at apply time is what
+  stops a malformed ABA reaching the row through a route with a looser schema.
+
+It is deliberately **not** a Pydantic `field_validator`. FastAPI renders a
+`ValidationError` as a 422 whose body echoes the rejected `input` — and the
+input is the whole `bank_details` dict, account number included. Validating
+there turned "your routing number has a typo" into a response body carrying
+banking data. Raising from the chokepoint lets the 4xx name only the FIELD.
+
+### It travels the dual-control BEC gate like every other banking field
+
+`wire_routing_number` is not a new door. `POST /vendors` strips bank details off
+the insert and STAGES them; `PATCH /vendors/{id}` stages rather than applies;
+`POST /vendors/{id}/bank-change` is the canonical staging path — and a SECOND
+user holding `vendor.bank_change.approve` (who cannot be the proposer) approves.
+A field that applied inline would be exactly the one-person bank redirect the
+gate exists to prevent.
+
+It is also in `api/vendors._BANK_SECRET_KEYS`, so the audit trail records only
+that it changed plus a last-4 — never the number.
 
 ## API Endpoints
 

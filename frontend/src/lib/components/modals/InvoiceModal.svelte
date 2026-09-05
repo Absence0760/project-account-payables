@@ -2,7 +2,7 @@
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import type { Invoice, AuditSummary } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, isNegativeAmount, isPositiveAmount } from '$lib/utils/money';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
@@ -11,6 +11,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
 	import type { MessageKey } from '$lib/i18n/messages';
@@ -19,6 +20,20 @@
 	import type { AuditEntry, AuditFieldChange } from '$lib/types/audit';
 	import { getInvoiceAuditLog } from '$lib/api/audit';
 
+	/**
+	 * Badge tone per quality-inspection verdict (the 4-way match's gate).
+	 *
+	 * `missing` is not an `inspection_result` — it is the "required but never
+	 * recorded" case the markup renders separately — and it shares `danger`
+	 * with `fail` because it has the same consequence: the 4-way match cannot
+	 * be satisfied. That was already true of the CSS these tones replace (one
+	 * rule covered `.fail, .missing`), so no distinction collapses here.
+	 */
+	const INSPECTION_TONES: Record<'pass' | 'fail' | 'partial', BadgeTone> = {
+		pass: 'success',
+		fail: 'danger',
+		partial: 'warning'
+	};
 	import type { WorkflowInstanceDetail } from '$lib/types/workflowInstance';
 	import { chainIsComplete, chainLevelRemaining } from '$lib/types/workflowInstance';
 	import { getInvoiceWorkflowInstance } from '$lib/api/workflowInstance';
@@ -385,7 +400,9 @@
 		const missing: string[] = [];
 		if (!vendor.trim()) missing.push(m('invoices.modal.field.vendor'));
 		if (!invoice_number.trim()) missing.push(m('invoices.modal.field.invoiceNumber'));
-		if (!amount || amount <= 0) missing.push(m('invoices.modal.field.amount'));
+		// `amount` is money, so "is there a usable figure here?" is a predicate —
+		// `isPositiveAmount`, not `<= 0` on a value that may be an exact string.
+		if (!isPositiveAmount(amount)) missing.push(m('invoices.modal.field.amount'));
 		return missing;
 	});
 
@@ -1405,7 +1422,7 @@
 							<span>{m('invoices.modal.field.invoiceNumber')} <em class="required">*</em> {#if dot('invoice_number', invoice_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.invoice_number)}" data-tip="{Math.round(fieldConfidence.invoice_number * 100)}% — {confidenceLabel(fieldConfidence.invoice_number)}"></span>{/if}</span>
 							<input type="text" bind:value={invoice_number} required />
 						</label>
-						<label class:field-error={canSubmitStatus && (!amount || amount <= 0)}>
+						<label class:field-error={canSubmitStatus && !isPositiveAmount(amount)}>
 							<span>{m('invoices.modal.field.amount')} <em class="required">*</em> {#if dot('amount', amount)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.amount)}" data-tip="{Math.round(fieldConfidence.amount * 100)}% — {confidenceLabel(fieldConfidence.amount)}"></span>{/if}</span>
 							<input type="number" step="0.01" bind:value={amount} required />
 						</label>
@@ -1645,15 +1662,15 @@
 											<span class="po-match-value mono">{formatMoney(pm.po_total, { currency: invoice.currency })}</span>
 										</div>
 									{/if}
-									{#if pm.amount_variance !== 0}
+									{#if isPositiveAmount(pm.amount_variance) || isNegativeAmount(pm.amount_variance)}
 										<div>
 											<span class="po-match-label">{m('invoices.modal.poMatch.variance')}</span>
 											<span
 												class="po-match-value mono"
-												class:variance-pos={pm.amount_variance > 0}
-												class:variance-neg={pm.amount_variance < 0}
+												class:variance-pos={isPositiveAmount(pm.amount_variance)}
+												class:variance-neg={isNegativeAmount(pm.amount_variance)}
 											>
-												{pm.amount_variance > 0 ? '+' : ''}{formatMoney(pm.amount_variance, { currency: invoice.currency })}
+												{isPositiveAmount(pm.amount_variance) ? '+' : ''}{formatMoney(pm.amount_variance, { currency: invoice.currency })}
 												({pm.amount_variance_pct > 0 ? '+' : ''}{pm.amount_variance_pct.toFixed(1)}%)
 											</span>
 										</div>
@@ -1664,19 +1681,19 @@
 								<div class="po-match-inspection">
 									<span class="po-match-label">{m('invoices.modal.poMatch.qualityInspection')}</span>
 									{#if pm.inspection_result}
-										<span class="inspection-badge {pm.inspection_result}">
+										<Badge tone={INSPECTION_TONES[pm.inspection_result]} variant={pm.inspection_result}>
 											{#if pm.inspection_result === 'pass'}{m('invoices.modal.poMatch.passed')}
 											{:else if pm.inspection_result === 'fail'}{m('invoices.modal.poMatch.failed')}
 											{:else}{m('invoices.modal.poMatch.partial')}
 											{/if}
-										</span>
+										</Badge>
 										{#if pm.inspection_accepted_quantity !== null}
 											<span class="po-match-value mono">
 												{m('invoices.modal.poMatch.accepted', { qty: pm.inspection_accepted_quantity })}
 											</span>
 										{/if}
 									{:else if pm.inspection_required}
-										<span class="inspection-badge missing">{m('invoices.modal.poMatch.requiredMissing')}</span>
+										<Badge tone="danger" variant="missing">{m('invoices.modal.poMatch.requiredMissing')}</Badge>
 									{/if}
 								</div>
 							{/if}
@@ -1775,10 +1792,10 @@
 								<span class="priors-title">{m('invoices.modal.priors.title')}</span>
 								<span class="priors-chips">
 									{#if priors.vendor_cache_applied.length > 0}
-										<span class="priors-chip">{m('invoices.modal.priors.vendorCacheChip', { count: priors.vendor_cache_applied.length })}</span>
+										<Badge tone="accent" variant="priors-chip">{m('invoices.modal.priors.vendorCacheChip', { count: priors.vendor_cache_applied.length })}</Badge>
 									{/if}
 									{#if priors.rag_neighbors.length > 0}
-										<span class="priors-chip">{m('invoices.modal.priors.ragChip', { count: priors.rag_neighbors.length })}</span>
+										<Badge tone="accent" variant="priors-chip">{m('invoices.modal.priors.ragChip', { count: priors.rag_neighbors.length })}</Badge>
 									{/if}
 								</span>
 								<span class="priors-caret">{priorsOpen ? '▾' : '▸'}</span>
@@ -3019,29 +3036,6 @@
 		border-top: 1px solid var(--border);
 	}
 
-	.inspection-badge {
-		font-size: 0.72rem;
-		font-weight: 600;
-		padding: 2px 10px;
-		border-radius: 10px;
-	}
-
-	.inspection-badge.pass {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
-	}
-
-	.inspection-badge.fail,
-	.inspection-badge.missing {
-		background: rgba(224, 64, 64, 0.15);
-		color: var(--danger);
-	}
-
-	.inspection-badge.partial {
-		background: rgba(212, 148, 10, 0.15);
-		color: #d4940a;
-	}
-
 	.required {
 		color: var(--danger);
 		font-style: normal;
@@ -3579,14 +3573,6 @@
 		display: inline-flex;
 		gap: 6px;
 		flex: 1;
-	}
-	.priors-chip {
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
-		font-size: 0.72rem;
-		font-weight: 500;
-		padding: 2px 8px;
-		border-radius: 999px;
 	}
 	.priors-caret {
 		color: var(--text-muted);

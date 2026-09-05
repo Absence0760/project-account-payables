@@ -7,9 +7,16 @@ import {
 } from './moneyTypeAudit';
 
 import type { Budget, BudgetSpend } from './budget';
+import type { CatalogItem } from './catalog';
+import type { ContractSpend } from './contract';
+import type { Expense } from './expense';
 import type { IntakeRequest } from './intake';
+import type { Invoice } from './invoice';
+import type { Payment } from './payment';
 import type { PositivePayFile } from './positivePay';
 import type { RecurringOccurrence, RecurringTemplate } from './recurring';
+import type { ReconLine } from './vendorStatementRecon';
+import type { ApprovalStepConfig } from './workflow';
 
 /**
  * Repo-wide ratchet on the money-typing conversion of `src/lib/types/`.
@@ -61,6 +68,10 @@ const sources = Object.entries(RAW)
  * once every candidate in it is either retyped or judged here.
  */
 const JUDGED_NOT_MONEY: Record<string, Record<string, string>> = {
+	'lib/types/bankReconciliation.ts': {
+		// Pagination row count of the whole statement set, not money.
+		'BankStatementListResponse.total': 'pagination row count'
+	},
 	'lib/types/accessReview.ts': {
 		'AccessReviewResponse.total': 'users reviewed — a head count, not money'
 	},
@@ -74,6 +85,49 @@ const JUDGED_NOT_MONEY: Record<string, Record<string, string>> = {
 		'UsageResponse.remaining': 'tokens left in that allowance',
 		'InvoiceListResult.total': 'row count of the assistant tool result',
 		'PendingApprovalsResult.total': 'row count of the assistant tool result'
+	},
+	'lib/types/catalog.ts': {
+		'CatalogListResponse.total': 'pagination row count of the whole filtered set'
+	},
+	'lib/types/contract.ts': {
+		'ContractListResponse.total': 'pagination row count of the whole filtered set'
+	},
+	'lib/types/discounts.ts': {
+		'DiscountOfferPage.total': 'pagination row count of the whole filtered set'
+	},
+	'lib/types/expense.ts': {
+		'ExpenseListResponse.total': 'pagination row count of the whole filtered set',
+		// `ExpenseSummaryResponse.total` is `int`, beside the per-currency money
+		// in `by_currency` — which is grouped, never summed. The KPI money on
+		// this surface is `ExpenseCurrencyTotal.total`, already `MoneyString`.
+		'ExpenseSummary.total': 'expense row count of the whole filtered set',
+		'ExpenseReportListResponse.total': 'pagination row count of the whole filtered set',
+		'CardTransactionListResponse.total': 'pagination row count of the whole filtered set'
+	},
+	'lib/types/requisition.ts': {
+		'RequisitionListResponse.total': 'pagination row count of the whole filtered set',
+		'RequisitionSummary.total': 'requisition row count of the whole filtered set'
+	},
+	'lib/types/vendorStatementRecon.ts': {
+		'ReconciliationListResponse.total': 'pagination row count of the whole filtered set',
+		'ReconciliationSummary.total': 'reconciliation-run row count of the whole filtered set'
+	},
+	'lib/types/workflow.ts': {
+		// `schemas/workflow.py` types it `float = Field(ge=0.0, le=1.0)` and the
+		// builder renders it as `Math.round(x * 100)%` on a slider: the
+		// EXTRACTION CONFIDENCE an invoice must clear to auto-approve. The
+		// money threshold that gates a big invoice is `require_cfo_above`
+		// beside it, which IS `MoneyString`.
+		'ExtractionStepConfig.auto_approve_threshold':
+			'0..1 extraction-confidence ratio, not an amount',
+		// A condition rule's operand, discriminated by its sibling `field`: a
+		// money amount only when `field === "amount"`, otherwise a currency
+		// code / vendor id / GL account / cost-centre / department string. The
+		// union already carries `string | string[]`, so arithmetic on it is
+		// ALREADY a type error — the hazard the ratchet exists to catch cannot
+		// occur here, and naming the whole operand `MoneyAmount` would misread
+		// the five non-money arms.
+		'ConditionRule.value': 'a per-field rule operand, money only on the `amount` field'
 	},
 	'lib/types/budget.ts': {
 		'BudgetListResponse.total': 'pagination row count of the whole filtered set',
@@ -111,6 +165,7 @@ const JUDGED_NOT_MONEY: Record<string, Record<string, string>> = {
 	},
 	'lib/types/vendor.ts': {
 		'VendorStatusCounts.total': 'vendor row count behind the status chips',
+		'ScreeningReviewQueueResponse.total': 'pagination row count of the review queue',
 		'VendorMergeResponse.total_reassigned': 'rows re-pointed by the merge — a count',
 		'VendorChangeRequestPage.total': 'pagination row count',
 		'VendorChangeRequestCounts.total': 'change-request row count'
@@ -120,23 +175,37 @@ const JUDGED_NOT_MONEY: Record<string, Record<string, string>> = {
 /**
  * Modules whose every money field is typed `MoneyAmount` / `MoneyString`.
  *
- * A candidate reappearing here is a regression, not a budget to raise. Four
- * were converted in this round (`budget` — the module the follow-up names as
- * the clearest case — plus `intake`, `positivePay` and `recurring`); the other
- * seven carry no money at all and are pinned so they cannot grow one untyped.
+ * A candidate reappearing here is a regression, not a budget to raise. Seven
+ * more landed this round — `payment`, `workflow`, `catalog`, `invoice`,
+ * `vendorStatementRecon`, `contract` and `expense` — leaving `discounts` and
+ * `requisition` in {@link BASELINE} at one field each, for the reason both
+ * carry in their own doc comment: the page SCALES the amount by a
+ * non-money factor (a tier percent; a line quantity) to preview a figure the
+ * server owns, and `utils/money.ts` exposes no exact multiply — only
+ * `sumMoney`. Retyping without one would force a cast, or
+ * `parseMoneyForLayout` used outside its stated geometry-only contract.
  */
 const CONVERTED = [
 	'lib/types/accessReview.ts',
 	'lib/types/assistant.ts',
 	'lib/types/budget.ts',
+	'lib/types/catalog.ts',
+	'lib/types/contract.ts',
+	'lib/types/discounts.ts',
 	'lib/types/exceptionAgents.ts',
+	'lib/types/expense.ts',
 	'lib/types/intake.ts',
+	'lib/types/invoice.ts',
 	'lib/types/notification.ts',
+	'lib/types/payment.ts',
 	'lib/types/positivePay.ts',
 	'lib/types/privacy.ts',
 	'lib/types/recurring.ts',
 	'lib/types/reports.ts',
-	'lib/types/vendor.ts'
+	'lib/types/requisition.ts',
+	'lib/types/vendor.ts',
+	'lib/types/vendorStatementRecon.ts',
+	'lib/types/workflow.ts'
 ];
 
 /**
@@ -148,15 +217,10 @@ const CONVERTED = [
  * commit.
  */
 const BASELINE: Record<string, number> = {
-	'lib/types/catalog.ts': 7,
-	'lib/types/contract.ts': 12,
-	'lib/types/discounts.ts': 14,
-	'lib/types/expense.ts': 16,
-	'lib/types/invoice.ts': 7,
-	'lib/types/payment.ts': 2,
-	'lib/types/requisition.ts': 7,
-	'lib/types/vendorStatementRecon.ts': 10,
-	'lib/types/workflow.ts': 6
+	// EMPTY — every module under `src/lib/types/` is converted. The map stays
+	// so a module that legitimately needs a staged conversion has somewhere to
+	// land, but adding an entry now is a REGRESSION, not a plan: an unconverted
+	// module fails `no module grows a new number-typed money field` first.
 };
 
 const candidates = findMoneyShapedNumberFields(sources);
@@ -171,10 +235,18 @@ describe('money-typing ratchet over src/lib/types', () => {
 	});
 
 	it('detects the shape it is meant to detect', () => {
-		// The audit's own regression test: a module everyone agrees still carries
-		// `number`-typed money must be found. Without it, breaking the parser
-		// turns this whole suite green.
-		expect(counts['lib/types/expense.ts']).toBeGreaterThan(0);
+		// The audit's own regression test. Without it, breaking the parser turns
+		// this whole suite green — and now that no real module carries a
+		// `number`-typed money field, there is nothing left in the repo to point
+		// at, so the probe is synthetic. It must stay synthetic: pointing it at
+		// a real module again would mean the ratchet had slipped.
+		const planted = findMoneyShapedNumberFields([
+			[
+				'lib/types/__probe__.ts',
+				'export interface Probe {\n\tamount: number;\n\tlabel: string;\n}'
+			]
+		]);
+		expect(planted.map((c) => c.key)).toEqual(['Probe.amount']);
 	});
 
 	it.each(CONVERTED)('%s carries no number-typed money field', (path) => {
@@ -309,7 +381,14 @@ function moneyArithmeticMustNotCompile(
 	intake: IntakeRequest,
 	file: PositivePayFile,
 	template: RecurringTemplate,
-	occurrence: RecurringOccurrence
+	occurrence: RecurringOccurrence,
+	payment: Payment,
+	approval: ApprovalStepConfig,
+	item: CatalogItem,
+	invoice: Invoice,
+	reconLine: ReconLine,
+	contractSpend: ContractSpend,
+	expense: Expense
 ) {
 	// @ts-expect-error money is not a number — use `parseMoneyForLayout` for geometry.
 	const scaled = budget.amount * 2;
@@ -325,5 +404,34 @@ function moneyArithmeticMustNotCompile(
 	const monthly = template.amount / 12;
 	// @ts-expect-error summing amounts client-side is `sumMoney`, not `+`.
 	const twoRuns = occurrence.amount + occurrence.amount;
-	return { scaled, headroom, overspent, scale, rendered, monthly, twoRuns };
+	// @ts-expect-error a payment amount is money, whatever the wire shape.
+	const doubled = payment.amount * 2;
+	// @ts-expect-error the CFO gate is an exact decimal string, not a number to compare.
+	const overGate = approval.require_cfo_above > 1000;
+	// @ts-expect-error extending a catalog price by a quantity is not float math.
+	const extended = item.unit_price * 3;
+	// @ts-expect-error money never round-trips through `.toFixed()`.
+	const invoiceText = invoice.amount.toFixed(2);
+	// @ts-expect-error the statement-vs-ledger delta is the server's own figure.
+	const delta = reconLine.statement_amount - reconLine.ledger_amount;
+	// @ts-expect-error headroom under a spend limit is `ContractSpend.remaining`.
+	const headroomLeft = contractSpend.spend_limit - contractSpend.invoiced_total;
+	// @ts-expect-error a chart scale goes through `parseMoneyForLayout`.
+	const expenseScale = Math.max(expense.amount, 0);
+	return {
+		scaled,
+		headroom,
+		overspent,
+		scale,
+		rendered,
+		monthly,
+		twoRuns,
+		doubled,
+		overGate,
+		extended,
+		invoiceText,
+		delta,
+		headroomLeft,
+		expenseScale
+	};
 }

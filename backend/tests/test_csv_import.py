@@ -11,19 +11,28 @@ when changing the service. See ``backend/scripts/seed.py``.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
+from app.models.invoice import Invoice
+from app.services import csv_import as csv_import_module
 from app.services.csv_import import (
     _CORPORATE_CARD_COLUMNS,
+    IMPORT_PROVENANCE_KEY,
+    IMPORT_PROVENANCE_SOURCE,
     _parse_bool,
     _parse_date,
     _parse_decimal,
     import_corporate_card_csv,
     import_invoices_csv,
     import_vendors_csv,
+    imported_invoice_clause,
+    native_invoice_clause,
 )
 
 
@@ -568,3 +577,84 @@ async def test_corporate_card_import_validation_errors_count_as_skipped():
     assert result.imported == 1, result.to_dict()
     assert result.skipped == 2, result.to_dict()
     assert len(result.errors) == 2
+
+
+# ---------------------------------------------------------------------------
+# Import provenance — `Invoice.meta["imported"]`
+#
+# A CSV-imported invoice is history migrated in from the tenant's previous
+# system; the workflow engine never ran on it. `services/analytics`'
+# touchless rate excludes such rows from BOTH of its legs, and it can only do
+# that if the importer records the fact. Status cannot: `done`, `paid` and
+# `rejected` are each reachable natively too.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_import_invoices_stamps_provenance_on_every_row():
+    """Every invoice the importer creates carries the marker — whatever status
+    the CSV asked for, and for every row of a multi-row batch (not just the
+    first)."""
+    db = _StubSession()
+    csv_text = (
+        "invoice_number,vendor_name,amount,status\n"
+        "INV-P1,Acme,100.00,new\n"
+        "INV-P2,Acme,200.00,done\n"
+        "INV-P3,Acme,300.00,paid\n"
+        "INV-P4,Acme,400.00,rejected\n"
+    )
+    result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
+    assert result.imported == 4, result.to_dict()
+
+    invoices = [o for o in db.added if isinstance(o, Invoice)]
+    assert len(invoices) == 4
+    for inv in invoices:
+        marker = (inv.meta or {}).get(IMPORT_PROVENANCE_KEY)
+        assert marker, f"{inv.invoice_number} carries no import marker: {inv.meta!r}"
+        assert marker["source"] == IMPORT_PROVENANCE_SOURCE
+        assert datetime.fromisoformat(marker["at"]).tzinfo is not None
+
+    # One batch, one instant — the fact being recorded is when the import ran.
+    assert len({inv.meta[IMPORT_PROVENANCE_KEY]["at"] for inv in invoices}) == 1
+
+
+@pytest.mark.asyncio
+async def test_import_provenance_does_not_displace_other_meta_keys():
+    """`Invoice.meta` is a shared bag — `audit_summary` (services/audit_summary)
+    and `archived_at` (services/retention_sweep) also live there. The marker
+    takes one reserved top-level key and nothing else, so those writers keep
+    working on an imported row."""
+    db = _StubSession()
+    csv_text = "invoice_number,vendor_name,amount\nINV-META,Acme,100.00\n"
+    await import_invoices_csv(db, uuid.uuid4(), csv_text)
+    inv = next(o for o in db.added if isinstance(o, Invoice))
+    assert set(inv.meta) == {IMPORT_PROVENANCE_KEY}
+
+
+def test_the_importer_has_exactly_one_invoice_construction_site():
+    """ "Every path that creates an invoice stamps the marker" is only checkable
+    if the paths are enumerable. Pin the count: a second `Invoice(...)` site
+    added later must come back here and be stamped too, rather than silently
+    minting unmarked rows that then pollute the touchless population."""
+    source = Path(csv_import_module.__file__).read_text()
+    assert source.count("Invoice(") == 1, (
+        "csv_import grew another Invoice construction site — stamp "
+        "IMPORT_PROVENANCE_KEY on it and update this guard"
+    )
+
+
+def test_native_and_imported_clauses_are_exact_complements():
+    """The two SQL predicates must partition every row, INCLUDING rows whose
+    `meta` is NULL. Postgres' `?` operator yields NULL — not false — on a NULL
+    jsonb, so a naive `NOT (meta ? 'imported')` would silently drop every
+    legacy row out of the metric entirely instead of treating it as native.
+    """
+    imported = str(imported_invoice_clause().compile(dialect=postgresql.dialect()))
+    native = str(native_invoice_clause().compile(dialect=postgresql.dialect()))
+    # The NULL guard is present on the positive clause...
+    assert "IS NOT NULL" in imported
+    assert "?" in imported
+    # ...and the negative clause is exactly its complement, so `meta IS NULL`
+    # evaluates FALSE AND NULL = FALSE inside, and TRUE outside.
+    assert native.startswith("NOT (")
+    assert imported in native

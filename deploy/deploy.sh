@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy / update the minimal single-VM stack (docs/minimal-deployment.md).
 # Run ON the VM from anywhere: preflight → pull main → decrypt secrets →
-# build frontend (in a node:20 container — no Node/pnpm needed on the VM) →
+# build frontend (in a node:24 container — no Node/pnpm needed on the VM) →
 # build backend → run migrations BEFORE the new code serves traffic (control
 # plane + every tenant DB — same ordering contract as the future ECS
 # pipeline) → roll containers and wait for the API healthcheck.
@@ -14,7 +14,7 @@ REPO_ROOT=$(cd .. && pwd)
 COMPOSE=(docker compose -f compose.prod.yml)
 # Matches CI (ci.yml pins pnpm 9 on Node 20). The named volume caches the
 # pnpm store across deploys so rebuilds don't re-download the world.
-NODE_IMAGE=node:20-alpine
+NODE_IMAGE=node:24-alpine
 PNPM_SPEC=pnpm@9
 
 die() {

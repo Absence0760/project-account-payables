@@ -9,7 +9,10 @@ way, pinned against a real Postgres tenant.
   3. `touchless_rate` omitted `sending_to_erp` from both legs, so an invoice
      sitting in the ERP export hop vanished from a metric it had already
      earned a place in; `failed` was omitted wholesale even though half the
-     invoices in it are approved ones whose ERP export failed.
+     invoices in it are approved ones whose ERP export failed; and `done` /
+     `paid` counted as "cleared review" on status alone, even for the rows
+     that reached them WITHOUT ever being approved (`new -> done`, or a CSV
+     import that bypasses the workflow engine).
   4. `monthly_trend` bounded a CALENDAR-MONTH `GROUP BY` with a rolling
      180-day window — two units that never line up, so the oldest bar was a
      partial slice of a month (or a seventh, stub bucket).
@@ -33,6 +36,11 @@ from sqlalchemy import select
 from app.models.entity import Entity
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentSchedule
+from app.services.csv_import import (
+    IMPORT_PROVENANCE_KEY,
+    build_import_provenance,
+    import_invoices_csv,
+)
 from app.utils.dates import utc_today
 
 TENANT = "a"
@@ -277,14 +285,23 @@ async def test_discount_capture_unconvertible_row_is_disclosed(realdb):
 # ---------------------------------------------------------------------------
 
 
-async def _seed_statuses(realdb, rows: list[tuple[InvoiceStatus, bool]]) -> None:
-    """`rows` is [(status, has_approval_stamp)]."""
+async def _seed_statuses(realdb, rows: list[tuple]) -> None:
+    """`rows` is [(status, has_approval_stamp)], optionally with a third
+    element: a `meta` dict to persist on the row (the import provenance
+    marker, or another `meta` tenant such as a cached audit summary)."""
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
     today = utc_today()
     async with mk() as s:
         ent = await _default_entity_id(s)
-        for status, approved in rows:
+        for row in rows:
+            status, approved = row[0], row[1]
+            extra = {"meta": row[2]} if len(row) > 2 else {}
+            # `meta` is OMITTED, not passed as None, when no dict is supplied:
+            # SQLAlchemy's JSON type persists a Python `None` as JSON `null`,
+            # which is a different value from SQL NULL and behaves differently
+            # under the `?` operator. Omitting the column is what real invoices
+            # that never touch `meta` produce.
             s.add(
                 _inv(
                     org_id,
@@ -293,8 +310,26 @@ async def _seed_statuses(realdb, rows: list[tuple[InvoiceStatus, bool]]) -> None
                     invoice_date=today,
                     approval_date=today if approved else None,
                     approved_by="Reviewer" if approved else None,
+                    **extra,
                 )
             )
+        await s.commit()
+
+
+def _import_marker() -> dict:
+    return {IMPORT_PROVENANCE_KEY: build_import_provenance()}
+
+
+async def _import_invoices(realdb, csv_text: str) -> None:
+    """Run the REAL importer against the tenant DB, so these tests pin the
+    end-to-end wiring (importer stamps -> dashboard excludes) rather than a
+    hand-written restatement of the marker."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        result = await import_invoices_csv(s, org_id, csv_text, entity_id=ent)
+        assert not result.errors, result.to_dict()
         await s.commit()
 
 
@@ -353,6 +388,193 @@ async def test_touchless_rate_ignores_a_failed_invoice_that_never_reached_review
         body = (await c.get("/api/dashboard")).json()
 
     assert body["touchless_rate"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_excludes_a_done_invoice_that_skipped_approval(realdb):
+    """`new -> done` is a legal transition that skips approval outright (and
+    the Day-0 CSV importer lands historical rows there by default). Such an
+    invoice never cleared review — it bypassed it — so counting it as
+    touchless inflates a board-reported automation figure.
+
+    One shortcut `done` (no approval stamp) + one rejected. Pre-fix the `done`
+    row counted as cleared and the rate read 50.0%; it is now out of the
+    population entirely, and with nothing left that cleared review the honest
+    answer is 0.0%.
+    """
+    await _seed_statuses(
+        realdb,
+        [(InvoiceStatus.done, False), (InvoiceStatus.rejected, False)],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["pipeline"]["done"] == 1
+    assert body["touchless_rate"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_counts_a_done_invoice_that_cleared_a_real_approval(realdb):
+    """The other `done`: approved (untouched) and carried through to terminal.
+    It has the durable `approval_date` stamp, so it counts exactly as before —
+    the change narrows the numerator, it does not gut it."""
+    await _seed_statuses(
+        realdb,
+        [(InvoiceStatus.done, True), (InvoiceStatus.rejected, False)],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["touchless_rate"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_excludes_an_imported_paid_invoice(realdb):
+    """`services/csv_import` may also land a historical row straight at `paid`,
+    bypassing the workflow engine — the same hole as `done`. One imported
+    `paid` (unstamped) + one genuine untouched approval: the rate is 100% off
+    the ONE invoice that really cleared review, not 100% off two.
+    """
+    await _seed_statuses(
+        realdb,
+        [(InvoiceStatus.paid, False), (InvoiceStatus.approved, True)],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["pipeline"]["paid"] == 1
+    assert body["touchless_rate"] == 100.0
+
+    # And it is genuinely absent from BOTH legs, not just the numerator: an
+    # unstamped `paid` sitting beside a rejection cannot drag the rate down
+    # either, because it never finished review.
+    await _seed_statuses(realdb, [(InvoiceStatus.rejected, False)])
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+    assert body["touchless_rate"] == 50.0
+
+
+# ---------------------------------------------------------------------------
+# 3b. touchless_rate — imported rows are outside BOTH legs
+#
+# The numerator fix above narrowed on EVIDENCE (`approval_date`). The
+# denominator has the mirror hole and evidence cannot close it: nothing writes
+# an approval stamp on a rejection, so gating the bounced leg would zero it
+# outright. Provenance closes it instead — `services/csv_import` stamps
+# `meta["imported"]` on every row it creates, and marked rows leave both legs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_excludes_a_csv_imported_rejection(realdb):
+    """A migrated historical `rejected` row is not a reviewer HERE bouncing an
+    invoice back — the workflow engine never ran on it — so it must not
+    deflate the automation figure.
+
+    One genuine untouched approval + one CSV-imported rejection. Pre-fix the
+    imported row padded the denominator: 1/2 -> 50.0%. It is now out of the
+    population and the honest rate is 100.0%, off ONE invoice.
+    """
+    await _seed_statuses(realdb, [(InvoiceStatus.approved, True)])
+    await _import_invoices(
+        realdb,
+        "invoice_number,vendor_name,amount,status\nHIST-R1,Legacy Supplies,500.00,rejected\n",
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    # The row really is there — this is an exclusion from the metric, not from
+    # the tenant's data.
+    assert body["pipeline"]["rejected"] == 1
+    assert body["touchless_rate"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_excludes_a_csv_imported_done_row_from_both_legs(realdb):
+    """An imported `done` row was already out of the NUMERATOR (it carries no
+    approval stamp). Confirm it is now out of the DENOMINATOR too, so it can
+    never be promoted back into the population by an evidence count.
+
+    Baseline: one stamped `done` + one native rejection = 50.0%. Importing
+    three more historical `done` rows leaves it at 50.0% — and the stamped
+    imported row in the second half proves provenance beats evidence: even
+    carrying `approval_date`, it does not re-enter the numerator.
+    """
+    await _seed_statuses(
+        realdb,
+        [(InvoiceStatus.done, True), (InvoiceStatus.rejected, False)],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        assert (await c.get("/api/dashboard")).json()["touchless_rate"] == 50.0
+
+    await _import_invoices(
+        realdb,
+        "invoice_number,vendor_name,amount,status\n"
+        "HIST-D1,Legacy Supplies,100.00,done\n"
+        "HIST-D2,Legacy Supplies,200.00,done\n"
+        "HIST-D3,Legacy Supplies,300.00,paid\n",
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+    assert body["pipeline"]["done"] == 3
+    assert body["touchless_rate"] == 50.0
+
+    # An imported row that DOES carry an approval stamp (a future importer, or
+    # a hand-repaired row) still stays out: provenance, not evidence, is what
+    # removes it.
+    await _seed_statuses(realdb, [(InvoiceStatus.done, True, _import_marker())])
+    async with realdb.client(key=TENANT, role="admin") as c:
+        assert (await c.get("/api/dashboard")).json()["touchless_rate"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_still_counts_a_native_rejection(realdb):
+    """Only PROVABLY imported rows leave the bounced leg. A tenant that never
+    imports sees no change at all from this edit."""
+    await _seed_statuses(
+        realdb,
+        [
+            (InvoiceStatus.approved, True),
+            (InvoiceStatus.rejected, False),
+            (InvoiceStatus.rejected, False),
+        ],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["pipeline"]["rejected"] == 2
+    assert body["touchless_rate"] == 33.3
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_treats_an_unmarked_row_as_native(realdb):
+    """No marker means "we do not know", and the marker is written only going
+    forward — so a row that predates it stays in the population rather than
+    being reclassified on a guess.
+
+    Both unmarked shapes are covered, because they behave differently in SQL:
+    a row whose `meta` column was never written (SQL NULL — every invoice
+    predating the marker) and one carrying OTHER keys (a cached audit summary,
+    an `archived_at`). The rows are stamped `done`, which routes them through
+    the evidence-count query where the distinction bites: Postgres' `?`
+    operator returns NULL, not false, on a SQL-NULL jsonb, so a naive
+    `NOT (meta ? 'imported')` drops every meta-less legacy row out of the
+    NUMERATOR while leaving it in the denominator — 33.3% instead of 50.0%.
+    """
+    summary_meta = {"audit_summary": {"text": "auto-approved", "generated_at": "2026-01-01"}}
+    await _seed_statuses(
+        realdb,
+        [
+            (InvoiceStatus.done, True),  # meta IS NULL
+            (InvoiceStatus.done, True, summary_meta),  # meta present, no marker
+            (InvoiceStatus.rejected, False),  # meta IS NULL
+            (InvoiceStatus.rejected, False, summary_meta),  # meta present, no marker
+        ],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["touchless_rate"] == 50.0
 
 
 # ---------------------------------------------------------------------------

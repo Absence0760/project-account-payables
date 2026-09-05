@@ -2,6 +2,9 @@
 	import type {
 		Expense,
 		ExpenseStatus,
+		ExpenseReportStatus,
+		ExpensePreapprovalStatus,
+		ReconciliationStatus,
 		ExpenseReport,
 		ExpenseReportSummary,
 		ExpensePolicy,
@@ -14,11 +17,15 @@
 	import {
 		EXPENSE_FILTER_STATUSES,
 		EXPENSE_STATUS_LABELS,
+		EXPENSE_STATUS_TONES,
 		EXPENSE_REPORT_STATUS_LABELS,
+		EXPENSE_REPORT_STATUS_TONES,
 		EXPENSE_PREAPPROVAL_STATUSES,
 		EXPENSE_PREAPPROVAL_STATUS_LABELS,
+		EXPENSE_PREAPPROVAL_STATUS_TONES,
 		RECONCILIATION_STATUSES,
-		RECONCILIATION_STATUS_LABELS
+		RECONCILIATION_STATUS_LABELS,
+		RECONCILIATION_STATUS_TONES
 	} from '$lib/types/expense';
 	import { expenseStore } from '$lib/stores/expenses.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -55,6 +62,7 @@
 		type ExpenseListParams,
 		type GlAccountOption
 	} from '$lib/api/expenses';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import PolicyModal from '$lib/components/modals/PolicyModal.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -79,6 +87,7 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
 	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
@@ -803,7 +812,10 @@
 	let showNewPreapproval = $state(false);
 	let paBusy = $state(false);
 	let paTitle = $state('');
-	let paAmount = $state<number | null>(null);
+	// Raw decimal text to the wire: `schemas/expense.py::ExpensePreapprovalBase`
+	// declares `estimated_amount` a `Decimal`, and `json.loads` collapses a
+	// fractional JSON number to a float before pydantic can intervene.
+	let paAmount = $state<string | null>(null);
 	let paCategory = $state('');
 	let paJustification = $state('');
 	let paRejectArmedId = $state<string | null>(null);
@@ -846,19 +858,18 @@
 		}
 	});
 
-	function paNumOrNull(v: unknown): number | null {
-		if (v === '' || v === null || v === undefined) return null;
-		const n = parseFloat(String(v));
-		return Number.isFinite(n) ? n : null;
-	}
-
 	async function handleNewPreapproval() {
 		if (!paTitle.trim() || paAmount == null) return;
+		const exactAmount = normalizeMoneyInput(paAmount);
+		if (exactAmount === null) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		paBusy = true;
 		try {
 			await createPreapproval({
 				title: paTitle.trim(),
-				estimated_amount: paAmount,
+				estimated_amount: exactAmount,
 				currency: orgCurrency.currency,
 				category: paCategory.trim() || null,
 				justification: paJustification.trim() || null
@@ -1199,10 +1210,20 @@
 						<td class="muted">{glLabel(exp.gl_account_id)}</td>
 						<td class="right mono"><Money amount={exp.amount} currency={exp.currency} /></td>
 						<td>
-							<span class="badge {exp.status}">{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</span>
-							{#if exp.policy_violations && exp.policy_violations.length}
-								<span class="badge violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</span>
-							{/if}
+							<!-- The 6px that used to be the violation pill's own
+							     `margin-left` lives on this wrapper: `<Badge>` owns colour
+							     and metrics, the caller owns placement. `cursor: help` is
+							     inherited down onto the pill from `.violation-chip`, which
+							     is also the caller's to own — the tooltip is the point of
+							     that chip. -->
+							<span class="status-cell">
+								<Badge tone={EXPENSE_STATUS_TONES[exp.status as ExpenseStatus]} variant={exp.status}>{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</Badge>
+								{#if exp.policy_violations && exp.policy_violations.length}
+									<span class="violation-chip">
+										<Badge tone="danger" variant="violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</Badge>
+									</span>
+								{/if}
+							</span>
 						</td>
 						<td class="actions">
 							{#if canCreate}
@@ -1243,7 +1264,7 @@
 					<button class="btn-back" onclick={closeReport}>{m('expenses.reports.back')}</button>
 					<div class="report-title-block">
 						<h2>{activeReport.report_number}</h2>
-						<span class="badge {activeReport.status}">{EXPENSE_REPORT_STATUS_LABELS[activeReport.status as keyof typeof EXPENSE_REPORT_STATUS_LABELS] ?? activeReport.status}</span>
+						<Badge tone={EXPENSE_REPORT_STATUS_TONES[activeReport.status as ExpenseReportStatus]} variant={activeReport.status}>{EXPENSE_REPORT_STATUS_LABELS[activeReport.status as keyof typeof EXPENSE_REPORT_STATUS_LABELS] ?? activeReport.status}</Badge>
 					</div>
 					<div class="report-detail-actions">
 						<button class="btn-secondary" onclick={exportReportCsv}>{m('expenses.reports.exportCsv')}</button>
@@ -1336,10 +1357,14 @@
 								<td>{exp.category ?? '—'}</td>
 								<td class="right mono"><Money amount={exp.amount} currency={exp.currency} /></td>
 								<td>
-									<span class="badge {exp.status}">{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</span>
-									{#if exp.policy_violations && exp.policy_violations.length}
-										<span class="badge violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</span>
-									{/if}
+									<span class="status-cell">
+										<Badge tone={EXPENSE_STATUS_TONES[exp.status as ExpenseStatus]} variant={exp.status}>{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</Badge>
+										{#if exp.policy_violations && exp.policy_violations.length}
+											<span class="violation-chip">
+												<Badge tone="danger" variant="violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</Badge>
+											</span>
+										{/if}
+									</span>
 								</td>
 								<td class="actions">
 									{#if canCreate && activeReport?.status === 'draft'}
@@ -1371,7 +1396,7 @@
 								</RowLink>
 							</td>
 							<td>{r.title ?? '—'}</td>
-							<td><span class="badge {r.status}">{EXPENSE_REPORT_STATUS_LABELS[r.status as keyof typeof EXPENSE_REPORT_STATUS_LABELS] ?? r.status}</span></td>
+							<td><Badge tone={EXPENSE_REPORT_STATUS_TONES[r.status as ExpenseReportStatus]} variant={r.status}>{EXPENSE_REPORT_STATUS_LABELS[r.status as keyof typeof EXPENSE_REPORT_STATUS_LABELS] ?? r.status}</Badge></td>
 							<td class="right mono"><Money amount={r.total_amount} currency={r.currency} /></td>
 						</tr>
 					{/each}
@@ -1427,7 +1452,13 @@
 						<td class="right mono">{p.category_limit != null ? formatMoney(p.category_limit, { currency: policyCurrency(p) }) : '—'}</td>
 						<td class="right mono">{p.requires_receipt_above != null ? formatMoney(p.requires_receipt_above, { currency: policyCurrency(p) }) : '—'}</td>
 						<td class="right mono">{p.requires_preapproval_above != null ? formatMoney(p.requires_preapproval_above, { currency: policyCurrency(p) }) : '—'}</td>
-						<td><span class="badge {p.active ? 'approved' : 'cancelled'}">{p.active ? m('expenses.policies.active') : m('expenses.policies.inactive')}</span></td>
+						<!-- The variant was `approved` / `cancelled` because those were the
+						     rules that happened to carry the right colours. A policy is
+						     neither approved nor cancelled — it is on or off — and now that
+						     the tone carries the colour, the class is free to say so
+						     (decisions.md §47: a variant is a selector hook, never a
+						     colour). No spec selects on either name. -->
+						<td><Badge tone={p.active ? 'success' : 'neutral'} variant={p.active ? 'active' : 'inactive'}>{p.active ? m('expenses.policies.active') : m('expenses.policies.inactive')}</Badge></td>
 						<td class="actions">
 							{#if canManagePolicies}
 								<RowAction
@@ -1470,7 +1501,7 @@
 						<td>{pa.title}</td>
 						<td>{pa.category ?? '—'}</td>
 						<td class="right mono"><Money amount={pa.estimated_amount} currency={pa.currency} /></td>
-						<td><span class="badge {pa.status}">{EXPENSE_PREAPPROVAL_STATUS_LABELS[pa.status as keyof typeof EXPENSE_PREAPPROVAL_STATUS_LABELS] ?? pa.status}</span></td>
+						<td><Badge tone={EXPENSE_PREAPPROVAL_STATUS_TONES[pa.status as ExpensePreapprovalStatus]} variant={pa.status}>{EXPENSE_PREAPPROVAL_STATUS_LABELS[pa.status as keyof typeof EXPENSE_PREAPPROVAL_STATUS_LABELS] ?? pa.status}</Badge></td>
 						<td class="actions">
 							{#if canDecidePreapproval(pa)}
 								<RowAction variant="success" onclick={() => approvePa(pa)}>{m('expenses.preapprovals.approve')}</RowAction>
@@ -1521,17 +1552,26 @@
 						<td>{txn.merchant ?? '—'}</td>
 						<td class="muted">
 							{#if txn.virtual_card_id}
-								<span class="badge approved">{m('expenses.cards.virtual')}</span>
+								<!-- A marker ("this charge came off a virtual card"), not a
+								     status: `accent`, the same tone `/payments` gives the
+								     virtual-card method pill. It read `approved` green only
+								     because that was the rule with the colour someone wanted. -->
+								<Badge tone="accent" variant="virtual-card">{m('expenses.cards.virtual')}</Badge>
 							{/if}
 							{txn.card_last_four ? `•••• ${txn.card_last_four}` : '—'}
 						</td>
 						<td class="right mono"><Money amount={txn.amount} currency={txn.currency} /></td>
 						<td>
-							<span class="badge {txn.reconciliation_status}">
+							<Badge
+								tone={RECONCILIATION_STATUS_TONES[
+									txn.reconciliation_status as ReconciliationStatus
+								]}
+								variant={txn.reconciliation_status}
+							>
 								{RECONCILIATION_STATUS_LABELS[
 									txn.reconciliation_status as keyof typeof RECONCILIATION_STATUS_LABELS
 								] ?? txn.reconciliation_status}
-							</span>
+							</Badge>
 						</td>
 						<!-- All four bind `cardBusy`. The three mutating handlers already
 						     set it, but nothing read it here, and the row's own `{#if}`
@@ -1668,7 +1708,7 @@
 						step="0.01"
 						min="0"
 						value={paAmount ?? ''}
-						oninput={(e) => (paAmount = paNumOrNull(e.currentTarget.value))}
+						oninput={(e) => (paAmount = e.currentTarget.value.trim() || null)}
 					/>
 				</label>
 				<label>
@@ -1770,29 +1810,30 @@
 		color: var(--accent);
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
+	/* Every pill on this page is `<Badge>`. The tone per status lives beside the
+	   label map in `$lib/types/expense` — four of them, one per vocabulary this
+	   page badges (expense, report, pre-approval, card reconciliation) — so the
+	   list page, the report-detail tables and `ExpenseModal` can't tint the same
+	   status two different shades, which is what they were doing (.12 alpha
+	   here, .15 in the modal). What stays here is placement and the tooltip
+	   affordance. */
+
+	/* Status pill + the optional policy-violation pill beside it. The 6px was
+	   the violation pill's own `margin-left`; `flex-wrap` keeps the pair able to
+	   break at a narrow viewport, which two inline runs did for free and a flex
+	   row must be told to do (SC 1.4.10). */
+	.status-cell {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
 	}
-	.badge.draft { background: rgba(99, 140, 255, 0.12); color: #638cff; }
-	.badge.submitted { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.pending_approval { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.approved { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: var(--danger); }
-	.badge.reimbursed { background: rgba(140, 100, 240, 0.12); color: #a585f5; }
-	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
-	.badge.pending { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	/* Card reconciliation statuses (WF4). */
-	.badge.matched { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
-	.badge.unmatched { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
-	.badge.ignored { background: var(--bg); color: var(--text-muted); }
-	.badge.violation {
-		margin-left: 6px;
-		background: rgba(224, 64, 64, 0.12);
-		color: var(--danger);
+
+	/* `cursor` is inherited, so the caller can own the affordance without
+	   `Badge` growing a prop for it. The pill's whole job is its `title`
+	   tooltip, which is what the help cursor advertises. */
+	.violation-chip {
+		display: inline-flex;
 		cursor: help;
 	}
 

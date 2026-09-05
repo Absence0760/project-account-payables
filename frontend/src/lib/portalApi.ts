@@ -353,3 +353,45 @@ export function updatePortalNotificationPreferences(
 		update
 	);
 }
+
+// --- Home summary -------------------------------------------------------------
+
+/** One currency's slice of a portal money rollup.
+ *
+ *  `total` is an EXACT decimal string from the backend — never parsed into a
+ *  number, never added to another currency's total. Hand it to `<Money>`. */
+export interface PortalCurrencyTotal {
+	currency: string;
+	total: string;
+	count: number;
+}
+
+/** The at-a-glance figures the portal home renders.
+ *
+ *  Whole-set and vendor-scoped: the counts describe every invoice this supplier
+ *  has, not the 20 rows the list page happens to have loaded. Buckets mirror
+ *  the collapsed phases in `$lib/types/portalStatus` — a supplier never sees a
+ *  raw workflow status. */
+export interface PortalSummary {
+	invoices_total: number;
+	/** Rejected — the only bucket the supplier can move (resubmit). */
+	invoices_action_required: number;
+	/** Sitting with the customer. */
+	invoices_in_progress: number;
+	invoices_paid: number;
+	invoices_completed: number;
+	/** Value still owed, per currency. Deliberately not a "paid" total — that
+	 *  figure belongs to the payments page. */
+	outstanding_by_currency: PortalCurrencyTotal[];
+	open_discount_offers: number;
+	pending_change: {
+		id: string;
+		change_type: string;
+		status: string;
+		created_at: string;
+	} | null;
+}
+
+export function getPortalSummary(): Promise<PortalSummary> {
+	return portalApi.get<PortalSummary>('/api/portal/summary');
+}

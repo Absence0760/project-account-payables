@@ -7,6 +7,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
@@ -66,6 +67,22 @@
 	let loadingMore = $state(false);
 	let search = $state('');
 	let statusFilter = $state<'all' | 'open' | 'closed' | 'cancelled'>('all');
+	/**
+	 * Badge tone per PO status.
+	 *
+	 * `cancelled` keeps the tinted grey (`muted`) it had, distinct from the
+	 * flat `neutral` an unrecognised status falls back to — the old CSS drew
+	 * exactly that line (a `rgba(150,150,150,.15)` tint for cancelled, a bare
+	 * `--bg` fill for everything else), and it is worth keeping: a cancelled PO
+	 * is a decision somebody made, an unknown status is one nobody has told us
+	 * about. `PurchaseOrder.status` is a free-form column, hence the fallback.
+	 */
+	const STATUS_TONES: Record<string, BadgeTone> = {
+		open: 'accent',
+		closed: 'success',
+		cancelled: 'muted'
+	};
+
 	let syncing = $state(false);
 
 	let detailId = $state<string | null>(null);
@@ -323,7 +340,7 @@
 					</td>
 					<td>{po.vendor_name ?? '—'}</td>
 					<td class="right mono">{formatCurrency(po.total)}</td>
-					<td><span class="badge {po.status}">{po.status}</span></td>
+					<td><Badge tone={STATUS_TONES[po.status] ?? 'neutral'} variant={po.status}>{po.status}</Badge></td>
 					<td class="muted">{po.line_items.length}</td>
 					<td class="muted">{formatDate(po.created_at)}</td>
 				</tr>
@@ -356,7 +373,7 @@
 				<h2>{m('purchaseOrders.modal.title')}</h2>
 				{#if detail}
 					<span class="po-number-badge">{detail.po_number}</span>
-					<span class="badge {detail.status}">{detail.status}</span>
+					<Badge tone={STATUS_TONES[detail.status] ?? 'neutral'} variant={detail.status}>{detail.status}</Badge>
 				{/if}
 			</div>
 			<button class="close-btn" onclick={() => (detailId = null)} aria-label={m('purchaseOrders.modal.close')}>&times;</button>
@@ -443,28 +460,6 @@
 	.btn-outline:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
-	}
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-		text-transform: capitalize;
-		background: var(--bg);
-		color: var(--text-muted);
-	}
-	.badge.open {
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
-	}
-	.badge.closed {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
-	}
-	.badge.cancelled {
-		background: rgba(150, 150, 150, 0.15);
-		color: #999;
 	}
 
 	/* Detail modal — custom header + body + nested line tables. */

@@ -39,7 +39,7 @@ test.describe('screening review queue — payments-blocked KPI', () => {
 			await route.fulfill({
 				status: 200,
 				contentType: 'application/json',
-				body: JSON.stringify([QUEUE_ROW])
+				body: JSON.stringify({ items: [QUEUE_ROW], total: 1, page: 1, page_size: 20 })
 			});
 		});
 		// Three blocked vendors tenant-wide; none of them is in the queue above.
@@ -50,7 +50,8 @@ test.describe('screening review queue — payments-blocked KPI', () => {
 				body: JSON.stringify({
 					total: 40,
 					by_status: { active: 39, unverified: 1 },
-					payments_blocked: 3
+					payments_blocked: 3,
+					by_screening_status: { clear: 38, review: 1, match: 1 }
 				})
 			});
 		});
@@ -59,10 +60,14 @@ test.describe('screening review queue — payments-blocked KPI', () => {
 
 		// The queue-derived tally would be 0 — every mocked row is unblocked.
 		await expect(blockedKpi(page)).toHaveText('3');
-		// The sibling KPIs still describe the queue itself.
+		// The sibling KPIs are whole-set too now: `by_screening_status`, not a
+		// filter over the one row this queue page happens to hold.
 		await expect(page.locator('.kpi', { hasText: 'Needs review' }).locator('.kpi-value')).toHaveText(
 			'1'
 		);
+		await expect(
+			page.locator('.kpi', { hasText: 'Sanctions matches' }).locator('.kpi-value')
+		).toHaveText('1');
 	});
 
 	test('says so when the tally is unavailable rather than showing a wrong number', async ({
@@ -72,7 +77,7 @@ test.describe('screening review queue — payments-blocked KPI', () => {
 			await route.fulfill({
 				status: 200,
 				contentType: 'application/json',
-				body: JSON.stringify([QUEUE_ROW])
+				body: JSON.stringify({ items: [QUEUE_ROW], total: 1, page: 1, page_size: 20 })
 			});
 		});
 		// `ap_clerk` reaches this queue but not the vendor list (and so not its
@@ -91,6 +96,14 @@ test.describe('screening review queue — payments-blocked KPI', () => {
 		await expect(blockedKpi(page)).toHaveText('—');
 		await expect(page.locator('.kpi', { hasText: 'Payments blocked' })).toContainText(
 			'Count unavailable'
+		);
+		// All three KPIs share that fate — a clerk-side derivation over the
+		// loaded PAGE would be a page-scoped undercount, not a fallback.
+		await expect(
+			page.locator('.kpi', { hasText: 'Sanctions matches' }).locator('.kpi-value')
+		).toHaveText('—');
+		await expect(page.locator('.kpi', { hasText: 'Needs review' }).locator('.kpi-value')).toHaveText(
+			'—'
 		);
 	});
 });

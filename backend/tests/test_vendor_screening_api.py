@@ -136,7 +136,7 @@ async def test_review_queue_includes_matched_vendor(realdb):
 
         resp = await client.get("/api/vendors/screening/review-queue")
     assert resp.status_code == 200, resp.text
-    queue = resp.json()
+    queue = resp.json()["items"]
     mine = [it for it in queue if it["vendor_id"] == vendor_id]
     assert mine, "the matched vendor should appear in the review queue"
     assert mine[0]["screening_status"] == "match"
@@ -165,7 +165,7 @@ async def test_adverse_media_hit_reaches_the_trail_queue_and_risk_factors(realdb
         assert history[0]["categories"] == ["adverse_media"]
         assert history[0]["adverse_media"] is True
 
-        queue = (await client.get("/api/vendors/screening/review-queue")).json()
+        queue = (await client.get("/api/vendors/screening/review-queue")).json()["items"]
         mine = [it for it in queue if it["vendor_id"] == vendor_id]
         assert mine, "an adverse-media vendor belongs in the review queue"
         assert mine[0]["adverse_media"] is True
@@ -202,7 +202,8 @@ async def test_review_queue_literal_route_not_shadowed(realdb):
     async with realdb.client(key=TENANT, role="admin") as client:
         resp = await client.get("/api/vendors/screening/review-queue")
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    # The canonical paginated envelope, not the `/{vendor_id}` route's object.
+    assert isinstance(resp.json()["items"], list)
 
 
 # ---------------------------------------------------------------------------

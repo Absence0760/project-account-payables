@@ -31,15 +31,17 @@ from app.models.user import User
 from app.schemas.budget import (
     BudgetCheckResponse,
     BudgetCreate,
+    BudgetCurrencyRollupEntry,
     BudgetCurrencyTotal,
     BudgetListResponse,
     BudgetResponse,
+    BudgetRollupResponse,
     BudgetSpendResponse,
     BudgetSummaryResponse,
     BudgetUpdate,
 )
 from app.services.audit_dispatch import dispatch_audit
-from app.services.budget_service import compute_budget_spend
+from app.services.budget_service import compute_budget_rollup, compute_budget_spend
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -260,6 +262,76 @@ async def budget_summary(
 
 
 # ---------------------------------------------------------------------------
+# Org-wide budget-vs-actual rollup — literal `rollup` segment, same ordering
+# rule as `summary` / `check` above (declared BEFORE /{budget_id}).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/rollup", response_model=BudgetRollupResponse)
+async def budget_rollup(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    dimension: str | None = Query(None),
+    period: str | None = Query(None),
+    search: str | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Org-wide allocated vs committed vs actual, grouped by currency.
+
+    The CFO counterpart of the per-budget ``GET /{id}/spend``: only that
+    endpoint and the standalone ``/budgets`` page existed, so a finance leader
+    had no consolidated view and had to open budgets one at a time.
+
+    Compute-on-read, like everything else in this router — ``compute_budget_
+    rollup`` folds ``compute_budget_spends`` over the matching budgets; there is
+    no stored running total to drift. Same ``dimension`` / ``period`` /
+    ``search`` filters as the list, through the SAME ``_budget_list_filters``,
+    and the same ``X-Entity-ID`` scope, so the rollup and the table can never
+    describe different sets.
+
+    Whole-set by design (a paged rollup presented as an org-wide total is the
+    dishonesty this endpoint exists to avoid), so the cost has to scale with
+    something other than the budget count: each spend leg runs as ONE grouped
+    query keyed on ``Budget.id`` (the invoice leg, one per distinct dimension).
+    ``GET /{id}/spend`` reads that same function with a single-budget filter,
+    which is what keeps its figures — and its ``excluded_row_count`` — provably
+    identical to this endpoint's rather than merely intended to be.
+
+    Money is grouped BY CURRENCY and serialised as exact decimal strings —
+    never added across currencies, never FX-converted on a read. Anything the
+    spend legs had to refuse rides ``excluded_row_count`` so the reader is told
+    the figures are a floor rather than left to assume they are complete.
+    """
+    base = _budget_list_filters(
+        apply_entity_scope(select(Budget), Budget, entity_id),
+        dimension=dimension,
+        period=period,
+        search=search,
+    )
+    budgets = list((await db.execute(base.order_by(Budget.created_at.desc()))).scalars().all())
+    rollup = await compute_budget_rollup(db, budgets)
+    return BudgetRollupResponse(
+        budget_count=rollup.budget_count,
+        by_currency=[
+            BudgetCurrencyRollupEntry(
+                currency=c.currency,
+                budget_count=c.budget_count,
+                allocated=str(c.allocated),
+                committed=str(c.committed),
+                actual=str(c.actual),
+                remaining=str(c.remaining),
+                utilization_pct=(str(c.utilization_pct) if c.utilization_pct is not None else None),
+                over_budget_count=c.over_budget_count,
+                excluded_row_count=c.excluded_row_count,
+            )
+            for c in rollup.by_currency
+        ],
+        excluded_row_count=rollup.excluded_row_count,
+        insufficient_data=rollup.insufficient_data,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Spend check — literal `check` segment declared BEFORE /{budget_id} so it
 # isn't captured as a {budget_id} UUID (mirrors the expenses /receipt ordering).
 # ---------------------------------------------------------------------------
@@ -331,6 +403,7 @@ async def get_budget_spend(
         actual=float(spend.actual),
         remaining=float(spend.remaining),
         utilization_pct=float(spend.utilization_pct),
+        excluded_row_count=spend.excluded_row_count,
     )
 
 

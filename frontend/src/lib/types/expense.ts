@@ -3,7 +3,8 @@
 // `ExpenseResponse` / `ExpenseReportResponse`). Money fields arrive as
 // numbers (backend `float(...)`); date/datetime fields are ISO strings.
 
-import type { MoneyString } from '$lib/utils/money';
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type ExpenseStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'reimbursed';
 
@@ -60,6 +61,30 @@ export const EXPENSE_STATUS_LABELS: Record<ExpenseStatus, string> = {
 	reimbursed: 'Reimbursed'
 };
 
+/**
+ * Badge tone per expense status. Hoisted out of `ExpenseModal`, which is where
+ * it was first written and where it left a note saying it belonged here once
+ * the list page converted. It now has three callers — the modal, the Expenses
+ * table and the report-detail line table — which is exactly the shape
+ * `frontend/CLAUDE.md` § Badge asks for.
+ *
+ * Total record: a status added to `ExpenseStatus` is a compile error here
+ * rather than an untinted pill.
+ *
+ * `reimbursed` takes the `erp` tone — the measured purple the list page's rule
+ * spelled by hand, doing the job that tone does elsewhere: handed off
+ * downstream. Green would collapse it into `approved`, and "someone approved
+ * this" and "the money went back" are different answers to the only question
+ * an employee asks of this pill.
+ */
+export const EXPENSE_STATUS_TONES: Record<ExpenseStatus, BadgeTone> = {
+	draft: 'accent',
+	submitted: 'warning',
+	approved: 'success',
+	rejected: 'danger',
+	reimbursed: 'erp'
+};
+
 export type ExpensePaymentMethod = 'out_of_pocket' | 'corporate_card' | 'virtual_card';
 
 export const EXPENSE_PAYMENT_METHODS: ExpensePaymentMethod[] = [
@@ -103,6 +128,32 @@ export const EXPENSE_REPORT_STATUS_LABELS: Record<ExpenseReportStatus, string> =
 	cancelled: 'Cancelled'
 };
 
+/**
+ * Badge tone per expense-REPORT status. Two callers on the same page — the
+ * reports table and the report-detail header, which the e2e suite reads as
+ * `.report-title-block .badge`.
+ *
+ * `submitted` and `pending_approval` share `warning` because the report is
+ * waiting on someone in both, which is what the pill is for. They keep their
+ * own labels (and their own filter chips), so the states stay distinguishable
+ * in text — SC 1.4.1 — while the colour answers the only scannable question.
+ *
+ * `cancelled` is `neutral`, not a grey tint: a withdrawn report is the absence
+ * of a signal rather than a weak one. That is the same call `/payments` makes
+ * for a `draft` run, and the opposite of the one it makes for a `voided`
+ * payment — money that moved and came back is an event; a report nobody
+ * pursued is not.
+ */
+export const EXPENSE_REPORT_STATUS_TONES: Record<ExpenseReportStatus, BadgeTone> = {
+	draft: 'accent',
+	submitted: 'warning',
+	pending_approval: 'warning',
+	approved: 'success',
+	rejected: 'danger',
+	reimbursed: 'erp',
+	cancelled: 'neutral'
+};
+
 // A single policy-engine finding stamped onto `Expense.policy_violations` by the
 // WF3 backend engine (`evaluate_expense`). `code` is a stable machine key
 // (`category_limit`, `receipt_required`, `preapproval_required`,
@@ -140,7 +191,7 @@ export interface Expense {
 	merchant: string | null;
 	category: string | null;
 	description: string | null;
-	amount: number;
+	amount: MoneyAmount;
 	currency: string;
 	// Rate-locked expression of `amount` in the owning report's currency
 	// (issue #157). Exact decimal STRINGS — never parse into a float for
@@ -202,7 +253,7 @@ export interface ExpenseReport {
 	submitted_at: string | null;
 	approved_at: string | null;
 	approved_by: string | null;
-	total_amount: number;
+	total_amount: MoneyAmount;
 	// Exact `total_amount` (in `currency`) as a decimal string.
 	total_amount_exact: string;
 	currency: string;
@@ -230,7 +281,7 @@ export interface ExpenseReportListResponse {
 export interface ExpenseSummaryBucket {
 	category?: string | null;
 	status?: string | null;
-	total: number;
+	total: MoneyAmount;
 	// Exact `total` as a decimal string.
 	total_exact: string;
 	// Lines with no usable rate lock — EXCLUDED from `total`.
@@ -250,7 +301,7 @@ export interface ExpenseCurrencyBucket {
 }
 
 export interface ExpenseReportSummary {
-	total: number;
+	total: MoneyAmount;
 	// Exact `total`, denominated in `currency` — the report's own currency.
 	// Every figure here is converted at each line's LOCKED rate, never a naive
 	// cross-currency sum (issue #157).
@@ -279,7 +330,8 @@ export interface ExpenseCreate {
 	merchant: string | null;
 	category: string | null;
 	description: string | null;
-	amount: number;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	amount: MoneyString;
 	currency: string;
 	gl_account_id: string | null;
 	payment_method: string;
@@ -313,12 +365,15 @@ export interface ExpensePolicy {
 	 * time) — the unit a bare threshold number has always implicitly had.
 	 */
 	threshold_currency: string | null;
-	per_diem_amount: number | null;
+	per_diem_amount: MoneyAmount;
 	per_diem_currency: string | null;
+	// A money-PER-MILE rate, not an amount: the policy engine flags a claim
+	// that isn't `miles x rate`, so this is a factor in that product rather
+	// than a figure the UI renders as currency.
 	mileage_rate: number | null;
-	category_limit: number | null;
-	requires_preapproval_above: number | null;
-	requires_receipt_above: number | null;
+	category_limit: MoneyAmount;
+	requires_preapproval_above: MoneyAmount;
+	requires_receipt_above: MoneyAmount;
 	rules: unknown | null;
 	created_at: string;
 	updated_at: string;
@@ -329,10 +384,11 @@ export interface ExpensePolicyCreate {
 	active: boolean;
 	category: string | null;
 	threshold_currency: string | null;
-	category_limit: number | null;
-	requires_receipt_above: number | null;
-	requires_preapproval_above: number | null;
-	per_diem_amount: number | null;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	category_limit: MoneyString | null;
+	requires_receipt_above: MoneyString | null;
+	requires_preapproval_above: MoneyString | null;
+	per_diem_amount: MoneyString | null;
 	mileage_rate: number | null;
 }
 
@@ -352,11 +408,18 @@ export const EXPENSE_PREAPPROVAL_STATUS_LABELS: Record<ExpensePreapprovalStatus,
 	rejected: 'Rejected'
 };
 
+/** Badge tone per pre-approval status — a decision pending, taken, or refused. */
+export const EXPENSE_PREAPPROVAL_STATUS_TONES: Record<ExpensePreapprovalStatus, BadgeTone> = {
+	pending: 'warning',
+	approved: 'success',
+	rejected: 'danger'
+};
+
 export interface ExpensePreapproval {
 	id: string;
 	requester_user_id: string;
 	title: string;
-	estimated_amount: number;
+	estimated_amount: MoneyAmount;
 	currency: string;
 	category: string | null;
 	justification: string | null;
@@ -370,7 +433,8 @@ export interface ExpensePreapproval {
 
 export interface ExpensePreapprovalCreate {
 	title: string;
-	estimated_amount: number;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	estimated_amount: MoneyString;
 	currency: string;
 	category: string | null;
 	justification: string | null;
@@ -392,6 +456,21 @@ export const RECONCILIATION_STATUS_LABELS: Record<ReconciliationStatus, string> 
 	ignored: 'Ignored'
 };
 
+/**
+ * Badge tone per card-transaction reconciliation status.
+ *
+ * `unmatched` is `warning`, not `danger`: a charge nobody has coded yet is
+ * work outstanding, not a failure — and this table has no failure state to
+ * confuse it with. `ignored` is `neutral` (flat), the deliberate "no signal"
+ * chip: someone has decided this line needs nothing, which is the absence of a
+ * signal rather than a weak one.
+ */
+export const RECONCILIATION_STATUS_TONES: Record<ReconciliationStatus, BadgeTone> = {
+	unmatched: 'warning',
+	matched: 'success',
+	ignored: 'neutral'
+};
+
 // Mirrors the backend `CorporateCardTransactionResponse`. Money fields arrive as
 // numbers (backend `float(...)` on the `Numeric(15,2)` column); date fields are
 // ISO date strings. PII: only `card_last_four` is ever surfaced — never a PAN.
@@ -403,7 +482,7 @@ export interface CorporateCardTransaction {
 	txn_date: string;
 	posted_date: string | null;
 	merchant: string | null;
-	amount: number;
+	amount: MoneyAmount;
 	currency: string;
 	external_txn_id: string | null;
 	matched_expense_id: string | null;

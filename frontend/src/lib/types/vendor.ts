@@ -17,7 +17,15 @@ export interface VendorMailingAddress {
 export interface VendorBankDetails {
 	counterparty_id: string | null;
 	account_last4: string | null;
+	// Last 4 of the ACH / domestic routing number (`bank_details.routing_number`
+	// — the original generic key, which every stored row already means ACH by).
 	routing_last4: string | null;
+	// Last 4 of the SEPARATE Fedwire ABA larger US banks publish for incoming
+	// wires (`bank_details.wire_routing_number`). Optional: when it is absent
+	// the wire rail falls back to the ACH number, which is what a bank with a
+	// single ABA means. Backend: `resolve_routing_number` in
+	// `services/payment_adapters/base.py`.
+	wire_routing_last4?: string | null;
 	bank_name: string | null;
 	// ISO 3166-1 alpha-2 destination-bank country. Drives the routing-number
 	// vs. sort-code label/validation switch on the AP bank-change modal (a
@@ -110,6 +118,19 @@ export interface VendorStatusCounts {
 	total: number;
 	by_status: Record<string, number>;
 	payments_blocked: number;
+	// Whole-set tally of `Vendor.screening_status`, on the same aggregate pass
+	// as `by_status` / `payments_blocked`. Drives the `/vendors/screening` KPI
+	// row: those figures used to be derived by filtering the LOADED review
+	// queue, which stopped being whole-set the moment that queue paginated.
+	by_screening_status: Record<string, number>;
+}
+
+// `GET /api/vendors/screening/review-queue` — the canonical paginated envelope.
+export interface ScreeningReviewQueueResponse {
+	items: ScreeningReviewItem[];
+	total: number;
+	page: number;
+	page_size: number;
 }
 
 // Vendor risk detail (GET /risk, POST /risk/recompute).

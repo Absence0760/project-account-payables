@@ -11,12 +11,45 @@ import logging
 import queue
 import threading
 import uuid
+from dataclasses import asdict, dataclass
 
 import boto3
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ExtractionOptions:
+    """Per-job extraction modifiers, carried across BOTH dispatch modes.
+
+    Every field defaults to ``False`` — the unchanged ingest behaviour — so an
+    older in-flight job (a local queue tuple that predates this field, an SQS
+    message written by an older deploy) decodes to exactly what it used to do.
+    New options belong here rather than as extra positional tuple slots, so the
+    queue tuple's shape stops changing.
+
+    ``skip_vendor_match`` / ``suppress_auto_approve`` are documented on
+    ``services.extraction.run_extraction``; both exist for RE-extraction of an
+    invoice that was already triaged once (the supplier-portal resubmit).
+    """
+
+    skip_vendor_match: bool = False
+    suppress_auto_approve: bool = False
+
+    @classmethod
+    def from_payload(cls, payload: dict | None) -> "ExtractionOptions":
+        """Decode the SQS message body. An absent key is ``False``."""
+        data = payload or {}
+        return cls(
+            skip_vendor_match=bool(data.get("skip_vendor_match", False)),
+            suppress_auto_approve=bool(data.get("suppress_auto_approve", False)),
+        )
+
+    def as_payload(self) -> dict:
+        return asdict(self)
+
 
 # ---------------------------------------------------------------------------
 # Local extraction queue — a small pool of worker threads processes jobs
@@ -25,7 +58,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _WORKER_COUNT = 3
-_job_queue: queue.Queue[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = queue.Queue()
+# `(invoice_id, org_id, actor_id, options)`. The 4th slot is optional on read —
+# see `_extraction_worker` — so a job already sitting in the queue when this
+# module is reloaded (dev auto-reload) still drains instead of raising.
+_job_queue: queue.Queue[tuple] = queue.Queue()
 _worker_threads: list[threading.Thread] = []
 _worker_lock = threading.Lock()
 
@@ -52,16 +88,26 @@ def _extraction_worker() -> None:
     logger.info("[extraction] Worker thread started")
     while True:
         try:
-            invoice_id, org_id, actor_id = _job_queue.get(timeout=120)
+            job = _job_queue.get(timeout=120)
         except queue.Empty:
             logger.info("[extraction] Worker idle — exiting")
             break  # idle timeout — exit
+
+        # Tolerant unpack: a job enqueued before the options slot existed is a
+        # 3-tuple, and must not crash the worker (which would strand the
+        # invoice in `pending` with no `failed` transition).
+        invoice_id, org_id, actor_id = job[0], job[1], job[2]
+        options = (
+            job[3]
+            if len(job) > 3 and isinstance(job[3], ExtractionOptions)
+            else (ExtractionOptions())
+        )
 
         logger.info("[extraction] Worker picked up job for invoice %s", invoice_id)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(_run_local(invoice_id, org_id, actor_id))
+            loop.run_until_complete(_run_local(invoice_id, org_id, actor_id, options))
         except Exception as exc:
             # Class name only — a pipeline exception can carry extracted PII.
             logger.error(
@@ -92,8 +138,20 @@ async def dispatch_extraction(
     invoice_id: uuid.UUID,
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
+    *,
+    skip_vendor_match: bool = False,
+    suppress_auto_approve: bool = False,
 ) -> None:
-    """Trigger extraction via the configured mode (local or lambda)."""
+    """Trigger extraction via the configured mode (local or lambda).
+
+    The two keyword flags are carried unchanged to ``run_extraction`` in BOTH
+    modes — through the local queue tuple and through the SQS message body —
+    and both default to today's behaviour. See ``ExtractionOptions``.
+    """
+    options = ExtractionOptions(
+        skip_vendor_match=skip_vendor_match,
+        suppress_auto_approve=suppress_auto_approve,
+    )
     if settings.extraction_mode == "lambda":
         # boto3 is synchronous: building the client resolves the credential
         # chain (which can reach IMDS) and `send_message` is a full HTTPS round
@@ -102,9 +160,9 @@ async def dispatch_extraction(
         # inline occupies the event loop for that whole window and every other
         # in-flight request on the worker waits behind it. Same offload
         # `services/storage` and the audit-shipping adapters already use.
-        await asyncio.to_thread(_send_to_sqs, invoice_id, org_id, actor_id)
+        await asyncio.to_thread(_send_to_sqs, invoice_id, org_id, actor_id, options)
     else:
-        _job_queue.put((invoice_id, org_id, actor_id))
+        _job_queue.put((invoice_id, org_id, actor_id, options))
         _ensure_workers()
 
 
@@ -117,6 +175,7 @@ def _send_to_sqs(
     invoice_id: uuid.UUID,
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
+    options: ExtractionOptions | None = None,
 ) -> None:
     """Put extraction job on SQS for Lambda to pick up.
 
@@ -141,6 +200,11 @@ def _send_to_sqs(
                 "invoice_id": str(invoice_id),
                 "org_id": str(org_id),
                 "actor_id": str(actor_id),
+                # Additive + flat, never nested: an older Lambda consumer
+                # ignores the keys it doesn't know, and a newer one reads them
+                # with `.get(..., False)` so a message from an older producer
+                # decodes to the unchanged behaviour.
+                **(options or ExtractionOptions()).as_payload(),
             }
         ),
         MessageGroupId=str(invoice_id),
@@ -156,6 +220,7 @@ async def _run_local(
     invoice_id: uuid.UUID,
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
+    options: ExtractionOptions | None = None,
 ) -> None:
     """Run extraction in-process with its own DB session and engine.
 
@@ -233,11 +298,14 @@ async def _run_local(
                             invoice_id,
                             invoice.file_key,
                         )
+                        opts = options or ExtractionOptions()
                         await run_extraction(
                             db,
                             invoice,
                             actor_id=actor_id,
                             org_settings=org.settings,
+                            skip_vendor_match=opts.skip_vendor_match,
+                            suppress_auto_approve=opts.suppress_auto_approve,
                         )
                         logger.info(
                             "[extraction] Completed extraction for invoice %s, status=%s",

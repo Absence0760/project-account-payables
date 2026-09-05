@@ -13,6 +13,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from fastapi import (
     APIRouter,
@@ -51,7 +52,11 @@ from app.services.storage import (
     _safe_filename,
     tax_form_type_from_key,
 )
-from app.services.tax_1099 import build_1099_dashboard, build_1099_report
+from app.services.tax_1099 import (
+    box_total_for_form,
+    build_1099_dashboard,
+    build_1099_report,
+)
 from app.services.tax_1099_forms import (
     FORM_MISC,
     FORM_NEC,
@@ -135,7 +140,9 @@ async def get_1099_report(
     payment it can PROVE is denominated in it — see
     ``services/tax_1099.build_1099_report``.
     """
-    report = await build_1099_report(db, org_id, year, resolve_reporting_currency(org.settings))
+    report = await build_1099_report(
+        db, org_id, year, resolve_reporting_currency(org.settings), org.settings
+    )
     return report.to_dict()
 
 
@@ -155,7 +162,7 @@ async def get_1099_dashboard(
     the chase list before filing season.
     """
     dashboard = await build_1099_dashboard(
-        db, org_id, year, resolve_reporting_currency(org.settings)
+        db, org_id, year, resolve_reporting_currency(org.settings), org.settings
     )
     return dashboard.to_dict()
 
@@ -348,12 +355,25 @@ async def download_vendor_1099(
     # The org's reporting currency, not the `USD` default: the aggregation
     # uses it to decide which payments it can express, so passing nothing
     # would drop a non-USD tenant's whole book out of the form amount.
-    report = await build_1099_report(db, org_id, year, resolve_reporting_currency(org.settings))
+    report = await build_1099_report(
+        db, org_id, year, resolve_reporting_currency(org.settings), org.settings
+    )
     row = next((r for r in report.rows if r.vendor_id == vendor.id), None)
     if row is None or row.ytd_paid <= 0:
         raise HTTPException(
             status_code=400,
             detail="Vendor has no reportable payments for the requested year",
+        )
+    # A vendor whose spend is entirely rent has nothing to put on a NEC form,
+    # and vice versa. Refusing beats rendering a $0.00 form that looks filable
+    # — the box allocation is exactly what tells the two apart.
+    if box_total_for_form(row, form_type) <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Vendor has no {form_type} box amounts for the requested year "
+                "— its reportable spend is allocated to the other form's boxes"
+            ),
         )
 
     company = _company_profile(org)
@@ -468,9 +488,23 @@ async def file_1099_batch(
     # Reporting currency as above — the filed box amount must come from the
     # same aggregation the report endpoint shows.
     report = await build_1099_report(
-        db, org_id, body.year, resolve_reporting_currency(org.settings)
+        db, org_id, body.year, resolve_reporting_currency(org.settings), org.settings
     )
     filable = [r for r in report.rows if r.is_1099_eligible and r.over_threshold]
+
+    # The filed amount is the part of the vendor's reportable total that
+    # belongs on THIS form, not the whole total. A vendor paid for rent
+    # (1099-MISC box 1) and contract work (1099-NEC box 1) used to have the
+    # combined figure filed on whichever form the batch asked for — an
+    # over-report on one form and a missing form on the other side. A vendor
+    # with nothing on this form is left out of the batch entirely rather than
+    # filed at zero.
+    filable_forms: list[tuple] = []
+    for r in filable:
+        amount = box_total_for_form(r, body.form_type)
+        if amount <= 0:
+            continue
+        filable_forms.append((r, amount))
 
     forms = [
         FilingFormPayload(
@@ -478,11 +512,35 @@ async def file_1099_batch(
             form_type=body.form_type,
             recipient_name=r.vendor_name,
             recipient_tin=r.tax_id or "",
-            box_amount=r.ytd_paid,
+            box_amount=amount,
+            box_amounts={
+                a.box: a.amount
+                for a in r.box_allocations
+                if a.form_type == body.form_type and a.amount > 0
+            },
             tax_year=body.year,
         )
-        for r in filable
+        for r, amount in filable_forms
     ]
+    # The per-box detail the transmission itself carries only as one total.
+    # Persisted + returned so a preparer can see the split behind each filed
+    # figure, and so the record of what was filed is not narrower than the
+    # calculation that produced it. PII-free: vendor id, box code, amount.
+    box_breakdown = [
+        {
+            "vendor_id": str(r.vendor_id),
+            "boxes": [a.to_dict() for a in r.box_allocations if a.form_type == body.form_type],
+            "form_total": str(amount),
+        }
+        for r, amount in filable_forms
+    ]
+    _box_totals: dict[str, Decimal] = {}
+    for _r, _amount in filable_forms:
+        for _alloc in _r.box_allocations:
+            if _alloc.form_type != body.form_type:
+                continue
+            _box_totals[_alloc.box] = _box_totals.get(_alloc.box, Decimal("0")) + _alloc.amount
+    box_totals = {code: str(total) for code, total in _box_totals.items()}
 
     try:
         result = await adapter.submit_batch(
@@ -503,7 +561,7 @@ async def file_1099_batch(
     filing.submitted_count = result.submitted_count
     filing.accepted_count = result.accepted_count
     filing.rejected_count = result.rejected_count
-    filing.result = {"forms": result.to_dict()["forms"]}
+    filing.result = {"forms": result.to_dict()["forms"], "box_breakdown": box_breakdown}
     # Filing with the IRS is a regulated, externally-visible act — the trail
     # records who submitted what and the partner's verdict. PII-free: counts
     # and the confirmation number, never a recipient name, TIN or box amount.
@@ -524,6 +582,9 @@ async def file_1099_batch(
             "submitted_count": filing.submitted_count,
             "accepted_count": filing.accepted_count,
             "rejected_count": filing.rejected_count,
+            # Box CODES + totals, never a recipient name or TIN — the shape of
+            # the filing, so an auditor can see which boxes were transmitted.
+            "box_totals": box_totals,
         },
     )
     await db.commit()
@@ -633,6 +694,9 @@ def _filing_response(filing: Tax1099Filing, *, already_filed: bool) -> dict:
         "rejected_count": filing.rejected_count,
         "already_filed": already_filed,
         "forms": (filing.result or {}).get("forms", []),
+        # Per-box split behind each filed form. Empty for a filing made before
+        # per-box allocation shipped — a stored record is never back-filled.
+        "box_breakdown": (filing.result or {}).get("box_breakdown", []),
     }
 
 

@@ -164,7 +164,8 @@ def test_ensure_workers_is_thread_safe():
 
 @pytest.mark.asyncio
 async def test_dispatch_extraction_local_puts_job_on_queue():
-    """In local mode, dispatch_extraction enqueues a (invoice_id, org_id, actor_id) tuple."""
+    """In local mode, dispatch_extraction enqueues
+    `(invoice_id, org_id, actor_id, ExtractionOptions)`."""
     import app.services.extraction_dispatch as mod
 
     invoice_id = uuid.uuid4()
@@ -180,7 +181,7 @@ async def test_dispatch_extraction_local_puts_job_on_queue():
         assert mod._job_queue.qsize() == original_qsize + 1
 
         item = mod._job_queue.get_nowait()
-        assert item == (invoice_id, org_id, actor_id)
+        assert item == (invoice_id, org_id, actor_id, mod.ExtractionOptions())
 
         mock_ensure.assert_called_once()
 
@@ -217,7 +218,7 @@ async def test_dispatch_extraction_lambda_calls_sqs_not_queue():
 
         await mod.dispatch_extraction(inv_id, org_id, actor_id)
 
-        mock_sqs.assert_called_once_with(inv_id, org_id, actor_id)
+        mock_sqs.assert_called_once_with(inv_id, org_id, actor_id, mod.ExtractionOptions())
         mock_ensure.assert_not_called()
         assert mod._job_queue.qsize() == original_qsize
 

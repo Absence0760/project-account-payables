@@ -28,7 +28,7 @@ mutation writes a PII-free audit row (`bank_reconciliation.imported` /
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/upload` | Multipart CSV upload (`file`, `account_identifier`, `period_start`, `period_end`, `currency`). Parses via `parse_csv_statement`, persists the statement + transactions, runs `match_statement_transactions`, returns the detail view (201). **Idempotent** on `(org, account_identifier, sha256(body))` — a repeat upload returns the existing statement with 200. 422 on a malformed CSV (`StatementImportError`); 413 over the 10 MB cap. |
-| `GET` | `` | List statements, paginated, optional `?account_identifier=` filter. |
+| `GET` | `` | List statements, paginated. `?account_identifier=` is an EXACT filter (the value the upload form posts); `?search=` is the free-text one — see § Searching the statement list. |
 | `GET` | `/{id}` | Statement detail including every transaction (list omits transactions to avoid an N+1 payload on the index). |
 | `GET` | `/outstanding` | Org-wide close view: uncleared payments, unmatched bank debits, and classified discrepancies. `?older_than_days=` (default 0) / `?limit=` (default 200). See below. |
 | `POST` | `/{id}/transactions/{tx_id}/resolve` | Manually set (`matched_payment_id: "<uuid>"`) or clear (`null`) a transaction's match — confidence 100 when set; `match_method` is `manual`, or the matching discrepancy class (`amount_mismatch` / `currency_mismatch` / `status_conflict`) when the payment doesn't reconcile — derived by the SAME `classify_discrepancy` the matcher uses (see § Identity is not reconciliation). Recomputes the statement's `matched_count`. 409 on a non-`debit` transaction (a credit is not a payment we made); 422 on a malformed `matched_payment_id` (schema-typed `uuid.UUID`). |
@@ -42,6 +42,51 @@ Raw-file storage (the uploaded CSV → S3, for audit replay) is deferred —
 `file_key` is always `NULL` today, matching `vendor_statement_recon`'s CSV
 intake. The file's **sha256 is** stored (`content_hash`), which is what makes
 the import idempotent below.
+
+### Searching the statement list
+
+`GET /api/bank-reconciliation` carries **two** account filters, and they are
+not redundant:
+
+- **`?account_identifier=`** — an EXACT match on the same string the upload
+  form posts and the import-idempotency key is built from. A caller that
+  already holds one account label wants that account's statements and nothing
+  else. Unchanged, and nothing was removed: the frontend's
+  `BankStatementListParams.account_identifier` still sends it, and
+  `test_bank_reconciliation_api.py::test_list_and_get_detail` still pins it.
+- **`?search=`** — free text, the shape `/positive-pay` and
+  `/vendor-statements` already have. Applied through the shared
+  `app.utils.search.ilike_contains`, so `%`, `_` and `\` are treated as the
+  text the user typed rather than as LIKE syntax — a bank account label is
+  exactly where those turn up (`Ops_2024`, `Fee 50%`).
+
+**Both live in `_statement_list_filters`, and the list's row query AND its
+`total` are built from the object it returns.** That is the load-bearing part:
+a paginated list whose count is computed on a different filter than its rows
+heads a narrowed table with a whole-set figure, tells the user "nothing
+matched" for a statement sitting on page 2, and is the class of defect
+`docs/decisions.md` §48 and `backend/tests/test_paginated_list_search_legs.py`
+exist to prevent.
+
+What `search` matches, and why:
+
+| Column | Why |
+|---|---|
+| `account_identifier` | The row's primary rendered label, and the reason the leg exists — a reviewer types "operating" or "1234", not the full stored string. |
+| `source_format` | Not a column on the tab, but the statement's own kind and part of the detail header the reviewer just came from. The direct analogue of the `file_type` leg on `/positive-pay`; lets a tenant that mixes CSV and OFX imports narrow to one. |
+| `period_start` / `period_end`, rendered ISO | The honest half of the period column. Matched as `to_char(…, 'YYYY-MM-DD')` — **not** a plain `CAST(… AS text)`, which resolves against the Postgres session `DateStyle` and could hand back `08-15-2026` on a non-ISO server. So `2026-08` narrows to that month. |
+
+Two deliberate exclusions:
+
+- **The rendered period label.** The row prints a LOCALISED date
+  (`formatDate`), and matching that in SQL would make the result set depend on
+  the caller's browser language — the same trap `/positive-pay` declined for
+  its localised file-type label. The ISO form is matched instead, which only
+  ever ADDS matches: a term that reads as a date in any locale still finds the
+  account beside it.
+- **`currency`.** Never shown on this tab, and a three-letter code is the
+  highest-noise substring of the candidate set — a two-character term would
+  silently pull in every row of a currency the user never mentioned.
 
 ### Import idempotency + the upload cap
 
@@ -96,12 +141,119 @@ the retry the loser would 500 and lose every other line on its file.
   add `include_shared=True` to the exceptions query? something else?) — not a
   default worth guessing at silently, since guessing wrong ships a queue item
   most multi-entity tenants would never see.
-- **Frontend page.** No `/bank-reconciliation` route ships yet in the SPA;
-  the API is usable today via any HTTP client / the `/docs` Swagger UI. A
-  dedicated page (statement list, upload form, transaction match-review
-  table) is tracked as its own follow-up — same shape as `/vendor-statements`.
 - **OFX / camt.053 import.** `source_format` already carries the value;
   only the CSV parser is implemented.
+
+## Frontend (`/bank-reconciliation`)
+
+`frontend/src/routes/bank-reconciliation/` — two tabs, because the surface
+answers two different questions.
+
+| Piece | File |
+|---|---|
+| Page (tabs, KPIs, the three outstanding buckets, statement list) | `routes/bank-reconciliation/+page.svelte` |
+| Statement detail + per-line resolve | `routes/bank-reconciliation/StatementDetailModal.svelte` |
+| CSV import | `routes/bank-reconciliation/ImportStatementModal.svelte` |
+| Typed API helpers | `lib/api/bankReconciliation.ts` |
+| Response shapes + the pure match-state derivation | `lib/types/bankReconciliation.ts` |
+| i18n | the `bankRecon.` namespace in all six `lib/i18n/locales/*.ts` |
+| Nav | `lib/nav.ts` — under **Billing**, beside Positive Pay |
+
+**Outstanding** is the default tab: the `/outstanding` worksheet rendered as
+its three buckets, each headed by its whole-set count + total. Both of its
+filters are SERVER filters — `?older_than_days=` (chips: any / 7 / 30 / 60)
+and the free-text box (`?search=`, debounced, matching each bucket's own
+rendered columns). Neither narrows loaded rows in the browser: `/outstanding`
+caps its ROWS at `?limit=` while its counts stay whole-set, so a client-side
+filter would hide matches past the cap and report "nothing matched" under a
+whole-set header. Each bucket also prints a truncation line whenever `?limit`
+capped its rows below the count above it, so a filtered view can never quietly
+claim less money than the KPI does.
+
+**Statements** is the per-file view (account, period, lines, reconciled,
+discrepancy count, imported), paginated with load-more, and the way into the
+transaction table. It has its own `SearchBox` over the server's `?search=`
+leg — debounced, routed through the page's request sequencer, and URL-backed
+on **`?statement_search=`**, a separate key from Outstanding's `?search=`.
+Two keys because the tabs query different endpoints over different columns: a
+shared key would carry a vendor name into an account filter (or the reverse)
+on every tab switch. The tab shipped with no box at all until the server leg
+existed, because the only filter available was an EXACT `account_identifier`
+match — a free-text box over that returns nothing for a partial term, and a
+chip set built from page one omits every account further down. Both are the
+"filter that quietly hides rows" class `frontend/CLAUDE.md` § Search forbids.
+
+When the term matches nothing the table renders its own
+`bankRecon.empty.statementsFiltered` row — deliberately NOT the first-run
+`EmptyState` block, which offers to import a statement. "Your search matched
+nothing" and "you have imported nothing" are different claims, and only the
+second one is answered by an import button.
+
+### Confidence is rendered as a judgment, not a number
+
+`lib/types/bankReconciliation.ts::transactionMatchState` collapses a row's
+four match fields (`direction`, `matched_payment_id`, `match_method`,
+`match_confidence`) into one of `credit` / `unmatched` / `discrepancy` /
+`confirmed` / `probable` / `suggested`, and the row renders from THAT — never
+from `matched_payment_id` alone. Two rules the pure function encodes, both
+unit-tested in `bankReconciliation.test.ts`:
+
+- a 50–79 `fuzzy_vendor` hit is `suggested`, tinted amber and captioned "a
+  suggestion, not a fact" — it is a vendor-name coincidence a human still owes
+  a decision on, and green would be the UI asserting something the matcher
+  never claimed. A linked row carrying NO confidence figure is `suggested`
+  too: absence of evidence is not evidence of a match;
+- `is_reconciled` (the backend's own predicate) outranks `match_method`, so a
+  linked line the server calls unreconciled reads as a discrepancy even when
+  its method is one this frontend has never heard of. An unknown method
+  degrades to "a human needs to look", never to a clean tick.
+
+### The resolve affordance
+
+Mutate controls render only for admin / ap_manager (`auth.isManager`), mirroring
+`_WRITE_ROLES`; a clerk sees every figure and no button, and the backend refuses
+regardless.
+
+| Row state | Controls |
+|---|---|
+| `suggested` | **Confirm** (re-sends the row's EXISTING `matched_payment_id`, so the server re-runs `classify_discrepancy` and stamps the human's own decision at confidence 100) + **Clear** |
+| `discrepancy` / `confirmed` / `probable` | **Clear** (re-point by clearing, then matching) |
+| `unmatched` debit | **Match** — opens an inline picker |
+| credit | none (only a debit can clear a payment; `/resolve` 409s) |
+
+The picker's candidate list is `/outstanding`'s `uncleared_payments` bucket,
+which is exactly "payments our books say went out that no bank line claims" —
+the only payments a debit can legitimately be pointed at. Anything already
+claimed would be refused by the one-payment-one-line invariant, so offering it
+would be offering a dead end.
+
+other buckets do), so the uncleared rows — and `uncleared_total`, which the
+backend sums across currencies — render in the org's reporting currency. A
+multi-currency tenant can therefore see the wrong symbol on that bucket only.
+The durable fix is a `currency` field on that schema (the invoice's, the same
+side of the settlement pair the matcher compares against) plus a per-currency
+total; it is called out at the render site rather than guessed at.
+
+### Tests
+
+`frontend/tests-e2e/bank-reconciliation/bank-reconciliation.spec.ts` — renders
+the worksheet, the age filter as a server filter + URL round-trip, import →
+list → detail → the unmatched line, the match round-trip (asserting the payment
+id the UI sends), the fuzzy-match "suggestion, not a fact" treatment, and the
+clerk read-only gate.
+`frontend/tests-e2e/bank-reconciliation/statement-search.spec.ts` covers the
+Statements tab's search: the term reaching the server and narrowing the rows +
+the footer together, the URL round-trip on `statement_search`, the 300ms
+debounce coalescing keystrokes into one request for the final term (typed, not
+`fill()`ed — the shape that catches issue #168), the search-vs-onboarding empty
+states, clearing the box re-firing without the term, and the two tabs keeping
+separate terms on separate keys.
+`frontend/src/lib/types/bankReconciliation.test.ts` pins the pure match-state
+derivation. `backend/tests/test_bank_reconciliation_search.py` pins the server
+leg — partial account match, the COUNT narrowing with the rows, a statement
+found past page one, the `source_format` + ISO-period legs, composition with
+the exact `account_identifier` filter, LIKE-metacharacter escaping, and tenant
+scoping.
 
 ## CSV importer
 
@@ -353,7 +505,7 @@ worksheet, computed on read across every imported statement:
 A linked line has already dropped out of `unmatched_debits`, and a discrepancy's
 payment is accounted for so it's out of `uncleared_payments` — which makes the
 discrepancy bucket the **only** place it can surface. That's why it covers all
-three classes rather than the amount one alone. `amount_mismatch_net_variance`
+three classes rather than the amount one alone. `amount_mismatch_net_variances`
 still sums the amount-mismatch subset only, for the same reason the per-row
 variance is NULL on the other two.
 

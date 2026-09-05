@@ -42,6 +42,69 @@ TERMINAL_STATUSES: frozenset[PaymentStatus] = frozenset(
 )
 
 
+# --- Routing-number selection -------------------------------------------------
+#
+# A US vendor's `bank_details` may carry TWO ABA routing numbers, because larger
+# US banks publish a different one for incoming wires than for ACH:
+#
+#   * ``routing_number``       — the ACH / domestic (paper & electronic) ABA.
+#     This is the ORIGINAL, generic key. Every row already stored under it means
+#     the ACH number, so it keeps that meaning: no backfill, no reinterpretation
+#     of data somebody else wrote.
+#   * ``wire_routing_number``  — the Fedwire ABA, recorded only when the bank
+#     actually publishes a separate one.
+#
+# `WIRE_ROUTING_METHODS` is the rail set that must use the wire ABA. Everything
+# else (ach, international_ach, rtp, check, and the non-US rails, which don't use
+# an ABA at all) reads the ACH field.
+WIRE_ROUTING_METHODS: frozenset[str] = frozenset({"wire", "international_wire"})
+
+ACH_ROUTING_FIELD = "routing_number"
+WIRE_ROUTING_FIELD = "wire_routing_number"
+
+
+@dataclass(frozen=True)
+class RoutingSelection:
+    """Which routing number a rail should use, and where it came from.
+
+    `source` is a PII-free label (`"wire"` / `"ach"` / `"none"`) safe to put in
+    a log line, an audit row or a provider `raw_response`; `number` is banking
+    data and must never leave the outbound request to the processor.
+    """
+
+    number: str | None
+    source: str  # "wire" | "ach" | "none"
+
+
+def resolve_routing_number(vendor_bank: dict | None, method: str) -> RoutingSelection:
+    """Pick the routing number the given rail must be instructed with.
+
+    Wire-family rails prefer ``wire_routing_number`` and **fall back** to
+    ``routing_number`` when the vendor recorded only one — a bank that publishes
+    a single ABA uses it for both, so refusing the payment there would break
+    every vendor banking at a smaller institution.
+
+    ACH-family rails read ``routing_number`` and deliberately do **not** fall
+    back to the wire number. The fallback is asymmetric on purpose: a bank with
+    two ABAs will not accept an ACH file addressed to its Fedwire number, so
+    "borrowing" it turns a missing-data problem into a returned item days later
+    at the vendor's expense. Missing means missing.
+
+    Pure — no IO, no DB. Callers decide what an empty selection means for their
+    rail (most processors identify the payee by a counterparty token instead and
+    never need this at all).
+    """
+    bank = vendor_bank or {}
+    if method in WIRE_ROUTING_METHODS:
+        wire = (str(bank.get(WIRE_ROUTING_FIELD) or "")).strip()
+        if wire:
+            return RoutingSelection(number=wire, source="wire")
+        ach = (str(bank.get(ACH_ROUTING_FIELD) or "")).strip()
+        return RoutingSelection(number=ach or None, source="ach" if ach else "none")
+    ach = (str(bank.get(ACH_ROUTING_FIELD) or "")).strip()
+    return RoutingSelection(number=ach or None, source="ach" if ach else "none")
+
+
 @dataclass
 class PaymentPayload:
     """Everything an adapter needs to submit one payment.
@@ -50,7 +113,10 @@ class PaymentPayload:
     doesn't double-pay. `vendor_bank` is intentionally a free-form dict —
     each processor models bank accounts differently (Modern Treasury uses
     `counterparty_id`; Increase uses an external account ID; mock ignores it).
-    The orchestrator looks up the right shape per processor.
+    The orchestrator looks up the right shape per processor. It carries the
+    vendor's whole `bank_details` JSONB, which may hold BOTH a `routing_number`
+    (ACH) and a `wire_routing_number` (Fedwire) — read the right one for this
+    rail through the `routing` property, never by key.
 
     International fields are populated by
     `services.international_payments.prepare_international_payment` when
@@ -75,6 +141,19 @@ class PaymentPayload:
     source_amount: Decimal | None = None
     fx_rate: Decimal | None = None
     target_country: str | None = None
+
+    @property
+    def routing(self) -> RoutingSelection:
+        """The routing number THIS rail must be instructed with.
+
+        Single accessor so no adapter has to re-derive "is this a wire?" from
+        `self.method` — see `resolve_routing_number`. Most adapters never touch
+        it (their processor identifies the payee by a counterparty token); the
+        ones that hand a bank raw coordinates read it here rather than reaching
+        into `vendor_bank["routing_number"]`, which is the ACH number and would
+        misroute a wire at any bank publishing a separate Fedwire ABA.
+        """
+        return resolve_routing_number(self.vendor_bank, self.method)
 
 
 @dataclass

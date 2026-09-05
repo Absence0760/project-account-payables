@@ -89,6 +89,11 @@ class BudgetSpendResponse(BaseModel):
     actual: float
     remaining: float
     utilization_pct: float
+    # A COUNT, not money: requisitions / POs / invoices that matched this budget
+    # but are denominated in another currency (or none), so the legs refused
+    # them rather than adding unlike face values. Non-zero means `committed` /
+    # `actual` describe PART of the linked activity — say so where they render.
+    excluded_row_count: int = 0
 
 
 class BudgetCurrencyTotal(BaseModel):
@@ -114,6 +119,50 @@ class BudgetSummaryResponse(BaseModel):
 
     total: int
     by_currency: list[BudgetCurrencyTotal]
+
+
+class BudgetCurrencyRollupEntry(BaseModel):
+    """One currency's slice of the org-wide budget-vs-actual rollup.
+
+    Money is an **exact decimal string**, never ``float`` — unlike the
+    per-budget ``BudgetSpendResponse``, which predates the string convention and
+    stays ``float`` for API back-compat. These are org-wide totals a CFO reads
+    off a dashboard, so they never round-trip through a binary float, and they
+    are never added across currencies or FX-converted on a read.
+    """
+
+    currency: str
+    budget_count: int
+    allocated: str
+    committed: str
+    actual: str
+    remaining: str
+    # ``None``, never ``"0.00"``, when this currency allocates nothing at all —
+    # "0% used" and "there is nothing to use" are opposite facts and 0% reads as
+    # the reassuring one (``docs/decisions.md`` §34).
+    utilization_pct: str | None
+    over_budget_count: int
+    excluded_row_count: int
+
+
+class BudgetRollupResponse(BaseModel):
+    """Whole-set, org-wide allocated vs committed vs actual — the CFO's
+    counterpart of the per-budget ``GET /budgets/{id}/spend``.
+
+    Takes the SAME ``dimension`` / ``period`` / ``search`` filters as
+    ``GET /api/budgets`` through the shared ``_budget_list_filters``, so the
+    rollup can never describe a different set than the table.
+
+    ``excluded_row_count`` is the whole-set disclosure: rows the spend legs
+    refused for a currency mismatch. Non-zero means the figures are a floor, not
+    a complete picture, and the surface rendering them must say so beside them
+    — the same rule ``/cfo``'s ``unconverted_count`` banners follow.
+    """
+
+    budget_count: int
+    by_currency: list[BudgetCurrencyRollupEntry]
+    excluded_row_count: int
+    insufficient_data: bool
 
 
 class BudgetCheckResponse(BaseModel):
@@ -143,5 +192,7 @@ __all__ = [
     "BudgetSpendResponse",
     "BudgetCurrencyTotal",
     "BudgetSummaryResponse",
+    "BudgetCurrencyRollupEntry",
+    "BudgetRollupResponse",
     "BudgetCheckResponse",
 ]

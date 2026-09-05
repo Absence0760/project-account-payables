@@ -9,7 +9,14 @@ Frontend-specific guidance. See root `CLAUDE.md` for project-wide context.
 - **Icons**: unplugin-icons with `@iconify-json/material-symbols`
 - **Markdown**: mdsvex
 - **Styling**: normalize.css + custom CSS in `src/app.css`
-- **Sanitization**: isomorphic-dompurify
+- **Sanitization**: there is no sanitizer dependency, deliberately. The XSS
+  defence in this tree is that **no component uses `{@html}` at all** — every
+  chat / assistant / invoice bubble binds plain text, and says so in a comment.
+  `isomorphic-dompurify` was declared for years and never imported once; it was
+  removed rather than bumped, since an unused dependency still sets a Node floor
+  and drags `jsdom` into the graph. If you ever have a case that genuinely needs
+  user-supplied markup, add the sanitizer back **with** its call site in the same
+  change — never ahead of one.
 
 ## Commands (from `frontend/`)
 
@@ -63,6 +70,43 @@ The `packageManager` pin is expected to stop Dependabot dropping the block,
 since it will now resolve the same pnpm as everything else — but that is
 unconfirmed until the next npm PR. If it still happens, regenerate by hand, the
 same way `backend/CLAUDE.md` § Dependency lock describes for the pip locks.
+
+## The Node floor: 24, and the dependency that sets it
+
+CI runs Node **24** — every `setup-node` step across all six workflows that
+have one (`ci.yml` ×4, `sso-e2e`, `web-bundle-budget`, `compliance-drift`,
+`aws-deploy`, `audit`). 24 is the current Active LTS (Krypton, LTS since
+2025-10-28, supported to 2028-04-30); Node 20 (Iron) went end-of-life on
+2026-04-30 and 22 (Jod) has been in maintenance since 2025-10-21. Pin the
+whole set together — a floor raised in one workflow and not another is worse
+than not raising it, because the disagreement is invisible until the odd job
+out breaks.
+
+**What used to set the floor** was `isomorphic-dompurify` and its `jsdom`
+dependency, both declaring `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`. pnpm
+does not enforce `engines` without `engine-strict`, so Node 20 installed them
+without complaint — which is precisely why this drifted unnoticed for so long.
+It was removed rather than bumped, because nothing had ever imported it: an
+unused dependency was dictating the runtime the whole project builds on. What
+remains is `jsdom@30` as **vitest's own** test-environment peer, which declares
+the same range — so the floor is real, it just now belongs to something the
+project actually uses.
+
+Two consequences worth knowing before you touch either half:
+
+- **Bumping the floor is a two-file-set edit**, not one. Raising
+  `node-version:` means checking every other place a Node version is written
+  down. There is no `.nvmrc`, no `engines` block in either `package.json`, and
+  no Node Dockerfile in the app tree — but `deploy/deploy.sh` builds the
+  production frontend in a `NODE_IMAGE=node:<major>-alpine` container,
+  documented in `docs/minimal-deployment.md`. **Both halves move together**;
+  raising CI and leaving the deploy image behind means production builds on a
+  runtime CI never tested.
+- **The `# vN.N.N` comment beside a `setup-node@<sha>` pin is documentation,
+  not the pin.** Eight of the nine sites carried `# v6.0.0` against a SHA that
+  is really `v7.0.0`; Scorecard's PinnedDependencies check reads the SHA and
+  was perfectly happy, so nothing caught it. When you re-pin, verify the tag
+  the SHA resolves to rather than copying the neighbouring comment.
 
 ## Routes → API mappings
 

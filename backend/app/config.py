@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     contract_renewal_enabled: bool = False
     contract_renewal_interval_seconds: int = 3600
     contract_renewal_default_notice_days: int = 30
+    # How many candidate contracts each of the sweep's two passes (renewal
+    # alert, end-of-term expiry) pages through at a time, per tenant. It is a
+    # PAGE size, not a per-tick cap: both passes keyset-paginate by id until the
+    # tenant is exhausted, so nothing starves. Capping is not available to this
+    # sweep -- a contract outside its own lead window stays un-alerted, so it
+    # never leaves the candidate set and a LIMIT would re-serve the same
+    # lowest-id rows every tick forever. The alert pass used to pre-filter on
+    # `end_date <= today + 3650 days` (effectively every active contract with an
+    # end date) and load the lot in one unbounded SELECT.
+    contract_renewal_batch_size: int = 200
 
     # QMS (Quality Management System) inspection sync. A background loop that
     # pulls quality-inspection records from an external QMS / LIMS into the
@@ -140,6 +150,14 @@ class Settings(BaseSettings):
     # not currency, so float is fine.
     discount_optimization_enabled: bool = False
     discount_optimization_interval_seconds: int = 3600
+    # How many candidate `offered` offers the auto-capture sweep pages through
+    # at a time, per tenant. It is a PAGE size, not a per-tick cap: the sweep
+    # keyset-paginates by id until the tenant is exhausted, so nothing starves.
+    # Capping is not available here -- an offer skipped for a below-threshold
+    # ROI stays `offered`, so it never leaves the candidate set and a LIMIT
+    # would re-serve the same lowest-id rows every tick forever. The sweep used
+    # to select every `offered` offer id in one unbounded SELECT.
+    discount_optimization_batch_size: int = 200
     discount_auto_capture_roi_threshold: float = 12.0
     discount_cost_of_capital_pct: float = 8.0
     approval_escalation_interval_seconds: int = 600

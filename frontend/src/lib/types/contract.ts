@@ -1,3 +1,5 @@
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
+
 // Types for the Contracts surface. Mirrors the JSON returned by the
 // `/api/contracts` endpoints (backend `Contract.to_dict()`). Money fields
 // arrive as numbers (or null); date fields are ISO date strings (or null).
@@ -77,16 +79,25 @@ export interface ContractLineItem {
 	item_code: string | null;
 	description: string | null;
 	quantity: number | null;
-	unit_price: number | null;
-	total: number | null;
+	// `schemas/contract.py::ContractLineItemResponse` inherits these as bare
+	// `Decimal | None`, and pydantic's DEFAULT JSON shape for a Decimal is an
+	// exact STRING — unlike the `float`-typed header figures below. So they
+	// arrive as `"1200.00"`, which the old `number` type quietly mis-declared.
+	unit_price: MoneyString | null;
+	total: MoneyString | null;
 	gl_account: string | null;
 }
 
 export interface ContractSpend {
-	invoiced_total: number;
+	invoiced_total: MoneyAmount;
 	invoice_count: number;
-	spend_limit: number | null;
-	remaining: number | null;
+	spend_limit: MoneyAmount;
+	/**
+	 * Headroom left under the limit, computed SERVER-side. Never re-derive it
+	 * from `spend_limit - invoiced_total`; `over_limit` is the server's own
+	 * verdict and is what the UI branches on.
+	 */
+	remaining: MoneyAmount;
 	over_limit: boolean;
 }
 
@@ -100,8 +111,8 @@ export interface Contract {
 	vendor_id: string;
 	vendor_name: string | null;
 	currency: string;
-	total_value: number | null;
-	spend_limit: number | null;
+	total_value: MoneyAmount;
+	spend_limit: MoneyAmount;
 	not_to_exceed: boolean;
 	start_date: string | null;
 	end_date: string | null;
@@ -128,8 +139,9 @@ export interface ContractLineItemInput {
 	item_code?: string | null;
 	description?: string | null;
 	quantity?: number | null;
-	unit_price?: number | null;
-	total?: number | null;
+	/** Request side — the exact decimal text typed, never a JSON number. */
+	unit_price?: MoneyString | null;
+	total?: MoneyString | null;
 	gl_account?: string | null;
 }
 
@@ -141,8 +153,8 @@ export interface ContractCreate {
 	description?: string | null;
 	contract_type?: ContractType;
 	currency?: string;
-	total_value?: number | null;
-	spend_limit?: number | null;
+	total_value?: MoneyString | null;
+	spend_limit?: MoneyString | null;
 	not_to_exceed?: boolean;
 	start_date?: string | null;
 	end_date?: string | null;

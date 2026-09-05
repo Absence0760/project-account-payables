@@ -8,7 +8,10 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+	import type { MoneyAmount } from '$lib/utils/money';
+	import { isMoneyInput } from '$lib/utils/moneyInput';
 	import ApprovalMatrixEditor from '$lib/components/modals/ApprovalMatrixEditor.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import WorkflowCanvas from '$lib/components/workflow-builder/WorkflowCanvas.svelte';
 	import StepPalette from '$lib/components/workflow-builder/StepPalette.svelte';
 	import ConditionBuilder from '$lib/components/workflow-builder/ConditionBuilder.svelte';
@@ -216,8 +219,47 @@
 		}
 	}
 
+	/**
+	 * Every money threshold on an approval step, in the order the editor shows
+	 * them: the three step-level gates, then each chain level's amount band.
+	 *
+	 * These go to the wire as the exact decimal text that was typed
+	 * (`MoneyString`), so the shape check belongs at save — not on every
+	 * keystroke, which would toast at a half-typed `12.`. A blank field is a
+	 * real value ("no threshold") and is skipped; anything else the money
+	 * grammar cannot read is REFUSED rather than repaired or forwarded as
+	 * `null`, because a silently-dropped `require_cfo_above` removes the CFO
+	 * gate on every invoice this workflow routes.
+	 */
+	function unreadableMoneyThresholds(): boolean {
+		return steps.some((step) => {
+			if (step.type !== 'approval') return false;
+			const cfg = step.config as ApprovalStepConfig;
+			const thresholds: MoneyAmount[] = [
+				cfg.auto_approve_below,
+				cfg.require_cfo_above,
+				cfg.max_invoice_amount,
+				...(cfg.approval_chain ?? []).flatMap((level) => [level.min_amount, level.max_amount]),
+			];
+			return thresholds.some(
+				(value) =>
+					value !== null &&
+					value !== undefined &&
+					value !== '' &&
+					// `String(...)` because a workflow saved before the text
+					// conversion still holds a NUMBER in `steps_config`; the money
+					// grammar reads text, and a legacy `1000` is legitimate.
+					!isMoneyInput(String(value))
+			);
+		});
+	}
+
 	async function handleSave() {
 		if (!workflow) return;
+		if (unreadableMoneyThresholds()) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		saving = true;
 		try {
 			await workflowStore.update(workflow.id, {
@@ -284,7 +326,7 @@
 							{nameInput}
 						</button>
 						{#if workflow.is_default}
-							<span class="default-badge">{m('workflows.builder.defaultBadge')}</span>
+							<Badge tone="accent" variant="default-badge">{m('workflows.builder.defaultBadge')}</Badge>
 						{/if}
 					</h1>
 				{/if}
@@ -554,7 +596,7 @@
 									min="0"
 									placeholder={m('workflows.builder.approval.noLimit')}
 									value={cfg.auto_approve_below ?? ''}
-									oninput={(e) => updateStepConfig(selectedIndex, 'auto_approve_below', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
+									oninput={(e) => updateStepConfig(selectedIndex, 'auto_approve_below', e.currentTarget.value.trim() || null)}
 								/>
 								<p class="field-hint">{m('workflows.builder.approval.autoApproveBelowHint', { currency: orgCurrency.currency })}</p>
 							</div>
@@ -568,7 +610,7 @@
 									min="0"
 									placeholder={m('workflows.builder.approval.noLimit')}
 									value={cfg.require_cfo_above ?? ''}
-									oninput={(e) => updateStepConfig(selectedIndex, 'require_cfo_above', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
+									oninput={(e) => updateStepConfig(selectedIndex, 'require_cfo_above', e.currentTarget.value.trim() || null)}
 								/>
 								<p class="field-hint">{m('workflows.builder.approval.requireCfoAboveHint', { currency: orgCurrency.currency })}</p>
 							</div>
@@ -582,7 +624,7 @@
 									min="0"
 									placeholder={m('workflows.builder.approval.noLimit')}
 									value={cfg.max_invoice_amount ?? ''}
-									oninput={(e) => updateStepConfig(selectedIndex, 'max_invoice_amount', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
+									oninput={(e) => updateStepConfig(selectedIndex, 'max_invoice_amount', e.currentTarget.value.trim() || null)}
 								/>
 								<p class="field-hint">{m('workflows.builder.approval.maxInvoiceAmountHint', { currency: orgCurrency.currency })}</p>
 							</div>
@@ -829,17 +871,6 @@
 		padding: 4px 10px;
 		outline: none;
 		font-family: inherit;
-	}
-
-	.default-badge {
-		font-size: 0.68rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		padding: 2px 7px;
-		border-radius: 4px;
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
 	}
 
 	.btn-toggle {

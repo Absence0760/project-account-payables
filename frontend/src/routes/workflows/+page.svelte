@@ -12,6 +12,7 @@
 	import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -256,10 +257,12 @@
 					</td>
 					<td>
 						<RowLink href="/workflows/{wf.id}" ariaLabel={m('workflows.list.editAria', { name: wf.name })}>
-							{wf.name}
-							{#if wf.is_default}
-								<span class="default-badge">{m('workflows.list.defaultBadge')}</span>
-							{/if}
+							<span class="wf-name">
+								{wf.name}
+								{#if wf.is_default}
+									<Badge tone="accent" variant="default-badge">{m('workflows.list.defaultBadge')}</Badge>
+								{/if}
+							</span>
 						</RowLink>
 						{#if wf.description}
 							<div class="wf-desc">{wf.description}</div>
@@ -400,16 +403,16 @@
 		accent-color: var(--accent);
 	}
 
-	.default-badge {
-		font-size: 0.68rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		padding: 2px 7px;
-		border-radius: 4px;
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
-		margin-left: 8px;
+	/* The default marker is `<Badge tone="accent">`; the 8px that used to be
+	   the pill's own `margin-left` lives here — `<Badge>` owns colour and
+	   metrics, the caller owns placement. `flex-wrap` keeps the name and the
+	   pill able to break onto two lines, which they could as separate inline
+	   runs (SC 1.4.10). */
+	.wf-name {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 
 	.wf-desc {
