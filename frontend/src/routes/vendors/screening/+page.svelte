@@ -34,6 +34,8 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
+	import { untrack } from 'svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_VENDOR_BLOCK } from '$lib/types/admin';
 
@@ -43,17 +45,28 @@
 	const canBlock = $derived(auth.can(PERM_VENDOR_BLOCK));
 	const canRescreen = $derived(auth.isManager);
 
+	const PAGE_SIZE = 20;
+
 	let items = $state<ScreeningReviewItem[]>([]);
 	let loading = $state(true);
+	let loadingMore = $state(false);
 	let loadError = $state(false);
 	let search = $state('');
+	// The term the newest ISSUED request carried, so the debounce effect's first
+	// run (mount) doesn't fire a duplicate load behind the initial fetch.
+	let appliedSearch = $state('');
+	let page = $state(1);
+	let total = $state(0);
+	let hasMore = $derived(items.length < total);
 
-	// Whole-set payment-block tally from `GET /api/vendors/counts`. `null` means
-	// "not available" (the call failed, or the caller is an ap_clerk — the
-	// screening queue admits that role, the vendor list and therefore its tally
-	// do not). We render an em-dash rather than falling back to a
-	// queue-derived number, because that number is the bug this replaced.
+	// Whole-set tallies from `GET /api/vendors/counts`. `null` means "not
+	// available" (the call failed, or the caller is an ap_clerk — the screening
+	// queue admits that role, the vendor list and therefore its tally do not).
+	// We render an em-dash rather than falling back to a queue-derived number,
+	// because that number is the bug this replaced.
 	let blockedTotal = $state<number | null>(null);
+	let matchCount = $state<number | null>(null);
+	let reviewCount = $state<number | null>(null);
 
 	// Detail modal — the selected vendor + its screening history.
 	let selected = $state<ScreeningReviewItem | null>(null);
@@ -74,30 +87,24 @@
 
 	$effect(() => {
 		loadQueue();
-		loadBlockedCount();
+		loadCounts();
 	});
 
-	// Client-side search over the loaded queue (vendor name + matched list +
-	// the hit categories, so "negative news" finds the adverse-media rows).
-	// The queue is a bounded attention list, so it's small enough to filter in
-	// memory; the fetch pulls the whole set.
-	let filtered = $derived(
-		search.trim()
-			? items.filter((it) => {
-					const q = search.trim().toLowerCase();
-					return (
-						it.vendor_name.toLowerCase().includes(q) ||
-						(it.latest_matched_list ?? '').toLowerCase().includes(q) ||
-						formatCategories(it.latest_categories).toLowerCase().includes(q)
-					);
-				})
-			: items
-	);
-
-	// The queue is fetched whole (unpaginated) and holds exactly the `match` +
-	// `review` vendors, so these two ARE whole-set figures.
-	let matchCount = $derived(items.filter((it) => it.screening_status === 'match').length);
-	let reviewCount = $derived(items.filter((it) => it.screening_status === 'review').length);
+	// Search is SERVER-side. It used to filter the loaded queue in memory, which
+	// was survivable only while the endpoint returned every row; now that it
+	// pages, an in-memory filter would silently hide every match on a later page
+	// and report "no vendors match your search" (`frontend/CLAUDE.md` § Search).
+	// The trade: the backend matches vendor name + any matched list on the
+	// vendor's screening trail, not the formatted hit-category labels — those
+	// are derived in Python from the provider payload and aren't a SQL column.
+	$effect(() => {
+		const term = search.trim();
+		// Read `appliedSearch` untracked: it is written where a request is
+		// ISSUED, so tracking it would re-run this effect on its own write.
+		if (term === untrack(() => appliedSearch)) return;
+		const timer = setTimeout(() => loadQueue(), 300);
+		return () => clearTimeout(timer);
+	});
 
 	// Sequences `loadQueue`. The mount `$effect` is not its only trigger — the
 	// header Refresh button fires it too, so two can be in flight at once and
@@ -124,30 +131,62 @@
 	 * claiming to count blocked payments, at any queue size. See
 	 * `docs/decisions.md` §48 and `backend/docs/vendor-risk-screening.md`.
 	 */
-	async function loadBlockedCount() {
+	async function loadCounts() {
 		const token = countsSequence.start();
 		try {
 			const counts = await getVendorCounts();
 			if (!countsSequence.canCommit(token)) return;
 			blockedTotal = counts.payments_blocked;
+			// `by_screening_status` omits a bucket with no rows, so a missing key
+			// is a genuine zero — distinct from the `null` "we could not ask".
+			matchCount = counts.by_screening_status?.match ?? 0;
+			reviewCount = counts.by_screening_status?.review ?? 0;
 		} catch {
 			// Non-fatal, and deliberately NOT latched back to a queue-derived
 			// tally: an em-dash says "we don't know", the old number said
-			// something false.
+			// something false — and with the queue paginated it would now be
+			// false by construction, not just in the blocked-vendor edge case.
 			if (!countsSequence.isCurrentRequest(token)) return;
 			blockedTotal = null;
+			matchCount = null;
+			reviewCount = null;
 		}
 	}
 
-	async function loadQueue() {
+	async function loadQueue(opts: { append?: boolean; nextPage?: number } = {}) {
 		const token = fetchSequence.start();
-		loading = true;
+		const targetPage = opts.nextPage ?? 1;
+		// `untrack`: this runs from the mount effect AND the debounce effect, and
+		// Svelte tracks reads transitively through called functions — a plain
+		// read here would make the mount effect depend on `search` and fire an
+		// un-debounced request on every keystroke (issue #168).
+		const term = untrack(() => search).trim();
+		appliedSearch = term;
+		if (opts.append) loadingMore = true;
+		else loading = true;
 		loadError = false;
 		try {
-			const queue = await getScreeningReviewQueue();
+			const queue = await getScreeningReviewQueue({
+				page: targetPage,
+				page_size: PAGE_SIZE,
+				search: term || undefined
+			});
 			// Superseded by a newer refresh, or by a local block/re-screen.
 			if (!fetchSequence.canCommit(token)) return;
-			items = queue;
+			// Same job as `utils/pagination.appendUnique` — offset pagination can
+			// re-surface a row when a concurrent re-screen shifts the set, and a
+			// duplicated key crashes the keyed `{#each}` — but that helper is
+			// keyed on `id` and this row's key is `vendor_id`, so the dedupe is
+			// spelled out here rather than widening the shared helper for one
+			// caller.
+			if (opts.append) {
+				const seen = new Set(items.map((it) => it.vendor_id));
+				items = [...items, ...queue.items.filter((it) => !seen.has(it.vendor_id))];
+			} else {
+				items = queue.items;
+			}
+			total = queue.total;
+			page = targetPage;
 		} catch {
 			// `isCurrentRequest`, not `canCommit`: a load superseded by a local
 			// edit still failed, and no newer load is coming to report it.
@@ -155,8 +194,15 @@
 			loadError = true;
 			toast('Failed to load the screening review queue', 'error');
 		} finally {
-			if (fetchSequence.isCurrentRequest(token)) loading = false;
+			if (fetchSequence.isCurrentRequest(token)) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
+	}
+
+	async function loadMore() {
+		await loadQueue({ append: true, nextPage: page + 1 });
 	}
 
 	async function openDetail(item: ScreeningReviewItem) {
@@ -224,7 +270,7 @@
 			applyVendorUpdate(updated);
 			// The tally is whole-set, so it can't be adjusted locally — a vendor
 			// outside this queue may have been blocked meanwhile. Re-ask.
-			loadBlockedCount();
+			loadCounts();
 			toast(updated.payments_blocked ? 'Payments blocked' : 'Payments unblocked', 'success');
 			blockReason = '';
 		} catch (err) {
@@ -242,7 +288,7 @@
 			const updated = await screenVendor(selected.vendor_id);
 			applyVendorUpdate(updated);
 			// A `match` verdict auto-blocks the vendor, so the tally can move.
-			loadBlockedCount();
+			loadCounts();
 			toast('Vendor re-screened', 'success');
 			// Refresh the history so the new screen appears at the top.
 			historyLoading = true;
@@ -266,7 +312,7 @@
 			class="btn-outline"
 			onclick={() => {
 				loadQueue();
-				loadBlockedCount();
+				loadCounts();
 			}}
 			disabled={loading}
 		>
@@ -275,8 +321,23 @@
 	{/snippet}
 
 	<div class="kpi-row">
-		<KpiCard value={matchCount} label="Sanctions matches" highlight={matchCount > 0 ? 'red' : null} />
-		<KpiCard value={reviewCount} label="Needs review" highlight={reviewCount > 0 ? 'red' : null} />
+		<!-- All three figures are whole-set, from `GET /api/vendors/counts`. They
+		     are NOT derived from the loaded queue: that only ever worked while
+		     the queue returned every row, and it pages now. `null` = the call
+		     failed, or the caller is an ap_clerk (whom `/counts` 403s) — an
+		     em-dash says "we don't know" instead of a page-scoped undercount. -->
+		<KpiCard
+			value={matchCount ?? '—'}
+			label="Sanctions matches"
+			highlight={matchCount !== null && matchCount > 0 ? 'red' : null}
+			sub={matchCount === null ? 'Count unavailable' : null}
+		/>
+		<KpiCard
+			value={reviewCount ?? '—'}
+			label="Needs review"
+			highlight={reviewCount !== null && reviewCount > 0 ? 'red' : null}
+			sub={reviewCount === null ? 'Count unavailable' : null}
+		/>
 		<KpiCard
 			value={blockedTotal ?? '—'}
 			label="Payments blocked"
@@ -294,15 +355,17 @@
 
 	<DataTable
 		columns={COLUMNS}
-		isEmpty={!loading && filtered.length === 0}
-		empty={loadError
-			? 'Could not load the review queue.'
-			: search.trim()
-				? 'No vendors match your search.'
-				: 'No vendors are awaiting screening review. 🎉'}
+		isEmpty={items.length === 0}
+		empty={loading
+			? 'Loading…'
+			: loadError
+				? 'Could not load the review queue.'
+				: search.trim()
+					? 'No vendors match your search.'
+					: 'No vendors are awaiting screening review. 🎉'}
 	>
 		{#snippet body()}
-			{#each filtered as it (it.vendor_id)}
+			{#each items as it (it.vendor_id)}
 				<tr
 					class="clickable"
 					onclick={(e) => {
@@ -333,6 +396,23 @@
 			{/each}
 		{/snippet}
 	</DataTable>
+
+	<!-- `showingAll` is rendered ONLY behind `total > 0`: `total` is the server's
+	     whole-set count, so stating it while a later page is unfetched would be
+	     the same claim the KPIs used to make wrongly. -->
+	{#if hasMore}
+		<div class="load-more-row">
+			<button class="btn-load-more" onclick={loadMore} disabled={loadingMore || loading}>
+				{loadingMore
+					? m('common.loading')
+					: m('vendors.loadMore', { shown: items.length, total })}
+			</button>
+		</div>
+	{:else if total > 0}
+		<div class="load-more-row">
+			<span class="load-more-end">{m('vendors.showingAll', { total })}</span>
+		</div>
+	{/if}
 </PageHeader>
 
 <Modal

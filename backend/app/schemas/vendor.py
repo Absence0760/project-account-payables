@@ -1,7 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
+from app.api.pagination import PageMeta
+from app.schemas.sanctions import ScreeningReviewItem
 from app.services.vendor_consolidation import mask_tax_id
 from app.utils.banking import validate_aba_routing, validate_uk_sort_code
 
@@ -11,6 +13,51 @@ from app.utils.banking import validate_aba_routing, validate_uk_sort_code
 # `Vendor.status` string column) so an out-of-scope target is a 422 from
 # Pydantic itself rather than reaching the endpoint and failing per-row.
 VendorBulkStatusTarget = Literal["active", "rejected"]
+
+
+# The two ABA-shaped routing fields a `bank_details` payload may carry, and the
+# rail family each one is for. `routing_number` is the ORIGINAL, generic field
+# and stays the ACH/domestic number — every stored row already means that by it,
+# so reading it as ACH keeps history correct with no backfill and no
+# reinterpretation. `wire_routing_number` is the separate Fedwire ABA larger US
+# banks publish alongside it; when a vendor has only one number, the wire rail
+# falls back to the ACH one (which is what a single-number bank means).
+ACH_ROUTING_FIELD = "routing_number"
+WIRE_ROUTING_FIELD = "wire_routing_number"
+ROUTING_NUMBER_FIELDS: tuple[str, ...] = (ACH_ROUTING_FIELD, WIRE_ROUTING_FIELD)
+
+
+def validate_bank_routing_fields(details: dict) -> dict:
+    """Structurally validate every routing-shaped key in a `bank_details` dict.
+
+    Checked ONLY when a key is present and non-empty — an international
+    vendor's details carry `iban` / `swift_bic` and legitimately have no ABA at
+    all, so requiring one would refuse a whole class of real payees. A key that
+    IS supplied and is malformed raises `ValueError`, because the alternative
+    is storing a fat-fingered digit that only surfaces days later as a returned
+    or misdirected payment.
+
+    Raises with the FIELD NAME only, never the value — the message reaches an
+    HTTP 4xx body and a routing number is banking data (invariant: PII/banking
+    data stays out of logs and error bodies).
+
+    Shared by `VendorBankChangeRequest` (the AP staging path) and
+    `api/vendors.approve_change_request` (the single chokepoint where any
+    staged change — AP- or portal-submitted — is applied to the vendor row),
+    so a payload that reached staging through a route this module doesn't own
+    still cannot be applied unvalidated.
+    """
+    for field in ROUTING_NUMBER_FIELDS:
+        value = details.get(field)
+        if value and not validate_aba_routing(value):
+            raise ValueError(f"{field} is not a valid 9-digit ABA routing number")
+    # Same posture for the UK equivalent — a sort code, only checked when
+    # present (a US vendor's details never carry one). Accepted either grouped
+    # (NN-NN-NN) or bare (NNNNNN); see validate_uk_sort_code.
+    sort_code = details.get("sort_code")
+    if sort_code and not validate_uk_sort_code(sort_code):
+        raise ValueError("sort_code is not a valid 6-digit UK sort code")
+    return details
 
 
 def _is_masked_tax_id(value) -> bool:
@@ -55,6 +102,16 @@ class VendorBankDetails(BaseModel):
         safe to surface in the UI.
       - `country`: ISO 3166-1 alpha-2 country code for the destination
         bank; used by the corridor selector.
+
+    Routing numbers (US):
+      - `routing_last4` displays the ACH/domestic routing number
+        (`bank_details["routing_number"]`, the original generic key —
+        every stored row already means ACH by it).
+      - `wire_routing_last4` displays the SEPARATE Fedwire ABA
+        (`bank_details["wire_routing_number"]`) larger US banks publish for
+        incoming wires. Optional: when it is absent the wire rail falls back
+        to the ACH number, which is what a single-number bank means. See
+        `services/payment_adapters/base.resolve_routing_number`.
       - `mailing_address`: where a `check` payment via the `checkeeper` rail
         gets physically mailed (street/city/state/postal/country). Without
         it that rail refuses every payment with `checkeeper_missing_
@@ -63,6 +120,7 @@ class VendorBankDetails(BaseModel):
     counterparty_id: str | None = Field(default=None, max_length=255)
     account_last4: str | None = Field(default=None, max_length=4)
     routing_last4: str | None = Field(default=None, max_length=4)
+    wire_routing_last4: str | None = Field(default=None, max_length=4)
     bank_name: str | None = Field(default=None, max_length=255)
     iban_last4: str | None = Field(default=None, max_length=4)
     swift_bic: str | None = Field(default=None, max_length=11)
@@ -215,9 +273,14 @@ def _mask_change_value(change_type: str, proposed_value: dict) -> dict:
     if change_type == "bank_details":
         bank = proposed_value.get("bank_details") or {}
         account = str(bank.get("account_number") or "")
+        wire = str(bank.get(WIRE_ROUTING_FIELD) or "")
         return {
             "bank_name": bank.get("bank_name"),
             "account_last4": account[-4:] if len(account) >= 4 else bank.get("account_last4"),
+            # Whether the proposal changes the WIRE ABA is material to the
+            # approver (it re-points every wire to this vendor), so the masked
+            # list view says so — a last-4, never the number.
+            "wire_routing_last4": (wire[-4:] if len(wire) >= 4 else bank.get("wire_routing_last4")),
         }
     return {}
 
@@ -283,25 +346,15 @@ class VendorBankChangeRequest(BaseModel):
 
     bank_details: dict
 
-    @field_validator("bank_details")
-    @classmethod
-    def _validate_routing_number(cls, v: dict) -> dict:
-        # Structural check only, and only when a US routing number is present
-        # at all — an international vendor's staged change carries `iban`/
-        # `swift_bic` instead. Unlike IBAN/SWIFT (checked at payment time in
-        # `services/international_payments.py`), nothing validated a routing
-        # number anywhere, so a fat-fingered digit surfaced only as a returned
-        # ACH days later. Reject it at the point it's first written instead.
-        routing = v.get("routing_number")
-        if routing and not validate_aba_routing(routing):
-            raise ValueError("routing_number is not a valid 9-digit ABA routing number")
-        # Same posture for the UK equivalent — a sort code, only checked when
-        # present (a US vendor's staged change never carries one). Accepted
-        # either grouped (NN-NN-NN) or bare (NNNNNN); see validate_uk_sort_code.
-        sort_code = v.get("sort_code")
-        if sort_code and not validate_uk_sort_code(sort_code):
-            raise ValueError("sort_code is not a valid 6-digit UK sort code")
-        return v
+    # NOTE the routing/sort-code check is deliberately NOT a `field_validator`
+    # here. FastAPI renders a Pydantic `ValidationError` as a 422 whose body
+    # echoes the rejected `input` back to the caller — and the input is the
+    # whole `bank_details` dict, account number included. A validator on this
+    # field therefore turned "your routing number has a typo" into a response
+    # body carrying banking data, which the PII invariant forbids. The check
+    # runs instead inside `api/vendors._stage_ap_bank_change` — the single
+    # staging chokepoint all three AP paths (create / PATCH / bank-change) go
+    # through — and raises an `HTTPException` naming only the FIELD.
 
 
 class VendorBulkStatusRequest(BaseModel):
@@ -373,3 +426,30 @@ class VendorStatusCounts(BaseModel):
     total: int
     by_status: dict[str, int] = Field(default_factory=dict)
     payments_blocked: int = 0
+    # Whole-set tally of `Vendor.screening_status` over the SAME population, on
+    # the same single aggregate pass as `by_status` / `payments_blocked` — so
+    # the three can never describe differently-filtered sets.
+    #
+    # It exists because the `/vendors/screening` page derived its "Sanctions
+    # matches" / "Needs review" headline figures by filtering the LOADED review
+    # queue. That was correct only while the queue endpoint returned every row
+    # AND was selected on exactly those two statuses — a construction accident,
+    # not a stated property, and paginating the queue would have turned both
+    # KPIs into silent page-scoped undercounts. A tally has to come from a
+    # query that asks the tally's own question (`docs/decisions.md` §48).
+    by_screening_status: dict[str, int] = Field(default_factory=dict)
+
+
+class ScreeningReviewQueueResponse(PageMeta):
+    """`GET /api/vendors/screening/review-queue` — the canonical paginated
+    envelope (`items` / `total` / `page` / `page_size`), same contract as every
+    other list endpoint.
+
+    The queue used to return a bare, unbounded `list[...]`: one `Vendor` query
+    plus one `sanctions_checks` lookup PER ROW, growing without limit with the
+    tenant's flagged-vendor population. Paginating bounds both. The headline
+    counts that used to be derived from the full list now come from
+    `GET /api/vendors/counts` (`by_screening_status`) instead."""
+
+    items: list[ScreeningReviewItem]
+    total: int

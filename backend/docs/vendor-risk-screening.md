@@ -140,6 +140,33 @@ override.
 `sanctions_checks(result)` + the `vendors(screening_status)` index).
 `GET /api/vendors/{id}/screening-history` returns the full trail for one vendor.
 
+**The queue is paginated** on the canonical `page` / `page_size` envelope
+(`items` / `total` / `page` / `page_size`), ordered `last_screened_at DESC NULLS
+LAST, id ASC`. It used to return a bare unbounded list, which cost one extra
+`sanctions_checks` lookup PER flagged vendor with no ceiling. The `.id`
+tie-break is load-bearing: `last_screened_at` is not unique (a bulk re-screen
+stamps a whole batch inside one transaction, and it is NULL for a never-screened
+vendor), so without it Postgres may order equal-keyed rows differently between
+the `offset=0` and `offset=N` queries and a vendor is duplicated onto two pages
+or skipped entirely.
+
+**The page's headline counts do not come from the queue.** "Sanctions matches"
+and "Needs review" were derived by filtering the LOADED queue, which was correct
+only while the endpoint returned every row AND was selected on exactly those two
+statuses — a construction accident, not a stated property, and paginating would
+have turned both into silent page-scoped undercounts. They now read
+`by_screening_status` from `GET /api/vendors/counts`, computed on the SAME
+single aggregate pass as `by_status` and `payments_blocked` so the three can
+never describe differently-filtered populations. Same rule as the "Payments
+blocked" KPI before it: a tally has to come from a query that asks the tally's
+own question (`docs/decisions.md` §48).
+
+`/api/vendors/counts` is `admin` / `ap_manager` / `cfo` while the queue also
+admits `ap_clerk`, so a clerk sees an em-dash for all three KPIs rather than a
+number. That is deliberate and unchanged from how the blocked tally already
+behaved: with the queue paginated, a clerk-side client derivation would be a
+page-scoped lie, and "we don't know" beats a wrong figure.
+
 **Frontend surface.** The dedicated review-queue page lives at
 `frontend/src/routes/vendors/screening/+page.svelte` (sidebar link
 **Screening**, admin / ap_manager / ap_clerk / cfo — the same four roles

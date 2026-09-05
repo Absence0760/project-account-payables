@@ -116,7 +116,17 @@ class MockPaymentAdapter(PaymentAdapter):
             status=PaymentStatus.completed,
             provider_payment_id=provider_id,
             reference=reference,
-            raw_response={"mock": True, "correlation_id": payload.correlation_id},
+            raw_response={
+                "mock": True,
+                "correlation_id": payload.correlation_id,
+                # WHICH routing number this rail would have been instructed
+                # with — the PII-free label only (`wire` / `ach` / `none`),
+                # never the number itself, which is banking data. Local dev and
+                # the e2e stack run on this adapter, so surfacing the selection
+                # is what makes the wire-vs-ACH routing choice observable at all
+                # without a real bank credential.
+                "routing_source": payload.routing.source,
+            },
         )
 
     async def get_payment_status(self, provider_payment_id: str) -> PaymentStatus:

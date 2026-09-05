@@ -61,6 +61,7 @@ from app.schemas.sanctions import (
     VendorBlockRequest,
 )
 from app.schemas.vendor import (
+    ScreeningReviewQueueResponse,
     VendorBankChangeRequest,
     VendorBulkExportRequest,
     VendorBulkScreenRequest,
@@ -75,6 +76,7 @@ from app.schemas.vendor import (
     VendorResponse,
     VendorStatusCounts,
     VendorUpdate,
+    validate_bank_routing_fields,
 )
 from app.services.audit_access import build_field_diff, log_access
 from app.services.audit_dispatch import dispatch_audit
@@ -141,7 +143,11 @@ _AUDITABLE_SCALAR_FIELDS = (
 # NEVER appear in an audit row. We record only THAT they changed plus a
 # last-4 (PII-out-of-logs invariant). Every other key (counterparty_id,
 # *_last4, bank_name, swift_bic, country) is non-secret display metadata.
-_BANK_SECRET_KEYS = frozenset({"account_number", "routing_number", "iban"})
+# NOTE `wire_routing_number` is here for the same reason `routing_number` is:
+# this project treats a payee's routing coordinates as banking data that stays
+# out of the trail, and a NEW secret-shaped key that isn't listed would be
+# recorded verbatim by `_bank_details_audit_summary`'s else-branch.
+_BANK_SECRET_KEYS = frozenset({"account_number", "routing_number", "wire_routing_number", "iban"})
 
 
 def _last4(value: object) -> str | None:
@@ -184,6 +190,19 @@ async def _stage_ap_bank_change(
         )
 
     incoming = incoming or {}
+    # Structural check on whatever routing coordinates the payload actually
+    # carries (ABA / wire ABA / UK sort code) — an international payee has none
+    # of them and is untouched. Deliberately NOT a Pydantic field validator:
+    # FastAPI renders a `ValidationError` as a 422 whose body echoes the
+    # rejected `input`, and the input here is the whole `bank_details` dict,
+    # account number included — so validating there turned "your routing number
+    # has a typo" into a response carrying banking data. Raising from the
+    # chokepoint instead lets the 4xx name only the FIELD, and covers all three
+    # AP entry points (create, PATCH, POST /bank-change) in one place.
+    try:
+        validate_bank_routing_fields(incoming)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     last4 = _last4(incoming.get("account_number") or incoming.get("account_last4"))
     # PII-safe preview of what WOULD change if approved (last-4s only; raw
     # secrets masked by _bank_details_audit_summary). The change isn't applied
@@ -663,6 +682,11 @@ async def vendor_status_counts(
         apply_entity_scope(
             select(
                 Vendor.status,
+                # Second grouping dimension so `by_screening_status` is computed
+                # from the SAME rows as `by_status` rather than a sibling query
+                # that could be filtered differently. Cross-product of two
+                # low-cardinality enums — a handful of rows either way.
+                Vendor.screening_status,
                 func.count(),
                 # `count(*) FILTER (WHERE payments_blocked)` — one pass over the
                 # same filtered population, so the blocked tally cannot describe
@@ -674,16 +698,29 @@ async def vendor_status_counts(
         ),
         search=search,
         # `status` is the dimension being tallied — applying it would zero every
-        # other chip (`invoices.py::invoice_counts` states the same rule).
+        # other chip (`invoices.py::invoice_counts` states the same rule). The
+        # same reasoning covers `screening_status`, which this endpoint takes no
+        # filter for at all.
         status_filter=None,
         source=source,
-    ).group_by(Vendor.status)
+    ).group_by(Vendor.status, Vendor.screening_status)
     rows = (await db.execute(query)).all()
-    by_status = {str(status): int(n) for status, n, _blocked in rows}
+    by_status: dict[str, int] = {}
+    by_screening_status: dict[str, int] = {}
+    total = 0
+    blocked = 0
+    for vendor_status, screening_status, n, n_blocked in rows:
+        n = int(n)
+        total += n
+        blocked += int(n_blocked)
+        by_status[str(vendor_status)] = by_status.get(str(vendor_status), 0) + n
+        key = str(screening_status or "unscreened")
+        by_screening_status[key] = by_screening_status.get(key, 0) + n
     return VendorStatusCounts(
-        total=sum(by_status.values()),
+        total=total,
         by_status=by_status,
-        payments_blocked=sum(int(blocked) for _s, _n, blocked in rows),
+        payments_blocked=blocked,
+        by_screening_status=by_screening_status,
     )
 
 
@@ -784,21 +821,63 @@ async def list_change_requests(
 # mismatch anyway — but declaration order makes the intent explicit and safe.)
 
 
-@router.get("/screening/review-queue", response_model=list[ScreeningReviewItem])
+@router.get("/screening/review-queue", response_model=ScreeningReviewQueueResponse)
 async def screening_review_queue(
+    pagination: PaginationParams = Depends(pagination_params),
+    search: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Vendors needing screening attention — `match` or `review` status —
     newest screen first. Each row carries the matched-list NAME + provider
-    from its most recent `sanctions_checks` row (never raw match details)."""
+    from its most recent `sanctions_checks` row (never raw match details).
+
+    Paginated on the canonical `page` / `page_size` envelope. It returned a
+    bare unbounded list, which cost one extra `sanctions_checks` query PER
+    flagged vendor with no ceiling, and made the page's own headline counts a
+    filter over whatever happened to be loaded. Those counts now come from
+    `GET /api/vendors/counts` (`by_screening_status`), which asks the whole-set
+    question directly.
+
+    `.id` is appended as the final tie-break: `last_screened_at` is not unique
+    (a bulk re-screen stamps a whole batch within the same transaction, and it
+    is NULL for a never-screened vendor), so without it Postgres may order
+    equal-keyed rows differently between the `offset=0` and `offset=N` queries
+    and a vendor can be duplicated onto two pages or skipped entirely. Same
+    rule as `GET /vendors`.
+    """
     query = apply_entity_scope(
         select(Vendor).where(Vendor.screening_status.in_(("match", "review"))),
         Vendor,
         entity_id,
     )
-    query = query.order_by(Vendor.last_screened_at.desc().nulls_last())
+    if search:
+        # Server-side, because the page paginates now: a client-side filter over
+        # the LOADED rows silently hides every match on a later page and tells
+        # the reviewer nothing was found (`frontend/CLAUDE.md` § Search).
+        # Matched-list uses EXISTS over the vendor's screening trail rather than
+        # only its latest row — a superset, and the honest one: "which vendors
+        # have ever hit OFAC" is the question a reviewer typing a list name is
+        # asking. Raw provider match details are never searched (they are the
+        # PII this surface exists to keep out).
+        query = query.where(
+            ilike_contains(Vendor.name, search)
+            | select(SanctionsCheck.id)
+            .where(
+                SanctionsCheck.vendor_id == Vendor.id,
+                ilike_contains(SanctionsCheck.matched_list, search),
+            )
+            .exists()
+        )
+    total = int(
+        (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    )
+    query = (
+        query.order_by(Vendor.last_screened_at.desc().nulls_last(), Vendor.id.asc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
     vendors = (await db.execute(query)).scalars().all()
 
     items: list[ScreeningReviewItem] = []
@@ -829,7 +908,9 @@ async def screening_review_queue(
                 adverse_media=has_adverse_media(categories),
             )
         )
-    return items
+    return ScreeningReviewQueueResponse(
+        items=items, total=total, page=pagination.page, page_size=pagination.page_size
+    )
 
 
 @router.get("/{vendor_id}", response_model=VendorResponse)
@@ -1722,6 +1803,18 @@ async def approve_change_request(
     last4: str | None = None
     if req.change_type == "bank_details":
         incoming = (req.proposed_value or {}).get("bank_details") or {}
+        # Re-validate the routing coordinates at the point they are APPLIED.
+        # This is the single chokepoint every staged bank change passes through
+        # — AP-initiated (`POST /{id}/bank-change`, already validated by
+        # `VendorBankChangeRequest`) and supplier-portal-submitted alike — so a
+        # malformed ABA that reached staging through a route with a looser
+        # schema fails loudly here instead of being written onto the vendor and
+        # surfacing days later as a returned payment. The message names the
+        # field only, never the number.
+        try:
+            validate_bank_routing_fields(incoming)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         account = str(incoming.get("account_number") or "")
         last4 = account[-4:] if len(account) >= 4 else None
         vendor.bank_details = _merge_bank_details(vendor.bank_details, incoming)

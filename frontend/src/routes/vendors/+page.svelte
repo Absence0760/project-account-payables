@@ -67,6 +67,7 @@
 		counterparty_id: '',
 		account_last4: '',
 		routing_last4: '',
+		wire_routing_last4: '',
 		bank_name: '',
 		country: '',
 		mailing_address: { street: '', city: '', state: '', postal: '', country: '' }
@@ -86,6 +87,7 @@
 			counterparty_id: v.bank_details?.counterparty_id ?? '',
 			account_last4: v.bank_details?.account_last4 ?? '',
 			routing_last4: v.bank_details?.routing_last4 ?? '',
+			wire_routing_last4: v.bank_details?.wire_routing_last4 ?? '',
 			bank_name: v.bank_details?.bank_name ?? '',
 			country: v.bank_details?.country ?? '',
 			mailing_address: {
@@ -845,7 +847,7 @@
 					<input type="text" maxlength="4" bind:value={bankForm.account_last4} />
 				</label>
 				<label>
-					<span>{bankIsUK ? m('vendors.bank.sortCodeLast2') : m('vendors.bank.routingLast4')}</span>
+					<span>{bankIsUK ? m('vendors.bank.sortCodeLast2') : m('vendors.bank.achRoutingLast4')}</span>
 					<input
 						type="text"
 						maxlength={bankIsUK ? 2 : 4}
@@ -853,6 +855,18 @@
 					/>
 				</label>
 			</div>
+			<!-- Larger US banks publish a SEPARATE Fedwire ABA from their ACH one,
+			     so a wire and an ACH to the same vendor are addressed differently.
+			     UK vendors use a sort code and have neither, so this is hidden for
+			     them. Leave it blank when the bank publishes one number: the
+			     payment path falls back to the ACH routing number for wires. -->
+			{#if !bankIsUK}
+				<label>
+					<span>{m('vendors.bank.wireRoutingLast4')}</span>
+					<input type="text" maxlength="4" bind:value={bankForm.wire_routing_last4} />
+				</label>
+				<p class="modal-hint">{m('vendors.bank.wireRoutingHint')}</p>
+			{/if}
 			<h3>{m('vendors.bank.mailingAddressSection')}</h3>
 			<p class="modal-hint">{m('vendors.bank.mailingHint')}</p>
 			<label>

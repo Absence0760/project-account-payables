@@ -54,6 +54,13 @@ def test_vendor_bank_details_schema_only_exposes_last_four():
         "iban_last4",
         "swift_bic",
         "country",
+        # Display last-4 of the SEPARATE Fedwire ABA larger US banks publish
+        # for incoming wires. Same trust level as `routing_last4` beside it —
+        # the FULL `wire_routing_number` lives only in the JSONB column and is
+        # in `api/vendors._BANK_SECRET_KEYS`, so it is masked out of the audit
+        # trail exactly like `routing_number`. See `docs/vendor-management.md`
+        # § Bank details: two routing numbers.
+        "wire_routing_last4",
         # Where a `check` payment via the `checkeeper` rail gets physically
         # mailed. Not a banking secret — same trust level as the vendor's
         # own `address` field, which is already recorded verbatim elsewhere
@@ -67,6 +74,7 @@ def test_vendor_bank_details_schema_only_exposes_last_four():
     forbidden = {
         "account_number",
         "routing_number",
+        "wire_routing_number",  # the Fedwire ABA; wire_routing_last4 is OK
         "iban",  # full IBAN must never be exposed; iban_last4 is OK
         "swift",  # legacy / ambiguous name; use swift_bic instead
         "full_account",
@@ -82,7 +90,7 @@ def test_vendor_bank_details_last4_fields_are_capped_at_four_chars():
     number."""
     from app.schemas.vendor import VendorBankDetails
 
-    for fname in ("account_last4", "routing_last4"):
+    for fname in ("account_last4", "routing_last4", "wire_routing_last4"):
         field = VendorBankDetails.model_fields[fname]
         metadata_str = str(field.metadata)
         assert "max_length=4" in metadata_str or "MaxLen(max_length=4)" in metadata_str, (
@@ -224,6 +232,7 @@ def test_vendor_response_filters_unknown_bank_keys_through_typed_schema():
         "account_last4": "1234",
         "account_number": "01234567890987",  # forbidden — full PAN-equivalent
         "routing_number": "021000021",
+        "wire_routing_number": "026009593",  # forbidden — the Fedwire ABA
     }
     safe = VendorBankDetails(
         counterparty_id=polluted.get("counterparty_id"),
@@ -234,6 +243,7 @@ def test_vendor_response_filters_unknown_bank_keys_through_typed_schema():
     serialised = safe.model_dump()
     assert "account_number" not in serialised
     assert "routing_number" not in serialised
+    assert "wire_routing_number" not in serialised
     assert serialised.get("account_last4") == "1234"
 
 

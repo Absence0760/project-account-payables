@@ -73,6 +73,10 @@
 	let bankName = $state('');
 	let accountNumber = $state('');
 	let routingNumber = $state('');
+	// Larger US banks publish a SEPARATE ABA for incoming wires. Optional: left
+	// blank, the wire rail falls back to the ACH routing number above — which is
+	// what a bank publishing a single number means.
+	let wireRoutingNumber = $state('');
 	let sortCode = $state('');
 	let bankCountry = $state('');
 	// GB uses a 6-digit sort code, not a 9-digit US ABA routing number — the
@@ -187,11 +191,21 @@
 			await portalCompany.requestBankChange({
 				bank_name: bankName,
 				account_number: accountNumber,
-				...(bankIsUK ? { sort_code: sortCode } : { routing_number: routingNumber }),
+				...(bankIsUK
+					? { sort_code: sortCode }
+					: {
+							routing_number: routingNumber,
+							// Omitted entirely when blank, so an empty string can't
+							// be stored and then fail the ABA check at approval.
+							...(wireRoutingNumber.trim()
+								? { wire_routing_number: wireRoutingNumber.trim() }
+								: {})
+						}),
 				...(bankCountry ? { country: bankCountry } : {})
 			});
 			accountNumber = '';
 			routingNumber = '';
+			wireRoutingNumber = '';
 			sortCode = '';
 			bankName = '';
 			bankCountry = '';
@@ -287,6 +301,11 @@
 					{m('portal.company.bank.routing')}
 					<input type="text" bind:value={routingNumber} autocomplete="off" />
 				</label>
+				<label>
+					{m('portal.company.bank.wireRouting')}
+					<input type="text" bind:value={wireRoutingNumber} autocomplete="off" />
+				</label>
+				<p class="note">{m('portal.company.bank.wireRoutingHint')}</p>
 			{/if}
 			<button
 				type="submit"

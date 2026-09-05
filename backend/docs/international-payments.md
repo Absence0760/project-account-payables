@@ -309,14 +309,32 @@ Stored in `Vendor.bank_details` (JSONB):
 | Key | Set by | Read by | Surfaced to UI |
 |---|---|---|---|
 | `counterparty_id` | UI (admin) | adapter | yes |
-| `account_last4`, `routing_last4` | UI | display only | yes |
+| `account_last4`, `routing_last4`, `wire_routing_last4` | UI | display only | yes |
 | `bank_name` | UI | display | yes |
+| `routing_number` | supplier portal / admin endpoint | `resolve_routing_number` (ACH rails), Positive Pay ACH file | **no** — `routing_last4` only |
+| `wire_routing_number` | supplier portal / admin endpoint | `resolve_routing_number` (wire rails) | **no** — `wire_routing_last4` only |
 | `iban` | admin endpoint | orchestrator | **no** — `iban_last4` only |
 | `swift_bic` | UI / admin | orchestrator + adapter | yes (public bank code) |
 | `country` | UI / IBAN-derived | corridor | yes |
 
 The full IBAN never appears in the `VendorBankDetails` Pydantic
 schema. Pinned by `tests/test_pii_protection.py`.
+
+### Two US routing numbers, one per rail family
+
+Larger US banks publish a different ABA for incoming Fedwires than for ACH.
+`routing_number` is the ORIGINAL, generic key and stays the **ACH** number —
+every stored row already means that by it, so nothing is reinterpreted;
+`wire_routing_number` is the optional separate **Fedwire** ABA.
+
+`services/payment_adapters/base.resolve_routing_number(vendor_bank, method)`
+picks between them, surfaced as `PaymentPayload.routing`. Wire rails (`wire`,
+`international_wire`) prefer the wire ABA and fall back to the ACH one (a bank
+publishing a single ABA uses it for both); ACH-family rails read the ACH number
+and never borrow the wire one, because a bank with two ABAs rejects an ACH file
+addressed to its Fedwire number. Adapters read `payload.routing`, never
+`vendor_bank["routing_number"]`. Full rationale, validation and the dual-control
+staging path: `docs/vendor-management.md` § Bank details: two routing numbers.
 
 ## Adding an FX provider
 
