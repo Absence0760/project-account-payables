@@ -9,12 +9,17 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import VendorTaxModal from '$lib/components/modals/VendorTaxModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
-	import { formatMoney, isPositiveAmount } from '$lib/utils/money';
+	import { formatMoney, isPositiveAmount, sumMoney } from '$lib/utils/money';
 	import { get1099Report, file1099Batch } from '$lib/api/tax';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
-	import type { Filing1099Response, Report1099, Vendor1099Row } from '$lib/types/tax';
+	import type {
+		Box1099Allocation,
+		Filing1099Response,
+		Report1099,
+		Vendor1099Row
+	} from '$lib/types/tax';
 	import { formatDate } from '$lib/utils/time';
 
 	// `POST /api/tax/vendors/{id}/{w9,tin-verify}` and `POST /api/tax/1099/file`
@@ -35,8 +40,8 @@
 
 	let search = $state('');
 	// Chip keys: 'all' | 'reportable' | 'missing_w9' | 'over_threshold' |
-	// 'tin_unverified' | 'card_excluded'. Typed as string to match FilterChips'
-	// bindable `active`.
+	// 'tin_unverified' | 'card_excluded' | 'unmapped'. Typed as string to match
+	// FilterChips' bindable `active`.
 	let rowFilter = $state('all');
 
 	// Row-level "manage this vendor's tax bookkeeping" modal (W-9 upload/edit,
@@ -47,6 +52,12 @@
 	// `RunDetailModal`'s execute button and `payments/+page.svelte`'s void
 	// dialog — submitting to the IRS is not reversible from this app.
 	let showFileModal = $state(false);
+	// Which form this batch files. It matters now that a vendor's reportable
+	// total is split across boxes: a 1099-MISC batch carries only that vendor's
+	// MISC boxes, so a tenant with rent AND contractor spend files twice. The
+	// backend takes `form_type` on every filing; this is the control for it.
+	const FORM_TYPES = ['1099-NEC', '1099-MISC'] as const;
+	let fileFormType = $state<string>('1099-NEC');
 	let fileArmed = $state(false);
 	let filing = $state(false);
 	let fileResult = $state<Filing1099Response | null>(null);
@@ -104,6 +115,36 @@
 		return isPositiveAmount(r.card_paid);
 	}
 
+	// Reportable money sitting in the fallback box because no GL → box rule
+	// matched it. It IS filed — but in whichever box the org nominated as the
+	// catch-all, so this is the "go write a mapping rule" worklist.
+	function hasUnmappedSpend(r: Vendor1099Row): boolean {
+		return isPositiveAmount(r.unmapped_paid);
+	}
+
+	function boxesForForm(r: Vendor1099Row, formType: string): Box1099Allocation[] {
+		return (r.box_allocations ?? []).filter((b) => b.form_type === formType);
+	}
+
+	// The amounts that would be filed for one vendor on one form. A row with no
+	// allocation at all (a shape older than per-box filing) falls back to the
+	// whole reportable total, mirroring the backend's `box_total_for_form`.
+	function formAmounts(r: Vendor1099Row, formType: string): string[] {
+		const boxes = r.box_allocations ?? [];
+		if (boxes.length === 0) return [r.ytd_paid];
+		return boxesForForm(r, formType).map((b) => b.amount);
+	}
+
+	// Vendors that actually have something to file on the selected form —
+	// `sumMoney` only decides membership + renders one display subtotal; every
+	// per-box figure on screen is the backend's own string-Decimal.
+	let filableForForm = $derived(
+		(report?.rows ?? []).filter((r) => isReportable(r) && sumMoney(formAmounts(r, fileFormType)) > 0)
+	);
+	let filableTotalForForm = $derived(
+		sumMoney(filableForForm.flatMap((r) => formAmounts(r, fileFormType)))
+	);
+
 	let filteredRows = $derived.by(() => {
 		const rows = report?.rows ?? [];
 		const q = search.trim().toLowerCase();
@@ -120,6 +161,8 @@
 					return r.over_threshold;
 				case 'card_excluded':
 					return hasCardExcluded(r);
+				case 'unmapped':
+					return hasUnmappedSpend(r);
 				default:
 					return true;
 			}
@@ -168,6 +211,7 @@
 	}
 
 	function openFileModal() {
+		fileFormType = '1099-NEC';
 		fileArmed = false;
 		fileResult = null;
 		fileError = null;
@@ -198,7 +242,7 @@
 		filing = true;
 		fileError = null;
 		try {
-			fileResult = await file1099Batch(year, '1099-NEC');
+			fileResult = await file1099Batch(year, fileFormType);
 			toast(
 				fileResult.already_filed
 					? m('tax.fileModal.toast.alreadyFiled')
@@ -267,6 +311,47 @@
 			/>
 		</div>
 
+		{#if report.box_allocations.length > 0}
+			<section class="box-panel" aria-labelledby="box-panel-title">
+				<h2 id="box-panel-title">{m('tax.boxes.title')}</h2>
+				<p class="box-panel-sub">{m('tax.boxes.subtitle')}</p>
+				<ul class="box-list">
+					{#each report.box_allocations as b (b.box)}
+						<li class="box-item">
+							<span class="box-code">{b.box}</span>
+							<span class="box-label">
+								{b.label}
+								{#if b.fallback}
+									<span class="box-fallback">{m('tax.boxes.fallbackTag')}</span>
+								{/if}
+							</span>
+							<span class="box-count">{m('tax.boxes.paymentCount', { n: b.payment_count })}</span>
+							<span class="box-amount mono">
+								<Money amount={b.amount} currency={reportCurrency} />
+							</span>
+						</li>
+					{/each}
+				</ul>
+				{#if isPositiveAmount(report.total_unmapped)}
+					<p class="box-note warn">
+						{m('tax.boxes.unmapped', {
+							amount: formatMoney(report.total_unmapped, { currency: report.currency }),
+							box: report.box_allocations.find((b) => b.fallback)?.box ?? 'NEC-1'
+						})}
+					</p>
+				{/if}
+				{#if report.box_allocation_reconciled}
+					<p class="box-note">{m('tax.boxes.reconciled')}</p>
+				{:else}
+					<p class="box-note warn" role="alert">
+						{m('tax.boxes.notReconciled', {
+							residual: formatMoney(report.box_unallocated, { currency: report.currency })
+						})}
+					</p>
+				{/if}
+			</section>
+		{/if}
+
 		<div class="toolbar-row">
 			<FilterChips
 				chips={[
@@ -296,6 +381,11 @@
 						key: 'card_excluded',
 						label: m('tax.filter.cardExcluded'),
 						count: report.rows.filter(hasCardExcluded).length
+					},
+					{
+						key: 'unmapped',
+						label: m('tax.filter.unmapped'),
+						count: report.rows.filter(hasUnmappedSpend).length
 					}
 				]}
 				bind:active={rowFilter}
@@ -348,6 +438,25 @@
 									class="threshold-flag"
 									title={m('tax.thresholdFlag', { threshold: thresholdLabel })}>▲</span
 								>
+							{/if}
+							{#if r.box_allocations.length > 0}
+								<span class="box-split">
+									{#each r.box_allocations as b (b.box)}
+										<span
+											class="box-split-item"
+											class:fallback={b.fallback}
+											title={m('tax.boxes.rowTitle', {
+												label: b.label,
+												amount: formatMoney(b.amount, { currency: reportCurrency })
+											})}
+										>
+											{b.box}{#if r.box_allocations.length > 1}&nbsp;<Money
+													amount={b.amount}
+													currency={reportCurrency}
+												/>{/if}
+										</span>
+									{/each}
+								</span>
 							{/if}
 						</td>
 						<td class="right mono card-excluded">
@@ -420,13 +529,22 @@
 			</button>
 		</div>
 	{:else if report}
+		<label class="form-type">
+			<span>{m('tax.fileModal.formType')}</span>
+			<select bind:value={fileFormType} disabled={filing || fileArmed}>
+				{#each FORM_TYPES as ft (ft)}
+					<option value={ft}>{ft}</option>
+				{/each}
+			</select>
+		</label>
 		<p class="modal-hint">
 			{m('tax.fileModal.summary', {
-				count: report.vendor_count_eligible_over_threshold,
+				count: filableForForm.length,
 				year,
-				amount: formatMoney(report.total_reportable, { currency: report.currency })
+				amount: formatMoney(filableTotalForForm, { currency: report.currency })
 			})}
 		</p>
+		<p class="modal-hint">{m('tax.fileModal.formTypeHint')}</p>
 		<p class="modal-warn">{m('tax.fileModal.warning')}</p>
 		{#if fileArmed}
 			<p class="modal-warn armed" role="alert">{m('tax.fileModal.armedNote')}</p>
@@ -440,7 +558,7 @@
 				type="button"
 				class="btn-danger"
 				class:armed={fileArmed}
-				disabled={filing || report.vendor_count_eligible_over_threshold === 0}
+				disabled={filing || filableForForm.length === 0}
 				onclick={submitFile}
 			>
 				{filing
@@ -448,7 +566,7 @@
 					: fileArmed
 						? m('tax.fileModal.confirmFinal')
 						: m('tax.fileModal.confirmArm', {
-								count: report.vendor_count_eligible_over_threshold,
+								count: filableForForm.length,
 								year
 							})}
 			</button>
@@ -457,6 +575,114 @@
 </Modal>
 
 <style>
+	.box-panel {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 16px 18px;
+	}
+
+	.box-panel h2 {
+		margin: 0;
+		font-size: 0.95rem;
+		font-weight: 600;
+	}
+
+	.box-panel-sub {
+		margin: 4px 0 12px;
+		font-size: 0.8rem;
+		color: var(--text-muted);
+	}
+
+	.box-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.box-item {
+		display: grid;
+		grid-template-columns: 5.5rem 1fr auto auto;
+		align-items: baseline;
+		gap: 12px;
+		padding: 6px 0;
+		border-top: 1px solid var(--border);
+	}
+
+	.box-item:first-child {
+		border-top: none;
+	}
+
+	.box-code {
+		font-family: var(--font-mono, monospace);
+		font-size: 0.78rem;
+		font-weight: 600;
+	}
+
+	.box-label {
+		font-size: 0.85rem;
+	}
+
+	.box-fallback {
+		margin-left: 6px;
+		font-size: 0.68rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 1px 6px;
+	}
+
+	.box-count,
+	.box-note {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+	}
+
+	.box-amount {
+		font-variant-numeric: tabular-nums;
+		font-weight: 600;
+	}
+
+	.box-note {
+		margin: 10px 0 0;
+	}
+
+	.box-note.warn {
+		color: var(--danger);
+	}
+
+	.box-split {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 4px 8px;
+		margin-top: 3px;
+	}
+
+	.box-split-item {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.box-split-item.fallback {
+		text-decoration: underline dotted;
+		text-underline-offset: 2px;
+	}
+
+	.form-type {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 10px;
+		font-size: 0.85rem;
+	}
+
 	.year-select {
 		display: inline-flex;
 		align-items: center;

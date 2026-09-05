@@ -35,6 +35,42 @@ export interface Vendor1099Row {
 	 * never run through `POST /api/tax/vendors/{id}/tin-verify`.
 	 */
 	tin_verified: boolean;
+	/**
+	 * Per-box split of `ytd_paid`, driven by the paying invoice's GL account
+	 * through the org's `settings.tax.boxes` mapping. Sums to `ytd_paid`
+	 * exactly — every payment lands whole in one box, so there is no rounding
+	 * residual. See backend/docs/tax-1099.md § Per-box allocation.
+	 */
+	box_allocations: Box1099Allocation[];
+	/**
+	 * The slice of `ytd_paid` that reached the fallback box because no mapping
+	 * rule matched it — string-Decimal. It IS filed (in the fallback box); it
+	 * is surfaced because nobody has told us which box it really belongs in.
+	 */
+	unmapped_paid: string;
+	unmapped_payment_count: number;
+	/**
+	 * `ytd_paid` minus the sum of the boxes — string-Decimal, `"0.00"` for
+	 * every row the aggregation produced. Published so the reconciliation
+	 * guarantee can be checked rather than taken on trust.
+	 */
+	box_unallocated: string;
+}
+
+/** One 1099 box's share of a vendor's reportable total. Money is a
+ *  string-Decimal; `box` is the stable code (`NEC-1`, `MISC-6`). */
+export interface Box1099Allocation {
+	box: string;
+	/** "1099-NEC" | "1099-MISC" — which form this box prints on. */
+	form_type: string;
+	/** IRS box number within that form, e.g. "6". */
+	box_number: string;
+	/** Human label, e.g. "Medical and health care payments". */
+	label: string;
+	amount: string;
+	payment_count: number;
+	/** True when this box absorbed spend no mapping rule matched. */
+	fallback: boolean;
 }
 
 /**
@@ -102,6 +138,18 @@ export interface Filing1099Response {
 	rejected_count: number;
 	already_filed: boolean;
 	forms: Filing1099FormResult[];
+	/** Per-box split behind each filed form. Empty for a filing made before
+	 *  per-box allocation shipped — stored records are never back-filled. */
+	box_breakdown: Filing1099BoxBreakdown[];
+}
+
+/** The per-box detail behind one filed form. PII-free: vendor id, box codes
+ *  and amounts — never a name or TIN. */
+export interface Filing1099BoxBreakdown {
+	vendor_id: string;
+	boxes: Box1099Allocation[];
+	/** Sum of `boxes` — the figure actually transmitted for this form. */
+	form_total: string;
 }
 
 export interface Report1099 {
@@ -129,6 +177,19 @@ export interface Report1099 {
 	 * string-Decimal.
 	 */
 	total_card_excluded: string;
+	/**
+	 * Per-box totals across exactly the vendors `total_reportable` covers
+	 * (1099-eligible + over threshold). The preparer's pre-filing sanity check.
+	 */
+	box_allocations: Box1099Allocation[];
+	/** Reportable money sitting in the fallback box for want of a mapping rule
+	 *  — string-Decimal. Non-zero means "go write a GL → box rule". */
+	total_unmapped: string;
+	/** `total_reportable` minus the sum of the boxes — string-Decimal, always
+	 *  `"0.00"`. Published so the guarantee is checkable. */
+	box_unallocated: string;
+	/** True when the boxes reconcile to `total_reportable` to the cent. */
+	box_allocation_reconciled: boolean;
 	/** ISO date the report was generated. */
 	generated_at: string;
 	rows: Vendor1099Row[];
