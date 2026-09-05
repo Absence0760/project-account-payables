@@ -144,13 +144,24 @@ class WebAuthnRegisterFinishRequest(BaseModel):
 
 
 class WebAuthnCredentialResponse(BaseModel):
-    """A registered passkey, metadata only — never the public key or counter."""
+    """A registered passkey, metadata only — never the public key or counter.
+
+    `rp_id` is the registrable domain the credential is bound to, and
+    `usable_here` whether that matches the Relying Party the CURRENT request
+    resolved to (`services/webauthn_rp`). A WebAuthn credential works on one RP
+    ID and no other, so a passkey registered on the platform host cannot be
+    presented on a tenant's vanity host — surfacing both fields is what lets the
+    UI say "registered for ap.acmecorp.com" instead of offering a credential
+    whose ceremony is guaranteed to fail.
+    """
 
     id: str
     name: str
     transports: str | None = None
     created_at: str | None = None
     last_used_at: str | None = None
+    rp_id: str | None = None
+    usable_here: bool = True
 
 
 class WebAuthnAuthStartRequest(BaseModel):

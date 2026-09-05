@@ -904,15 +904,50 @@ POST /api/auth/mfa/passkey/authenticate/verify  {challenge_token, credential}  #
 
 Both authenticate endpoints are **pre-access-token, public-by-design**: the login-issued MFA challenge token (`typ: mfa_challenge`, the same credential the `/mfa/verify` path uses) IS the gate; there is no JWT yet. The register / list / delete endpoints require the normal JWT.
 
-The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:reg_challenge:<user_id>` for registration, `webauthn:auth_challenge:<user_id>` for login, `webauthn:stepup_challenge:<operation>:<user_id>` for a step-up — `FEOH_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. **Those namespaces are a security boundary, not bookkeeping** — see "Purpose binding" below. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins are configurable (`FEOH_WEBAUTHN_RP_ID` / `FEOH_WEBAUTHN_ORIGINS`); the dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account. In deployed envs `FEOH_WEBAUTHN_ORIGINS` also accepts wildcard-subdomain entries (`https://*.app.example.com`) so every tenant origin is admitted without a per-tenant env change — the match is same-scheme suffix-at-a-label-boundary only (suffix look-alikes like `https://evilapp.example.com`, scheme downgrades, ports, and userinfo tricks don't match, and the bare base needs its own exact entry).
+The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:reg_challenge:<user_id>` for registration, `webauthn:auth_challenge:<user_id>` for login, `webauthn:stepup_challenge:<operation>:<user_id>` for a step-up — `FEOH_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. **Those namespaces are a security boundary, not bookkeeping** — see "Purpose binding" below. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins come from `FEOH_WEBAUTHN_RP_ID` / `FEOH_WEBAUTHN_ORIGINS`, but they are **resolved per request** rather than read at each ceremony site — see "Passkeys on a custom domain" below. The dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account. In deployed envs `FEOH_WEBAUTHN_ORIGINS` also accepts wildcard-subdomain entries (`https://*.app.example.com`) so every tenant origin is admitted without a per-tenant env change — the match is same-scheme suffix-at-a-label-boundary only (suffix look-alikes like `https://evilapp.example.com`, scheme downgrades, ports, and userinfo tricks don't match, and the bare base needs its own exact entry).
 
-Stored material — the credential id, COSE public key, and counter — is not secret in the password sense (the private key never leaves the authenticator) and is never logged. The login challenge offers `passkey` as a method whenever the user has at least one registered credential.
+Stored material — the credential id, COSE public key, counter, and the `rp_id` the credential is bound to — is not secret in the password sense (the private key never leaves the authenticator) and is never logged. The login challenge offers `passkey` as a method whenever the user has at least one registered credential **that this host's Relying Party can actually challenge**.
 
 Registering a passkey on an account that **already** has a factor (TOTP enabled, or at least one passkey) is a step-up operation with the same optional `{password?, code?, assertion?}` body as `/mfa/enroll` — otherwise a stolen session could quietly bind an attacker-controlled authenticator to the account. The *first* factor on a bare account needs no step-up.
 
 **Deleting** a passkey is a step-up operation too, and unconditionally: the passkey being deleted is itself a live factor, so `DELETE /api/auth/mfa/passkey/{id}` always requires the password, a current authenticator code, or a passkey assertion. Removing a factor with a stolen token is the same attack as replacing one. The credentials travel in the request **body**, never a query string — a password must not land in access logs or a `Referer` header. An id that isn't the caller's own is still an opaque `404`, checked *before* the step-up so an unknown id can't be used to burn the account's throttle or probe for existence. On top of that, under org-enforced MFA the last surviving factor can't be removed at all.
 
 The `/profile` passkey panel renders one "Confirm your password" field that serves both add and remove, shown only when a step-up actually applies. Leaving it blank on an account that holds a passkey runs the passkey step-up ceremony instead — the only route open to an SSO-only account.
+
+#### Passkeys on a custom domain (vanity host)
+
+A WebAuthn credential is bound to exactly **one** registrable domain — its Relying Party ID. `FEOH_WEBAUTHN_RP_ID` is a single global, so a tenant served on a white-label vanity host (`ap.acmecorp.com`, registered under `settings.brand.custom_domains` — see `docs/white-label.md`) could neither register nor use a passkey against it: the browser refuses to sign an RP ID that is not the page's effective domain or a registrable parent of it. TOTP and email OTP were unaffected, so it presented as a silently *reduced* second-factor menu rather than an error.
+
+The RP ID and allowed origins are now resolved **per request**, from the host the ceremony is running on, by `backend/app/services/webauthn_rp.py`. That module is the single owner of the `(rp_id, origins)` pair; every ceremony site goes through it, and `begin_registration` / `finish_registration` / `begin_authentication` / `finish_authentication` all take the resolved `RelyingParty` as a **required** argument — there is no config read left inside the ceremony module for a call site to disagree with.
+
+**The `Host` header is client-supplied, so it can never become an RP ID on its own.** Resolution is:
+
+| Request host | Resolved RP ID | Allowed origins |
+|---|---|---|
+| absent, or under the configured `FEOH_WEBAUTHN_RP_ID` (`acme.localhost`) | the global `FEOH_WEBAUTHN_RP_ID` | `FEOH_WEBAUTHN_ORIGINS` |
+| a host on **this tenant's own** `settings.brand.custom_domains` | that host | `https://<host>` + `FEOH_WEBAUTHN_ORIGINS` |
+| anything else — unknown, forged, or **another tenant's** vanity domain | the global `FEOH_WEBAUTHN_RP_ID` (fail closed) | `FEOH_WEBAUTHN_ORIGINS` |
+
+Three things make that safe:
+
+- The custom-domain list consulted is the one belonging to the org that owns the **account** the ceremony is for, not one looked up from the header. A vanity domain registered by a different tenant is therefore just an unknown host here.
+- Host normalization reuses `app/tenant.py::normalize_custom_domain` — the same function the tenant resolver maps an inbound `Host` to a slug with, so there is one notion of "is this that domain", not two.
+- A host that already sits *under* the platform RP ID keeps the platform RP ID even when it is also registered as a custom domain. Existing passkeys keep working; nothing needs re-registering.
+
+`https://<host>` is auto-allowed for a registered custom domain so a new vanity host needs no env change. The RP ID is the real binding (the authenticator signs `sha256(rp_id)` into `authenticatorData`, and a browser only produces it for a page under that domain); the origin list is a pre-screen on top of it. The configured platform origins stay in the list so an operator can add an explicit local-dev origin for a vanity host without a code change.
+
+**Registration and authentication cannot drift.** Beyond the single resolver, the RP ID a ceremony was *minted* under is stored alongside its Redis challenge and re-checked on the verify call — so a ceremony begun on the platform host and finished on a vanity one (or the reverse) is refused, instead of persisting a credential bound to a domain the authenticator never signed.
+
+##### The migration story: a passkey does not follow you across hosts
+
+A passkey registered against the platform RP ID genuinely cannot be presented on a vanity host. That is the protocol, not a defect to code around — so the goal is to make it **legible** rather than silent. `webauthn_credentials.rp_id` (migration `0091`, control-plane, nullable, backfilled to the configured global RP ID, which is provably what every pre-existing row was registered under) records where each credential lives, and:
+
+- `GET /api/auth/mfa/passkey` lists **every** passkey with its `rp_id` and a derived `usable_here` flag, so the security page can show "registered for `ap.acmecorp.com`" instead of offering a credential whose ceremony is guaranteed to fail.
+- `POST /api/auth/mfa/passkey/authenticate` and `POST /api/auth/mfa/step-up/passkey` narrow `allowCredentials` to the credentials this host can challenge, and when that leaves none they say *which* host the account's passkeys belong to. The caller has already proved control of the account (an access token, or the post-password MFA challenge token) and the hosts named are the tenant's own, so this leaks nothing. An account with **no** passkey at all keeps the old opaque `No passkey registered`, so the message can't be used to probe factor enrollment.
+- The login `methods` list omits `passkey` on a host where none is usable — but the **MFA gate itself still counts every passkey**, so a vanity-host passkey remains a second factor on the platform host. `email` is always offered, so narrowing the menu can never strand an account.
+- **Deleting** a passkey is deliberately *not* host-scoped: a user must be able to remove a credential from wherever they happen to be signed in.
+
+The residual rough edge, by design: an SSO-only account whose only factor is a passkey registered on another host cannot run the *assertion* step-up on this one (there is nothing here to sign with). It falls back to the password / TOTP proofs, or to registering a passkey on this host first. Regression tests: `backend/tests/test_webauthn_custom_domain.py`.
 
 #### Purpose binding — why a step-up assertion is not a login
 
@@ -1008,7 +1043,7 @@ Every step-up check is **throttled and audited**: 5 attempts per minute keyed on
 | `User.mfa_secret` (base32) | control-plane DB | Per-user, durable, written ONLY by a successful `/mfa/enroll/verify`. |
 | Pending (unverified) enrollment secret | Redis (`mfa:pending_enroll:<user_id>`, `mfa:vendor_pending_enroll:<id>`) | The candidate from an in-flight enrollment. Kept off the account row so starting an enrollment can't disturb the factor already in force; TTL `FEOH_MFA_ENROLL_PENDING_TTL_SECONDS`, consumed on verify. |
 | `User.mfa_enabled`, `mfa_enrolled_at` | control-plane DB | Drives login-flow decisions. |
-| `WebAuthnCredential` rows (credential id, COSE public key, sign counter) | control-plane DB (`webauthn_credentials`, migration 0063) | One row per registered passkey, keyed by `user_id` (control-plane, never tenant-fanned). Not secret in the password sense; never logged. |
+| `WebAuthnCredential` rows (credential id, COSE public key, sign counter, `rp_id`) | control-plane DB (`webauthn_credentials`, migrations 0063 + 0091) | One row per registered passkey, keyed by `user_id` (control-plane, never tenant-fanned). Not secret in the password sense; never logged. `rp_id` records the registrable domain the credential is bound to — see "Passkeys on a custom domain". |
 | `Organization.settings.mfa.required` | control-plane DB (JSONB) | Org-wide policy; lives next to other settings. |
 | Email-OTP hash | Redis (`mfa:email_otp:<user_id>`) | Short-lived, single-use, no need to persist. |
 | WebAuthn ceremony challenge | Redis (`webauthn:{reg,auth}_challenge:<user_id>`) | Short-lived, single-use; the verify call rejects an attacker-chosen challenge. |

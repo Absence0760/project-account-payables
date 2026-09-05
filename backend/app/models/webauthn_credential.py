@@ -27,6 +27,17 @@ key). We persist:
       it on every successful assertion and reject a regression (clone-detection,
       per the WebAuthn spec). Some authenticators (most passkeys) always report
       0; a 0→0 is allowed, a decrease from a non-zero count is rejected.
+    * ``rp_id`` — the registrable domain the credential is bound to. A WebAuthn
+      credential works on ONE Relying Party ID and no other, so a passkey
+      registered on the platform host genuinely cannot be presented on a
+      tenant's vanity host (``ap.acmecorp.com``) and vice versa. That is the
+      protocol, not a bug we can code around — recording it is what lets the
+      list endpoint and the authenticate path say "this passkey belongs to
+      <host>; register one here" instead of failing as an opaque signature
+      error. Resolved per request by ``services/webauthn_rp``. NULL means the
+      row predates this column; migration ``0091`` backfills those to the
+      configured global RP ID (provably what they were registered under) and
+      ``webauthn_rp.effective_rp_id`` reads a residual NULL the same way.
 None of these are PII or bank/credential material; they never go in logs.
 """
 
@@ -57,6 +68,11 @@ class WebAuthnCredential(Base, TimestampMixin):
     public_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     # Authenticator signature counter — monotonic clone-detection guard.
     sign_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # Registrable domain (RP ID) this credential is bound to — the platform
+    # `FEOH_WEBAUTHN_RP_ID`, or a tenant vanity host it was registered on.
+    # Nullable so a rolling deploy can't fail an insert from an old worker;
+    # `webauthn_rp.effective_rp_id` treats NULL as the platform RP ID.
+    rp_id: Mapped[str | None] = mapped_column(String(255))
     # Human label so a user can tell two passkeys apart in the security UI.
     name: Mapped[str] = mapped_column(String(120), nullable=False, default="Passkey")
     # comma-joined authenticator transports (usb, nfc, ble, internal, hybrid),

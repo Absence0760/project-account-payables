@@ -29,7 +29,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from tests.test_webauthn import RP_ID, SoftAuthenticator, _challenge_from_options
+from tests.test_webauthn import (
+    RP_ID,
+    SoftAuthenticator,
+    _challenge_from_options,
+    platform_rp,
+)
 
 ORIGIN = "http://localhost:7777"
 
@@ -144,10 +149,13 @@ async def _register_passkey(user) -> tuple[SoftAuthenticator, SimpleNamespace]:
         user_name=user.email,
         user_display_name=user.full_name,
         existing_credential_ids=[],
+        rp=platform_rp(),
     )
     soft = SoftAuthenticator()
     fields = await webauthn.finish_registration(
-        user_id=user.id, credential_json=soft.create(_challenge_from_options(options_json))
+        user_id=user.id,
+        credential_json=soft.create(_challenge_from_options(options_json)),
+        rp=platform_rp(),
     )
     cred = SimpleNamespace(
         id=uuid.uuid4(),
@@ -156,6 +164,7 @@ async def _register_passkey(user) -> tuple[SoftAuthenticator, SimpleNamespace]:
         public_key=fields["public_key"],
         sign_count=fields["sign_count"],
         transports=fields["transports"],
+        rp_id=fields["rp_id"],
         name="Laptop",
         created_at=None,
         last_used_at=None,
@@ -450,6 +459,7 @@ async def test_step_up_assertion_is_bound_to_its_operation():
             user,
             SimpleNamespace(password=None, code=None, assertion=assertion),
             operation="passkey_delete",
+            rp=platform_rp(),
         )
     assert satisfied is False
 
@@ -471,8 +481,12 @@ async def test_step_up_assertion_is_single_use():
         assertion = await _step_up_assertion(user, db, soft, "passkey_register")
         body = SimpleNamespace(password=None, code=None, assertion=assertion)
 
-        assert await auth_mod._step_up_satisfied(db, user, body, operation="passkey_register")
-        assert not await auth_mod._step_up_satisfied(db, user, body, operation="passkey_register")
+        assert await auth_mod._step_up_satisfied(
+            db, user, body, operation="passkey_register", rp=platform_rp()
+        )
+        assert not await auth_mod._step_up_satisfied(
+            db, user, body, operation="passkey_register", rp=platform_rp()
+        )
 
 
 @pytest.mark.asyncio
@@ -496,6 +510,7 @@ async def test_step_up_assertion_from_an_unregistered_credential_is_refused():
             user,
             SimpleNamespace(password=None, code=None, assertion=assertion),
             operation="passkey_register",
+            rp=platform_rp(),
         )
     assert satisfied is False
 

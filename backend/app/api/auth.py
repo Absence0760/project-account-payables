@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
@@ -49,7 +50,7 @@ from app.schemas.auth import (
     WebAuthnRegisterStartResponse,
     WebAuthnStepUpStartRequest,
 )
-from app.services import mfa, password_reset, webauthn
+from app.services import mfa, password_reset, webauthn, webauthn_rp
 from app.services.audit_dispatch import dispatch_auth_audit, queue_auth_audit
 from app.services.email_adapters import (
     EmailMessage,
@@ -86,6 +87,7 @@ from app.utils.passwords import (
     validate_password_complexity,
     verify_password,
 )
+from app.utils.tenant_urls import tenant_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +132,78 @@ async def _user_passkeys(db: AsyncSession, user_id) -> list[WebAuthnCredential]:
     return list(result.scalars().all())
 
 
+async def _relying_party(db: AsyncSession, org_id, host: str | None) -> webauthn_rp.RelyingParty:
+    """The WebAuthn Relying Party this request's ceremony runs under.
+
+    Every passkey call site goes through here, so registration and
+    authentication can't resolve differently (a credential is bound to one RP ID
+    — a mismatch would surface as an opaque signature failure). The org is
+    loaded ONLY when the host could actually change the answer: an absent Host,
+    or one already under the platform RP ID, resolves with no extra query. The
+    org whose registered custom domains are consulted is the one that owns the
+    ACCOUNT, which is what makes another tenant's vanity domain unusable here —
+    it simply isn't in this org's list, so the resolver falls back to the
+    platform RP rather than trusting the header. See `services/webauthn_rp`.
+    """
+    if not webauthn_rp.requires_tenant_domain_lookup(host):
+        return webauthn_rp.platform_relying_party()
+    org = await _load_user_org(db, org_id)
+    return webauthn_rp.resolve_relying_party(host=host, org_settings=org.settings if org else None)
+
+
+async def _relying_party_for_subject(
+    db: AsyncSession, user_id, host: str | None
+) -> webauthn_rp.RelyingParty:
+    """`_relying_party` for a caller we only know by user id (the passkey LOGIN
+    ceremony, which runs before an access token exists — the MFA challenge
+    token is the credential there).
+
+    Same lazy shape: the user row is fetched only when the host could change the
+    answer, so the ordinary subdomain login path adds no query.
+    """
+    if not webauthn_rp.requires_tenant_domain_lookup(host):
+        return webauthn_rp.platform_relying_party()
+    result = await db.execute(select(User).where(User.id == user_id))
+    subject = result.scalar_one_or_none()
+    if subject is None:
+        return webauthn_rp.platform_relying_party()
+    return await _relying_party(db, subject.organization_id, host)
+
+
+def _usable_passkeys(
+    creds: list[WebAuthnCredential], rp: webauthn_rp.RelyingParty
+) -> list[WebAuthnCredential]:
+    """The subset of an account's passkeys that can be presented under `rp`."""
+    return [c for c in creds if webauthn_rp.usable_under(c.rp_id, rp)]
+
+
+def _wrong_host_detail(creds: list[WebAuthnCredential], rp: webauthn_rp.RelyingParty) -> str:
+    """Why there is no usable passkey here, in words the account holder can act on.
+
+    A passkey is bound to one registrable domain, so one registered on the
+    platform host genuinely cannot be presented on a tenant's vanity host. That
+    is WebAuthn working as specified — the only thing we can improve is whether
+    the user is told. The caller has already proved control of the account (an
+    access token, or the post-password MFA challenge token), and the hosts named
+    are the tenant's own, so this leaks nothing an opaque error would protect.
+    """
+    others = webauthn_rp.other_rp_ids([c.rp_id for c in creds], rp)
+    if not others:
+        return "No passkey registered"
+    where = ", ".join(others)
+    return (
+        f"Your passkey is registered for {where}, not {rp.rp_id}. "
+        f"Sign in there, or register a passkey on {rp.rp_id}."
+    )
+
+
 async def _verify_presented_assertion(
     db: AsyncSession,
     user_id,
     credential_json: str,
     *,
     purpose: str,
+    rp: webauthn_rp.RelyingParty,
     operation: str | None = None,
 ) -> WebAuthnCredential:
     """Resolve the presented passkey and verify its assertion.
@@ -164,6 +232,12 @@ async def _verify_presented_assertion(
         cred = result.scalar_one_or_none()
     if not cred:
         raise webauthn.WebAuthnError("Unknown credential")
+    if not webauthn_rp.usable_under(cred.rp_id, rp):
+        # Bound to a different registrable domain — the assertion could not
+        # have been produced for this RP. Refused here rather than left to the
+        # signature check so the reason is knowable to the caller (which turns
+        # it into its own opaque response either way).
+        raise webauthn.WebAuthnError("Credential belongs to a different host")
 
     cred.sign_count = await webauthn.finish_authentication(
         user_id=user_id,
@@ -171,6 +245,7 @@ async def _verify_presented_assertion(
         stored_public_key=cred.public_key,
         stored_sign_count=cred.sign_count,
         purpose=purpose,
+        rp=rp,
         operation=operation,
     )
     cred.last_used_at = datetime.now(UTC)
@@ -280,6 +355,12 @@ async def login(
     body: LoginRequest,
     request: Request,
     db: AsyncSession = Depends(get_control_db),
+    # `host` resolves the WebAuthn Relying Party for the passkey method (see
+    # `services/webauthn_rp`). It goes LAST, after the injected dependencies,
+    # because callers pass `(body, request, db)` positionally — a parameter
+    # inserted before `db` silently rebinds it. FastAPI ignores order. The same
+    # rule applies to every other `host` parameter in this file.
+    host: Annotated[str | None, Header()] = None,
 ):
     """Password login. Returns either a final access token or — if MFA is in
     play — a short-lived challenge token the browser trades for one."""
@@ -378,7 +459,18 @@ async def login(
         # Passkeys (WebAuthn) are a separate factor — offered whenever the user
         # has at least one registered credential, independent of TOTP. This is
         # the additive passkey login path; TOTP/email remain unchanged.
-        if passkeys:
+        #
+        # The GATE above counts every passkey (a credential bound to a vanity
+        # host is still a second factor on this account, so it must still trip
+        # MFA on the platform host — the fail-closed direction). The OFFER is
+        # narrowed to the ones this host's Relying Party can actually challenge,
+        # so the SPA never presents a passkey button whose ceremony is
+        # guaranteed to fail. `email` is appended unconditionally below, so
+        # narrowing here can never strand an account with no way in.
+        login_rp = webauthn_rp.resolve_relying_party(
+            host=host, org_settings=org.settings if org else None
+        )
+        if _usable_passkeys(passkeys, login_rp):
             methods.append("passkey")
         # Email backup is always available as long as the account has an email
         # (which they all do — it's the login identifier). For an unenrolled
@@ -424,21 +516,32 @@ async def login(
 # ---------------------------------------------------------------------------
 
 
-def _password_reset_url(slug: str, token: str) -> str:
+def _password_reset_url(org: Organization, token: str) -> str | None:
+    """The tenant-hosted reset page, or ``None`` when no base URL is configured.
+
+    Same construction as the signup welcome email / supplier-portal invite —
+    `app/utils/tenant_urls.tenant_base_url` is the one resolver, so a tenant on
+    its own vanity hostname gets a reset link on THAT host rather than the
+    platform subdomain. Never a placeholder domain.
+
+    ``None`` rather than a relative path: an operator who has blanked
+    `FEOH_TENANT_URL_TEMPLATE` and set no per-org override has left us nowhere
+    to point, and `/login/reset-password?token=…` in an email body is a dead
+    link that also leaks a live single-use credential to no purpose. The caller
+    skips the send; the endpoint's generic response is unchanged either way, so
+    this is invisible to an enumerating caller.
+    """
     from urllib.parse import quote
 
-    # Same construction as the signup welcome email / supplier-portal invite
-    # (`_tenant_url` / `invite_vendor_portal_user`'s `template_base`) — the
-    # tenant's own subdomain, never a placeholder domain.
-    template_base = (settings.tenant_url_template or "http://{slug}.localhost:7777").replace(
-        "{slug}", slug
-    )
+    template_base = tenant_base_url(org.slug, org.settings)
+    if not template_base:
+        return None
     # Nested under `/login/` — same reason `/login/mfa` and the SSO/SAML
     # callback pages are, not top-level routes: the root layout redirects any
     # unauthenticated visitor off a top-level path unless it starts with
     # `/login` (or is in its small public-paths allowlist), so this is the
     # path of least footprint for a public, unauthenticated page.
-    return f"{template_base.rstrip('/')}/login/reset-password?token={quote(token)}"
+    return f"{template_base}/login/reset-password?token={quote(token)}"
 
 
 async def _send_password_reset_email(user: User, reset_url: str) -> None:
@@ -506,9 +609,15 @@ async def forgot_password(
     if user is not None and user.is_active:
         org = await _load_user_org(db, user.organization_id)
         if org is not None:
-            token = await password_reset.issue_reset_token(user.id)
-            reset_url = _password_reset_url(org.slug, token)
-            _spawn_background(_send_password_reset_email(user, reset_url))
+            reset_url = _password_reset_url(org, await password_reset.issue_reset_token(user.id))
+            if reset_url is not None:
+                _spawn_background(_send_password_reset_email(user, reset_url))
+            else:
+                logger.warning(
+                    "Password reset requested but no tenant base URL is configured "
+                    "(org=%s) — no email sent",
+                    org.id,
+                )
             await dispatch_auth_audit(
                 organization_id=user.organization_id,
                 actor_id=None,
@@ -762,6 +871,7 @@ async def _step_up_satisfied(
     body: MFAStepUpRequest | None,
     *,
     operation: str,
+    rp: webauthn_rp.RelyingParty,
 ) -> bool:
     """Did the caller re-prove control of the account for `operation`?
 
@@ -799,6 +909,7 @@ async def _step_up_satisfied(
             user.id,
             json.dumps(body.assertion),
             purpose=webauthn.ASSERTION_PURPOSE_STEP_UP,
+            rp=rp,
             operation=operation,
         )
     except webauthn.WebAuthnError:
@@ -817,6 +928,7 @@ async def _require_mfa_step_up(
     *,
     db: AsyncSession,
     operation: str,
+    rp: webauthn_rp.RelyingParty,
     has_passkey: bool = False,
 ) -> None:
     """Gate any change to an account's *existing* second factor.
@@ -838,7 +950,7 @@ async def _require_mfa_step_up(
     if not has_live_factor:
         return
     await _throttle_step_up(user.id)
-    if await _step_up_satisfied(db, user, body, operation=operation):
+    if await _step_up_satisfied(db, user, body, operation=operation, rp=rp):
         return
     await _audit_step_up_failure(user, operation=operation)
     raise HTTPException(status_code=400, detail=STEP_UP_FAILURE_DETAIL)
@@ -849,6 +961,7 @@ async def enroll_mfa_start(
     body: MFAStepUpRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
     """Start TOTP enrollment — mint a candidate secret + QR.
 
@@ -864,8 +977,9 @@ async def enroll_mfa_start(
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
 
     existing = await _user_passkeys(db, user.id)
+    rp = await _relying_party(db, user.organization_id, host)
     await _require_mfa_step_up(
-        user, body, db=db, operation="totp_enroll", has_passkey=bool(existing)
+        user, body, db=db, operation="totp_enroll", rp=rp, has_passkey=bool(existing)
     )
 
     secret = mfa.generate_totp_secret()
@@ -914,6 +1028,7 @@ async def disable_mfa(
     body: MFADisableRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
     """Turn off TOTP for this account.
 
@@ -924,8 +1039,9 @@ async def disable_mfa(
     passkey assertion is how it disables its own TOTP.) Throttled + audited on
     failure like the rest.
     """
+    rp = await _relying_party(db, user.organization_id, host)
     await _throttle_step_up(user.id)
-    if not await _step_up_satisfied(db, user, body, operation="totp_disable"):
+    if not await _step_up_satisfied(db, user, body, operation="totp_disable", rp=rp):
         await _audit_step_up_failure(user, operation="totp_disable")
         raise HTTPException(status_code=400, detail=STEP_UP_FAILURE_DETAIL)
 
@@ -951,13 +1067,24 @@ async def disable_mfa(
 # ---------------------------------------------------------------------------
 
 
-def _credential_to_response(c: WebAuthnCredential) -> WebAuthnCredentialResponse:
+def _credential_to_response(
+    c: WebAuthnCredential, rp: webauthn_rp.RelyingParty
+) -> WebAuthnCredentialResponse:
+    """Passkey metadata for the security UI.
+
+    `rp_id` and `usable_here` are what make the one-RP-ID-per-credential rule
+    legible: a passkey registered on the platform host shows up on a vanity host
+    as belonging elsewhere, instead of silently offering itself and then failing
+    the ceremony. Both are derived, never stored twice.
+    """
     return WebAuthnCredentialResponse(
         id=str(c.id),
         name=c.name,
         transports=c.transports,
         created_at=c.created_at.isoformat() if c.created_at else None,
         last_used_at=c.last_used_at.isoformat() if c.last_used_at else None,
+        rp_id=webauthn_rp.effective_rp_id(c.rp_id),
+        usable_here=webauthn_rp.usable_under(c.rp_id, rp),
     )
 
 
@@ -966,6 +1093,7 @@ async def passkey_register_start(
     body: MFAStepUpRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
     """Begin passkey enrollment — mint WebAuthn registration options. The
     browser feeds ``options`` to ``navigator.credentials.create()``.
@@ -978,14 +1106,23 @@ async def passkey_register_start(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
     existing = await _user_passkeys(db, user.id)
+    rp = await _relying_party(db, user.organization_id, host)
+    # Step-up gates on ANY live factor, not just the ones usable on this host:
+    # a passkey registered elsewhere is still a second factor on this account,
+    # so adding another must still be re-proved. (It can't be proved WITH that
+    # passkey here — the password or a TOTP code is the route in that case.)
     await _require_mfa_step_up(
-        user, body, db=db, operation="passkey_register", has_passkey=bool(existing)
+        user, body, db=db, operation="passkey_register", rp=rp, has_passkey=bool(existing)
     )
     options_json = await webauthn.begin_registration(
         user_id=user.id,
         user_name=user.email,
         user_display_name=user.full_name or user.email,
-        existing_credential_ids=[c.credential_id for c in existing],
+        # Only credentials bound to THIS RP can collide with the one about to
+        # be minted; excluding a cross-host one would be meaningless to the
+        # authenticator (a different RP ID is a different credential scope).
+        existing_credential_ids=[c.credential_id for c in _usable_passkeys(existing, rp)],
+        rp=rp,
     )
     return WebAuthnRegisterStartResponse(options=json.loads(options_json))
 
@@ -995,14 +1132,24 @@ async def passkey_register_finish(
     body: WebAuthnRegisterFinishRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
-    """Verify the browser's ``create()`` response and persist the passkey."""
+    """Verify the browser's ``create()`` response and persist the passkey.
+
+    Resolves the Relying Party through the same `_relying_party` the start call
+    used, and `webauthn.finish_registration` additionally re-checks it against
+    the RP recorded with the challenge — so a ceremony begun on one host cannot
+    be completed on another, and the stored `rp_id` is always the one the
+    authenticator actually signed.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
+    rp = await _relying_party(db, user.organization_id, host)
     try:
         fields = await webauthn.finish_registration(
             user_id=user.id,
             credential_json=json.dumps(body.credential),
+            rp=rp,
         )
     except webauthn.WebAuthnError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1013,6 +1160,7 @@ async def passkey_register_finish(
         public_key=fields["public_key"],
         sign_count=fields["sign_count"],
         transports=fields["transports"],
+        rp_id=fields["rp_id"],
         name=body.name or "Passkey",
     )
     db.add(cred)
@@ -1023,19 +1171,28 @@ async def passkey_register_finish(
         actor_id=user.id,
         action="auth.mfa.passkey.registered",
         entity_id=user.id,
-        details={"name": cred.name},
+        details={"name": cred.name, "rp_id": cred.rp_id},
     )
-    return _credential_to_response(cred)
+    return _credential_to_response(cred, rp)
 
 
 @router.get("/mfa/passkey", response_model=list[WebAuthnCredentialResponse])
 async def passkey_list(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
-    """List this account's registered passkeys (metadata only)."""
+    """List this account's registered passkeys (metadata only).
+
+    Every passkey is listed, including ones bound to a different host — each
+    carries its `rp_id` and a `usable_here` flag, so the security page can show
+    "registered for ap.acmecorp.com" rather than a credential that mysteriously
+    never works. Deleting one is deliberately NOT host-scoped either: a user
+    must be able to remove a passkey from wherever they happen to be signed in.
+    """
     creds = await _user_passkeys(db, user.id)
-    return [_credential_to_response(c) for c in creds]
+    rp = await _relying_party(db, user.organization_id, host)
+    return [_credential_to_response(c, rp) for c in creds]
 
 
 @router.delete("/mfa/passkey/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1044,6 +1201,7 @@ async def passkey_delete(
     body: MFAStepUpRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
     """Remove one passkey.
 
@@ -1075,7 +1233,10 @@ async def passkey_delete(
     # doesn't burn the account's step-up throttle. The credential is the
     # caller's own either way — `GET /mfa/passkey` already lists it — so this
     # ordering leaks nothing new.
-    await _require_mfa_step_up(user, body, db=db, operation="passkey_delete", has_passkey=True)
+    rp = await _relying_party(db, user.organization_id, host)
+    await _require_mfa_step_up(
+        user, body, db=db, operation="passkey_delete", rp=rp, has_passkey=True
+    )
 
     org = await _load_user_org(db, user.organization_id)
     if mfa.org_requires_mfa(org.settings if org else None):
@@ -1104,10 +1265,14 @@ async def passkey_authenticate_start(
     body: WebAuthnAuthStartRequest,
     request: Request,
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
     """Begin a passkey LOGIN challenge. The ``challenge_token`` from /login
     proves the password was already accepted, so we only mint options for that
-    user's registered credentials."""
+    user's registered credentials — and only the ones bound to the Relying Party
+    this host resolves to, since a credential from another RP ID could never
+    produce a valid assertion here. An account whose passkeys all live on
+    another host is told so, rather than being handed options it cannot use."""
     await check_rate_limit("auth_mfa_passkey", request, limit=10, window_seconds=60)
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
@@ -1120,10 +1285,17 @@ async def passkey_authenticate_start(
     if not creds:
         # No passkeys registered — opaque error (don't enumerate factors).
         raise HTTPException(status_code=400, detail="No passkey registered")
+    rp = await _relying_party_for_subject(db, claims.subject_id, host)
+    usable = _usable_passkeys(creds, rp)
+    if not usable:
+        raise HTTPException(status_code=400, detail=_wrong_host_detail(creds, rp))
     options_json = await webauthn.begin_authentication(
         user_id=claims.subject_id,
-        credentials=[{"credential_id": c.credential_id, "transports": c.transports} for c in creds],
+        credentials=[
+            {"credential_id": c.credential_id, "transports": c.transports} for c in usable
+        ],
         purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+        rp=rp,
     )
     return WebAuthnAuthStartResponse(options=json.loads(options_json))
 
@@ -1133,6 +1305,7 @@ async def passkey_step_up_start(
     body: WebAuthnStepUpStartRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
     """Begin a passkey STEP-UP challenge for one factor-management operation.
 
@@ -1168,10 +1341,20 @@ async def passkey_step_up_start(
     creds = await _user_passkeys(db, user.id)
     if not creds:
         raise HTTPException(status_code=400, detail="No passkey registered")
+    rp = await _relying_party(db, user.organization_id, host)
+    usable = _usable_passkeys(creds, rp)
+    if not usable:
+        # The account HAS a passkey, just not one this host can challenge. Say
+        # so: the alternative is a caller stuck retrying a ceremony that can
+        # never succeed, with the password / TOTP route not obviously open.
+        raise HTTPException(status_code=400, detail=_wrong_host_detail(creds, rp))
     options_json = await webauthn.begin_authentication(
         user_id=user.id,
-        credentials=[{"credential_id": c.credential_id, "transports": c.transports} for c in creds],
+        credentials=[
+            {"credential_id": c.credential_id, "transports": c.transports} for c in usable
+        ],
         purpose=webauthn.ASSERTION_PURPOSE_STEP_UP,
+        rp=rp,
         operation=body.operation,
     )
     return WebAuthnAuthStartResponse(options=json.loads(options_json))
@@ -1182,6 +1365,7 @@ async def passkey_authenticate_finish(
     body: WebAuthnAuthFinishRequest,
     request: Request,
     db: AsyncSession = Depends(get_control_db),
+    host: Annotated[str | None, Header()] = None,
 ):
     """Verify a passkey assertion and mint the real access token. The login
     counterpart of /mfa/verify, but for the passkey factor."""
@@ -1198,6 +1382,9 @@ async def passkey_authenticate_finish(
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid challenge")
 
+    # Same resolver the `authenticate` start call used, so this verify runs
+    # against the RP ID the browser was asked to sign for.
+    rp = await _relying_party(db, user.organization_id, host)
     try:
         # `purpose=login` pins which Redis challenge slot this assertion must
         # match — a step-up assertion signs a challenge from a different slot and
@@ -1207,6 +1394,7 @@ async def passkey_authenticate_finish(
             claims.subject_id,
             json.dumps(body.credential),
             purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+            rp=rp,
         )
     except webauthn.WebAuthnError as exc:
         await dispatch_auth_audit(

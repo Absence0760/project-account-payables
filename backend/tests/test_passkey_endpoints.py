@@ -300,7 +300,7 @@ async def test_passkey_register_start_refused_without_step_up_when_a_passkey_exi
     from app.api import auth as auth_mod
 
     user = _fake_user()
-    db = _RegDB(existing=[SimpleNamespace(credential_id=b"abc")])
+    db = _RegDB(existing=[SimpleNamespace(credential_id="abc", rp_id=None)])
 
     with patch("app.api.auth.settings.mfa_enabled", True):
         with pytest.raises(HTTPException) as exc:
@@ -315,7 +315,7 @@ async def test_passkey_register_start_allowed_with_a_correct_password_step_up():
     from app.schemas.auth import MFAStepUpRequest
 
     user = _fake_user()
-    db = _RegDB(existing=[SimpleNamespace(credential_id=b"abc")])
+    db = _RegDB(existing=[SimpleNamespace(credential_id="abc", rp_id=None)])
 
     with (
         patch("app.api.auth.settings.mfa_enabled", True),
@@ -341,7 +341,7 @@ async def test_passkey_register_start_refused_for_a_passwordless_sso_account_wit
 
     user = _fake_user()
     user.hashed_password = None
-    db = _RegDB(existing=[SimpleNamespace(credential_id=b"abc")])
+    db = _RegDB(existing=[SimpleNamespace(credential_id="abc", rp_id=None)])
 
     with patch("app.api.auth.settings.mfa_enabled", True):
         with pytest.raises(HTTPException) as exc:
