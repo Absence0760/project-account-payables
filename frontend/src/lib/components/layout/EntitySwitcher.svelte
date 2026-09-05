@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { entityStore, ALL_ENTITIES } from '$lib/stores/entity.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let { collapsed = false }: { collapsed?: boolean } = $props();
 
@@ -10,7 +11,10 @@
 	// list order); "All entities" is rendered as a fixed first option.
 	let entities = $derived(entityStore.entities);
 	let selectedId = $derived(entityStore.selectedId);
-	let label = $derived(entityStore.selectedLabel);
+	// The store's `selectedLabel` falls back to an English literal, so the label
+	// is derived here instead: `m()` is reactive to a locale switch and the store
+	// stays free of i18n. `selected` is null exactly when "all entities" is active.
+	let label = $derived(entityStore.selected?.name ?? m('entity.all'));
 
 	function choose(id: string) {
 		open = false;
@@ -34,7 +38,7 @@
 		{#if open}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div class="entity-backdrop" onclick={() => (open = false)} onkeydown={() => {}}></div>
-			<div class="entity-menu" role="listbox" aria-label="Select entity">
+			<div class="entity-menu" role="listbox" aria-label={m('entity.selectAria')}>
 				<button
 					class="entity-option"
 					class:selected={selectedId === ALL_ENTITIES}
@@ -42,8 +46,8 @@
 					aria-selected={selectedId === ALL_ENTITIES}
 					onclick={() => choose(ALL_ENTITIES)}
 				>
-					All entities
-					<span class="entity-option-sub">Consolidated</span>
+					{m('entity.all')}
+					<span class="entity-option-sub">{m('entity.consolidated')}</span>
 				</button>
 				{#each entities as e (e.id)}
 					<button
@@ -54,7 +58,7 @@
 						onclick={() => choose(e.id)}
 					>
 						{e.name}
-						{#if e.is_default}<span class="entity-option-sub">Default</span>{/if}
+						{#if e.is_default}<span class="entity-option-sub">{m('entity.default')}</span>{/if}
 					</button>
 				{/each}
 			</div>
@@ -63,7 +67,7 @@
 			bind:this={triggerBtn}
 			class="entity-btn"
 			class:collapsed
-			title={collapsed ? `Entity: ${label}` : ''}
+			title={collapsed ? m('entity.triggerTitle', { name: label }) : ''}
 			aria-haspopup="listbox"
 			aria-expanded={open}
 			onclick={() => (open = !open)}
@@ -74,7 +78,7 @@
 			{#if !collapsed}
 				<span class="entity-text">
 					<span class="entity-name">{label}</span>
-					<span class="entity-hint">Entity</span>
+					<span class="entity-hint">{m('entity.hint')}</span>
 				</span>
 				<svg class="entity-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:flipped={open}><polyline points="6 9 12 15 18 9"/></svg>
 			{/if}

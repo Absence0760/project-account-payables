@@ -154,6 +154,10 @@ A single-entity tenant still behaves exactly as before: with one entity the
 switcher is hidden, the `X-Entity-ID` header is never sent, and every endpoint
 returns the consolidated (all-rows) view.
 
+**Every entity after the first is created by an admin** at Settings → Entities
+(`/admin/entities`) — see *Frontend* below. Nothing else in the product mints
+one: `create_tenant.py` / signup seed the Default entity and stop there.
+
 ## Phase 2 — request scoping + entity switcher
 
 ### The `X-Entity-ID` contract
@@ -211,6 +215,27 @@ the scope from the scoped invoice query they consume.
 - `frontend/src/lib/components/layout/EntitySwitcher.svelte` — sidebar dropdown
   (All entities + each entity, Default first). Renders **only when the tenant
   has >1 entity**, so a single-entity tenant sees the pre-multi-entity UI.
+- `frontend/src/routes/admin/entities/+page.svelte` — the **admin UI** for the
+  table above (`frontend/src/lib/api/entities.ts` is the typed client). List +
+  create modal + edit modal + a `Make default` row action, admin-gated like
+  every sibling under `/admin` and linked from Settings → Entities.
+
+  It is what makes multi-entity *startable*. Provisioning creates exactly one
+  Default entity and the switcher hides below two, so with `POST /api/entities`
+  reachable only by hand-rolled HTTP, a tenant could never get a second entity
+  and the whole feature was unreachable from the product — Phases 1–4 shipped
+  behind a door with no handle.
+
+  Both backend refusals are rendered **inline in the modal, verbatim from the
+  response `detail`** — a duplicate slug (409, *"An entity with that slug
+  already exists."*) and deactivating the default (400, *"The default entity
+  cannot be deactivated."*). The Active checkbox on the default entity is
+  deliberately **not** disabled: the server owns that rule, and a disabled
+  control would show the admin something they can't click with no explanation
+  of why, while a client-side copy of the rule is free to drift from it. After
+  any mutation the page calls `entityStore.reset()` + `ensureLoaded()`, so the
+  switcher appears the moment the second entity exists rather than after a
+  manual reload.
 
 ### Deferred from Phase 2 → delivered in Phase 3
 
@@ -232,6 +257,7 @@ the scope from the scoped invoice query they consume.
 | POST | `/api/entities/{id}/set-default` | admin | make this entity the tenant's default (see below) |
 
 Reads are open to all roles because the Phase 2 entity selector needs the list.
+Every mutation is admin-only and is driven from `/admin/entities`.
 
 ### Changing the default entity
 
