@@ -7,6 +7,7 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import ApprovalMatrixEditor from '$lib/components/modals/ApprovalMatrixEditor.svelte';
 	import WorkflowCanvas from '$lib/components/workflow-builder/WorkflowCanvas.svelte';
 	import StepPalette from '$lib/components/workflow-builder/StepPalette.svelte';
@@ -82,6 +83,15 @@
 		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
 		adminStore.fetchUsers().catch(() => {});
 		loadErpMethod();
+		// The approval-step money thresholds (`auto_approve_below`,
+		// `require_cfo_above`, `max_invoice_amount`) and the matrix's per-level
+		// amount bands are BARE NUMBERS denominated in the org's reporting
+		// currency — the backend converts each invoice into it before comparing
+		// (`approval_chain.reporting_gate_amount`). Nothing in the input says so,
+		// so the labels name the code, resolved from the same store `/cfo` and
+		// `/discounts` use rather than assuming dollars. Until it loads the store
+		// holds the platform default, so the field is never unlabelled.
+		orgCurrency.ensureLoaded();
 	});
 
 	async function loadErpMethod() {
@@ -521,7 +531,7 @@
 								<div class="field">
 									<label for="approval-matrix">{m('workflows.builder.approval.matrix')}</label>
 									<p class="field-hint">
-										{m('workflows.builder.approval.matrixHint')}
+										{m('workflows.builder.approval.matrixHint', { currency: orgCurrency.currency })}
 									</p>
 									<ApprovalMatrixEditor
 										chain={cfg.approval_chain ?? []}
@@ -536,7 +546,7 @@
 							<h4 class="field-section-title">{m('workflows.builder.approval.thresholdsTitle')}</h4>
 
 							<div class="field">
-								<label for="auto-approve-below">{m('workflows.builder.approval.autoApproveBelow')}</label>
+								<label for="auto-approve-below">{m('workflows.builder.approval.autoApproveBelow', { currency: orgCurrency.currency })}</label>
 								<input
 									id="auto-approve-below"
 									type="number"
@@ -546,11 +556,11 @@
 									value={cfg.auto_approve_below ?? ''}
 									oninput={(e) => updateStepConfig(selectedIndex, 'auto_approve_below', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
 								/>
-								<p class="field-hint">{m('workflows.builder.approval.autoApproveBelowHint')}</p>
+								<p class="field-hint">{m('workflows.builder.approval.autoApproveBelowHint', { currency: orgCurrency.currency })}</p>
 							</div>
 
 							<div class="field">
-								<label for="require-cfo-above">{m('workflows.builder.approval.requireCfoAbove')}</label>
+								<label for="require-cfo-above">{m('workflows.builder.approval.requireCfoAbove', { currency: orgCurrency.currency })}</label>
 								<input
 									id="require-cfo-above"
 									type="number"
@@ -560,11 +570,11 @@
 									value={cfg.require_cfo_above ?? ''}
 									oninput={(e) => updateStepConfig(selectedIndex, 'require_cfo_above', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
 								/>
-								<p class="field-hint">{m('workflows.builder.approval.requireCfoAboveHint')}</p>
+								<p class="field-hint">{m('workflows.builder.approval.requireCfoAboveHint', { currency: orgCurrency.currency })}</p>
 							</div>
 
 							<div class="field">
-								<label for="max-invoice-amount">{m('workflows.builder.approval.maxInvoiceAmount')}</label>
+								<label for="max-invoice-amount">{m('workflows.builder.approval.maxInvoiceAmount', { currency: orgCurrency.currency })}</label>
 								<input
 									id="max-invoice-amount"
 									type="number"
@@ -574,7 +584,7 @@
 									value={cfg.max_invoice_amount ?? ''}
 									oninput={(e) => updateStepConfig(selectedIndex, 'max_invoice_amount', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
 								/>
-								<p class="field-hint">{m('workflows.builder.approval.maxInvoiceAmountHint')}</p>
+								<p class="field-hint">{m('workflows.builder.approval.maxInvoiceAmountHint', { currency: orgCurrency.currency })}</p>
 							</div>
 
 							<div class="field-divider"></div>
