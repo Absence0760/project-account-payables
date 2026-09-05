@@ -334,6 +334,25 @@ async def lifespan(app: FastAPI):
                 except (asyncio.CancelledError, Exception):
                     pass
 
+        # Flush queued auth audit rows before the engines go away.
+        # `queue_auth_audit` deliberately does NOT await its write — that is
+        # what stops `/api/auth/login` leaking account existence through a
+        # tenant-DB round trip only a known address pays for (see
+        # `docs/authentication.md` § The failure row is written off the response
+        # path). The cost of not waiting is a window in which a stopping process
+        # could drop the row, and this is the rung that closes it for a CLEAN
+        # shutdown. Bounded — a hung write costs the shutdown a known five
+        # seconds and is then abandoned loudly, rather than blocking it until an
+        # orchestrator SIGKILLs us and every remaining row is lost, not just the
+        # stuck one. Must run BEFORE `dispose_all_engines`: the write needs the
+        # tenant engine it is about to commit through.
+        from app.services.audit_dispatch import (
+            AUTH_AUDIT_DRAIN_TIMEOUT_SECONDS,
+            drain_auth_audits,
+        )
+
+        await drain_auth_audits(timeout=AUTH_AUDIT_DRAIN_TIMEOUT_SECONDS)
+
         from app.database import dispose_all_engines
 
         await dispose_all_engines()

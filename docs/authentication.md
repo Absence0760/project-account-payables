@@ -235,7 +235,7 @@ Action names:
 | Successful MFA verify | `auth.mfa.verify.success` |
 | Failed MFA verify | `auth.mfa.verify.failure` |
 | Failed step-up against a second-factor change (enroll / passkey register / passkey delete / disable) | `auth.mfa.step_up.failure` (employee) · `portal.mfa.step_up.failure` (supplier portal) — PII-free, records only the operation name |
-| Failed supplier-portal password login | `portal.login.failure` — records `{ip, reason}` (`bad_password` \| `no_password` \| `inactive`) and identifies the account by `entity_id`, never by address (a supplier contact's email is third-party PII we don't restate on every guess) |
+| Failed supplier-portal password login | `portal.login.failure` — records `{ip, reason}` (`bad_password` \| `no_password` \| `inactive`) and identifies the account by `entity_id`, never by address (a supplier contact's email is third-party PII we don't restate on every guess). Queued off the response path, like its employee twin |
 | Successful SSO login | `auth.sso.login.success` |
 | Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
 | Successful SAML login | `auth.saml.login.success` |
@@ -278,15 +278,35 @@ Notes on the mechanism:
   that logs at **ERROR** (not WARNING): this is SOX evidence for an
   authentication event and nothing downstream retries it. The log carries the
   action, the org UUID and the exception **class name** only — never `details`,
-  which carries the submitted address. The guarantee is therefore "written
-  shortly after the response, or reported at ERROR", not "written before the
-  response returns"; a process killed inside that window loses the row, the same
-  exposure every other fire-and-forget leg in the app carries
-  (`services/post_commit`, `services/webhooks/dispatch`). `drain_auth_audits()`
-  flushes in-flight writes for tests and for a graceful shutdown.
+  which carries the submitted address. The guarantee is "written shortly after
+  the response, or reported at ERROR", not "written before the response
+  returns".
+- **A clean shutdown flushes the queue.** The lifespan's `finally`
+  (`app/main.py` — the production entrypoint `app.main:app`, which the local-dev
+  `main.py` also runs) awaits `drain_auth_audits(...)` before
+  `dispose_all_engines`, since the write commits through the tenant engine that
+  call disposes. **Bounded at `AUTH_AUDIT_DRAIN_TIMEOUT_SECONDS` (5s):** a hung
+  write costs the shutdown a known five seconds and is then cancelled, with the
+  abandoned **count** logged at WARNING. Unbounded, one stuck write would block
+  the shutdown until an orchestrator SIGKILLs the process — losing every *other*
+  queued row too, not just the stuck one. A hard kill still loses in-flight
+  rows, the same exposure every other fire-and-forget leg carries
+  (`services/post_commit`, `services/webhooks/dispatch`).
 - **Only the login *failure* rows moved.** Success, MFA-challenge-issued and
   the SSO-only refusal still `await dispatch_auth_audit` — they all sit *after*
   a correct password, so none of them is an existence oracle.
+- **The supplier portal had the identical defect, and the identical fix.**
+  `POST /api/portal/auth/login` awaited `dispatch_auth_audit` only when the
+  address resolved to a vendor user, so a known supplier address paid for a
+  control-plane lookup plus a *second* tenant session (the dispatcher opens its
+  own, separate from `get_tenant_db`'s) that an unknown one skipped — despite
+  the portal's differently-shaped, tenant-scoped failure budget. Both rejections
+  now funnel through `api/portal_auth.py::_reject_portal_login` with the same
+  queued write. A legacy vendor-user row with no `organization_id` used to
+  `return` from inside the audit helper *after* entering the await; it now lands
+  on the same `organization_id=None` branch as an unknown address, so it is not
+  a third timing class. The row's contents are unchanged — still identified by
+  `entity_id`, never by address.
 
 ### Database separation
 

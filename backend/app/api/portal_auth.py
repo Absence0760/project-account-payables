@@ -34,7 +34,7 @@ from app.schemas.portal import (
     PortalUpdateProfileRequest,
 )
 from app.services import mfa
-from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.audit_dispatch import dispatch_auth_audit, queue_auth_audit
 from app.services.email_adapters import EmailMessage, get_email_adapter, is_supported_locale
 from app.services.rate_limit import (
     EMAIL_OTP_PER_ACCOUNT_PER_HOUR,
@@ -85,34 +85,52 @@ async def _send_vendor_email_otp(vu: VendorUser, code: str) -> None:
     await adapter.send(msg)
 
 
-async def _audit_portal_login_failure(vu: VendorUser, *, ip: str, reason: str) -> None:
-    """Record a rejected supplier sign-in.
+async def _reject_portal_login(
+    identity: str,
+    vu: VendorUser | None,
+    *,
+    ip: str,
+    reason: str,
+) -> HTTPException:
+    """The ONE credential-rejection path for `/portal/auth/login`.
 
-    ``reason`` is one of a fixed set of literals (`bad_password`,
-    `no_password`, `inactive`) — machine-readable for the tenant's admins and
-    never derived from anything the caller supplied.
+    Both rejections — "no usable account" (unknown address, no password hash,
+    deactivated) and "wrong password" — funnel through here, for the same
+    reason the employee twin does (`api/auth._reject_login`): the two branches
+    must be indistinguishable by response time, or an attacker can enumerate a
+    tenant's supplier contacts around the bcrypt cost `dummy_verify` equalises.
+    Sharing the tail makes them identical by construction rather than by
+    review — one awaited call (`record_auth_failure`), one non-awaited call
+    (`queue_auth_audit`), one raise.
 
-    PII-lean by construction: the account is identified by id, so a supplier
-    contact's address is not restated into the trail on every guess. Skipped
-    for a legacy row with no `organization_id` (the dispatcher resolves the
-    tenant DB from it); `dispatch_auth_audit` swallows its own failures, so
-    this never breaks the request either way.
+    The row itself is unchanged: `reason` is one of a fixed set of literals
+    (`bad_password`, `no_password`, `inactive`), never derived from caller
+    input, and the account is identified by `entity_id` so a supplier contact's
+    address is not restated into the trail on every guess.
 
-    Reached only once the account is known, which is the same shape the
-    employee twin already ships: an unknown address has no org and so no
-    tenant trail to write into. The enumeration guard that matters — identical
-    status + detail, and `dummy_verify` equalising the bcrypt cost that
-    dominates the response — is unaffected.
+    `queue_auth_audit` is deliberately NOT awaited. Writing the row resolves
+    the tenant DB from the control plane and opens a SECOND tenant session to
+    commit through — and only an account with an `organization_id` can do any
+    of that, so awaiting it made a known address measurably slower than an
+    unknown one. A legacy row with no org lands on the same `None` branch as an
+    unknown address: nothing to route to, so nothing written.
+
+    Returns the exception for the caller to `raise`, so the control flow stays
+    visible at the branch.
     """
-    if not vu.organization_id:
-        return
-    await dispatch_auth_audit(
-        organization_id=vu.organization_id,
+    await record_auth_failure("portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS)
+    queue_auth_audit(
+        # `None` whenever there is no tenant DB to route the row to — an
+        # unknown address, or a legacy vendor-user row with no org. Passed
+        # rather than branched on, so this call site is reached identically
+        # from both rejections.
+        organization_id=vu.organization_id if vu is not None else None,
         actor_id=None,
         action="portal.login.failure",
-        entity_id=vu.id,
+        entity_id=vu.id if vu is not None else None,
         details={"ip": ip, "reason": reason},
     )
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
 
 async def _mint_portal_session(
@@ -185,30 +203,25 @@ async def portal_login(
 
     if not vu or not vu.hashed_password or not vu.is_active:
         # Equalize timing with the wrong-password path so the response time
-        # doesn't reveal whether a vendor account exists (enumeration).
+        # doesn't reveal whether a vendor account exists (enumeration). Both
+        # rejections share `_reject_portal_login` from here on, so neither can
+        # acquire work the other does not do.
         await dummy_verify()
-        await record_auth_failure(
-            "portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
+        raise await _reject_portal_login(
+            identity,
+            vu,
+            ip=ip,
+            reason=(
+                "unknown_account"
+                if vu is None
+                else ("no_password" if not vu.hashed_password else "inactive")
+            ),
         )
-        # A rejection against an account we CAN identify is auditable; a truly
-        # unknown address has no org and so no tenant trail to write into. Same
-        # split the employee twin makes. Someone hammering a deactivated
-        # supplier login is exactly what an admin wants to see.
-        if vu is not None:
-            await _audit_portal_login_failure(
-                vu, ip=ip, reason="no_password" if not vu.hashed_password else "inactive"
-            )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not await verify_password(body.password, vu.hashed_password):
-        await record_auth_failure(
-            "portal_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
-        )
-        # Until now a brute-force against a supplier account left no trace at
-        # all — the employee twin has written `auth.login.failure` since it was
-        # built. PII-lean: the vendor user is identified by id, so the trail
-        # doesn't restate the supplier contact's address.
-        await _audit_portal_login_failure(vu, ip=ip, reason="bad_password")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        # Until this shipped, a brute-force against a supplier account left no
+        # trace at all — the employee twin has written `auth.login.failure`
+        # since it was built.
+        raise await _reject_portal_login(identity, vu, ip=ip, reason="bad_password")
 
     await clear_auth_failures("portal_login", identity)
 

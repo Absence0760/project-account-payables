@@ -347,3 +347,237 @@ async def test_unknown_address_writes_no_row_but_still_pays_dummy_verify():
             p.stop()
 
     assert dummy_calls == [1]
+
+
+# ---------------------------------------------------------------------------
+# 5. The supplier-portal twin has the SAME asymmetry, and the same fix
+# ---------------------------------------------------------------------------
+#
+# The portal is not a copy-paste of the employee path: its failure budget is
+# tenant-scoped (`slug + email`, because a vendor address is unique only within
+# a tenant DB) and it already holds a tenant session from `get_tenant_db`. None
+# of that changes the shape of the leak — `dispatch_auth_audit` still resolves
+# the tenant DB from the control plane and opens its OWN session to commit
+# through, so a known vendor address paid for a round trip an unknown one
+# skipped, exactly like the employee twin.
+
+
+def _vendor_user(*, is_active: bool = True, hashed_password: str = "$2b$12$stub", org=True):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        email=KNOWN_EMAIL,
+        hashed_password=hashed_password,
+        organization_id=uuid.uuid4() if org else None,
+        vendor_id=uuid.uuid4(),
+        is_active=is_active,
+        must_change_password=False,
+        mfa_enabled=False,
+        mfa_secret=None,
+    )
+
+
+def _patched_portal_login(recorder: _Recorder, *, queue=None):
+    from app.api import portal_auth as portal_mod
+
+    return (
+        patch.object(portal_mod, "check_rate_limit", recorder._record("check_rate_limit")),
+        patch.object(portal_mod, "check_auth_failures", recorder._record("check_auth_failures")),
+        patch.object(portal_mod, "record_auth_failure", recorder._record("record_auth_failure")),
+        patch.object(portal_mod, "dummy_verify", recorder._record("password_hash_cost")),
+        patch.object(portal_mod, "verify_password", recorder._record("password_hash_cost")),
+        patch.object(portal_mod, "queue_auth_audit", queue or recorder.queue),
+    )
+
+
+async def _attempt_portal_login(recorder: _Recorder, *, vu, queue=None) -> HTTPException:
+    from app.api import portal_auth as portal_mod
+    from app.schemas.portal import PortalLoginRequest
+
+    db = _db_returning(vu)
+    patches = _patched_portal_login(recorder, queue=queue)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await portal_mod.portal_login(
+                PortalLoginRequest(
+                    email=KNOWN_EMAIL if vu is not None else UNKNOWN_EMAIL,
+                    password=SUBMITTED_PASSWORD,
+                ),
+                _fake_request(),
+                slug="acme",
+                db=db,
+            )
+    finally:
+        for p in reversed(patches):
+            p.stop()
+    assert db.execute.await_count == 1
+    return exc.value
+
+
+@pytest.mark.asyncio
+async def test_portal_known_and_unknown_rejections_await_the_same_operations():
+    """Same deliverable, supplier surface. Pre-fix the known path appends an
+    extra awaited `_audit_portal_login_failure` → `dispatch_auth_audit`."""
+    known = _Recorder()
+    known_exc = await _attempt_portal_login(known, vu=_vendor_user())
+
+    unknown = _Recorder()
+    unknown_exc = await _attempt_portal_login(unknown, vu=None)
+
+    assert known.awaited == unknown.awaited
+    assert known.awaited == [
+        "check_rate_limit",
+        "check_auth_failures",
+        "password_hash_cost",
+        "record_auth_failure",
+    ]
+    assert known_exc.status_code == unknown_exc.status_code == 401
+    assert known_exc.detail == unknown_exc.detail == "Invalid credentials"
+
+    assert len(known.queued) == len(unknown.queued) == 1
+    assert known.queued[0]["organization_id"] is not None
+    assert unknown.queued[0]["organization_id"] is None
+    assert known.queued[0]["action"] == unknown.queued[0]["action"] == "portal.login.failure"
+
+
+@pytest.mark.asyncio
+async def test_portal_legacy_row_without_an_org_lands_on_the_same_branch():
+    """A vendor-user row predating `organization_id` has nowhere to route a row
+    either. It used to `return` early from inside the audit helper — AFTER the
+    await had already been entered; now it reaches the same `None` branch as an
+    unknown address, so it is not a third timing class."""
+    legacy = _Recorder()
+    await _attempt_portal_login(legacy, vu=_vendor_user(org=False))
+
+    unknown = _Recorder()
+    await _attempt_portal_login(unknown, vu=None)
+
+    assert legacy.awaited == unknown.awaited
+    assert legacy.queued[0]["organization_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_portal_known_address_failure_still_writes_the_audit_row():
+    """The row survives the move, and stays PII-lean: the supplier contact is
+    identified by `entity_id`, never by address."""
+    from app.services import audit_dispatch
+
+    written: list[dict] = []
+
+    async def _write(**kwargs):
+        written.append(kwargs)
+
+    vu = _vendor_user()
+    recorder = _Recorder()
+    with patch.object(audit_dispatch, "_write_auth_audit", _write):
+        await _attempt_portal_login(recorder, vu=vu, queue=audit_dispatch.queue_auth_audit)
+        await audit_dispatch.drain_auth_audits()
+
+    assert len(written) == 1
+    row = written[0]
+    assert row["action"] == "portal.login.failure"
+    assert row["organization_id"] == vu.organization_id
+    assert row["entity_id"] == vu.id
+    assert row["details"] == {"ip": "10.0.0.1", "reason": "bad_password"}
+    assert KNOWN_EMAIL not in repr(row["details"])
+
+
+# ---------------------------------------------------------------------------
+# 6. The drain is bounded, and wired into shutdown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drain_is_bounded_and_reports_what_it_abandoned(caplog):
+    """A hung audit write must cost a graceful shutdown a KNOWN amount.
+
+    Unbounded, one stuck write blocks the shutdown until an orchestrator
+    SIGKILLs the process — at which point every *other* queued row is lost too,
+    not just the stuck one. So the drain gives up, cancels, and says how many
+    rows it abandoned; PII-free (a count and a bound, never who was signing in).
+    """
+    import asyncio
+
+    from app.services import audit_dispatch
+
+    started = asyncio.Event()
+
+    async def _hangs(**kwargs):
+        started.set()
+        await asyncio.sleep(3600)
+
+    with patch.object(audit_dispatch, "_write_auth_audit", _hangs):
+        audit_dispatch.queue_auth_audit(
+            organization_id=uuid.uuid4(),
+            actor_id=None,
+            action="auth.login.failure",
+            details={"email": KNOWN_EMAIL, "ip": "10.0.0.1", "reason": "bad_password"},
+        )
+        await started.wait()
+
+        with caplog.at_level(logging.WARNING, logger="app.services.audit_dispatch"):
+            loop = asyncio.get_running_loop()
+            before = loop.time()
+            abandoned = await audit_dispatch.drain_auth_audits(timeout=0.1)
+            elapsed = loop.time() - before
+
+    assert abandoned == 1
+    assert elapsed < 2, "the drain must return on its own bound, not wait out the write"
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "abandoned=1" in joined
+    assert KNOWN_EMAIL not in joined
+
+    # The stuck write was cancelled, not left running past shutdown. The task
+    # is cancelled synchronously; its done-callback (which unregisters it)
+    # runs on a later loop iteration, so yield until the registry drains
+    # rather than sleeping a guessed interval.
+    for _ in range(100):
+        if not audit_dispatch._pending_auth_audits:
+            break
+        await asyncio.sleep(0)
+    assert not audit_dispatch._pending_auth_audits
+
+
+@pytest.mark.asyncio
+async def test_lifespan_shutdown_drains_queued_audit_writes():
+    """The rung that makes the documented guarantee hold on a clean shutdown.
+
+    `queue_auth_audit` deliberately does not await, so a process stopping right
+    after a rejected login could drop the row. The lifespan's `finally` drains
+    it — and must do so BEFORE `dispose_all_engines`, since the write commits
+    through the tenant engine that call disposes.
+    """
+    from app import database as db_mod
+    from app import main as main_mod
+    from app.services import audit_dispatch
+
+    written: list[dict] = []
+    order: list[str] = []
+
+    async def _write(**kwargs):
+        import asyncio
+
+        await asyncio.sleep(0.05)  # still in flight when the lifespan exits
+        written.append(kwargs)
+        order.append("write")
+
+    async def _dispose():
+        order.append("dispose")
+
+    with (
+        patch.object(audit_dispatch, "_write_auth_audit", _write),
+        patch.object(db_mod, "dispose_all_engines", _dispose),
+        patch.object(main_mod.settings, "debug", True),
+        patch.object(main_mod.settings, "extraction_reaper_enabled", False),
+    ):
+        async with main_mod.lifespan(main_mod.app):
+            audit_dispatch.queue_auth_audit(
+                organization_id=uuid.uuid4(),
+                actor_id=None,
+                action="auth.login.failure",
+                details={"email": KNOWN_EMAIL, "ip": "10.0.0.1", "reason": "bad_password"},
+            )
+
+    assert len(written) == 1, "shutdown must flush the queued auth audit row"
+    assert order == ["write", "dispose"], "the drain must run before the engines are disposed"

@@ -291,15 +291,58 @@ def queue_auth_audit(
     task.add_done_callback(_finish_auth_audit)
 
 
-async def drain_auth_audits() -> None:
+# How long a graceful shutdown waits for queued auth audit rows to land. The
+# write is a control-plane lookup plus a tenant INSERT and COMMIT — generous at
+# five seconds, and BOUNDED on purpose: a hung write must cost the shutdown a
+# known amount, not block it indefinitely. An orchestrator that gives up waiting
+# and SIGKILLs loses every remaining row instead of just the stuck one.
+AUTH_AUDIT_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+async def drain_auth_audits(*, timeout: float | None = None) -> int:
     """Await every queued auth audit write currently in flight.
 
-    For TESTS that assert on the row right after the response, and for a
-    graceful shutdown that wants the trail flushed. Production request handlers
-    never call it — not waiting is the whole point.
+    For TESTS that assert on the row right after the response, and for the
+    lifespan shutdown, which is what makes the documented guarantee ("written
+    shortly after the response, or reported at ERROR") actually hold when the
+    process is stopped cleanly. Production request handlers never call it — not
+    waiting is the whole point.
+
+    ``timeout`` bounds the wait. Past it the remaining writes are cancelled and
+    the count is logged at WARNING and returned, so an abandoned row is as
+    visible as a failed one. ``None`` (the test default) waits indefinitely.
     """
+
+    async def _drain() -> None:
+        while _pending_auth_audits:
+            await asyncio.gather(*list(_pending_auth_audits), return_exceptions=True)
+
+    if timeout is None:
+        await _drain()
+        return 0
+
+    # `asyncio.wait` rather than `wait_for`: on expiry it returns instead of
+    # cancelling, so the writes are still countable. `wait_for` cancels the
+    # gather, whose done callbacks then empty `_pending_auth_audits` before the
+    # count can be read — reporting `abandoned=0` for a drain that abandoned
+    # work is worse than not reporting at all.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     while _pending_auth_audits:
-        await asyncio.gather(*list(_pending_auth_audits), return_exceptions=True)
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        await asyncio.wait(list(_pending_auth_audits), timeout=remaining)
+
+    abandoned = len(_pending_auth_audits)
+    if abandoned:
+        for task in list(_pending_auth_audits):
+            task.cancel()
+        # PII-free: a count and a bound, nothing about who was signing in.
+        logger.warning(
+            "auth audit drain timed out after %ss; abandoned=%d row(s)", timeout, abandoned
+        )
+    return abandoned
 
 
 def _send_to_sqs(
