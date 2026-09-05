@@ -70,6 +70,7 @@ export const messages = {
 	'common.cancel': 'Cancelar',
 	'common.loading': 'Carregando…',
 	'common.loadFailed': 'Não foi possível carregar esta lista. Atualize para tentar novamente.',
+	'common.amountInvalid': 'Informe o valor como um número simples, por exemplo 1200 ou 1200.50',
 
 	// Profile → Language picker
 	'profile.language.heading': 'Idioma',

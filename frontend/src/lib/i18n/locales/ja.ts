@@ -73,6 +73,7 @@ export const messages = {
 	'common.cancel': 'キャンセル',
 	'common.loading': '読み込み中…',
 	'common.loadFailed': 'このリストを読み込めませんでした。更新して再試行してください。',
+	'common.amountInvalid': '金額は 1200 や 1200.50 のような数値で入力してください',
 
 	// Profile → Language picker
 	'profile.language.heading': '言語',

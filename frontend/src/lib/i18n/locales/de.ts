@@ -69,6 +69,7 @@ export const messages = {
 	'common.cancel': 'Abbrechen',
 	'common.loading': 'Wird geladen …',
 	'common.loadFailed': 'Diese Liste konnte nicht geladen werden. Zum erneuten Versuch aktualisieren.',
+	'common.amountInvalid': 'Geben Sie den Betrag als einfache Zahl ein, z. B. 1200 oder 1200.50',
 
 	// Profile → Language picker
 	'profile.language.heading': 'Sprache',

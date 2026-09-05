@@ -78,6 +78,7 @@ export const en = {
 	'common.cancel': 'Cancel',
 	'common.loading': 'Loading…',
 	'common.loadFailed': 'Couldn’t load this list. Refresh to try again.',
+	'common.amountInvalid': 'Enter the amount as a plain number, e.g. 1200 or 1200.50',
 
 	// Profile → Language picker (profile/+page.svelte)
 	'profile.language.heading': 'Language',
