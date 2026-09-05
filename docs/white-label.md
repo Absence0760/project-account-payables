@@ -11,7 +11,9 @@ product name, logo, and accent colors. Shipped so far:
 3. **Custom domains** — a tenant can be served on its own vanity
    hostname (`ap.acmecorp.com`) and have the backend resolve it to the right
    tenant, in addition to the `*.localhost` subdomain / `X-Tenant-Slug`
-   mechanism. See [Custom domains](#custom-domains-vanity-hostnames) below.
+   mechanism. The SPA half is `PUBLIC_PLATFORM_DOMAINS` (which hosts are the
+   platform's) plus a runtime-resolved API origin. See
+   [Custom domains](#custom-domains-vanity-hostnames) below.
 4. **Partner / reseller admin** (this slice) — a partner (reseller) org can
    administer a set of branded **child** tenants: list them, read each child's
    branding, and push branding to a child. See
@@ -412,16 +414,69 @@ deployment shapes — DNS records, certificate issuance + renewal, the CORS env
 change, end-to-end verification, rollback and troubleshooting — is
 [`docs/founder-runbooks/custom-domain-provisioning.md`](founder-runbooks/custom-domain-provisioning.md).
 
-**The hostname is not free-form — it must be `<tenant-slug>.<customer-domain>`.**
-The custom-domain `Host` fallback fires only when `X-Tenant-Slug` is *absent*,
-and the SPA always sends that header when it can derive one: `getTenantSlug()`
-(`frontend/src/lib/tenant.ts`) takes the **first label** of any 3+-label
-hostname. So `ap.acmecorp.com` pointed at the tenant `acme` makes the SPA send
-`X-Tenant-Slug: ap` and every call 404s (`Unknown tenant: ap`), and a two-label
-apex (`acmecorp.com`) yields no header at all while the SPA still calls the
-build-time `PUBLIC_API_URL` origin — so the backend never sees the vanity `Host`
-and answers the 400. Pick the tenant's slug to match the label the customer
-wants, at provisioning time. The runbook above carries the full table.
+### The SPA half — `PUBLIC_PLATFORM_DOMAINS`
+
+The backend's `Host` fallback only ever fires when `X-Tenant-Slug` is **absent**,
+so the vanity host works or doesn't work depending entirely on what the SPA
+decides to send. It used to decide wrong. `getTenantSlug()` took the **first
+label of any 3+-label hostname**, which cannot tell a platform subdomain from a
+customer's own domain: on `ap.acmecorp.com` (the tenant `acme`) it sent
+`X-Tenant-Slug: ap` and every call 404'd `Unknown tenant: ap`, with the `Host`
+fallback never reached; on a two-label apex (`acmecorp.com`) it sent no header
+but still called the **build-time** `PUBLIC_API_URL` origin, so the backend saw
+the platform's `Host`, not the vanity one, and answered the 400. Custom domains
+were unreachable from the SPA in both shipped deployment shapes.
+
+The SPA is now **platform-domain aware**. `PUBLIC_PLATFORM_DOMAINS` is a
+comma-separated list of the registrable domains the *platform* serves, and
+`frontend/src/lib/hostRouting.ts` sorts every hostname into one of four kinds:
+
+| Host | Kind | `X-Tenant-Slug` | API origin |
+|---|---|---|---|
+| `acme.feohledger.com`, `acme.localhost:7777` | platform tenant | `acme` | build-time `PUBLIC_API_URL` |
+| `feohledger.com`, bare `localhost` | platform apex (marketing / signup) | none | build-time `PUBLIC_API_URL` |
+| `ap.acmecorp.com`, `acmecorp.com` | **vanity** | **none** | **same origin (`''`)** |
+| no `window` (prerender) | unknown | none | build-time `PUBLIC_API_URL` |
+
+Both halves matter and neither is sufficient alone. Sending no header is what
+lets the backend's `Host` lookup run at all; calling `/api` **same-origin** is
+what puts the *vanity* hostname in the `Host` header for it to look up. A vanity
+host that called the build-time API origin would hand the backend the platform's
+own hostname and get the 400 anyway. `frontend/src/lib/tenant.ts::getApiBase()`
+is the single owner of that decision, resolved per request at **runtime** rather
+than frozen into a module constant at build time, and `$lib/api.ts` +
+`$lib/portalApi.ts` both read it — there is no second spelling.
+
+**Two things the operator must do**, beyond the DNS + TLS below:
+
+1. **Build the frontend with `PUBLIC_PLATFORM_DOMAINS` set** to the platform's
+   own domain(s) — e.g. `PUBLIC_PLATFORM_DOMAINS=feohledger.com pnpm build`. See
+   `docs/environment.md`. **Unset is legal and means "the old rule"**: an empty
+   list replays the pre-change behaviour byte-for-byte, so an existing build that
+   passes only `PUBLIC_API_URL` is unchanged — and custom domains stay
+   unreachable from the SPA until the var is set. That default is deliberate: if
+   an unset list meant "every host is a vanity host", every deployment would stop
+   sending `X-Tenant-Slug` on upgrade and fall back to a `Host` map with no
+   entries.
+2. **Serve `/api` on the vanity origin.** Because a vanity host calls its own
+   origin, the edge terminating `ap.acmecorp.com` must proxy `/api/*` through to
+   the backend (CloudFront behaviour / ALB rule, or the `handle_path` block in
+   `deploy/Caddyfile` on the single-VM shape). Without it every API call hits the
+   static site and 404s. There is no CORS change to make for this path — the
+   request is same-origin by construction.
+
+**The hostname is now free-form.** `ap.acmecorp.com` no longer has to be
+`<tenant-slug>.<customer-domain>`, because the first label is never read as a
+slug on a non-platform host; a two-label apex (`acmecorp.com`) works too. The
+one remaining shape rule is the backend's own `normalize_custom_domain` (bare,
+lowercase, no port, no IPv6 literal).
+
+**Consequences elsewhere in the SPA.** A vanity host has a tenant but no slug, so
+anything that keyed off the slug needs the host instead. `$lib/entity.ts`
+partitions its stored multi-entity selection by
+`$lib/tenant.ts::getTenantStorageKey()` — the slug on a platform host, the
+hostname on a vanity host — rather than by `getTenantSlug()`, which would have
+silently disabled entity persistence on every vanity host.
 
 **Admin UI** — the **Custom Domains** section on `/organization`
 (`frontend/src/routes/organization/+page.svelte`, below the Branding panel):
@@ -473,6 +528,27 @@ branding save preserves `custom_domains`.
 `frontend/tests-e2e/organization/custom-domains.spec.ts` — the panel renders;
 adding a host through the UI round-trips through GET; removing one (armed
 confirm) drops it; an invalid hostname surfaces an inline error and fires no PUT.
+
+`frontend/src/lib/tenant.test.ts` — the SPA half, over the dependency-free
+`$lib/hostRouting.ts`: the four host kinds; a vanity 3-label host and a vanity
+apex both yielding **no** slug; the `*.localhost` dev convention and the deployed
+platform subdomain still yielding one; longest-platform-domain-first matching;
+the API-base resolver (platform host → build-time `PUBLIC_API_URL`, vanity host →
+same origin); the per-tenant storage key; and — the upgrade guard — that an unset
+`PUBLIC_PLATFORM_DOMAINS` replays the pre-change rule exactly.
+`frontend/src/lib/tenantSlugUsage.test.ts` adds two whole-tree scans: nothing
+outside `hostRouting.ts` splits a hostname into labels, and nothing outside
+`tenant.ts` imports the build-time `PUBLIC_API_URL` (bar a ratcheted two-file
+baseline), so a second spelling of either rule can't reappear.
+
+`frontend/tests-e2e/tenant/vanity-host.spec.ts` — the platform-host half
+end-to-end: every `/api` call from `<slug>.localhost:7777` still carries
+`X-Tenant-Slug: <slug>` and still targets the build-time API origin rather than
+collapsing to same-origin. The **vanity** half is deliberately unit-only: the
+e2e harness can neither guarantee `PUBLIC_PLATFORM_DOMAINS` reaches both run
+modes (local `pnpm dev` reads `.env.development`; CI serves a production-mode
+`vite build` that does not) nor serve a second hostname that terminates both the
+SPA and `/api`. The spec's header records exactly what would unlock it.
 
 ## Partner / reseller admin
 
