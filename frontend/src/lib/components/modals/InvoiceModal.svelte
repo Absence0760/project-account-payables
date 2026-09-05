@@ -33,6 +33,8 @@
 		resolveChatThread,
 		reopenChatThread,
 		getChatTemplates,
+		getChatMentionableUsers,
+		type ChatMentionCandidate,
 	} from '$lib/api/supplierChat';
 
 	// Render-side helper: extract the per-field before/after diff (SOX change
@@ -970,6 +972,13 @@
 	let chatThread = $state<ChatThread | null>(null);
 	let chatLoading = $state(false);
 	let chatTemplates = $state<ChatTemplate[]>([]);
+	// Colleagues the composer's @mention picker may offer. This used to read
+	// `adminStore.users` — a list only `/admin` and `/workflows/[id]` ever load,
+	// so on `/invoices` (where this modal lives) the picker was permanently
+	// empty, and visiting `/admin` first silently made it work. Same bug, and
+	// the same fix, as the approver picker: a narrow endpoint gated exactly like
+	// the action it feeds, never the admin directory.
+	let chatMembers = $state<ChatMentionCandidate[]>([]);
 
 	async function loadChatThread() {
 		const id = invoice.id;
@@ -989,6 +998,17 @@
 			chatTemplates = await getChatTemplates();
 		} catch {
 			// non-critical — composer still works without canned templates
+		}
+	}
+
+	async function loadChatMembers() {
+		try {
+			chatMembers = await getChatMentionableUsers();
+		} catch {
+			// Non-critical, and it must stay that way: the composer sends
+			// perfectly well with no mentions, so a failed roster load costs the
+			// picker, not the message. An empty list simply renders no dropdown.
+			chatMembers = [];
 		}
 	}
 
@@ -1108,6 +1128,7 @@
 		loadSummary();
 		loadChatThread();
 		loadChatTemplates();
+		loadChatMembers();
 		loadWorkflowInstance();
 	});
 
@@ -1864,7 +1885,7 @@
 							surface="ap"
 							thread={chatThread}
 							currentUserId={auth.user?.id}
-							members={adminStore.users}
+							members={chatMembers}
 							templates={chatTemplates}
 							loading={chatLoading}
 							onsend={handleChatSend}

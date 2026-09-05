@@ -1694,6 +1694,82 @@ async def _load_invoice_or_404(db: AsyncSession, invoice_id: uuid.UUID) -> Invoi
     return invoice
 
 
+class ChatMentionableUserResponse(BaseModel):
+    """The minimal projection of a teammate the @mention picker needs.
+
+    Same shape and the same reasoning as `AssignableReviewerResponse`: a display
+    name and nothing else. The picker used to be handed `AdminUser` rows and
+    rendered each candidate's EMAIL under their name, which is a directory of
+    every colleague's address rebuilt inside a chat composer.
+    """
+
+    id: str
+    full_name: str
+    is_active: bool
+
+
+async def _org_chat_members(control_db: AsyncSession, org_id: uuid.UUID) -> list[User]:
+    """The org's ACTIVE users — the set an AP chat mention may name.
+
+    One query behind both halves of the mention contract: the list the picker
+    offers, and the check the POST applies to what comes back. Deriving both
+    from the same place is what stops the two drifting into a picker that offers
+    someone the post then refuses.
+    """
+    rows = await control_db.execute(
+        select(User)
+        .where(User.organization_id == org_id, User.is_active.is_(True))
+        .order_by(User.full_name)
+    )
+    return list(rows.scalars().all())
+
+
+@router.get("/chat/mentionable-users", response_model=list[ChatMentionableUserResponse])
+async def list_chat_mentionable_users(
+    control_db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Who an AP chat message can @mention.
+
+    The picker had no source at all: the frontend read a store populated only by
+    `/admin` and `/workflows/[id]`, so landing on `/invoices` directly left it
+    permanently empty, and arriving via `/admin` first made it work — the same
+    feature behaving differently by navigation path.
+
+    The fix is this endpoint rather than the two that already exist, because
+    neither fits:
+
+    * `GET /api/admin/users` is `require_permission(user.manage)` and returns
+      emails, roles and last-login. Every non-admin would 403 — the identical
+      bug already fixed once for the approver picker — and none of that payload
+      belongs in a chat composer.
+    * `GET /api/invoices/assignable-reviewers` is PII-free but is gated
+      admin/ap_manager and scoped to holders of `invoice.approve`. Mentioning is
+      broader than approving in both directions: an ap_clerk or CFO can post to
+      this thread (both POST routes take `get_current_user`) yet could not read
+      that list, and a clerk is a perfectly reasonable person to mention.
+
+    So the gate here is `get_current_user` — exactly what posting a mention
+    requires. Reading the candidate list and acting on it are the same
+    privilege; a narrower read gate would leave a role able to mention but
+    unable to see who, and a wider payload would hand every employee a
+    directory. Scoped to the caller's own org, active users only, name + id +
+    flag only.
+
+    The caller is not filtered out; the composer drops itself, and
+    `notify_ap_mentions` already excludes the poster from the recipients.
+    """
+    return [
+        ChatMentionableUserResponse(
+            id=str(member.id),
+            full_name=member.full_name,
+            is_active=member.is_active,
+        )
+        for member in await _org_chat_members(control_db, org_id)
+    ]
+
+
 @router.get("/chat/templates", response_model=list[ChatTemplate])
 async def get_chat_templates(
     user: User = Depends(get_current_user),
@@ -1744,6 +1820,7 @@ async def get_invoice_chat(
 
 async def _post_ap_chat_message(
     db: AsyncSession,
+    control_db: AsyncSession,
     org: Organization,
     user: User,
     invoice: Invoice,
@@ -1762,6 +1839,21 @@ async def _post_ap_chat_message(
         try:
             parsed_mentions.append(uuid.UUID(raw))
         except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid mention_user_ids")
+
+    # A well-formed UUID was the only thing checked, so any id at all could be
+    # persisted onto `mentions` — a column read back on every GET of the thread.
+    # Nothing LEAKED (`notify_event`'s recipient load is org-scoped, so a
+    # foreign id simply resolves to nobody), but the record then asserted a
+    # mention of someone who was never notified and whose name no reader can
+    # resolve. Hold it to the same roster `GET /chat/mentionable-users` offers:
+    # a mention names an active colleague, or it is a client error like a
+    # malformed one. Refusing rather than silently dropping keeps the two
+    # halves honest — a stale selection surfaces instead of vanishing from a
+    # message the author believes they sent.
+    if parsed_mentions:
+        allowed = {member.id for member in await _org_chat_members(control_db, org.id)}
+        if not set(parsed_mentions).issubset(allowed):
             raise HTTPException(status_code=400, detail="Invalid mention_user_ids")
 
     thread = await get_or_create_thread(db, invoice)
@@ -1827,6 +1919,7 @@ async def post_invoice_chat(
     invoice_id: uuid.UUID,
     payload: ChatMessageCreate,
     db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(get_current_user),
 ):
@@ -1835,6 +1928,7 @@ async def post_invoice_chat(
     invoice = await _load_invoice_or_404(db, invoice_id)
     return await _post_ap_chat_message(
         db,
+        control_db,
         org,
         user,
         invoice,
@@ -1857,6 +1951,7 @@ async def post_invoice_chat_attachment(
     mention_user_ids: list[str] = Form(default=[]),
     template_key: str | None = Form(default=None),
     db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(get_current_user),
 ):
@@ -1881,6 +1976,7 @@ async def post_invoice_chat_attachment(
     }
     return await _post_ap_chat_message(
         db,
+        control_db,
         org,
         user,
         invoice,

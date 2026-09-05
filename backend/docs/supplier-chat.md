@@ -93,6 +93,50 @@ surfaces); the portal variant is `/api/portal/invoices/{id}/chat/file/{key}`.
 Control-plane `users.id` values as strings. AP side only; always `null`/absent
 for supplier posts. The portal response schema omits this field entirely.
 
+Every id is checked against the org's ACTIVE users before it is stored — the
+same roster `GET /invoices/chat/mentionable-users` offers, so the picker and the
+POST cannot disagree about who exists. An id outside it (another tenant's user,
+a deactivated colleague, a UUID that names nobody) is a **400**, exactly like a
+malformed one, and nothing is written — the refusal happens before the thread is
+lazy-created. Previously only the UUID *syntax* was checked, so any id at all
+could be persisted here and read back on every GET of the thread. Nothing
+leaked — `notify_event` scopes its recipient load to the organization, so a
+foreign id resolved to nobody — but the record then asserted a mention of
+someone who was never notified and whose name no reader can resolve. Refusing
+beats silently dropping: a stale selection surfaces instead of vanishing from a
+message the author believes they sent.
+
+### Who can be mentioned — `GET /invoices/chat/mentionable-users`
+
+The picker's source. Returns the caller's org's ACTIVE users as
+`{id, full_name, is_active}` — **no email, no roles, no audit metadata** —
+ordered by name.
+
+Gated on `get_current_user`, matching `POST /invoices/{id}/chat` exactly:
+reading the candidate list and acting on it are the same privilege, so a
+narrower read gate would leave a role able to mention but unable to see who.
+Neither existing endpoint fits, which is why this one exists:
+
+* `GET /api/admin/users` is `require_permission(user.manage)` and carries
+  emails, roles and last-login. Every non-admin 403s — the identical bug already
+  fixed once for the approver picker — and none of that payload belongs in a
+  chat composer.
+* `GET /api/invoices/assignable-reviewers` is PII-free but gated
+  admin/ap_manager and scoped to holders of `invoice.approve`. Mentioning is
+  broader in **both** directions: an ap_clerk or CFO can post to this thread yet
+  could not read that list, and a clerk is a perfectly ordinary person to
+  mention.
+
+The caller is not filtered out — the composer drops itself, and
+`notify_ap_mentions` already excludes the poster from the recipients.
+
+Before this endpoint the frontend picker had no source at all: it read a store
+only `/admin` and `/workflows/[id]` populate, so on `/invoices` — the one route
+the modal is reachable from — it was permanently empty, and arriving via
+`/admin` first made it work. Guards: `backend/tests/test_chat_mentionable_users.py`
+and `frontend/tests-e2e/invoices/chat-mentions.spec.ts` (which also asserts the
+supplier portal never fetches it).
+
 ## Attachment key scheme + cross-tenant gate
 
 Attachments are uploaded via `storage.upload_chat_file(org_id, invoice_id,
@@ -144,6 +188,7 @@ helpers) lives in `services/supplier_chat.py`.
 | POST | `/invoices/{id}/chat/reopen` | `admin` / `ap_manager` / `cfo` | — | `ChatThreadResponse` (200) |
 | GET | `/invoices/chat/file/{file_key:path}` | any authed | — | bytes (200) / 404 |
 | GET | `/invoices/chat/templates` | any authed | — | `list[ChatTemplate]` (200) |
+| GET | `/invoices/chat/mentionable-users` | any authed | — | `list[{id, full_name, is_active}]` (200) |
 
 - **GET lazy-creates nothing** — with no thread yet it returns
   `{ "id": null, "status": "open", "messages": [] }`.
