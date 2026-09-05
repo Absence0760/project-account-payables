@@ -11,6 +11,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { goodsReceiptTone } from '$lib/types/goodsReceipt';
 
 	const COLUMNS = $derived([
 		{ label: m('goodsReceipts.col.grNumber') },
@@ -159,7 +160,7 @@
 					</td>
 					<td class="mono">{gr.po_number ?? '—'}</td>
 					<td>{formatDate(gr.received_date)}</td>
-					<td><Badge tone="success" variant={gr.status}>{gr.status}</Badge></td>
+					<td><Badge tone={goodsReceiptTone(gr.status)} variant={gr.status}>{gr.status}</Badge></td>
 					<td class="muted">{gr.line_count}</td>
 					<td class="muted">{formatDate(gr.created_at)}</td>
 				</tr>
@@ -187,7 +188,7 @@
 				<h2>{m('goodsReceipts.modal.title')}</h2>
 				{#if detail}
 					<span class="num-badge">{detail.gr_number}</span>
-					<Badge tone="success" variant={detail.status}>{detail.status}</Badge>
+					<Badge tone={goodsReceiptTone(detail.status)} variant={detail.status}>{detail.status}</Badge>
 				{/if}
 			</div>
 			<button class="close-btn" onclick={() => (detailId = null)} aria-label={m('goodsReceipts.modal.close')}>&times;</button>
@@ -228,14 +229,12 @@
 
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
-	/* The status pill is `<Badge>`; the tone is `success` for EVERY status,
-	   which is what the single hand-rolled `.badge` rule this replaced already
-	   did — the conversion is faithful, not a re-colour. Worth knowing before
-	   the next edit: `GoodsReceipt.status` is a free-form `String(30)`, and the
-	   backend's own `po_matching.CANCELLED_GR_STATUSES` treats cancelled /
-	   voided / reversed receipts as deliveries that did NOT happen, so those
-	   currently badge green here. Giving them a `muted` tone means mirroring
-	   that frozenset with a drift guard, which is its own change. */
+	/* The status pill is `<Badge>`, toned by `types/goodsReceipt.goodsReceiptTone`.
+	   `GoodsReceipt.status` is a free-form `String(30)` with no normalisation on
+	   write, so the tone is resolved from the one set the backend itself acts on
+	   — `po_matching.CANCELLED_GR_STATUSES`, the receipts it excludes from the
+	   3-way quantity leg. Those badge `muted`; everything else `success`.
+	   `types/goodsReceipt.test.ts` fails if the two sets drift. */
 	/* Detail modal — bespoke header / body layout not covered by the shared modal CSS. */
 	.modal-header {
 		display: flex;
