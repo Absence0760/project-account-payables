@@ -203,7 +203,9 @@ class OutstandingItemsResponse(BaseModel):
     # Every identified-but-unreconciled line, whatever its class.
     discrepancies: list[DiscrepancyResponse]
     discrepancy_count: int
-    # Signed sum of the AMOUNT-mismatch subset's variances. Positive = the bank
-    # has taken more than we authorised in aggregate. Deliberately not summed
-    # over the other classes: a cross-currency subtraction isn't money.
-    amount_mismatch_net_variance: MoneyAmount
+    # Signed net of the AMOUNT-mismatch subset's variances, per currency.
+    # Positive = the bank has taken more than we authorised in aggregate.
+    # Deliberately not summed over the other classes (a cross-currency
+    # SUBTRACTION isn't money), and grouped rather than totalled for the same
+    # reason the other two buckets are (a cross-currency ADDITION isn't either).
+    amount_mismatch_net_variances: list[BankReconCurrencyTotal]

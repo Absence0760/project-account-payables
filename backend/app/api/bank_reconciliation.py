@@ -825,9 +825,17 @@ async def outstanding_items(
     # list it heads. The net variance deliberately sums the AMOUNT-mismatch
     # subset only: a cross-currency subtraction isn't money, and a
     # `status_conflict` line agrees on the amount by definition.
-    discrepancy_count, variance_sum = (
+    # Grouped by the statement's currency, for the same reason buckets 1 and 2
+    # are: an `amount_mismatch` line is same-currency by construction (a currency
+    # difference is classified `currency_mismatch` and excluded from the
+    # subtraction), but TWO mismatch lines in two different currencies still
+    # cannot be added together. Leaving this bucket ungrouped would make it the
+    # one figure on a page that disclaims cross-currency summing everywhere else.
+    variance_currency_expr = func.coalesce(BankStatement.currency, "")
+    variance_by_currency = (
         await db.execute(
             select(
+                variance_currency_expr,
                 func.count(),
                 func.sum(
                     case(
@@ -844,9 +852,11 @@ async def outstanding_items(
             .join(Payment, Payment.id == BankTransaction.matched_payment_id)
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(*discrepancy_where)
+            .group_by(variance_currency_expr)
         )
-    ).one()
-    net_variance = variance_sum if variance_sum is not None else Decimal("0.00")
+    ).all()
+    discrepancy_count = sum(row[1] for row in variance_by_currency)
+    net_variances = _currency_totals(variance_by_currency)
 
     # The row query selects the Payment itself and derives the settlement pair
     # through the SAME pure helper the matcher used, so a listed row can never
@@ -908,7 +918,7 @@ async def outstanding_items(
         unmatched_debit_totals=unmatched_totals,
         discrepancies=discrepancies,
         discrepancy_count=discrepancy_count,
-        amount_mismatch_net_variance=net_variance,
+        amount_mismatch_net_variances=net_variances,
     )
 
 

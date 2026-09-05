@@ -505,7 +505,7 @@ worksheet, computed on read across every imported statement:
 A linked line has already dropped out of `unmatched_debits`, and a discrepancy's
 payment is accounted for so it's out of `uncleared_payments` — which makes the
 discrepancy bucket the **only** place it can surface. That's why it covers all
-three classes rather than the amount one alone. `amount_mismatch_net_variance`
+three classes rather than the amount one alone. `amount_mismatch_net_variances`
 still sums the amount-mismatch subset only, for the same reason the per-row
 variance is NULL on the other two.
 

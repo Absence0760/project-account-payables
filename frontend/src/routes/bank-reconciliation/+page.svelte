@@ -519,7 +519,7 @@
 					<header class="bucket-head">
 						<h2>{m('bankRecon.section.uncleared')}</h2>
 						<span class="bucket-total mono">
-							{formatCurrencyTotals(outstanding.uncleared_totals, orgCurrency.currency).join(
+							{formatCurrencyTotals(outstanding.uncleared_totals ?? [], orgCurrency.currency).join(
 								' · '
 							) || formatMoney('0.00', { currency: orgCurrency.currency })}
 						</span>
@@ -570,7 +570,7 @@
 						<h2>{m('bankRecon.section.unmatched')}</h2>
 						<span class="bucket-total">
 							{formatCurrencyTotals(
-								outstanding.unmatched_debit_totals,
+								outstanding.unmatched_debit_totals ?? [],
 								orgCurrency.currency
 							).join(' · ') || formatMoney('0.00', { currency: orgCurrency.currency })}
 						</span>
@@ -623,13 +623,12 @@
 				<section class="bucket">
 					<header class="bucket-head">
 						<h2>{m('bankRecon.section.discrepancies')}</h2>
-						<span class="bucket-total">
+						<span class="bucket-total mono">
 							{m('bankRecon.kpi.netVariance')}:
-							<Money
-								amount={outstanding.amount_mismatch_net_variance}
-								currency={orgCurrency.currency}
-								mono
-							/>
+							{formatCurrencyTotals(
+								outstanding.amount_mismatch_net_variances ?? [],
+								orgCurrency.currency
+							).join(' · ') || formatMoney('0.00', { currency: orgCurrency.currency })}
 						</span>
 					</header>
 					<p class="bucket-help muted">{m('bankRecon.section.discrepanciesHelp')}</p>

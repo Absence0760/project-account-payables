@@ -261,7 +261,10 @@ export interface OutstandingItems {
 	discrepancy_count: number;
 	/** Signed sum of the amount-mismatch subset. Positive = the bank has taken
 	 *  more than we authorised in aggregate. */
-	amount_mismatch_net_variance: MoneyAmount;
+	/** Signed net of the amount-mismatch subset, grouped per currency. Two
+	 *  mismatch lines in two currencies cannot be added, so this is never one
+	 *  figure. Render via `formatCurrencyTotals`. */
+	amount_mismatch_net_variances: BankReconCurrencyTotal[];
 }
 
 /**

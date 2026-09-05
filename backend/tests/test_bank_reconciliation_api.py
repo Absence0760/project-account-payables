@@ -1390,3 +1390,28 @@ async def test_outstanding_search_narrows_counts_and_rows_together(realdb):
     assert miss_body["uncleared_payments"] == []
     assert miss_body["uncleared_count"] == 0
     assert miss_body["uncleared_totals"] == []
+
+
+async def test_net_variance_is_grouped_per_currency_too(realdb):
+    """The last bucket that summed across currencies.
+
+    An `amount_mismatch` line is same-currency by construction — a currency
+    difference is classified `currency_mismatch` and excluded from the
+    subtraction — but two mismatch lines in two DIFFERENT currencies still
+    cannot be added. Leaving this one ungrouped made it the single figure on a
+    page that disclaims cross-currency summing everywhere else."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get("/api/bank-reconciliation/outstanding")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The scalar is gone; what remains is a per-currency list of exact strings.
+    assert "amount_mismatch_net_variance" not in body
+    variances = body["amount_mismatch_net_variances"]
+    assert isinstance(variances, list)
+    for entry in variances:
+        assert set(entry) == {"currency", "total"}
+        assert isinstance(entry["total"], str)
+        # Signed: a negative net is legitimate (we authorised more than the
+        # bank took), so the assertion is on exactness, not on sign.
+        assert Decimal(entry["total"]).as_tuple().exponent == -2

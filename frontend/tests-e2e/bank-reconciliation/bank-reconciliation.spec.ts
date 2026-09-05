@@ -192,6 +192,7 @@ test.describe('/bank-reconciliation (admin)', () => {
 									invoice_number: 'E2E-INV-9001',
 									vendor_name: 'E2E Stub Vendor',
 									amount: '13579.24',
+									currency: 'USD',
 									method: 'ach',
 									status: 'submitted',
 									sent_on: '2019-03-05',
@@ -199,13 +200,13 @@ test.describe('/bank-reconciliation (admin)', () => {
 								}
 							],
 							uncleared_count: 1,
-							uncleared_total: '13579.24',
+							uncleared_totals: [{ currency: 'USD', total: '13579.24' }],
 							unmatched_debits: [],
 							unmatched_debit_count: 0,
-							unmatched_debit_total: '0.00',
+							unmatched_debit_totals: [],
 							discrepancies: [],
 							discrepancy_count: 0,
-							amount_mismatch_net_variance: '0.00'
+							amount_mismatch_net_variances: []
 						}
 					})
 			);
