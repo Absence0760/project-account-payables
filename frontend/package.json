@@ -36,9 +36,6 @@
 		"vitest": "^4.1.11"
 	},
 	"type": "module",
-	"dependencies": {
-		"isomorphic-dompurify": "^3.23.0"
-	},
 	"pnpm": {
 		"overrides": {
 			"cookie@<0.7.0": ">=0.7.0 <0.8.0",
