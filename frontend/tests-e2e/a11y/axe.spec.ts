@@ -74,7 +74,17 @@ const AUTHED_ROUTES: { path: string; name: string; ready?: string }[] = [
 	{ path: '/billing', name: 'billing', ready: 'Billing' },
 	{ path: '/reports', name: 'report builder', ready: 'Report Builder' },
 	{ path: '/experiments', name: 'workflow experiments', ready: 'Workflow Experiments' },
-	{ path: '/cfo', name: 'cash flow', ready: 'Cash Flow' }
+	{ path: '/cfo', name: 'cash flow', ready: 'Cash Flow' },
+	// Round 22's surfaces. Each shipped with an axe scan inside its own spec,
+	// which proves the page was clean the day it landed but does not keep it
+	// clean: this list is what re-scans every route on every run. `/organization`
+	// in particular had never been scanned at all despite carrying ~10 panels of
+	// forms, armed destructive actions and a one-time secret reveal.
+	{ path: '/organization', name: 'organization settings', ready: 'Organization' },
+	{ path: '/adaptive', name: 'adaptive workflows', ready: 'Adaptive Workflows' },
+	{ path: '/goods-receipts', name: 'goods receipts', ready: 'Goods Receipts' },
+	{ path: '/admin/entities', name: 'admin entities', ready: 'Entities' },
+	{ path: '/admin/health', name: 'admin sweep health', ready: 'Sweep Health' }
 ];
 
 test.describe('accessibility — authenticated app (WCAG 2.2 AA)', () => {
