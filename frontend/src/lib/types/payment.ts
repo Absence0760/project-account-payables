@@ -1,3 +1,4 @@
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
 import type { MoneyAmount } from '$lib/utils/money';
 
 // Mirrors the statuses the backend actually persists on `payments.status`.
@@ -37,6 +38,77 @@ export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
 	cancelled: 'Cancelled',
 	voided: 'Voided'
 };
+
+/**
+ * Badge tone per payment status.
+ *
+ * Lives here rather than on `/payments` because the same union is badged in
+ * more than one place — the History table, the queue, and `RunDetailModal`'s
+ * per-payment column — and the two used to disagree: the modal tinted
+ * `pending` amber but had no rule at all for `submitted`, `cancelled`,
+ * `voided` or `pending_compliance`, so half the union rendered untinted there
+ * while `/payments` painted it. That is the drift a shared map exists to stop
+ * (`frontend/CLAUDE.md` § Badge).
+ *
+ * `Record<PaymentStatus, …>` on purpose: the old per-status CSS rules were a
+ * list you had to remember to extend, and `voided` — a real member of
+ * `PAYMENT_STATUSES` — never got one, so a voided payment rendered an
+ * untinted pill. A total record makes the compiler ask the question.
+ *
+ * `cancelled` and `voided` share `muted` (a grey tint) while a run's `draft`
+ * is `neutral` (flat): "abandoned" and "reversed" are both inert money states,
+ * whereas draft is money that has not been attempted yet.
+ *
+ * No `?? 'neutral'` at the call sites, unlike {@link RUN_STATUS_TONES} below:
+ * this record is total over the union, and a status off the union lands on
+ * `Badge`'s own `tone` default — which is `neutral` — rather than on a
+ * fallback restating it.
+ */
+export const PAYMENT_STATUS_TONES: Record<PaymentStatus, BadgeTone> = {
+	pending: 'warning',
+	// Same tone as `pending` — both are waiting. What separates "a human must
+	// clear this" from "waiting its turn" is the ring the History cell draws
+	// around it (`/payments` `.compliance-ring`), a caller-owned wrapper
+	// rather than a sixth tone — decisions.md §52.
+	pending_compliance: 'warning',
+	submitted: 'accent',
+	processing: 'accent',
+	completed: 'success',
+	failed: 'danger',
+	cancelled: 'muted',
+	voided: 'muted'
+};
+
+/**
+ * Badge tone per payment-RUN status — `services/payment_runs`' three claim
+ * states (`draft` / `executing` / `cancelled`) plus the four its rollup
+ * derives (decisions.md §41).
+ *
+ * `PaymentRun.status` is a bare string (the backend derives it on read), so
+ * this can't be a total record and an unknown value falls back to the flat
+ * `neutral` chip rather than to nothing — use {@link runStatusTone}.
+ * `partial` and `executing` had no rule at all on either surface and rendered
+ * untinted — `partial` especially, which is the one run status meaning "some
+ * of this money failed".
+ *
+ * `draft` is `neutral`, not amber: `RunDetailModal` tinted it `warning` while
+ * `/payments` rendered it flat, for the same run, one click apart. Flat wins —
+ * a draft run is money that has not been attempted yet, which is the absence
+ * of a signal rather than a weak one.
+ */
+export const RUN_STATUS_TONES: Record<string, BadgeTone> = {
+	draft: 'neutral',
+	executing: 'accent',
+	submitted: 'accent',
+	completed: 'success',
+	partial: 'warning',
+	failed: 'danger',
+	cancelled: 'muted'
+};
+
+export function runStatusTone(status: string): BadgeTone {
+	return RUN_STATUS_TONES[status] ?? 'neutral';
+}
 
 // UK domestic bank rails (bacs / faster_payments / chaps). A same-currency
 // GBP payment to a GB vendor stays inside the UK banking system (sort code +

@@ -4,11 +4,14 @@
 		RequisitionLineItemInput,
 		RequisitionStatus
 	} from '$lib/types/requisition';
-	import { REQUISITION_STATUS_LABELS } from '$lib/types/requisition';
+	import {
+		REQUISITION_STATUS_LABELS,
+		REQUISITION_STATUS_TONES
+	} from '$lib/types/requisition';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatMoney, scaleMoney, sumMoney, type MoneyString } from '$lib/utils/money';
 	import { toast } from '$lib/components/ui/Toast.svelte';
@@ -28,30 +31,6 @@
 		onclose: () => void;
 		onsaved: (r: Requisition) => void;
 	} = $props();
-
-	/**
-	 * Badge tone per requisition status — the same seven the list page paints,
-	 * at the colours they already had.
-	 *
-	 * `converted` takes the `erp` tone: it is the measured purple literal this
-	 * rule already spelled by hand, and it is doing the same job it does
-	 * mid-invoice-pipeline — "handed off downstream", here to a PO. Keeping it
-	 * distinct from `approved` (green) matters: approved is a decision,
-	 * converted is a decision someone has already acted on.
-	 *
-	 * Belongs beside `REQUISITION_STATUS_LABELS` in `types/requisition.ts`
-	 * (the shape `types/recurring.ts` uses) once the list page converts too —
-	 * that file is outside this tranche.
-	 */
-	const STATUS_TONES: Record<RequisitionStatus, BadgeTone> = {
-		draft: 'accent',
-		submitted: 'warning',
-		pending_approval: 'warning',
-		approved: 'success',
-		rejected: 'danger',
-		converted: 'erp',
-		cancelled: 'neutral'
-	};
 
 	const isCreate = $derived(requisition === null);
 	const canEdit = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
@@ -210,7 +189,7 @@
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<Badge tone={STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
+				<Badge tone={REQUISITION_STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
 					{REQUISITION_STATUS_LABELS[statusKey] ?? status}
 				</Badge>
 				{#if requisition?.converted_po_id}

@@ -1,6 +1,12 @@
 <script lang="ts">
 	import type { Payment, PaymentStatus, PaymentMethod } from '$lib/types/payment';
-	import { PAYMENT_STATUSES, PAYMENT_STATUS_LABELS, PAYMENT_METHOD_LABELS } from '$lib/types/payment';
+	import {
+		PAYMENT_STATUSES,
+		PAYMENT_STATUS_LABELS,
+		PAYMENT_METHOD_LABELS,
+		PAYMENT_STATUS_TONES,
+		runStatusTone
+	} from '$lib/types/payment';
 	import { paymentStore } from '$lib/stores/payments.svelte';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { api } from '$lib/api';
@@ -117,36 +123,6 @@
 		paymentStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method; routes through api.get
 	}
 
-	/**
-	 * Badge tone per payment status.
-	 *
-	 * `Record<PaymentStatus, …>` on purpose: the old per-status CSS rules were
-	 * a list you had to remember to extend, and `voided` — a real member of
-	 * `PAYMENT_STATUSES` — never got one, so a voided payment rendered an
-	 * untinted pill. A total record makes the compiler ask the question.
-	 *
-	 * `cancelled` and `voided` share `muted` (a grey tint) while a run's
-	 * `draft` is `neutral` (flat): "abandoned" and "reversed" are both inert
-	 * money states, whereas draft is money that has not been attempted yet.
-	 *
-	 * No `?? 'neutral'` at the call site, unlike the two bare-string maps
-	 * below: this record is total over the union, and a status off the union
-	 * lands on `Badge`'s own `tone` default — which is `neutral` — rather than
-	 * on a fallback restating it.
-	 */
-	const PAYMENT_STATUS_TONES: Record<PaymentStatus, BadgeTone> = {
-		pending: 'warning',
-		// Same tone as `pending` — both are waiting. What separates "a human
-		// must clear this" from "waiting its turn" is the ring the History
-		// cell draws around it; see `.compliance-ring`.
-		pending_compliance: 'warning',
-		submitted: 'accent',
-		processing: 'accent',
-		completed: 'success',
-		failed: 'danger',
-		cancelled: 'muted',
-		voided: 'muted'
-	};
 
 	// Summary
 	// Money fields arrive as exact Decimal STRINGS from the backend (money
@@ -725,30 +701,6 @@
 	// loading flag at all.
 	let runsLoading = $state(true);
 	let runsErrored = $state(false);
-
-	/**
-	 * Badge tone per run status — `services/payment_runs`' three claim states
-	 * (`draft` / `executing` / `cancelled`) plus the four its rollup derives.
-	 *
-	 * `RunItem.status` is a bare string (the backend derives it on read), so
-	 * this can't be a total record and an unknown value falls back to the flat
-	 * `neutral` chip rather than to nothing. `partial` and `executing` had no
-	 * rule at all before and rendered untinted — `partial` especially, which
-	 * is the one run status meaning "some of this money failed".
-	 */
-	const RUN_STATUS_TONES: Record<string, BadgeTone> = {
-		draft: 'neutral',
-		executing: 'accent',
-		submitted: 'accent',
-		completed: 'success',
-		partial: 'warning',
-		failed: 'danger',
-		cancelled: 'muted'
-	};
-
-	function runTone(status: string): BadgeTone {
-		return RUN_STATUS_TONES[status] ?? 'neutral';
-	}
 
 	function buildParams(): Record<string, string> {
 		// Paging (page / page_size) is owned by the store's Load-More; only
@@ -1602,7 +1554,7 @@
 								{run.id.slice(0, 8)}
 							</RowLink>
 						</td>
-						<td><Badge tone={runTone(run.status)} variant={run.status}>{run.status}</Badge></td>
+						<td><Badge tone={runStatusTone(run.status)} variant={run.status}>{run.status}</Badge></td>
 						<td class="right mono">{run.total_amount ? formatCurrency(run.total_amount) : '—'}</td>
 						<td>{run.payment_count}</td>
 						<td class="muted">{formatDate(run.executed_at)}</td>
@@ -1977,9 +1929,12 @@
 
 	/* --- Status badges --- */
 
-	/* Every pill on this page is `<Badge>`; the tone per status lives in the
-	   three `*_STATUS_TONES` maps in the script. What stays here is placement
-	   and the one emphasis the palette has no tone for.
+	/* Every pill on this page is `<Badge>`; the tone per status lives in
+	   `PAYMENT_STATUS_TONES` / `RUN_STATUS_TONES` in `$lib/types/payment`
+	   (shared with `RunDetailModal`, which badges the same two vocabularies)
+	   and in the page-local `CARD_STATUS_TONES`, which has no second caller.
+	   What stays here is placement and the one emphasis the palette has no
+	   tone for.
 
 	   Held by the sanctions/KYC gate is an attention state, not a failure —
 	   amber, so it reads as "needs a human" and not as `failed`. It shares the

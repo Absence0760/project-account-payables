@@ -3,6 +3,7 @@
 // `ExpenseResponse` / `ExpenseReportResponse`). Money fields arrive as
 // numbers (backend `float(...)`); date/datetime fields are ISO strings.
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
 import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type ExpenseStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'reimbursed';
@@ -60,6 +61,30 @@ export const EXPENSE_STATUS_LABELS: Record<ExpenseStatus, string> = {
 	reimbursed: 'Reimbursed'
 };
 
+/**
+ * Badge tone per expense status. Hoisted out of `ExpenseModal`, which is where
+ * it was first written and where it left a note saying it belonged here once
+ * the list page converted. It now has three callers — the modal, the Expenses
+ * table and the report-detail line table — which is exactly the shape
+ * `frontend/CLAUDE.md` § Badge asks for.
+ *
+ * Total record: a status added to `ExpenseStatus` is a compile error here
+ * rather than an untinted pill.
+ *
+ * `reimbursed` takes the `erp` tone — the measured purple the list page's rule
+ * spelled by hand, doing the job that tone does elsewhere: handed off
+ * downstream. Green would collapse it into `approved`, and "someone approved
+ * this" and "the money went back" are different answers to the only question
+ * an employee asks of this pill.
+ */
+export const EXPENSE_STATUS_TONES: Record<ExpenseStatus, BadgeTone> = {
+	draft: 'accent',
+	submitted: 'warning',
+	approved: 'success',
+	rejected: 'danger',
+	reimbursed: 'erp'
+};
+
 export type ExpensePaymentMethod = 'out_of_pocket' | 'corporate_card' | 'virtual_card';
 
 export const EXPENSE_PAYMENT_METHODS: ExpensePaymentMethod[] = [
@@ -101,6 +126,32 @@ export const EXPENSE_REPORT_STATUS_LABELS: Record<ExpenseReportStatus, string> =
 	rejected: 'Rejected',
 	reimbursed: 'Reimbursed',
 	cancelled: 'Cancelled'
+};
+
+/**
+ * Badge tone per expense-REPORT status. Two callers on the same page — the
+ * reports table and the report-detail header, which the e2e suite reads as
+ * `.report-title-block .badge`.
+ *
+ * `submitted` and `pending_approval` share `warning` because the report is
+ * waiting on someone in both, which is what the pill is for. They keep their
+ * own labels (and their own filter chips), so the states stay distinguishable
+ * in text — SC 1.4.1 — while the colour answers the only scannable question.
+ *
+ * `cancelled` is `neutral`, not a grey tint: a withdrawn report is the absence
+ * of a signal rather than a weak one. That is the same call `/payments` makes
+ * for a `draft` run, and the opposite of the one it makes for a `voided`
+ * payment — money that moved and came back is an event; a report nobody
+ * pursued is not.
+ */
+export const EXPENSE_REPORT_STATUS_TONES: Record<ExpenseReportStatus, BadgeTone> = {
+	draft: 'accent',
+	submitted: 'warning',
+	pending_approval: 'warning',
+	approved: 'success',
+	rejected: 'danger',
+	reimbursed: 'erp',
+	cancelled: 'neutral'
 };
 
 // A single policy-engine finding stamped onto `Expense.policy_violations` by the
@@ -357,6 +408,13 @@ export const EXPENSE_PREAPPROVAL_STATUS_LABELS: Record<ExpensePreapprovalStatus,
 	rejected: 'Rejected'
 };
 
+/** Badge tone per pre-approval status — a decision pending, taken, or refused. */
+export const EXPENSE_PREAPPROVAL_STATUS_TONES: Record<ExpensePreapprovalStatus, BadgeTone> = {
+	pending: 'warning',
+	approved: 'success',
+	rejected: 'danger'
+};
+
 export interface ExpensePreapproval {
 	id: string;
 	requester_user_id: string;
@@ -396,6 +454,21 @@ export const RECONCILIATION_STATUS_LABELS: Record<ReconciliationStatus, string> 
 	unmatched: 'Unmatched',
 	matched: 'Matched',
 	ignored: 'Ignored'
+};
+
+/**
+ * Badge tone per card-transaction reconciliation status.
+ *
+ * `unmatched` is `warning`, not `danger`: a charge nobody has coded yet is
+ * work outstanding, not a failure — and this table has no failure state to
+ * confuse it with. `ignored` is `neutral` (flat), the deliberate "no signal"
+ * chip: someone has decided this line needs nothing, which is the absence of a
+ * signal rather than a weak one.
+ */
+export const RECONCILIATION_STATUS_TONES: Record<ReconciliationStatus, BadgeTone> = {
+	unmatched: 'warning',
+	matched: 'success',
+	ignored: 'neutral'
 };
 
 // Mirrors the backend `CorporateCardTransactionResponse`. Money fields arrive as

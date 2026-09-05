@@ -3,8 +3,13 @@
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
-	import { PAYMENT_METHOD_LABELS } from '$lib/types/payment';
-	import type { PaymentMethod } from '$lib/types/payment';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import {
+		PAYMENT_METHOD_LABELS,
+		PAYMENT_STATUS_TONES,
+		runStatusTone
+	} from '$lib/types/payment';
+	import type { PaymentMethod, PaymentStatus } from '$lib/types/payment';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_PAYMENT_EXECUTE } from '$lib/types/admin';
 	import { formatMoney } from '$lib/utils/money';
@@ -190,7 +195,10 @@
 				<h2>{m('paymentRuns.runDetail.title')}</h2>
 				{#if run}
 					<span class="run-id">{run.id.slice(0, 8)}</span>
-					<span class="status-badge {run.status}">{run.status}</span>
+					<!-- `status-badge` is the e2e hook (tests-e2e/payments read it by
+					     class and assert on textContent); the tone comes from the
+					     shared map, never from a rule on the variant. -->
+					<Badge tone={runStatusTone(run.status)} variant="status-badge {run.status}">{run.status}</Badge>
 				{/if}
 			</div>
 			<button class="close-btn" onclick={onclose} aria-label={m('paymentRuns.runDetail.close')}>&times;</button>
@@ -233,7 +241,13 @@
 								<td>{p.vendor_name ?? '—'}</td>
 								<td class="right mono">{fmt(p.amount)}</td>
 								<td>{methodLabel(p.method)}</td>
-								<td><span class="badge {p.status}">{p.status}</span></td>
+								<!-- No `?? 'neutral'`: the map is total over `PaymentStatus`,
+								     and a value off the union lands on `Badge`'s own `tone`
+								     default — which IS neutral — rather than a fallback
+								     restating it. -->
+								<td>
+									<Badge tone={PAYMENT_STATUS_TONES[p.status as PaymentStatus]} variant={p.status}>{p.status}</Badge>
+								</td>
 								<td class="mono muted">{p.reference ?? '—'}</td>
 							</tr>
 						{/each}
@@ -492,53 +506,16 @@
 		color: var(--text-muted);
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 10px;
-		font-size: 0.72rem;
-		font-weight: 600;
-		text-transform: capitalize;
-	}
-
-	.badge.pending {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
-	}
-
-	.badge.processing {
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
-	}
-
-	.badge.completed {
-		background: var(--success-tint);
-		color: var(--success-on-tint);
-	}
-
-	.badge.failed {
-		background: rgba(240, 70, 70, 0.15);
-		color: var(--danger);
-	}
-
-	.status-badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-		text-transform: capitalize;
-	}
-
-	.status-badge.draft {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
-	}
-
-	.status-badge.completed {
-		background: var(--success-tint);
-		color: var(--success-on-tint);
-	}
+	/* No status-badge rules here on purpose. Both pills in this dialog are
+	   `<Badge>`, and their tones come from `PAYMENT_STATUS_TONES` /
+	   `RUN_STATUS_TONES` in `$lib/types/payment` — shared with `/payments`,
+	   which badges the same two vocabularies one click away. This file used to
+	   carry its own seven rules and they had already drifted: `draft` was
+	   amber here and flat there, and `submitted` / `cancelled` / `voided` /
+	   `pending_compliance` had no rule at all, so half the payment-status
+	   union rendered untinted in this table. The `status-badge` / `<status>`
+	   classes survive as `variant` — selector hooks for the e2e suite, never
+	   colour (decisions.md §47). */
 
 	footer {
 		padding: 14px 20px;
@@ -636,11 +613,6 @@
 	.btn-discard:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
-	}
-
-	.status-badge.cancelled {
-		background: var(--muted-tint);
-		color: var(--muted-on-tint);
 	}
 
 	.footer-note.pending {

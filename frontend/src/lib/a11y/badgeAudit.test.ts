@@ -98,29 +98,36 @@ const BASELINE: Record<string, number> = {
 
 	// --- Still to convert ---------------------------------------------------
 	'routes/discounts/+page.svelte': 4,
-	'routes/expenses/+page.svelte': 10,
 	'routes/invoices/+page.svelte': 1,
-	'routes/requisitions/+page.svelte': 6,
 	'routes/tax/+page.svelte': 3,
 	'routes/vendor-statements/+page.svelte': 1,
-	'routes/vendors/+page.svelte': 3,
-	// Deferred, not declined: this modal badges the SAME `PaymentStatus` union
-	// and the same run statuses `/payments` does, and `frontend/CLAUDE.md`
-	// requires a shared `STATUS_TONES` map beside `PAYMENT_STATUS_LABELS` in
-	// `types/payment.ts` rather than a second copy — converting it with a local
-	// map would create exactly the drift the convention forbids.
-	'lib/components/modals/RunDetailModal.svelte': 7
+	'routes/vendors/+page.svelte': 3
 };
 
 /** Files a tranche took to zero. A rule reappearing here is a regression. */
 const CONVERTED = [
 	'routes/admin/webhooks/+page.svelte',
+	// Converted with `types/payment.ts` and `/payments` as one move, because it
+	// badges the SAME `PaymentStatus` union and the same run statuses — the two
+	// tone maps now live beside `PAYMENT_STATUS_LABELS` in the shared types
+	// module. Its seven local rules had already drifted from the list page's
+	// (amber `draft` vs flat, and no rule at all for four payment statuses),
+	// which is what converting it with a local map would have preserved.
+	'lib/components/modals/RunDetailModal.svelte',
 	// The dashboard's second spelling of `.overdue-badge` — /payments already
 	// rendered the same flag through the primitive, so it shipped at two sizes
 	// on two pages.
 	'routes/+page.svelte',
+	// Converted in round 13; their tone maps were hoisted into
+	// `types/requisition.ts` / `types/expense.ts` when the list pages below
+	// converted, which is where each map's own comment said they belonged.
 	'lib/components/modals/RequisitionModal.svelte',
 	'lib/components/modals/ExpenseModal.svelte',
+	// Four vocabularies between them (expense, expense report, pre-approval,
+	// card reconciliation, requisition), every tone map now beside its label map
+	// in the shared types module rather than duplicated in the modal.
+	'routes/expenses/+page.svelte',
+	'routes/requisitions/+page.svelte',
 	'lib/components/marketing/Landing.svelte',
 	'lib/components/modals/InvoiceModal.svelte',
 	'routes/credit-memos/+page.svelte',
@@ -144,8 +151,10 @@ describe('tinted-badge conversion ratchet', () => {
 	it('detects the recipe it is meant to detect', () => {
 		// The audit's own regression test: a file everyone agrees still
 		// hand-rolls must be found. Without it, breaking the parser turns this
-		// whole suite green.
-		expect(counts['routes/expenses/+page.svelte']).toBeGreaterThan(0);
+		// whole suite green — every `toBe(0)` below would pass vacuously.
+		// Repointed from `/expenses` when that file converted; it must always
+		// name a file still carrying a non-zero baseline above.
+		expect(counts['routes/vendors/+page.svelte']).toBeGreaterThan(0);
 	});
 
 	it.each(CONVERTED)('%s stays on the shared primitive', (path) => {
