@@ -220,14 +220,28 @@ set), so rather than bypassing the gate it reads the snapshot in `evaluate` and
 the hard max). The money-path invariant stays intact — the agent never grants
 itself a role the actor doesn't hold.
 
-Both threshold reads in `evaluate` go through the shared
-`approval_chain.cfo_gate_applies` helper, so a **malformed / non-finite**
+Both threshold reads in `evaluate` go through `approval_chain`'s shared
+fail-CLOSED body (`_money_gate_applies`), so a **malformed / non-finite**
 `require_cfo_above` or `max_invoice_amount` in the snapshot (a settings typo, or
 a stringified `Infinity`/`NaN` an insider tampered in to defeat the control)
 **fails closed** — it escalates to a human rather than silently skipping the gate
 (`amount > Decimal("Infinity")` is always False, which previously let a tampered
-threshold auto-approve). The same fail-closed helper backs the human-approval and
+threshold auto-approve). The same fail-closed body backs the human-approval and
 expense-report CFO gates.
+
+Each cap is read through **its own** named wrapper —
+`approval_chain.max_amount_gate_applies` for `max_invoice_amount`,
+`approval_chain.cfo_gate_applies` for `require_cfo_above`. The two share that
+body, so the verdict is identical either way; what differs is the diagnosis. All
+four resolvers evaluated the hard cap through `cfo_gate_applies`, whose
+fail-closed log reads *"auto-approval money threshold is unparseable (…);
+requiring human (CFO) approval"* — so an operator chasing a stuck agent was
+pointed at `require_cfo_above` when the bad value was `max_invoice_amount`, on
+the one path where that log is the only evidence of what happened. The cap trip
+now logs *"max-invoice-amount money threshold is unparseable (…); refusing the
+approval"*. `tests/test_exception_agent_max_amount_gate.py` is the drift guard
+(an AST scan over the four resolvers, plus a check that the two helpers emit
+non-interchangeable diagnoses).
 
 **Fail-closed authority.** An auto-resolution approves an invoice with the
 actor's authority, so `run_agent` refuses to self-approve when it can't name the

@@ -44,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
-from app.services.approval_chain import cfo_gate_applies
+from app.services.approval_chain import cfo_gate_applies, max_amount_gate_applies
 from app.services.exception_agents.base import (
     ACTION_AUTO_RESOLVED,
     ACTION_ESCALATED,
@@ -349,8 +349,12 @@ class GLCodingResolver(ExceptionResolver):
         max_amount = approval_config.get("max_invoice_amount")
         cfo_threshold = approval_config.get("require_cfo_above")
         # Both money gates fail CLOSED on a malformed/non-finite threshold — a
-        # bad settings value must escalate to a human, never skip the gate.
-        if cfo_gate_applies(max_amount, amount) or cfo_gate_applies(cfo_threshold, amount):
+        # bad settings value must escalate to a human, never skip the gate. Each
+        # cap is evaluated by its OWN helper so a malformed `max_invoice_amount`
+        # is logged as the max-amount cap refusing the approval, not as a CFO
+        # sign-off requirement (same shared `_money_gate_applies` body, so the
+        # verdict is identical — only the diagnosis was wrong).
+        if max_amount_gate_applies(max_amount, amount) or cfo_gate_applies(cfo_threshold, amount):
             raise _NotApprovable(locked.status)
 
         corrections: dict = {_GL_FIELD: gl.value}
