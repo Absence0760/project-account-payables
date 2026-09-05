@@ -83,6 +83,47 @@ ERP-send states, …) would drop a fabricated, payable invoice into the queue
 with no audit row and no second approver — so those statuses are rejected per
 row (issue #174). Never try to import open AP as `approved`; import it as `new`.
 
+## Import provenance — `meta["imported"]`
+
+Every invoice row the importer creates is stamped, on the existing
+`Invoice.meta` JSONB bag (no migration, no new column):
+
+```json
+"imported": { "at": "2026-09-05T11:02:44.918273+00:00", "source": "csv_import" }
+```
+
+* **Presence of the key is the marker.** Nothing parses the value, so a
+  truncated or hand-edited `at` still reads as "imported" rather than quietly
+  flipping the row back to native.
+* **A nested object, not a flat `imported_at`**, so later provenance fields
+  (batch id, importing user) extend it without colonising more top-level keys
+  in a bag shared with `audit_summary` (`services/audit_summary`) and
+  `archived_at` (`services/retention_sweep`). Both of those writers merge into
+  a copy of the existing dict, so the marker survives them.
+* **`source` names the writer**, so a future importer (an ERP backfill, a
+  migration tool) can mark rows the same way and stay distinguishable.
+* One stamp per batch — every row in a single import shares the instant the
+  import ran, which is the fact being recorded.
+
+**Why it exists.** An imported invoice is history migrated in from whatever the
+tenant used before; the workflow engine never ran on it. Metrics that describe
+*this platform's* automation therefore have to exclude it, and status cannot
+identify it — `done`, `paid` and `rejected` are each reachable both by import
+and natively. The first consumer is the dashboard's touchless rate, which
+subtracts marked rows from **both** its legs; see
+`backend/docs/analytics.md` § Imported rows are outside the metric.
+
+`imported_invoice_clause()` / `native_invoice_clause()` in
+`services/csv_import` are the SQL predicates — use them rather than
+re-deriving the key, and note that the `?` operator returns NULL (not false)
+on a SQL-NULL `meta`, which is why the positive clause carries an
+`IS NOT NULL` guard.
+
+**No backfill.** Rows imported before the marker shipped carry no key and are
+read as native. That is deliberate: absence of the marker means "we do not
+know", and inventing provenance for a historical row is exactly the guessing
+the marker exists to avoid.
+
 ## What the import does NOT do
 
 - **No file attachment.** The importer creates the AP records; it does

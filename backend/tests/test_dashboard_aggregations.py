@@ -81,9 +81,14 @@ def _mk_db(*results):
 #   5.  aging rows (bucket, sum, sum_rep) — SQL-bucketed → .all()
 #   6.  trend rows (month, count, sum, sum_rep) — SQL group → .all()
 #   7.  upcoming payment rows (+ currency/reporting cols)  → .all()
-#   7a. invoices in an AMBIGUOUS status carrying an approval stamp → .scalar()
-#       (the touchless-rate numerator's evidence — `done`, `paid` and
-#       `failed` are each reachable both through review and around it, see
+#   7a. CSV-IMPORTED invoice counts per status              → .all()
+#       (rows carrying `meta["imported"]` — migrated history the workflow
+#       engine never ran on, subtracted from BOTH touchless legs; status
+#       cannot identify them, since `done`/`paid`/`rejected` are each
+#       reachable natively too)
+#   7b. NATIVE invoices in an AMBIGUOUS status carrying an approval stamp
+#       → .scalar() (the touchless-rate numerator's evidence — `done`, `paid`
+#       and `failed` are each reachable both through review and around it, see
 #       `analytics.compute_touchless_rate`)
 #   8.  total paid                        → .scalar()
 #   9.  total pending                     → .scalar()
@@ -103,6 +108,7 @@ def _full_results(
     aging=(),
     trend=(),
     upcoming=(),
+    imported_pipeline=(),
     review_cleared=0,
     paid=Decimal("0"),
     pending=Decimal("0"),
@@ -120,6 +126,7 @@ def _full_results(
         _r(all_=list(aging)),
         _r(all_=list(trend)),
         _r(all_=list(upcoming)),
+        _r(all_=list(imported_pipeline)),
         _r(scalar=review_cleared),
         _r(scalar=paid),
         _r(scalar=pending),
@@ -210,6 +217,38 @@ async def test_touchless_rate_is_100_with_no_rejections():
     db = _mk_db(*_full_results(pipeline=pipeline_rows, review_cleared=5))
     result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["touchless_rate"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_subtracts_imported_rows_from_both_legs():
+    """Day-0 migration shape: 20 real invoices (18 cleared, 2 bounced) buried
+    under 500 CSV-imported historical rows, 100 of which were rejected in the
+    tenant's PREVIOUS system.
+
+    Those 100 used to land in the bounced leg as though a reviewer here had
+    sent them back: 18 / (18 + 102) = 15.0%. Subtracting the imported rows
+    from both legs gives the honest 18 / 20 = 90.0%. The imported `done` rows
+    were already outside the numerator (no approval stamp) and are now outside
+    the denominator too.
+    """
+    pipeline_rows = [
+        (InvoiceStatus.approved, 18),
+        (InvoiceStatus.rejected, 102),
+        (InvoiceStatus.done, 400),
+    ]
+    imported = [(InvoiceStatus.rejected, 100), (InvoiceStatus.done, 400)]
+
+    # Without the provenance split, the migrated history dominates.
+    db = _mk_db(*_full_results(pipeline=pipeline_rows))
+    assert (await get_dashboard(db=db, org=_org(), user=_user()))["touchless_rate"] == 15.0
+
+    db = _mk_db(*_full_results(pipeline=pipeline_rows, imported_pipeline=imported))
+    result = await get_dashboard(db=db, org=_org(), user=_user())
+    assert result["touchless_rate"] == 90.0
+    # The rows are excluded from the METRIC, not from the tenant's data — the
+    # pipeline card still reports every invoice.
+    assert result["pipeline"]["rejected"] == 102
+    assert result["pipeline"]["done"] == 400
 
 
 @pytest.mark.asyncio

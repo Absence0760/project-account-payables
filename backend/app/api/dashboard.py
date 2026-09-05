@@ -23,6 +23,10 @@ from app.services.analytics import (
     compute_touchless_rate,
     discount_window_open,
 )
+from app.services.csv_import import (
+    imported_invoice_clause,
+    native_invoice_clause,
+)
 from app.services.currency_conversion import (
     card_currency_sql,
     payment_reporting_amount_sql,
@@ -384,17 +388,40 @@ async def get_dashboard(
     # `Invoice.approval_date` stamp is the positive evidence that review
     # actually happened; only the stamped ones count as cleared, and the rest
     # sit in neither leg.
+    #
+    # The mirror hole is provenance, not evidence: a CSV-imported `rejected`
+    # row sits in the bounced leg as though a reviewer HERE sent it back, and
+    # no approval stamp can ever exclude it (nothing writes one on a
+    # rejection). So imported rows leave BOTH legs, identified by the marker
+    # `services/csv_import` stamps on every row it creates rather than
+    # inferred from status — `done`, `paid` and `rejected` are each reachable
+    # natively too. A row with no marker is treated as native (the marker is
+    # written only going forward and never backfilled), so rows imported
+    # before it shipped stay in the population; see `docs/analytics.md`.
+    imported_status_rows = await db.execute(
+        _inv(
+            select(Invoice.status, func.count(Invoice.id))
+            .where(imported_invoice_clause())
+            .group_by(Invoice.status)
+        )
+    )
+    imported_pipeline = {
+        str(row[0].value if hasattr(row[0], "value") else row[0]): row[1]
+        for row in imported_status_rows.all()
+    }
     review_cleared_q = await db.execute(
         _inv(
             select(func.count()).where(
                 Invoice.status.in_(TOUCHLESS_REVIEW_EVIDENCE_STATUSES),
                 Invoice.approval_date.isnot(None),
+                native_invoice_clause(),
             )
         )
     )
     touchless_rate = compute_touchless_rate(
         pipeline,
         review_cleared_count=int(review_cleared_q.scalar() or 0),
+        imported_pipeline=imported_pipeline,
     )
 
     # Payment totals — separate queries to avoid complex CASE expressions

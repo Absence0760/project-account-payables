@@ -21,10 +21,10 @@ import csv
 import io
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
@@ -78,6 +78,68 @@ _INVOICE_COLUMNS = {
 # Open AP that still needs paying must be imported as `new` and go through the
 # normal approval controls.
 _IMPORTABLE_INVOICE_STATUSES = frozenset({"new", "done", "paid", "rejected"})
+
+# ---------------------------------------------------------------------------
+# Import provenance
+# ---------------------------------------------------------------------------
+#
+# An imported invoice is a HISTORICAL row copied in from whatever the tenant
+# used before us. The workflow engine never ran on it, so it is evidence
+# neither for nor against anything this platform did — and metrics that
+# describe our own work (the touchless rate in `services/analytics`) have to
+# be able to tell it apart from an invoice we actually processed.
+#
+# Status cannot answer that question: `done`, `paid` and `rejected` are all
+# both importable AND reachable natively. So the importer records the fact
+# directly, on the existing `Invoice.meta` JSONB bag (no migration).
+#
+# Shape — one reserved top-level key holding an object:
+#
+#     meta["imported"] = {"at": "<ISO-8601 UTC>", "source": "csv_import"}
+#
+# * A nested object, not a flat `imported_at`, so later provenance fields
+#   (batch id, importing user) extend it without colonising more top-level
+#   keys in a bag shared with `audit_summary` and `archived_at`.
+# * PRESENCE of the key is the marker; nothing parses the value. A truncated
+#   or hand-edited `at` still reads as "imported" rather than silently
+#   flipping the row back to native.
+# * `source` names the writer, so a future importer (an ERP backfill, a
+#   migration tool) marks rows the same way and is distinguishable.
+#
+# The marker is only ever written going forward and is NEVER backfilled: a row
+# that predates it carries no key and is read as native, because absence means
+# "we do not know", and inventing provenance for a historical row is exactly
+# the guessing this exists to avoid. See `backend/docs/analytics.md`
+# § Imported rows are outside the metric.
+IMPORT_PROVENANCE_KEY = "imported"
+IMPORT_PROVENANCE_SOURCE = "csv_import"
+
+
+def build_import_provenance(*, now: datetime | None = None) -> dict:
+    """The marker stamped on every invoice row a CSV import creates."""
+    stamped = now or datetime.now(UTC)
+    return {"at": stamped.isoformat(), "source": IMPORT_PROVENANCE_SOURCE}
+
+
+def imported_invoice_clause():
+    """SQL predicate: this invoice PROVABLY came from an import.
+
+    ``meta IS NOT NULL`` guards the ``?`` operator, which yields NULL (not
+    false) on a NULL column — so the negation below stays usable.
+    """
+    return and_(Invoice.meta.isnot(None), Invoice.meta.has_key(IMPORT_PROVENANCE_KEY))
+
+
+def native_invoice_clause():
+    """SQL predicate: no import marker, so treat the row as this platform's own.
+
+    Absence of the marker is NOT proof of native origin — every row imported
+    before the marker shipped looks native. That is the deliberate direction
+    to be wrong in: it keeps the metric's population stable rather than
+    retroactively reclassifying rows on a guess.
+    """
+    return not_(imported_invoice_clause())
+
 
 _CORPORATE_CARD_COLUMNS = {
     "external_txn_id",
@@ -273,6 +335,10 @@ async def import_invoices_csv(
         result.errors.append(ImportRowError(row=0, message=f"Malformed CSV: {exc}"))
         return result
 
+    # One stamp for the whole batch — every row in a single import shares the
+    # instant the import ran, which is the fact being recorded.
+    provenance = build_import_provenance()
+
     for i, row in enumerate(rows, start=2):
         invoice_number = (row.get("invoice_number") or "").strip()
         vendor_name = (row.get("vendor_name") or "").strip()
@@ -355,6 +421,11 @@ async def import_invoices_csv(
             gl_account=(row.get("gl_account") or None) or None,
             cost_center=(row.get("cost_center") or None) or None,
             status=status_val,
+            # Provenance: this row was migrated in, not processed here. Stamped
+            # on every invoice the importer creates, on every path, so metrics
+            # about our own automation can exclude it instead of inferring
+            # origin from status (which cannot distinguish the two).
+            meta={IMPORT_PROVENANCE_KEY: provenance},
         )
         db.add(invoice)
         result.imported += 1

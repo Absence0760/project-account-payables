@@ -398,31 +398,89 @@ TOUCHLESS_REVIEW_EVIDENCE_STATUSES: tuple[str, ...] = ("done", "paid", "failed")
 # no approval stamp on a rejection (nothing writes one), so this leg cannot be
 # evidence-gated the way the cleared leg is; a rejected row IS the evidence
 # that a human touched it.
+#
+# That asymmetry is why provenance, not evidence, is what removes an IMPORTED
+# rejection: `services/csv_import` can plant a historical `rejected` row, and
+# gating this leg on an approval stamp would zero the bounced population
+# outright (no rejection ever carries one) rather than exclude the imports.
 TOUCHLESS_BOUNCED_STATUSES: tuple[str, ...] = ("rejected",)
 
+# ---------------------------------------------------------------------------
+# Imported rows are outside the metric — BOTH legs
+# ---------------------------------------------------------------------------
+#
+# A CSV-imported invoice is history migrated in from the tenant's previous
+# system; the workflow engine never ran on it. It is therefore evidence
+# neither for nor against this platform's automation, in either direction:
+#
+#   * an imported `done` / `paid` row would inflate the numerator (already
+#     handled, since it carries no approval stamp), and
+#   * an imported `rejected` row DEFLATES the rate — it lands in the bounced
+#     leg as though a reviewer here had sent it back.
+#
+# Provenance is what settles this, not status: `done`, `paid` and `rejected`
+# are each reachable BOTH natively and by import, so no status set can tell
+# them apart. `services/csv_import` stamps every row it creates with the
+# `meta["imported"]` marker (`imported_invoice_clause` is its SQL predicate);
+# the caller counts marked rows per status and passes them in.
+#
+# An UNMARKED row is treated as native, deliberately: the marker is written
+# only going forward and is never backfilled, so absence means "we do not
+# know". Rows imported before it shipped stay in the population — stated in
+# `docs/analytics.md` rather than papered over with an invented provenance.
 
-def compute_touchless_rate(pipeline: dict, *, review_cleared_count: int) -> float:
+
+def _native_count(pipeline: dict, imported_pipeline: dict, statuses: tuple[str, ...]) -> int:
+    """Rows in `statuses` that carry no import marker.
+
+    Subtracted per status and floored at zero, so a stale or mismatched
+    `imported_pipeline` can neither drive a leg negative nor let a surplus in
+    one status cancel real rows in another.
+    """
+    total = 0
+    for status in statuses:
+        present = int(pipeline.get(status, 0) or 0)
+        imported = int(imported_pipeline.get(status, 0) or 0)
+        total += max(0, present - imported)
+    return total
+
+
+def compute_touchless_rate(
+    pipeline: dict,
+    *,
+    review_cleared_count: int,
+    imported_pipeline: dict,
+) -> float:
     """Straight-through-processing share, in [0, 100].
 
-    `pipeline` is the dashboard's `{status: count}` map.
+    `pipeline` is the dashboard's `{status: count}` map over EVERY invoice.
 
-    `review_cleared_count` is the number of invoices sitting in a
+    `imported_pipeline` is the same `{status: count}` shape restricted to rows
+    that provably came from an import (`csv_import.imported_invoice_clause`).
+    Those rows are subtracted from BOTH legs: the workflow engine never ran on
+    them, so they are evidence neither for nor against this platform's
+    automation. It is REQUIRED for the same reason `review_cleared_count` is —
+    a caller that has not been updated must fail loudly rather than quietly
+    re-publish the old, wider population.
+
+    `review_cleared_count` is the number of NATIVE invoices sitting in a
     `TOUCHLESS_REVIEW_EVIDENCE_STATUSES` status that carry a durable
     `Invoice.approval_date` stamp — the positive evidence that the invoice
     actually reached and cleared the approval step rather than arriving at a
-    terminal status around it. It is a REQUIRED argument, not a defaulted one:
-    a caller that forgets it must fail loudly rather than quietly re-publish
-    the old, wider number.
+    terminal status around it. The caller excludes imported rows from this
+    count at the query, since an imported row's stamp (if a future importer
+    ever wrote one) would not be evidence of review HERE.
 
     The numerator is a strict subset of the denominator, so the rate can
     never go negative (BUG 9).
     """
-    cleared = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_CLEARED_STATUSES)
-    bounced = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_BOUNCED_STATUSES)
-    # Never claim more evidenced-cleared invoices than there are invoices in
-    # those statuses (both figures come from the same snapshot, so this is
-    # belt-and-braces against a caller passing an unrelated count).
-    ambiguous_total = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_REVIEW_EVIDENCE_STATUSES)
+    imported_pipeline = imported_pipeline or {}
+    cleared = _native_count(pipeline, imported_pipeline, TOUCHLESS_CLEARED_STATUSES)
+    bounced = _native_count(pipeline, imported_pipeline, TOUCHLESS_BOUNCED_STATUSES)
+    # Never claim more evidenced-cleared invoices than there are NATIVE
+    # invoices in those statuses (all three figures come from the same
+    # snapshot, so this is belt-and-braces against an unrelated count).
+    ambiguous_total = _native_count(pipeline, imported_pipeline, TOUCHLESS_REVIEW_EVIDENCE_STATUSES)
     cleared += max(0, min(int(review_cleared_count or 0), ambiguous_total))
     reviewed_total = cleared + bounced
     if reviewed_total <= 0:

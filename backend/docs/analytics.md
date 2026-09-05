@@ -93,9 +93,10 @@ Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
   is missing a due date.
 - `touchless_rate` — straight-through-processing rate. **Definition: the share
   of invoices that PASSED REVIEW without a human touching them, out of every
-  invoice that provably finished review.** See § Touchless rate — what the
-  number means below; that section also records the day this definition
-  changed and which way the number moved.
+  invoice that provably finished review**, excluding rows a CSV import
+  planted. See § Touchless rate — what the number means below; that section
+  also records the two times this definition changed and which way the number
+  moved each time.
 - `monthly_trend` — invoice count + amount (+ `reporting_amount`) per calendar
   month, for the **last six calendar months**. The window is anchored to the
   1st of the month five months back, not `today - 180 days`: a rolling day
