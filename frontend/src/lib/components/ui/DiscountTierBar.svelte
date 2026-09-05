@@ -32,13 +32,22 @@
 		flex-wrap: wrap;
 		gap: 4px;
 	}
+	/* Not `<Badge>`: the accepted tier is a FILLED chip (`--success-strong`
+	   behind white text), and the palette has no solid tone — `Badge` exposes
+	   five tints, `neutral` and `erp`, none of which can say "this is the tier
+	   the supplier actually took". Rendering the unaccepted tiers through the
+	   primitive would leave that emphasis as a colour rule on a `variant` in
+	   this component, which is exactly what `Badge` forbids, and §52's ring
+	   trick doesn't transfer: the distinction here IS the fill. The chip also
+	   carries `tabular-nums` so the `2% / 10d` figures line up down a column.
+	   Only the colour literals are retired to the palette pair. */
 	.tier-chip {
 		display: inline-flex;
 		align-items: center;
 		padding: 2px 8px;
 		border-radius: 10px;
-		background: rgba(31, 168, 106, 0.1);
-		color: #1fa86a;
+		background: var(--success-tint);
+		color: var(--success-on-tint);
 		font-size: 0.74rem;
 		font-weight: 600;
 		font-variant-numeric: tabular-nums;

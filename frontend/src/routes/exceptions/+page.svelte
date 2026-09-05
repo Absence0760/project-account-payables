@@ -13,6 +13,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Tabs from '$lib/components/ui/Tabs.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import AgentDashboard from '$lib/components/exceptions/AgentDashboard.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { timeAgo } from '$lib/utils/time';
@@ -128,6 +129,23 @@
 		error: '#f06464',
 		warning: '#d4940a',
 		info: '#638cff',
+	};
+
+	/**
+	 * Badge tone per exception status.
+	 *
+	 * `open` (amber) and `escalated` (red) keep separate tones on purpose —
+	 * escalation is what says a human deadline has already passed, and folding
+	 * both onto `warning` would erase the only scannable difference between an
+	 * exception in the queue and one that has run out of time. `dismissed`
+	 * keeps the flat `neutral` chip it already had: a dismissal is the absence
+	 * of a finding, not a state to hunt for.
+	 */
+	const STATUS_TONES: Record<string, BadgeTone> = {
+		open: 'warning',
+		escalated: 'danger',
+		resolved: 'success',
+		dismissed: 'neutral',
 	};
 
 	// Two INDEPENDENT request streams — the queue itself and the chip-count
@@ -552,7 +570,12 @@
 						{dueLabel(exc)}
 					</td>
 					<td>
-						<span class="status-badge badge-{exc.status}">{exc.status}</span>
+						<Badge
+							tone={STATUS_TONES[exc.status] ?? 'neutral'}
+							variant="status-badge badge-{exc.status}"
+						>
+							{exc.status}
+						</Badge>
 					</td>
 					<td class="actions">
 						{#if exc.status === 'open' || exc.status === 'escalated'}
@@ -803,35 +826,6 @@
 		font-size: 0.72rem;
 		font-weight: 600;
 		text-transform: uppercase;
-	}
-
-	.status-badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.72rem;
-		font-weight: 600;
-		text-transform: capitalize;
-	}
-
-	.badge-open {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
-	}
-
-	.badge-escalated {
-		background: rgba(224, 64, 64, 0.12);
-		color: #f06464;
-	}
-
-	.badge-resolved {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
-	}
-
-	.badge-dismissed {
-		background: var(--bg);
-		color: var(--text-muted);
 	}
 
 	.actions-col {

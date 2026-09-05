@@ -6,6 +6,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -158,7 +159,7 @@
 					</td>
 					<td class="mono">{gr.po_number ?? '—'}</td>
 					<td>{formatDate(gr.received_date)}</td>
-					<td><span class="badge {gr.status}">{gr.status}</span></td>
+					<td><Badge tone="success" variant={gr.status}>{gr.status}</Badge></td>
 					<td class="muted">{gr.line_count}</td>
 					<td class="muted">{formatDate(gr.created_at)}</td>
 				</tr>
@@ -186,7 +187,7 @@
 				<h2>{m('goodsReceipts.modal.title')}</h2>
 				{#if detail}
 					<span class="num-badge">{detail.gr_number}</span>
-					<span class="badge {detail.status}">{detail.status}</span>
+					<Badge tone="success" variant={detail.status}>{detail.status}</Badge>
 				{/if}
 			</div>
 			<button class="close-btn" onclick={() => (detailId = null)} aria-label={m('goodsReceipts.modal.close')}>&times;</button>
@@ -227,17 +228,14 @@
 
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-		text-transform: capitalize;
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
-	}
-
+	/* The status pill is `<Badge>`; the tone is `success` for EVERY status,
+	   which is what the single hand-rolled `.badge` rule this replaced already
+	   did — the conversion is faithful, not a re-colour. Worth knowing before
+	   the next edit: `GoodsReceipt.status` is a free-form `String(30)`, and the
+	   backend's own `po_matching.CANCELLED_GR_STATUSES` treats cancelled /
+	   voided / reversed receipts as deliveries that did NOT happen, so those
+	   currently badge green here. Giving them a `muted` tone means mirroring
+	   that frozenset with a drift guard, which is its own change. */
 	/* Detail modal — bespoke header / body layout not covered by the shared modal CSS. */
 	.modal-header {
 		display: flex;

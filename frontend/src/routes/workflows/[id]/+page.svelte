@@ -11,6 +11,7 @@
 	import type { MoneyAmount } from '$lib/utils/money';
 	import { isMoneyInput } from '$lib/utils/moneyInput';
 	import ApprovalMatrixEditor from '$lib/components/modals/ApprovalMatrixEditor.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import WorkflowCanvas from '$lib/components/workflow-builder/WorkflowCanvas.svelte';
 	import StepPalette from '$lib/components/workflow-builder/StepPalette.svelte';
 	import ConditionBuilder from '$lib/components/workflow-builder/ConditionBuilder.svelte';
@@ -325,7 +326,7 @@
 							{nameInput}
 						</button>
 						{#if workflow.is_default}
-							<span class="default-badge">{m('workflows.builder.defaultBadge')}</span>
+							<Badge tone="accent" variant="default-badge">{m('workflows.builder.defaultBadge')}</Badge>
 						{/if}
 					</h1>
 				{/if}
@@ -870,17 +871,6 @@
 		padding: 4px 10px;
 		outline: none;
 		font-family: inherit;
-	}
-
-	.default-badge {
-		font-size: 0.68rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		padding: 2px 7px;
-		border-radius: 4px;
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
 	}
 
 	.btn-toggle {

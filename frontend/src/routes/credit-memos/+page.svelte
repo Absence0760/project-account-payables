@@ -9,6 +9,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -22,6 +23,21 @@
 	// create modal, or armed the two-click Void, and only then got a 403. Read
 	// stays open, which is also what lets the nav row admit a clerk.
 	const canMutate = $derived(auth.isManager);
+
+	/**
+	 * Badge tone per credit-memo status.
+	 *
+	 * `void` keeps the flat `neutral` chip it already had (a voided memo is the
+	 * absence of a credit, not a state to scan for), and `open` stays amber
+	 * against `applied`'s green — the two the row-muting rule relies on to
+	 * explain WHY a row is de-emphasised (`tests-e2e/a11y/deemphasised-rows`).
+	 */
+	const STATUS_TONES: Record<string, BadgeTone> = {
+		open: 'warning',
+		applied: 'success',
+		void: 'neutral'
+	};
+
 
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
@@ -349,7 +365,7 @@
 					<td class="right mono"><Money amount={memo.amount} currency={memo.currency} /></td>
 					<td class="muted">{formatDate(memo.issued_date)}</td>
 					<td class="mono muted">{memo.invoice_number ?? '—'}</td>
-					<td><span class="badge {memo.status}">{memo.status}</span></td>
+					<td><Badge tone={STATUS_TONES[memo.status] ?? 'neutral'} variant={memo.status}>{memo.status}</Badge></td>
 					<td class="actions">
 						{#if canMutate && memo.status === 'open'}
 							<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>{m('creditMemos.row.apply')}</RowAction>
@@ -495,25 +511,5 @@
 	.modal-hint.warn {
 		color: #d4940a;
 		margin: -6px 0 0;
-	}
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-		text-transform: capitalize;
-	}
-	.badge.open {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
-	}
-	.badge.applied {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
-	}
-	.badge.void {
-		background: var(--bg);
-		color: var(--text-muted);
 	}
 </style>

@@ -34,6 +34,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { appendUnique } from '$lib/utils/pagination';
@@ -136,6 +137,17 @@
 		if (changeType === 'tax_id') return m('vendors.changeRequests.type.taxId');
 		return changeType;
 	}
+
+	/**
+	 * Badge tone per change-request status. `pending` is amber because an
+	 * unreviewed bank change is outstanding work on the BEC gate, not a
+	 * neutral fact — the same reasoning the queue's red attention count uses.
+	 */
+	const STATUS_TONES: Record<string, BadgeTone> = {
+		pending: 'warning',
+		approved: 'success',
+		rejected: 'danger'
+	};
 
 	function statusLabel(status: string): string {
 		if (status === 'pending') return m('vendors.changeRequests.status.pending');
@@ -414,7 +426,7 @@
 					<td class="muted">{requesterLabel(r)}</td>
 					<td class="muted">{formatDate(r.created_at)}</td>
 					<td>
-						<span class="badge {r.status}">{statusLabel(r.status)}</span>
+						<Badge tone={STATUS_TONES[r.status] ?? 'neutral'} variant={r.status}>{statusLabel(r.status)}</Badge>
 					</td>
 					<td class="actions">
 						{#if r.status === 'pending'}
@@ -668,26 +680,6 @@
 		font-size: 0.74rem;
 		color: var(--text-muted);
 		white-space: nowrap;
-	}
-
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 600;
-	}
-	.badge.pending {
-		background: var(--warning-tint);
-		color: var(--warning-on-tint);
-	}
-	.badge.approved {
-		background: var(--success-tint);
-		color: var(--success-on-tint);
-	}
-	.badge.rejected {
-		background: var(--danger-tint);
-		color: var(--danger-on-tint);
 	}
 
 	/* --- Detail modal --- */
