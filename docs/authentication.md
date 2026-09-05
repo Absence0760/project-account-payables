@@ -220,7 +220,7 @@ Separately, changing an existing second factor is throttled 5/min per **account*
 
 ## Auth event audit logging
 
-Every auth action writes a row to the tenant `audit_log` table via `app/services/audit_dispatch.py::dispatch_auth_audit`. Because auth endpoints run on the control-plane DB (where users live) but the audit log is tenant-scoped, the helper resolves the tenant DB from the user's `organization_id` and opens a short-lived session to write the row. Failures are caught + logged at WARN level — auth itself never errors because the audit write couldn't complete.
+Every auth action writes a row to the tenant `audit_log` table via `app/services/audit_dispatch.py::dispatch_auth_audit`. Because auth endpoints run on the control-plane DB (where users live) but the audit log is tenant-scoped, the helper resolves the tenant DB from the user's `organization_id` and opens a short-lived session to write the row. Failures are caught + logged at WARN level (class name only — `details` carries the submitted address) — auth itself never errors because the audit write couldn't complete. `queue_auth_audit` is the same write scheduled as a task instead of awaited, for the one branch whose response time must not depend on whether the account exists — see [The failure row is written off the response path](#the-failure-row-is-written-off-the-response-path).
 
 Action names:
 
@@ -243,7 +243,50 @@ Action names:
 
 Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`. (The supplier-portal twin, `portal.login.failure`, deliberately omits the address — see the action table above.)
 
-**Known, accepted asymmetry:** because an unknown address has no org, a rejection against it skips the audit write that a rejection against a *known* account performs, so the known-account path is a DB round-trip slower. In principle that is a timing signal an equalised 401 doesn't carry. It is accepted rather than fixed: the response itself (status *and* detail) is byte-identical either way, and the bcrypt call `dummy_verify()` exists to equalise — dominates every rejected-login response by orders of magnitude more than an audit INSERT. Dropping the row instead would mean losing the only record that an account is being attacked, which is the more valuable half.
+#### The failure row is written off the response path
+
+`/api/auth/login` used to `await dispatch_auth_audit(...)` on a rejection — a
+control-plane lookup for the tenant DB name, then a tenant session, connect and
+commit. Only an address that *has* an organization can do any of that, so a
+rejection against a known account (wrong password, no password hash,
+deactivated) was a whole DB round trip slower than a rejection against an
+unknown one: an account-existence oracle sitting one line below the
+`dummy_verify()` call that exists to close exactly that channel.
+
+Neither obvious repair is acceptable. Dropping the row loses the only record
+that an account is being attacked. Padding the unknown-address branch to match
+is masking a defect rather than removing it. So the write moved **off the
+response path**: `audit_dispatch.queue_auth_audit` spawns it as a task and
+returns without awaiting, so *neither* branch pays for it, and both rejections
+now funnel through one shared tail (`api/auth.py::_reject_login`) — one awaited
+call (`record_auth_failure`), one non-awaited `queue_auth_audit`, one 401 — so
+they are identical by construction rather than by review.
+`tests/test_login_audit_off_response_path.py` asserts on the recorded sequence
+of awaited operations, not on a clock.
+
+Notes on the mechanism:
+
+- **It is not `services/post_commit`.** That queue fires from SQLAlchemy's
+  `after_commit`, and a failed login raises `HTTPException`, so `get_control_db`
+  rolls its session back — `after_rollback` drains and discards the queue by
+  design. A row queued there would never be written. The trigger here is the
+  event loop: the task runs while the response is already on its way out.
+- **`organization_id=None` is passed, not branched on.** An unknown address
+  still has nowhere to route a row, so the drop is real and stays — but the call
+  site is reached identically from both rejections, which is the point.
+- **A lost row is loud.** `queue_auth_audit` wraps the write in its own guard
+  that logs at **ERROR** (not WARNING): this is SOX evidence for an
+  authentication event and nothing downstream retries it. The log carries the
+  action, the org UUID and the exception **class name** only — never `details`,
+  which carries the submitted address. The guarantee is therefore "written
+  shortly after the response, or reported at ERROR", not "written before the
+  response returns"; a process killed inside that window loses the row, the same
+  exposure every other fire-and-forget leg in the app carries
+  (`services/post_commit`, `services/webhooks/dispatch`). `drain_auth_audits()`
+  flushes in-flight writes for tests and for a graceful shutdown.
+- **Only the login *failure* rows moved.** Success, MFA-challenge-issued and
+  the SSO-only refusal still `await dispatch_auth_audit` — they all sit *after*
+  a correct password, so none of them is an existence oracle.
 
 ### Database separation
 

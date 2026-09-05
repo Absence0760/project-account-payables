@@ -215,8 +215,17 @@ async def test_login_audit_dispatch_never_receives_plaintext_password():
     async def fake_dispatch(**kwargs):
         captured.append(kwargs)
 
+    def fake_queue(**kwargs):
+        # The login-failure row is now QUEUED off the response path rather than
+        # awaited (see `tests/test_login_audit_off_response_path.py`), so the
+        # payload has to be inspected here — same contract, one fewer await.
+        captured.append(kwargs)
+
     secret = "Secret-Sauce-Pizza-42"
-    with patch("app.api.auth.dispatch_auth_audit", new=fake_dispatch):
+    with (
+        patch("app.api.auth.dispatch_auth_audit", new=fake_dispatch),
+        patch("app.api.auth.queue_auth_audit", new=fake_queue),
+    ):
         with pytest.raises(HTTPException):
             await login(
                 body=LoginRequest(email="real@user.test", password=secret),

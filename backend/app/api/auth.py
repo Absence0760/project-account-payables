@@ -50,7 +50,7 @@ from app.schemas.auth import (
     WebAuthnStepUpStartRequest,
 )
 from app.services import mfa, password_reset, webauthn
-from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.audit_dispatch import dispatch_auth_audit, queue_auth_audit
 from app.services.email_adapters import (
     EmailMessage,
     get_email_adapter,
@@ -233,6 +233,48 @@ def _user_agent(request: Request | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+async def _reject_login(
+    identity: str,
+    user: User | None,
+    *,
+    email: str,
+    ip: str | None,
+    reason: str,
+) -> HTTPException:
+    """The ONE credential-rejection path for `/auth/login`.
+
+    Both rejections — "no usable account" (unknown address, no password hash,
+    deactivated) and "wrong password" — funnel through here, and that is the
+    security property, not a tidiness one: the two branches must be
+    indistinguishable by response time or an attacker can enumerate accounts
+    around the bcrypt cost `dummy_verify` equalizes. Sharing the tail makes
+    them identical by construction rather than by review — one awaited call
+    (`record_auth_failure`), one non-awaited call (`queue_auth_audit`), one
+    raise, in that order, whoever the caller is.
+
+    `queue_auth_audit` is deliberately NOT awaited: writing the
+    `auth.login.failure` row resolves the tenant DB and commits, and only an
+    address that HAS an organization can do that — so awaiting it made a known
+    address measurably slower than an unknown one. The row is still written,
+    just after the response is on its way (see its docstring for why
+    `services/post_commit` cannot carry it — a failed login rolls back).
+
+    Returns the exception for the caller to `raise`, so the control flow stays
+    visible at the branch.
+    """
+    await record_auth_failure("auth_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS)
+    queue_auth_audit(
+        # `None` for an address with no account: there is no tenant DB to
+        # route the row to. Passed rather than branched on, so this call site
+        # is reached identically from both rejections.
+        organization_id=user.organization_id if user is not None else None,
+        actor_id=None,
+        action="auth.login.failure",
+        details={"email": email, "ip": ip, "reason": reason},
+    )
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+
 @router.post("/login")
 async def login(
     body: LoginRequest,
@@ -277,35 +319,19 @@ async def login(
         # Equalize timing with the wrong-password path below so the response
         # time doesn't reveal whether the email has an account (enumeration).
         await dummy_verify()
-        await record_auth_failure(
-            "auth_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
+        raise await _reject_login(
+            identity,
+            user,
+            email=body.email,
+            ip=ip,
+            reason=(
+                "unknown_account"
+                if user is None
+                else ("no_password" if not user.hashed_password else "inactive")
+            ),
         )
-        # Failed login for an unknown user — still audit-log so abuse is
-        # visible. Without an organization_id we can't pick a tenant DB,
-        # so the write is simply dropped (logged at WARN inside the helper).
-        if user is not None:
-            await dispatch_auth_audit(
-                organization_id=user.organization_id,
-                actor_id=None,
-                action="auth.login.failure",
-                details={
-                    "email": body.email,
-                    "ip": ip,
-                    "reason": "no_password" if not user.hashed_password else "inactive",
-                },
-            )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not await verify_password(body.password, user.hashed_password):
-        await record_auth_failure(
-            "auth_login", identity, window_seconds=LOGIN_FAILURE_WINDOW_SECONDS
-        )
-        await dispatch_auth_audit(
-            organization_id=user.organization_id,
-            actor_id=None,
-            action="auth.login.failure",
-            details={"email": body.email, "ip": ip, "reason": "bad_password"},
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise await _reject_login(identity, user, email=body.email, ip=ip, reason="bad_password")
 
     # The password checked out — wipe the budget so earlier typos (or someone
     # else's spray against this address) can never keep the real owner out. The
