@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 
 import {
 	API_BASE,
+	acceptConsent,
 	currentTenantSlug,
 	expect,
 	test,
@@ -33,6 +34,7 @@ const PORTAL_PASSWORD = 'demo';
 test.use({ storageState: { cookies: [], origins: [] } });
 
 async function portalSignIn(page: Page) {
+	await acceptConsent(page);
 	await page.goto('/portal/login');
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
@@ -88,9 +90,18 @@ test.describe('/portal supplier chat — vendor surface', () => {
 		// `created_at` — every seeded portal invoice shares one, so `LIMIT 1`
 		// picks arbitrarily among ties. Clicking `.first()` and hoping it was
 		// the same row is what made this test fail against a seeded tenant.
+		//
+		// The `invoice_number <> ''` leg is load-bearing, not defensive. Any
+		// sibling spec that submits through the portal leaves a row for THIS
+		// vendor with no number yet (extraction has not run, or failed) — and
+		// being the newest, it wins `ORDER BY created_at DESC`. The row is real,
+		// so the test cannot assert it away; it simply is not the row this test
+		// can drive, because the list renders it with nothing to filter on.
+		// Ask for an invoice the portal list can actually be searched by.
 		const [invoiceId, invoiceNumber] = tenantPsql(
 			`SELECT id || '|' || invoice_number FROM invoices ` +
-				`WHERE vendor_id='${vendorId}' ORDER BY created_at DESC, id DESC LIMIT 1`,
+				`WHERE vendor_id='${vendorId}' AND invoice_number IS NOT NULL ` +
+				`AND invoice_number <> '' ORDER BY created_at DESC, id DESC LIMIT 1`,
 		)
 			.trim()
 			.split('|');
