@@ -18,8 +18,9 @@ Three concerns, one module:
      (``detect_invoice_anomaly``). Read-only and **explainable**: the baseline
      it compared against is returned alongside the flags.
   3. **Suggestion derivation** — turn the vendor patterns into advisory
-     "consider auto-approve under $X" suggestions (``derive_suggestions``). The
-     suggestions are inert advisory data — nothing here applies anything.
+     "consider auto-approve under X <reporting currency>" suggestions
+     (``derive_suggestions``). The suggestions are inert advisory data —
+     nothing here applies anything.
 
 Relationship to existing code (see ``backend/docs/adaptive-workflows.md``):
 ``invoice_warnings.fraud_stat_anomaly`` already does a *per-invoice,
@@ -131,6 +132,13 @@ class VendorApprovalPattern:
     min_approved_amount: Decimal
     max_approved_amount: Decimal
     sample_size: int  # approved+rejected
+    # Approvals whose amount could NOT be expressed in the org's reporting
+    # currency (no locked FX rate on the invoice row, or a lock that no longer
+    # describes its currency pair). Their amounts are EXCLUDED from the four
+    # money fields above -- mixing currencies into one mean/max is what made a
+    # JPY 100,000 vendor read as a 100,000-reporting-currency one -- and a
+    # vendor carrying any of them cannot support a threshold raise (fail-closed).
+    unconverted_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -196,6 +204,15 @@ def compute_vendor_patterns(decisions: list) -> list[VendorApprovalPattern]:
 
     A decision row adds ``vendor_id`` (str | None), ``vendor_name`` (str),
     ``amount`` (Decimal), ``unmodified`` (bool) to the approver-row shape.
+
+    ``amount`` must already be expressed in ONE currency -- the org's reporting
+    currency (``api/adaptive_workflows._decision_rows`` converts it at each
+    invoice's locked rate). A row the caller could not express there sets
+    ``amount_unconverted=True``; its amount is left out of the aggregates
+    entirely rather than added at face value, and is counted on
+    ``unconverted_count`` so a downstream control can fail closed on it. Rows
+    from a caller that predates the flag read as converted -- the correct
+    reading for a single-currency tenant.
     """
     buckets: dict[str, dict] = {}
     for row in decisions:
@@ -211,6 +228,7 @@ def compute_vendor_patterns(decisions: list) -> list[VendorApprovalPattern]:
                 "rejected": 0,
                 "unmodified": 0,
                 "amounts": [],
+                "unconverted": 0,
             },
         )
         decision = _get(row, "decision")
@@ -219,7 +237,11 @@ def compute_vendor_patterns(decisions: list) -> list[VendorApprovalPattern]:
             if _get(row, "unmodified"):
                 b["unmodified"] += 1
             amount = _get(row, "amount")
-            if amount is not None:
+            if _get(row, "amount_unconverted"):
+                # Approved, but in a currency we cannot bridge -- count it, never
+                # fold it into figures denominated in a different one.
+                b["unconverted"] += 1
+            elif amount is not None:
                 b["amounts"].append(Decimal(str(amount)))
         elif decision == "rejected":
             b["rejected"] += 1
@@ -255,6 +277,7 @@ def compute_vendor_patterns(decisions: list) -> list[VendorApprovalPattern]:
                 min_approved_amount=min_amt,
                 max_approved_amount=max_amt,
                 sample_size=approved + rejected,
+                unconverted_count=b["unconverted"],
             )
         )
     out.sort(key=lambda p: (-p.sample_size, p.vendor_name))
@@ -488,6 +511,7 @@ def derive_suggestions(
     min_history: int = 12,
     min_consistency_pct: Decimal = Decimal("95"),
     threshold_round_to: Decimal = Decimal("500"),
+    currency: str = "USD",
 ) -> list[DerivedSuggestion]:
     """Derive advisory auto-approve-threshold suggestions from vendor patterns.
 
@@ -504,7 +528,16 @@ def derive_suggestions(
     gate must agree — an admin reading "spotless" must be reading the truth.
     ``min_consistency_pct`` is retained for forward-compat/org-config symmetry;
     the absolute gate is strictly stronger, so it is applied as a floor only.
+
+    A vendor with ANY approval that could not be expressed in the reporting
+    currency (``unconverted_count > 0``) is disqualified: the suggested
+    threshold is the max approved amount, and a max computed off a partial
+    history would understate the vendor's real ceiling while the copy claims a
+    complete record. ``currency`` names what every figure here is denominated
+    in — the org's REPORTING currency, which is also what
+    ``auto_approve_below`` is measured in.
     """
+    cur = (currency or "USD").strip().upper() or "USD"
     out: list[DerivedSuggestion] = []
     for vp in vendor_patterns:
         if (
@@ -512,6 +545,7 @@ def derive_suggestions(
             and vp.rejected_count == 0
             and vp.unmodified_count == vp.approved_count
             and vp.consistency_pct >= min_consistency_pct
+            and vp.unconverted_count == 0
         ):
             threshold = _q2(
                 (vp.max_approved_amount / threshold_round_to).quantize(
@@ -523,14 +557,15 @@ def derive_suggestions(
             vendor_key = vp.vendor_id if vp.vendor_id else f"name:{vp.vendor_name}"
             title = (
                 f"Vendor {vp.vendor_name}: {vp.unmodified_count}/{vp.approved_count} "
-                f"invoices approved unmodified (median {vp.median_approved_amount}) — "
-                f"consider auto-approve under ${threshold:,.0f}"
+                f"invoices approved unmodified (median {vp.median_approved_amount} "
+                f"{cur}) — consider auto-approve under {threshold:,.0f} {cur}"
             )
             rationale = (
                 f"{vp.approved_count} invoices approved with no corrections and "
                 f"0 rejections, amounts {vp.min_approved_amount}–{vp.max_approved_amount} "
-                f"(median {vp.median_approved_amount}). Advisory only — review before "
-                f"enabling."
+                f"(median {vp.median_approved_amount}), all expressed in {cur} — the "
+                f"org's reporting currency, which is what auto_approve_below is "
+                f"denominated in. Advisory only — review before enabling."
             )
             out.append(
                 DerivedSuggestion(
@@ -542,6 +577,7 @@ def derive_suggestions(
                     payload={
                         "vendor_id": vp.vendor_id,
                         "suggested_threshold": str(threshold),
+                        "threshold_currency": cur,
                         "based_on_n": vp.approved_count,
                     },
                     confidence_pct=confidence,
@@ -579,6 +615,12 @@ class ThresholdRecommendation:
     evidence: list[dict]  # per-vendor evidence (vendor_name, n, max_amount)
     rationale: str  # deterministic, human-readable explanation
     reason_code: str  # "ok" | "insufficient_evidence" | "no_increase" | "at_cap"
+    # What every money figure on this recommendation — and the
+    # ``auto_approve_below`` it targets — is denominated in: the org's REPORTING
+    # currency. It is not decoration: the evidence is built from invoice amounts
+    # converted into it, and the gate that enforces the applied threshold
+    # (``extraction.decide_auto_approve``) compares against the same currency.
+    currency: str = "USD"
 
 
 def recommend_auto_approve_threshold(
@@ -591,6 +633,7 @@ def recommend_auto_approve_threshold(
     max_raise_multiple: Decimal = Decimal("2.0"),
     absolute_cap: Decimal = Decimal("25000"),
     threshold_round_to: Decimal = Decimal("500"),
+    currency: str = "USD",
 ) -> ThresholdRecommendation:
     """Recommend a new org-wide ``auto_approve_below`` threshold — conservatively.
 
@@ -622,8 +665,20 @@ def recommend_auto_approve_threshold(
       * **Refuses on thin evidence.** Fewer than ``min_qualifying_vendors`` clean
         vendors → ``should_raise=False`` (``reason_code="insufficient_evidence"``).
 
+      * **Refuses to price across currencies.** Every figure here — the
+        evidence, the candidate, the cap, and ``auto_approve_below`` itself — is
+        denominated in ``currency``, the org's REPORTING currency. A vendor
+        carrying any approval that could not be expressed there
+        (``unconverted_count > 0``) is excluded from the evidence base outright,
+        rather than contributing a max computed off a partial history. Before
+        this, the caller fed raw ``Invoice.amount`` in whatever currency each
+        invoice was billed in, so three clean JPY 100,000 vendors could push a
+        USD threshold toward the ``absolute_cap`` on evidence that supported
+        roughly USD 650.
+
     Pure / deterministic — no LLM, no IO. The caller persists/applies.
     """
+    cur = (currency or "USD").strip().upper() or "USD"
     current = current_threshold if current_threshold > 0 else Decimal("0")
 
     qualifying: list[VendorApprovalPattern] = [
@@ -633,6 +688,7 @@ def recommend_auto_approve_threshold(
         and vp.rejected_count == 0
         and vp.unmodified_count == vp.approved_count
         and vp.consistency_pct >= min_consistency_pct
+        and vp.unconverted_count == 0
     ]
     qualifying.sort(key=lambda vp: (-vp.max_approved_amount, vp.vendor_name))
 
@@ -665,10 +721,11 @@ def recommend_auto_approve_threshold(
             evidence=evidence,
             rationale=(
                 f"Only {len(qualifying)} vendor(s) have a clean auto-approvable "
-                f"history (need {min_qualifying_vendors}). Not enough independent "
-                f"evidence to raise the org-wide auto-approve threshold."
+                f"history priced in {cur} (need {min_qualifying_vendors}). Not enough "
+                f"independent evidence to raise the org-wide auto-approve threshold."
             ),
             reason_code="insufficient_evidence",
+            currency=cur,
         )
 
     # Highest clean-approved amount across qualifying vendors, rounded UP.
@@ -693,21 +750,24 @@ def recommend_auto_approve_threshold(
             evidence=evidence,
             rationale=(
                 f"{len(qualifying)} vendor(s) with {total_clean} spotless approvals, "
-                f"but the supportable threshold (${candidate:,.0f}, capped at "
-                f"${cap:,.0f}) is not above the current ${current:,.0f}. No change."
+                f"but the supportable threshold ({candidate:,.0f} {cur}, capped at "
+                f"{cap:,.0f} {cur}) is not above the current {current:,.0f} {cur}. "
+                f"No change."
             ),
             reason_code="no_increase",
+            currency=cur,
         )
 
     at_cap = capped < candidate  # the cap, not the evidence, bound the result
     rationale = (
         f"{len(qualifying)} vendor(s) cleared the clean-history gate "
         f"({total_clean} approvals, 0 rejections, 0 corrections). The highest "
-        f"clean-approved amount is ${observed_max:,.2f}; raising auto-approve "
-        f"from ${current:,.0f} to ${recommended:,.0f}"
-        + (f" (capped at ${cap:,.0f})." if at_cap else ".")
-        + " Affects only NEW invoices — in-flight invoices keep their frozen "
-        "workflow snapshot."
+        f"clean-approved amount is {observed_max:,.2f} {cur}; raising auto-approve "
+        f"from {current:,.0f} {cur} to {recommended:,.0f} {cur}"
+        + (f" (capped at {cap:,.0f} {cur})." if at_cap else ".")
+        + f" Every figure is denominated in {cur}, the org's reporting currency —"
+        " which is what auto_approve_below is measured in. Affects only NEW"
+        " invoices; in-flight invoices keep their frozen workflow snapshot."
     )
     return ThresholdRecommendation(
         should_raise=True,
@@ -719,6 +779,7 @@ def recommend_auto_approve_threshold(
         evidence=evidence,
         rationale=rationale,
         reason_code="at_cap" if at_cap else "ok",
+        currency=cur,
     )
 
 
@@ -1192,8 +1253,9 @@ def outcome_adjusted_threshold(
         f"{outcomes.auto_approved_count} auto-approved invoices were later "
         f"voided, corrected, or rejected ({rate}% overturn rate) — the "
         f"auto-approved population {verb}. Holding the auto-approve threshold at "
-        f"the current ${base.current_threshold:,.0f} instead of raising to "
-        f"${base.recommended_threshold:,.0f}; the approval history alone supported "
+        f"the current {base.current_threshold:,.0f} {base.currency} instead of "
+        f"raising to {base.recommended_threshold:,.0f} {base.currency}; the "
+        f"approval history alone supported "
         f"the raise, but the realised outcomes do not. Re-evaluate once the "
         f"overturn rate falls below {pullback_overturn_pct}%."
     )
@@ -1207,6 +1269,7 @@ def outcome_adjusted_threshold(
         evidence=base.evidence,
         rationale=rationale,
         reason_code=reason,
+        currency=base.currency,
     )
 
 

@@ -145,6 +145,41 @@ def _resolve_extraction_config(org_settings: dict | None, *, announce: bool = Tr
     }
 
 
+def auto_approve_floor_amount(invoice, org_settings: dict | None) -> tuple[Decimal, bool]:
+    """``(invoice amount in the org's REPORTING currency, unconverted)``.
+
+    The figure ``decide_auto_approve`` compares against ``auto_approve_below``.
+    The threshold is a bare number with no currency of its own, so it has to be
+    denominated in *something*: it is the org's reporting currency, the same
+    convention ``payments.cfo_approval_above`` and
+    ``settings.expense_approval.cfo_threshold`` already follow — and the same
+    currency the adaptive recommendation that proposes raising it is computed
+    in (``api/adaptive_workflows._decision_rows``). Both sides therefore move
+    together; converting one alone would just relocate the mismatch.
+
+    No FX call: the rate was locked onto the invoice row by
+    ``invoice_warnings._refresh_reporting_amount``, which both auto-approve call
+    sites run through ``refresh_warnings`` immediately beforehand. A row with no
+    lock that provably describes its currency pair returns ``unconverted=True``,
+    which the gate reads as **fail closed** — the floor does not fire and the
+    invoice goes to a human. A rate fetched at gate time would make the same
+    invoice auto-approvable or not depending on the minute it was evaluated.
+    """
+    from app.services.currency_conversion import (
+        reporting_amount_at_locked_rate,
+        resolve_reporting_currency,
+    )
+
+    return reporting_amount_at_locked_rate(
+        amount=Decimal(str(getattr(invoice, "amount", None) or 0)),
+        currency=getattr(invoice, "currency", None),
+        reporting_currency=resolve_reporting_currency(org_settings),
+        persisted_reporting_currency=getattr(invoice, "reporting_currency", None),
+        persisted_reporting_source_currency=getattr(invoice, "reporting_source_currency", None),
+        persisted_fx_rate=getattr(invoice, "reporting_fx_rate", None),
+    )
+
+
 def decide_auto_approve(
     ext_cfg: dict,
     approval_cfg: dict,
@@ -152,6 +187,8 @@ def decide_auto_approve(
     overall_confidence: float,
     amount: Decimal | float | None,
     aggregate_amount: Decimal | float | None = None,
+    reporting_amount: Decimal | None = None,
+    reporting_unconverted: bool = False,
 ) -> bool:
     """Decide whether an extracted invoice may auto-approve, skipping human review.
 
@@ -189,8 +226,20 @@ def decide_auto_approve(
     a "this document is too small to be worth a human's time" rule, not a spend
     control. Aggregating it would make the floor stop firing for any frequent
     vendor — turning a convenience knob into a second, silent threshold.
+
+    ``reporting_amount`` / ``reporting_unconverted`` come from
+    ``auto_approve_floor_amount`` and are what the ``auto_approve_below`` floor
+    is actually compared against: the threshold is a bare number denominated in
+    the org's REPORTING currency, so a ¥100,000 invoice must not be read as
+    100,000 of it. ``reporting_unconverted=True`` means the invoice could not be
+    expressed there — the floor then does not fire at all, sending the invoice
+    to a human rather than auto-approving on a comparison between two different
+    currencies. Omitting both keeps the raw ``amount``, which is the correct
+    reading for a single-currency tenant (and what every pre-existing caller
+    meant); every in-tree caller passes them.
     """
     amount_dec = Decimal(str(amount or 0))
+    floor_amount = amount_dec if reporting_amount is None else Decimal(str(reporting_amount))
     gate_amount = amount_dec if aggregate_amount is None else Decimal(str(aggregate_amount))
 
     # A confidence outside 0..1 is not evidence of anything — it is an adapter
@@ -228,7 +277,17 @@ def decide_auto_approve(
     # "no floor configured" and "floor misconfigured" converge on the same safe
     # behaviour: this trigger simply doesn't fire.)
     auto_below = finite_money_threshold(approval_cfg.get("auto_approve_below"))
-    if auto_below is not None and amount_dec < auto_below:
+    if auto_below is not None and reporting_unconverted:
+        # A floor IS configured, but this invoice can't be expressed in the
+        # currency the floor is denominated in. Comparing the bare numbers is
+        # how a ¥1,000,000 invoice slips under a 5,000 floor. Fail closed: the
+        # floor trigger doesn't fire and a human reviews it.
+        logger.warning(
+            "[extraction] auto_approve_below is set but the invoice amount could not be "
+            "expressed in the org's reporting currency; the amount floor does not apply "
+            "(fail-closed, human review)"
+        )
+    elif auto_below is not None and floor_amount < auto_below:
         auto_approved = True
 
     if not auto_approved:
@@ -734,6 +793,10 @@ async def run_extraction(
             # same-vendor rolling aggregate the human approval path uses, so a
             # split payable can't auto-approve past a control that a reviewer
             # would have been stopped by.
+            # `auto_approve_below` is denominated in the org's reporting
+            # currency; `refresh_warnings` above just locked the rate onto this
+            # row, so the conversion is a read, not an FX call.
+            floor_amount, floor_unconverted = auto_approve_floor_amount(invoice, org_settings)
             auto_approved = decide_auto_approve(
                 ext_cfg,
                 approval_cfg,
@@ -742,6 +805,8 @@ async def run_extraction(
                 aggregate_amount=await resolve_gate_aggregate(
                     db, invoice, org_settings=org_settings
                 ),
+                reporting_amount=floor_amount,
+                reporting_unconverted=floor_unconverted,
             )
             if auto_approved:
                 target_status = InvoiceStatus.approved

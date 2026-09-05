@@ -108,6 +108,55 @@ filtered to that entity; `None` (or absent / `all`) is the consolidated view.
 Approver display names are joined from the **control-plane** `User.full_name` in
 a separate query (tenant and control are different databases — no cross-DB join).
 
+### Every amount is expressed in the org's REPORTING currency
+
+`_decision_rows` does **not** hand the pure-stat layer raw `Invoice.amount`. It
+converts each invoice into the org's reporting currency
+(`currency_conversion.resolve_reporting_currency`) at the rate already **locked
+on that invoice row** by `invoice_warnings._refresh_reporting_amount` — via
+`currency_conversion.reporting_amount_at_locked_rate`, the same helper the
+payment CFO-approval gate uses. No FX call is made on the read, so a market
+move can never retroactively rewrite what a control decided.
+
+This is a money-correctness requirement, not a display nicety. The org-wide
+`auto_approve_below` these statistics recommend is a **bare number with no
+currency of its own**; it is denominated in the reporting currency, matching
+`payments.cfo_approval_above` (see `services/payment_controls.cfo_approval_decision`)
+and `settings.expense_approval.cfo_threshold`. Reading raw billed amounts let
+three spotless JPY 100,000 vendors — worth about 650 of a USD tenant's own
+currency — argue for a five-figure USD auto-approve limit.
+
+A row whose currency cannot be bridged (no lock, or a lock that provably
+describes a different currency pair) is emitted with `amount_unconverted=True`.
+It is then **excluded**, never converted at a guessed rate and never added at
+face value:
+
+- `compute_vendor_patterns` keeps its amount out of `avg/median/min/max` and
+  counts it on `VendorApprovalPattern.unconverted_count`;
+- `recommend_auto_approve_threshold` and `derive_suggestions` disqualify any
+  vendor with `unconverted_count > 0` — a max computed off a partial history
+  would understate the vendor's real ceiling while the copy claims a complete
+  record.
+
+The enforcement side moves with it. `services/extraction.decide_auto_approve`
+compares `auto_approve_below` against the invoice expressed in the same
+currency, resolved by `extraction.auto_approve_floor_amount` (the same locked-rate
+helper). When the invoice can't be expressed there the floor trigger **does not
+fire at all** — fail closed, the invoice goes to a human — because a threshold
+gate that silently passes an unconvertible invoice is an auto-approval nobody
+authorised. Both call sites (`run_extraction` and `POST
+/api/invoices/{id}/complete`) run `refresh_warnings` immediately beforehand,
+which is what locks the rate, so the conversion is a read of the row.
+
+**Single-currency tenants are unaffected** — same currency converts at rate 1
+with no lock required. For a tenant whose reporting currency is *not* USD, the
+figures the threshold surfaces show are now that currency, and they say so: the
+recommendation's `rationale` and the per-vendor suggestion copy name the
+currency code instead of prefixing `$`, `ThresholdRecommendation.currency`
+carries it, `DerivedSuggestion.payload.threshold_currency` records it, and the
+`POST /api/invoices/{id}/complete` auto-approve message reads
+"below the 5,000.00 EUR threshold".
+
 ## Statistics
 
 All amount math is `Decimal`; amounts quantize to `0.01`, rates/days to `0.1`.
@@ -297,8 +346,13 @@ conservative and explainable:
   vendor can't move the org-wide limit. Fewer → `should_raise=False`,
   `reason_code="insufficient_evidence"`.
 - **Candidate = the highest clean-approved amount** seen across qualifying
-  vendors, rounded **up** to the nearest $500 — every dollar below it would have
-  sailed through with a spotless record.
+  vendors, rounded **up** to the nearest 500 (reporting currency) — every unit
+  below it would have sailed through with a spotless record.
+- **Refuses to price across currencies.** Every figure — the evidence, the
+  candidate, the caps and `auto_approve_below` itself — is in the org's
+  reporting currency, and a vendor with any approval that could not be expressed
+  there is excluded from the evidence base. See *Every amount is expressed in
+  the org's REPORTING currency* above.
 - **Never lowers.** `recommended_threshold = max(current, capped_candidate)`; if
   the evidence supports nothing above the current limit it's a no-op
   (`reason_code="no_increase"`).
