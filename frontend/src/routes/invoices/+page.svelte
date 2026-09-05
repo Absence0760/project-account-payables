@@ -1088,6 +1088,14 @@
 		cursor: help;
 	}
 
+	/* Not `<Badge>`: this is an inline extraction-PROVENANCE annotation
+	   ("RAG·2·cache·3", `cursor: help` + a title), not a status — and it sits
+	   *beside the vendor name* in a fixed-width `overflow: hidden` cell. A
+	   status pill's metrics (0.75rem, 3px 10px, uppercase) would both eat the
+	   name it annotates and shout "CACHE·2" at a register the figure does not
+	   warrant — the same reason `admin/UsersPanel`'s `.you-badge` and
+	   `WorkflowCanvas`'s edge labels stay hand-rolled. It already takes the
+	   palette `-tint` / `-on-tint` pair, so the colour cannot drift. */
 	.priors-badge {
 		display: inline-block;
 		margin-left: 6px;

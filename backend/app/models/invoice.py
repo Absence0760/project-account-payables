@@ -109,13 +109,18 @@ class Invoice(Base, EntityMixin, TimestampMixin):
     uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     assigned_to_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     assigned_to: Mapped[str | None] = mapped_column(String(255))
-    gl_account: Mapped[str | None] = mapped_column(String(100))
-    cost_center: Mapped[str | None] = mapped_column(String(100))
-    # Budget-dimension attributes (procurement budgets match realised invoice
-    # spend by these columns — see services.budget_service._actual_invoice_legs).
-    # NOTE: `department` and `project` are indexed; `cost_center` and
-    # `gl_account` are not, so a budget on either of those dimensions
-    # seq-scans when no entity narrows the set. Tracked in docs/followups.md.
+    # Budget-dimension attributes. Procurement budgets attribute realised
+    # invoice spend by an equality against one of these four columns — see
+    # `services.budget_service._DIMENSION_MATCH_COLUMN` — so ALL FOUR are
+    # indexed. They were not always: `cost_center` / `gl_account` predate
+    # migration 0044 and carried no index until 0090, which made the same query
+    # shape seq-scan `invoices` on two of the four dimensions (measured 7.7 ms
+    # vs 1.8 ms at 40k invoices, 15.9 ms vs 7.4 ms at 200k, on the path
+    # `GET /budgets/check` sits in before every requisition submit). Keep the
+    # four symmetric: a new budget dimension needs its column indexed here AND
+    # in a tenant-fanned migration, or it silently joins the slow half.
+    gl_account: Mapped[str | None] = mapped_column(String(100), index=True)
+    cost_center: Mapped[str | None] = mapped_column(String(100), index=True)
     department: Mapped[str | None] = mapped_column(String(100), index=True)
     project: Mapped[str | None] = mapped_column(String(100), index=True)
     file_url: Mapped[str | None] = mapped_column(String(1024))

@@ -20,6 +20,7 @@
 	import SortableHeader from '$lib/components/ui/SortableHeader.svelte';
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import ScreeningBadge from '$lib/components/ui/ScreeningBadge.svelte';
 	import VendorModal from '$lib/components/modals/VendorModal.svelte';
 	import VendorConsolidationModal from '$lib/components/modals/VendorConsolidationModal.svelte';
@@ -34,6 +35,7 @@
 	import { PERM_VENDOR_MANAGE } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
 	import { importVendorsCsv, type PortalInviteResult } from '$lib/api/vendors';
+	import { VENDOR_STATUS_TONES } from '$lib/types/vendor';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 	import type { ImportResult } from '$lib/types/csvImport';
 	import { getVendorIds, bulkVendorStatus, bulkScreenVendors, exportVendorsCsv } from '$lib/api/vendors';
@@ -648,7 +650,12 @@
 					<td class="mono muted">{v.code ?? '—'}</td>
 					<td class="muted">{v.email ?? '—'}</td>
 					<td>
-						<span class="status-badge {v.status}">{STATUS_LABELS[v.status] ?? v.status}</span>
+						<Badge
+							tone={VENDOR_STATUS_TONES[v.status] ?? 'neutral'}
+							variant="status-badge {v.status}"
+						>
+							{STATUS_LABELS[v.status] ?? v.status}
+						</Badge>
 					</td>
 					<td>
 						<ScreeningBadge
@@ -972,29 +979,6 @@
 	}
 	.vendor-name {
 		font-weight: 500;
-	}
-	.status-badge {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 10px;
-		font-size: 0.75rem;
-		font-weight: 500;
-	}
-	.status-badge.active {
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
-	}
-	.status-badge.unverified {
-		background: rgba(212, 148, 10, 0.12);
-		color: #d4940a;
-	}
-	.status-badge.inactive {
-		background: var(--bg);
-		color: var(--text-muted);
-	}
-	.status-badge.rejected {
-		background: rgba(224, 64, 64, 0.12);
-		color: #f06464;
 	}
 	.source-badge {
 		display: inline-block;

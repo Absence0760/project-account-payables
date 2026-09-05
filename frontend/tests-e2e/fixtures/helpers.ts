@@ -335,6 +335,39 @@ export function escapeRegExp(input: string): string {
  * attempted). Waiting for networkidle covers Vite HMR + the dynamic
  * imports for `auth.svelte.ts` and `api.ts`.
  */
+/**
+ * Record a cookie-consent choice before the first paint.
+ *
+ * The GDPR consent banner is `position: fixed`, bottom-centre, `z-index:
+ * 10000`, so it sits directly over the app's bottom-anchored controls —
+ * BulkBar, modal footers, Load-more, and any table row near the fold — and
+ * intercepts their clicks. That was the systemic cause of a family of e2e
+ * shard failures.
+ *
+ * Authenticated AP specs get this for free two ways: baked into the persisted
+ * admin storage state by `_ensureAdminStorageState`, and as an init script in
+ * `signIn` for specs that sign in fresh. **The supplier portal has its own
+ * sign-in path and its own token key, so it gets neither** — every portal spec
+ * that opts out of the storage state has to call this itself. Four of them had
+ * hand-copied the same block; this is that block, hoisted, so the next portal
+ * spec cannot forget it and then fail intermittently depending on where the
+ * banner happens to land relative to a click.
+ *
+ * It is an init script rather than a `page.evaluate`, because the banner
+ * renders on first paint — writing the key after `goto` is already too late.
+ * `consent-banner.spec.ts` deliberately uses neither path, so the banner still
+ * shows there and its assertions still hold.
+ */
+export async function acceptConsent(page: Page) {
+	await page.addInitScript(() => {
+		try {
+			localStorage.setItem('feoh_consent_choice', 'accepted');
+		} catch {
+			/* about:blank — ignore */
+		}
+	});
+}
+
 export async function signIn(
 	page: Page,
 	creds?: { email: string; password: string }

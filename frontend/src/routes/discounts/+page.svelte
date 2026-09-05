@@ -23,6 +23,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import DiscountTierBar from '$lib/components/ui/DiscountTierBar.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import {
 		getDiscountDashboard,
 		listDiscountOffers,
@@ -30,6 +31,7 @@
 		declineDiscountOffer,
 		optimizeDiscounts
 	} from '$lib/api/discounts';
+	import { DISCOUNT_STATUS_TONES } from '$lib/types/discounts';
 	import type {
 		DiscountDashboard,
 		DiscountOffer,
@@ -505,7 +507,11 @@
 								<span class="muted">—</span>
 							{/if}
 						</td>
-						<td><span class="status-badge {offer.status}">{STATUS_LABELS[offer.status]}</span></td>
+						<td>
+							<Badge tone={DISCOUNT_STATUS_TONES[offer.status]} variant="status-badge {offer.status}">
+								{STATUS_LABELS[offer.status]}
+							</Badge>
+						</td>
 						<td class="muted">
 							{formatDate(offer.valid_until)}
 							{#if offer.valid_until && offer.status === 'offered'}
@@ -790,34 +796,6 @@
 		display: block;
 		font-size: 0.72rem;
 		color: var(--text-muted);
-	}
-
-	/* --- Status badge --- */
-	.status-badge {
-		display: inline-block;
-		padding: 3px 10px;
-		border-radius: 12px;
-		font-size: 0.74rem;
-		font-weight: 600;
-		text-transform: capitalize;
-		white-space: nowrap;
-	}
-	.status-badge.offered {
-		background: var(--accent-tint);
-		color: var(--accent-on-tint);
-	}
-	.status-badge.accepted {
-		background: rgba(255, 180, 50, 0.15);
-		color: #d4940a;
-	}
-	.status-badge.captured {
-		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
-	}
-	.status-badge.declined,
-	.status-badge.expired {
-		background: var(--muted-tint);
-		color: var(--muted-on-tint);
 	}
 
 	/* --- Accept modal tier picker --- */

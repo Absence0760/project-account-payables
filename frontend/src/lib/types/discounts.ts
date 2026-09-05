@@ -1,4 +1,5 @@
 import type { MoneyAmount } from '$lib/utils/money';
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
 
 // Types for the Dynamic Discounting & Early-Payment Optimization surface.
 // Mirrors the JSON the Phase-C `/api/discounts` router returns. Money fields
@@ -13,6 +14,27 @@ export interface DiscountTier {
 export type DiscountScope = 'invoice' | 'vendor';
 export type DiscountSource = 'supplier' | 'system' | 'financing';
 export type DiscountStatus = 'offered' | 'accepted' | 'captured' | 'declined' | 'expired';
+
+/**
+ * Badge tone per offer status. Lives here rather than in the page because the
+ * status is the type module's own union — the labels beside it are i18n keys
+ * resolved per-locale, but the *tone* is a property of the state, so a second
+ * surface that ever badges an offer inherits the calibration instead of
+ * re-deriving it.
+ *
+ * `accepted` is amber and `captured` green on purpose: accepting an offer only
+ * commits the AP team to pay early, and the saving is not realised until the
+ * payment run funds it. Collapsing the two onto `success` would report money
+ * we have not actually saved yet. `declined` and `expired` share `muted` — both
+ * are an offer that will not be taken, and the label carries which.
+ */
+export const DISCOUNT_STATUS_TONES: Record<DiscountStatus, BadgeTone> = {
+	offered: 'accent',
+	accepted: 'warning',
+	captured: 'success',
+	declined: 'muted',
+	expired: 'muted'
+};
 
 /** A discount offer on an invoice or a vendor-wide standing offer. */
 export interface DiscountOffer {

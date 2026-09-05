@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 
 import {
   API_BASE,
+  acceptConsent,
   currentTenantSlug,
   expect,
   test,
@@ -53,6 +54,7 @@ async function portalSignInRaw(
   email = PORTAL_EMAIL,
   password = PORTAL_PASSWORD,
 ) {
+  await acceptConsent(page);
   await page.goto("/portal/login");
   await page.waitForLoadState("networkidle");
   await page.locator('input[type="email"]').fill(email);

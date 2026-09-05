@@ -392,7 +392,7 @@
 					<td class="muted">{recon.statement_reference ?? '—'}</td>
 					<td class="right mono">
 						{#if discrepancyCount(recon) > 0}
-							<span class="disc-badge">{discrepancyCount(recon)}</span>
+							<Badge tone="danger" variant="disc-badge">{discrepancyCount(recon)}</Badge>
 						{:else}
 							<span class="disc-clean">0</span>
 						{/if}
@@ -459,19 +459,13 @@
 		color: var(--text-muted);
 	}
 
-	/* Not `<Badge>`: this is a discrepancy COUNT, not a status — it keeps its
-	   own tighter numeric metrics (bolder, narrower, no uppercase) so it reads
-	   as a figure beside the vendor name. Only the colour literals are retired
-	   to the palette pair. */
-	.disc-badge {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 10px;
-		font-size: 0.74rem;
-		font-weight: 700;
-		background: var(--danger-tint);
-		color: var(--danger-on-tint);
-	}
+	/* The discrepancy COUNT is `<Badge tone="danger">` — it sits in its own
+	   right-aligned numeric column, not beside a name, so the primitive's
+	   metrics cost the row nothing and the tint can no longer drift from the
+	   modal's. `.disc-clean` is the zero case: deliberately NOT a badge, because
+	   "nothing to reconcile" is the absence of a signal, and a tinted pill
+	   reading `0` would advertise itself exactly as loudly as a real
+	   discrepancy. */
 	.disc-clean {
 		color: var(--text-muted);
 	}

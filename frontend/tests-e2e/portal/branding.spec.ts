@@ -1,4 +1,11 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	acceptConsent,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Supplier-portal white-label theming.
@@ -113,6 +120,7 @@ const PORTAL_EMAIL = 'supplier@portal.test';
 const PORTAL_PASSWORD = 'demo';
 
 async function portalSignIn(page: import('@playwright/test').Page): Promise<void> {
+	await acceptConsent(page);
 	await page.goto('/portal/login');
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);

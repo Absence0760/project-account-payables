@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 
 import {
+	acceptConsent,
 	currentTenantSlug,
 	deleteInvoicesWhere,
 	expect,
@@ -38,13 +39,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 const seeded: string[] = [];
 
 async function portalSignIn(page: Page) {
-	await page.addInitScript(() => {
-		try {
-			localStorage.setItem('feoh_consent_choice', 'accepted');
-		} catch {
-			/* ignore */
-		}
-	});
+	await acceptConsent(page);
 	await page.goto('/portal/login');
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);

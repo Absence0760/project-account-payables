@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import { API_BASE, acceptConsent, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 /**
  * The supplier-chat @mention picker has a real member source — and the vendor
@@ -145,6 +145,7 @@ test.describe('/portal supplier chat — the vendor surface gets no roster', () 
 			await route.continue();
 		});
 
+		await acceptConsent(page);
 		await page.goto('/portal/login');
 		await page.waitForLoadState('networkidle');
 		await page.locator('input[type="email"]').fill('supplier@portal.test');

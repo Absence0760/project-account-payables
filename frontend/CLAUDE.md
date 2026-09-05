@@ -68,8 +68,38 @@ pnpm install --frozen-lockfile        # the check CI runs
 
 The `packageManager` pin is expected to stop Dependabot dropping the block,
 since it will now resolve the same pnpm as everything else — but that is
-unconfirmed until the next npm PR. If it still happens, regenerate by hand, the
-same way `backend/CLAUDE.md` § Dependency lock describes for the pip locks.
+unconfirmed until the next npm PR.
+
+### The sync is automated, and the overrides check is the point
+
+`.github/workflows/dependabot-lockfile.yml` runs that recipe for you on a
+Dependabot PR touching `frontend/package.json`: `pnpm install --lockfile-only`,
+then it commits the regenerated `pnpm-lock.yaml` back onto the Dependabot
+branch. An already-correct lockfile commits nothing. It does the backend pip
+locks in the same run — see
+[backend/CLAUDE.md](../backend/CLAUDE.md) § Dependency lock.
+
+Between regenerating and committing it **verifies every `pnpm.overrides` entry
+in `package.json` is present in the lockfile with the same value**, and fails
+the job naming the offending key if not. That check is the reason the workflow
+exists rather than being a plain "run pnpm install" step: the guards are inert
+today, so a lockfile missing one looks and behaves exactly like a correct one
+until the day it matters, and a workflow that committed silently would
+automate away the very failure (`ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`) that
+caught #344 and #351. It then runs `pnpm install --frozen-lockfile` — the
+command CI runs — as a second gate. There is no `--no-frozen-lockfile`
+anywhere in it, and there must never be.
+
+**When the job goes red on that check, regenerate by hand with the recipe
+above and confirm the block survived** — the same fallback as before, and the
+same one `backend/CLAUDE.md` § Dependency lock describes for the pip locks.
+Never "fix" it by relaxing the check or the install flag.
+
+Two limits worth knowing: a `GITHUB_TOKEN` push does not start a new workflow
+run, so CI does not re-verify the synced commit (re-run it before merging — do
+not `@dependabot rebase`, which drops the commit); and the workflow only fires
+for `dependabot[bot]`, so a human-pushed lockfile bump is still yours to
+regenerate.
 
 ## The Node floor: 24, and the dependency that sets it
 
@@ -1196,24 +1226,28 @@ Two guards enforce it, and neither subsumes the other:
   fine (a revoked-row fade put `/admin/api-keys`' status pill at 2.44:1). Add a
   route here when you add a page carrying dialogs or dense controls.
 
-What is left is **consistency, not contrast**. 202 rules used to spell a tinted
-badge as a hand-rolled `rgba()` plus a literal hex — 44 spellings of what the
-five pairs above name. `ui/Badge.svelte` now owns the recipe and most of the
-call sites have moved onto it. Every remaining one passes the contrast guard,
-so this is design-system debt rather than a defect — but the tokens standardise
+What was left was **consistency, not contrast**. 202 rules used to spell a
+tinted badge as a hand-rolled `rgba()` plus a literal hex — 44 spellings of what
+the five pairs above name. `ui/Badge.svelte` owns the recipe, and **the
+conversion tranches are done**: every entry still in the baseline is a
+*deliberate keep* carrying its reason in its own stylesheet, not outstanding
+work. The tranches moved one file at a time on purpose — the tokens standardise
 on alpha `.15`, so converting a `.1` or `.12` rule *visibly strengthens* that
-badge's tint. That is why it moves in tranches you can attribute rather than
-one sweep: check the rendered result, and check what a distinction was carrying
-before collapsing it.
+badge's tint, and landing them all at once would make any visual complaint
+unattributable. Two real defects surfaced that way (`/goods-receipts` badging
+every status green, so a cancelled receipt read as delivered; a draft run tinted
+amber in a modal and flat neutral on the page one click apart), which is the
+argument for checking what a distinction was carrying before collapsing it.
 
 **`src/lib/a11y/badgeAudit.test.ts` is the ratchet, and the count.** It scans
 every stylesheet for a badge-shaped selector (`badge` / `chip` / `pill` / `tag`)
 setting both a tinted background and a colour, holds each file to a recorded
 baseline, and holds the converted files at zero. A new hand-roll fails on the
-file it landed in; landing a tranche means editing its number down in the same
-commit. Don't restate the remaining count in prose — it goes stale, and the
-baseline map is the live figure. Reach for `<Badge>` in new code and whenever
-you are already editing one of these rules.
+file it landed in. Now that no tranche is outstanding, **a new non-zero baseline
+entry is a keep that has to argue for itself** — add it with its reason beside
+the others, or use the primitive. Don't restate the remaining count in prose —
+it goes stale, and the baseline map is the live figure. Reach for `<Badge>` in
+new code and whenever you are already editing one of these rules.
 
 **A failure means changing the colour, never relaxing the rule** — there is no
 suppression mechanism, because the `-strong` companions mean a correct answer
