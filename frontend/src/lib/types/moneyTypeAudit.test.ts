@@ -68,6 +68,10 @@ const sources = Object.entries(RAW)
  * once every candidate in it is either retyped or judged here.
  */
 const JUDGED_NOT_MONEY: Record<string, Record<string, string>> = {
+	'lib/types/bankReconciliation.ts': {
+		// Pagination row count of the whole statement set, not money.
+		'BankStatementListResponse.total': 'pagination row count'
+	},
 	'lib/types/accessReview.ts': {
 		'AccessReviewResponse.total': 'users reviewed — a head count, not money'
 	},

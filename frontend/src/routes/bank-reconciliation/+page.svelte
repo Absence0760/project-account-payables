@@ -55,6 +55,8 @@
 	import StatementDetailModal from './StatementDetailModal.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+	import { formatCurrencyTotals } from '$lib/utils/currencyGroups';
+	import { formatMoney } from '$lib/utils/money';
 	import { m } from '$lib/i18n/store.svelte';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
@@ -468,12 +470,10 @@
 				<section class="bucket">
 					<header class="bucket-head">
 						<h2>{m('bankRecon.section.uncleared')}</h2>
-						<span class="bucket-total">
-							<Money
-								amount={outstanding.uncleared_total}
-								currency={orgCurrency.currency}
-								mono
-							/>
+						<span class="bucket-total mono">
+							{formatCurrencyTotals(outstanding.uncleared_totals, orgCurrency.currency).join(
+								' · '
+							) || formatMoney('0.00', { currency: orgCurrency.currency })}
 						</span>
 					</header>
 					<p class="bucket-help muted">{m('bankRecon.section.unclearedHelp')}</p>
@@ -489,16 +489,14 @@
 									<td>{p.vendor_name ?? '—'}</td>
 									<td class="muted">{p.invoice_number ?? '—'}</td>
 									<td class="right">
-										<!-- `UnclearedPaymentResponse` carries no per-row currency
-										     (`unmatched_debits` and `discrepancies` both do), so this
-										     falls back to the org reporting currency — as does
-										     `uncleared_total`, which the backend sums across
-										     currencies. A multi-currency tenant can therefore see the
-										     wrong symbol on THIS bucket only. The durable fix is a
-										     `currency` field on that schema (the invoice's, the same
-										     pair the matcher compares against); reported as a
-										     follow-up rather than guessed at here. -->
-										<Money amount={p.amount} currency={orgCurrency.currency} mono />
+										<!-- The row's own currency (the invoice's — the same side of
+										     the settlement pair the matcher compares against), so a
+										     multi-currency tenant never sees the wrong symbol here. -->
+										<Money
+											amount={p.amount}
+											currency={p.currency ?? orgCurrency.currency}
+											mono
+										/>
 									</td>
 									<td class="muted">{p.method ?? '—'}</td>
 									<td class="muted">{p.status}</td>
@@ -523,11 +521,10 @@
 					<header class="bucket-head">
 						<h2>{m('bankRecon.section.unmatched')}</h2>
 						<span class="bucket-total">
-							<Money
-								amount={outstanding.unmatched_debit_total}
-								currency={orgCurrency.currency}
-								mono
-							/>
+							{formatCurrencyTotals(
+								outstanding.unmatched_debit_totals,
+								orgCurrency.currency
+							).join(' · ') || formatMoney('0.00', { currency: orgCurrency.currency })}
 						</span>
 					</header>
 					<p class="bucket-help muted">{m('bankRecon.section.unmatchedHelp')}</p>

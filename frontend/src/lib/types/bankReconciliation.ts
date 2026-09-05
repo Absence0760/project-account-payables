@@ -197,6 +197,8 @@ export interface UnclearedPayment {
 	invoice_number: string | null;
 	vendor_name: string | null;
 	amount: MoneyAmount;
+	/** The currency `amount` is denominated in (the invoice's). */
+	currency: string | null;
 	method: string | null;
 	status: string;
 	sent_on: string | null;
@@ -235,15 +237,26 @@ export interface Discrepancy {
 	counterparty_name: string | null;
 }
 
+/** One currency's slice of an outstanding-items total. `total` is an EXACT
+ *  decimal string, matching every other whole-set rollup in this app. */
+export interface BankReconCurrencyTotal {
+	currency: string;
+	total: string;
+}
+
 export interface OutstandingItems {
 	as_of: string;
 	older_than_days: number;
 	uncleared_payments: UnclearedPayment[];
 	uncleared_count: number;
-	uncleared_total: MoneyAmount;
+	/** Grouped per currency as exact decimal strings — never one blended sum.
+	 *  `Payment.amount` is invoice-currency, so a cross-currency total is
+	 *  denominated in nothing real. Render via `formatCurrencyTotals`. */
+	uncleared_totals: BankReconCurrencyTotal[];
 	unmatched_debits: UnmatchedDebit[];
 	unmatched_debit_count: number;
-	unmatched_debit_total: MoneyAmount;
+	/** Same rule — a statement carries its own currency. */
+	unmatched_debit_totals: BankReconCurrencyTotal[];
 	discrepancies: Discrepancy[];
 	discrepancy_count: number;
 	/** Signed sum of the amount-mismatch subset. Positive = the bank has taken
@@ -260,4 +273,16 @@ export interface OutstandingItems {
  */
 export function isTruncated(shown: number, total: number): boolean {
 	return shown < total;
+}
+
+/** The paginated statement-list envelope.
+ *
+ *  `total` is a pagination ROW COUNT, not money — recorded as such in
+ *  `moneyTypeAudit.test.ts`'s `JUDGED_NOT_MONEY`, so the ratchet does not
+ *  re-raise it every round. */
+export interface BankStatementListResponse {
+	items: BankStatement[];
+	total: number;
+	page: number;
+	page_size: number;
 }

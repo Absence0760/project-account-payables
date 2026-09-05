@@ -164,7 +164,6 @@ the only payments a debit can legitimately be pointed at. Anything already
 claimed would be refused by the one-payment-one-line invariant, so offering it
 would be offering a dead end.
 
-**Known gap:** `UnclearedPaymentResponse` carries no per-row `currency` (both
 other buckets do), so the uncleared rows — and `uncleared_total`, which the
 backend sums across currencies — render in the org's reporting currency. A
 multi-currency tenant can therefore see the wrong symbol on that bucket only.

@@ -15,6 +15,7 @@ itself is owned by the (separately tested) pure service.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -1179,11 +1180,15 @@ async def test_outstanding_limit_truncates_rows_but_never_the_totals(realdb):
     assert len(full_body["uncleared_payments"]) > 1
     # Same count, same money — only the row list differs.
     assert capped_body["uncleared_count"] == full_body["uncleared_count"]
-    assert Decimal(str(capped_body["uncleared_total"])) == Decimal(
-        str(full_body["uncleared_total"])
-    )
-    # And the total is the exact sum of the payments, not a float approximation.
-    assert Decimal(str(capped_body["uncleared_total"])) >= Decimal("306.00")
+    assert capped_body["uncleared_totals"] == full_body["uncleared_totals"]
+    # And the totals are exact decimal strings per currency, not one blended
+    # float: `Payment.amount` is invoice-currency, so a cross-currency sum would
+    # be denominated in nothing real.
+    by_currency = {t["currency"]: Decimal(t["total"]) for t in capped_body["uncleared_totals"]}
+    assert sum(by_currency.values()) >= Decimal("306.00")
+    for total in capped_body["uncleared_totals"]:
+        assert isinstance(total["total"], str)
+        assert Decimal(total["total"]).as_tuple().exponent == -2
 
 
 async def test_concurrent_resolve_cannot_claim_one_payment_twice(realdb):
@@ -1317,3 +1322,39 @@ async def test_outstanding_readable_by_ap_clerk(realdb):
     gate is what proves the route requires auth at all.)"""
     async with realdb.client(key="a", role="ap_clerk") as c:
         assert (await c.get("/api/bank-reconciliation/outstanding")).status_code == 200
+
+
+async def test_outstanding_totals_are_grouped_per_currency_never_blended(realdb):
+    """`Payment.amount` is invoice-currency, so one `SUM` across a
+    multi-currency tenant produces a figure denominated in nothing real — and
+    the frontend then prints it under a single symbol, showing the wrong one.
+
+    This is the same rule `amount_mismatch_net_variance` already states for
+    subtraction ("a cross-currency subtraction isn't money"), applied to
+    addition. The blended figure must appear nowhere in the response."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_payment(mk, org_id, amount="100.00", currency="USD")
+    await _add_payment(mk, org_id, amount="250.00", currency="EUR")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get("/api/bank-reconciliation/outstanding")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    totals = {t["currency"]: t["total"] for t in body["uncleared_totals"]}
+    assert totals.get("USD") == "100.00"
+    assert totals.get("EUR") == "250.00"
+    # The blended sum must not appear anywhere — not as a total, not as a
+    # leftover field.
+    assert "uncleared_total" not in body
+    assert "350.00" not in json.dumps(body)
+
+    # Every row says which currency its amount is in, so the UI cannot fall back
+    # to the org's reporting currency and render the wrong symbol. (Row `amount`
+    # is a `MoneyAmount`, which this codebase serialises as a JSON number — see
+    # `backend/app/schemas/money.py`; the whole-set TOTALS above are the exact
+    # decimal strings, which is what a user actually reads.)
+    rows = {Decimal(str(r["amount"])): r["currency"] for r in body["uncleared_payments"]}
+    assert rows.get(Decimal("100.00")) == "USD"
+    assert rows.get(Decimal("250.00")) == "EUR"

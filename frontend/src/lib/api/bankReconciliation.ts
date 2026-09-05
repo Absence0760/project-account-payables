@@ -7,25 +7,13 @@
 // excluded, the same write gate as Positive Pay. The page gates its controls
 // on the same split; the backend is authoritative regardless.
 import { api } from '$lib/api';
-import type { BankStatement, OutstandingItems } from '$lib/types/bankReconciliation';
+import type {
+	BankStatement,
+	BankStatementListResponse,
+	OutstandingItems
+} from '$lib/types/bankReconciliation';
 
-/**
- * The paginated list envelope.
- *
- * Declared here rather than in `types/bankReconciliation.ts` on purpose: its
- * `total` is a pagination ROW COUNT, and the money-typing ratchet over
- * `src/lib/types/` (`types/moneyTypeAudit.test.ts`) reads a bare `total` as a
- * money-shaped name that needs a written judgment in ITS list. Moving this
- * interface into the types module is a one-line follow-up that belongs with
- * that judgment, not with a `number`-typed field slipped in beside it.
- */
-export interface BankStatementListResponse {
-	items: BankStatement[];
-	/** Row count of the whole set — NOT money. */
-	total: number;
-	page: number;
-	page_size: number;
-}
+export type { BankStatementListResponse };
 
 export interface BankStatementListParams {
 	/** Exact account identifier (the endpoint offers no free-text search). */

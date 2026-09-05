@@ -55,6 +55,7 @@ from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.user import User
 from app.schemas.bank_reconciliation import (
+    BankReconCurrencyTotal,
     BankStatementListResponse,
     BankStatementResponse,
     BankTransactionResponse,
@@ -507,6 +508,21 @@ async def list_statements(
 # `status_conflict`. One list, so "outstanding" and "matchable" can't drift.
 
 
+def _currency_totals(rows) -> list[BankReconCurrencyTotal]:
+    """`(currency, count, sum)` rows → per-currency exact-decimal totals.
+
+    A row whose currency could not be established is reported under an empty
+    code rather than folded into another currency's figure or dropped — losing
+    it would make the buckets disagree with their own counts."""
+    return [
+        BankReconCurrencyTotal(
+            currency=currency or "",
+            total=str((total if total is not None else Decimal("0.00")).quantize(Decimal("0.01"))),
+        )
+        for currency, _count, total in sorted(rows, key=lambda r: r[0] or "")
+    ]
+
+
 @router.get("/outstanding", response_model=OutstandingItemsResponse)
 async def outstanding_items(
     older_than_days: int = Query(
@@ -585,19 +601,38 @@ async def outstanding_items(
     # reads no column from it: `Payment.invoice_id` is a NOT NULL FK so the join
     # cannot drop a row today, but two query shapes that disagree about which
     # rows qualify are how a count silently stops matching its own list.
-    uncleared_count, uncleared_sum = (
+    # Grouped by the invoice's currency, never one blended SUM: `Payment.amount`
+    # is invoice-currency, so a cross-currency total is denominated in nothing
+    # real — the rule `amount_mismatch_net_variance` already follows for
+    # subtraction, applied to addition.
+    # One expression object, selected AND grouped — Postgres matches GROUP BY
+    # terms by expression identity, so re-spelling the coalesce would error.
+    uncleared_currency_expr = func.coalesce(Invoice.currency, "")
+    uncleared_by_currency = (
         await db.execute(
-            select(func.count(), func.sum(Payment.amount))
+            select(
+                uncleared_currency_expr,
+                func.count(),
+                func.sum(Payment.amount),
+            )
             .select_from(Payment)
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(*uncleared_where)
+            .group_by(uncleared_currency_expr)
         )
-    ).one()
-    uncleared_total = uncleared_sum if uncleared_sum is not None else Decimal("0.00")
+    ).all()
+    uncleared_count = sum(row[1] for row in uncleared_by_currency)
+    uncleared_totals = _currency_totals(uncleared_by_currency)
 
     uncleared_rows = (
         await db.execute(
-            select(Payment, Invoice.invoice_number, Invoice.vendor_name, sent_on_expr)
+            select(
+                Payment,
+                Invoice.invoice_number,
+                Invoice.vendor_name,
+                sent_on_expr,
+                Invoice.currency,
+            )
             .join(Invoice, Invoice.id == Payment.invoice_id)
             .where(*uncleared_where)
             .order_by(Payment.created_at)
@@ -612,12 +647,13 @@ async def outstanding_items(
             invoice_number=invoice_number,
             vendor_name=vendor_name,
             amount=payment.amount,
+            currency=currency,
             method=payment.method,
             status=payment.status,
             sent_on=sent_on.isoformat() if sent_on else None,
             days_outstanding=(today - sent_on).days if sent_on else None,
         )
-        for payment, invoice_number, vendor_name, sent_on in uncleared_rows
+        for payment, invoice_number, vendor_name, sent_on, currency in uncleared_rows
     ]
 
     # ---- Bucket 2: bank debits with no payment behind them ----------------
@@ -626,15 +662,24 @@ async def outstanding_items(
         BankTransaction.direction == "debit",
         BankTransaction.matched_payment_id.is_(None),
     )
-    unmatched_count, unmatched_sum = (
+    # A statement carries its own currency and a tenant can import statements
+    # for accounts in different ones, so this groups too.
+    unmatched_currency_expr = func.coalesce(BankStatement.currency, "")
+    unmatched_by_currency = (
         await db.execute(
-            select(func.count(), func.sum(BankTransaction.amount))
+            select(
+                unmatched_currency_expr,
+                func.count(),
+                func.sum(BankTransaction.amount),
+            )
             .select_from(BankTransaction)
             .join(BankStatement, BankStatement.id == BankTransaction.statement_id)
             .where(*unmatched_where)
+            .group_by(unmatched_currency_expr)
         )
-    ).one()
-    unmatched_total = unmatched_sum if unmatched_sum is not None else Decimal("0.00")
+    ).all()
+    unmatched_count = sum(row[1] for row in unmatched_by_currency)
+    unmatched_totals = _currency_totals(unmatched_by_currency)
 
     unmatched_rows = (
         await db.execute(
@@ -756,10 +801,10 @@ async def outstanding_items(
         older_than_days=older_than_days,
         uncleared_payments=uncleared,
         uncleared_count=uncleared_count,
-        uncleared_total=uncleared_total,
+        uncleared_totals=uncleared_totals,
         unmatched_debits=unmatched,
         unmatched_debit_count=unmatched_count,
-        unmatched_debit_total=unmatched_total,
+        unmatched_debit_totals=unmatched_totals,
         discrepancies=discrepancies,
         discrepancy_count=discrepancy_count,
         amount_mismatch_net_variance=net_variance,
