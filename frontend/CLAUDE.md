@@ -68,8 +68,38 @@ pnpm install --frozen-lockfile        # the check CI runs
 
 The `packageManager` pin is expected to stop Dependabot dropping the block,
 since it will now resolve the same pnpm as everything else — but that is
-unconfirmed until the next npm PR. If it still happens, regenerate by hand, the
-same way `backend/CLAUDE.md` § Dependency lock describes for the pip locks.
+unconfirmed until the next npm PR.
+
+### The sync is automated, and the overrides check is the point
+
+`.github/workflows/dependabot-lockfile.yml` runs that recipe for you on a
+Dependabot PR touching `frontend/package.json`: `pnpm install --lockfile-only`,
+then it commits the regenerated `pnpm-lock.yaml` back onto the Dependabot
+branch. An already-correct lockfile commits nothing. It does the backend pip
+locks in the same run — see
+[backend/CLAUDE.md](../backend/CLAUDE.md) § Dependency lock.
+
+Between regenerating and committing it **verifies every `pnpm.overrides` entry
+in `package.json` is present in the lockfile with the same value**, and fails
+the job naming the offending key if not. That check is the reason the workflow
+exists rather than being a plain "run pnpm install" step: the guards are inert
+today, so a lockfile missing one looks and behaves exactly like a correct one
+until the day it matters, and a workflow that committed silently would
+automate away the very failure (`ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`) that
+caught #344 and #351. It then runs `pnpm install --frozen-lockfile` — the
+command CI runs — as a second gate. There is no `--no-frozen-lockfile`
+anywhere in it, and there must never be.
+
+**When the job goes red on that check, regenerate by hand with the recipe
+above and confirm the block survived** — the same fallback as before, and the
+same one `backend/CLAUDE.md` § Dependency lock describes for the pip locks.
+Never "fix" it by relaxing the check or the install flag.
+
+Two limits worth knowing: a `GITHUB_TOKEN` push does not start a new workflow
+run, so CI does not re-verify the synced commit (re-run it before merging — do
+not `@dependabot rebase`, which drops the commit); and the workflow only fires
+for `dependabot[bot]`, so a human-pushed lockfile bump is still yours to
+regenerate.
 
 ## The Node floor: 24, and the dependency that sets it
 
