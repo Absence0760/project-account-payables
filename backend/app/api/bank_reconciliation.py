@@ -83,6 +83,7 @@ from app.services.bank_reconciliation import (
 from app.services.csv_import import MAX_CSV_IMPORT_SIZE
 from app.tenant import get_tenant, get_tenant_db
 from app.utils.dates import resolve_day_first_preference, utc_today
+from app.utils.search import ilike_contains
 
 router = APIRouter(prefix="/bank-reconciliation", tags=["bank-reconciliation"])
 
@@ -532,6 +533,15 @@ async def outstanding_items(
         description="Only report payments sent at least this many days ago.",
     ),
     limit: int = Query(200, ge=1, le=1000),
+    search: str | None = Query(
+        None,
+        max_length=200,
+        description=(
+            "Free-text narrowing across all three buckets. Applied in SQL, on "
+            "the same WHERE the aggregates read, so counts and totals narrow "
+            "WITH the rows — a client-side filter cannot see a row past `limit`."
+        ),
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_READ_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
@@ -587,12 +597,43 @@ async def outstanding_items(
     # a local-calendar date against a UTC one and shift the boundary — and
     # `days_outstanding` with it — by a day.
     sent_on_expr = cast(func.timezone("UTC", sent_at_expr), Date)
+    # One term, three buckets, each searching the columns it actually renders.
+    # Folded into the shared WHERE tuples below, which the aggregates and the row
+    # queries BOTH read — so a narrowed list can never be headed by a whole-set
+    # count. `frontend/CLAUDE.md` § Search forbids the client-side alternative,
+    # and `tests/test_paginated_list_search_legs.py` enforces it.
+    term = (search or "").strip()
+    uncleared_search = (
+        (
+            or_(
+                ilike_contains(Invoice.vendor_name, term),
+                ilike_contains(Invoice.invoice_number, term),
+                ilike_contains(Payment.method, term),
+            ),
+        )
+        if term
+        else ()
+    )
+    bank_line_search = (
+        (
+            or_(
+                ilike_contains(BankTransaction.counterparty_name, term),
+                ilike_contains(BankTransaction.reference, term),
+                ilike_contains(BankTransaction.description, term),
+                ilike_contains(BankStatement.account_identifier, term),
+            ),
+        )
+        if term
+        else ()
+    )
+
     uncleared_where = (
         Payment.status.in_(EXPECTED_TO_CLEAR_STATUSES),
         Payment.id.not_in(claimed_subq),
         # A row with no usable timestamp at all can't be aged out — surface it
         # rather than hide it behind a filter it can never satisfy.
         or_(sent_at_expr.is_(None), sent_on_expr <= cutoff),
+        *uncleared_search,
     )
 
     # Counts + totals cover EVERY outstanding payment; only the row list below
@@ -661,6 +702,7 @@ async def outstanding_items(
         BankStatement.organization_id == org_id,
         BankTransaction.direction == "debit",
         BankTransaction.matched_payment_id.is_(None),
+        *bank_line_search,
     )
     # A statement carries its own currency and a tenant can import statements
     # for accounts in different ones, so this groups too.
@@ -718,6 +760,7 @@ async def outstanding_items(
         BankStatement.organization_id == org_id,
         BankTransaction.direction == "debit",
         BankTransaction.match_method.in_(UNRECONCILED_MATCH_METHODS),
+        *bank_line_search,
     )
     # Same join set as the row query below (Invoice included, though the
     # aggregate reads nothing from it) so the count can never disagree with the

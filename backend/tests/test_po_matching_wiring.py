@@ -331,10 +331,15 @@ async def test_refresh_warnings_clears_po_match_when_po_number_removed():
         patch("sqlalchemy.ext.asyncio.AsyncSession.execute"),
     ):
         # Stub out the db calls refresh_warnings makes: the duplicate check
-        # (`.scalar()`) and the line-total reconciliation sum
+        # (`.scalar()`), its normalized-number fallback (`.all()` — the pass that
+        # catches `INV-001` vs `INV-1`, reached only when the exact check misses,
+        # which it does here), and the line-total reconciliation sum
         # (`.scalar_one_or_none()` — None means "no line totals to reconcile").
+        # Each is a SYNC method on a real `Result`, so it must be a plain lambda:
+        # left as an AsyncMock child, `.all()` returns a coroutine.
         db = AsyncMock()
         db.execute.return_value.scalar = lambda: 0
+        db.execute.return_value.all = lambda: []
         db.execute.return_value.scalar_one_or_none = lambda: None
         await invoice_warnings.refresh_warnings(db, inv)
 

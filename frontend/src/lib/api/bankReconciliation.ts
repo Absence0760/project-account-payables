@@ -39,6 +39,7 @@ export function getBankStatement(id: string): Promise<BankStatement> {
 export interface OutstandingParams {
 	/** Only report payments sent at least this many days ago (default 0). */
 	older_than_days?: number;
+	search?: string;
 	/**
 	 * Caps the ROWS returned per bucket only — every count and total on the
 	 * response still covers the full set, so a truncated page can never
@@ -50,6 +51,7 @@ export interface OutstandingParams {
 export function getOutstandingItems(params: OutstandingParams = {}): Promise<OutstandingItems> {
 	const qs = new URLSearchParams();
 	if (params.older_than_days) qs.set('older_than_days', String(params.older_than_days));
+	if (params.search) qs.set('search', params.search);
 	if (params.limit) qs.set('limit', String(params.limit));
 	const suffix = qs.toString() ? `?${qs}` : '';
 	return api.get<OutstandingItems>(`/api/bank-reconciliation/outstanding${suffix}`);

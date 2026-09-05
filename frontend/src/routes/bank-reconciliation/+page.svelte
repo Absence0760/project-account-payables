@@ -128,6 +128,7 @@
 		try {
 			const res = await getOutstandingItems({
 				older_than_days: untrack(() => olderThanDays),
+				search: untrack(() => search.trim()) || undefined,
 				limit: OUTSTANDING_ROW_LIMIT
 			});
 			if (!outstandingSequence.canCommit(token)) return;
@@ -157,13 +158,18 @@
 		syncUrl();
 	});
 
-	// The search term only re-renders derived lists, so it needs no debounce —
-	// but the URL write does, or every keystroke pushes a history entry.
+	// The term is a SERVER filter: `/outstanding` caps rows at `limit` while its
+	// counts stay whole-set, so a client-side filter would hide matches past the
+	// cap and report "nothing matched" under a whole-set header. Debounced, and
+	// the fetch goes through the same sequencer as every other load.
 	let searchTimer: ReturnType<typeof setTimeout>;
 	$effect(() => {
 		search;
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(syncUrl, 300);
+		searchTimer = setTimeout(() => {
+			syncUrl();
+			void loadOutstanding();
+		}, 300);
 		// Cancel on teardown: without it the timer fires after the page is gone,
 		// running replaceState against a route the user already left.
 		return () => clearTimeout(searchTimer);
@@ -173,28 +179,13 @@
 		orgCurrency.ensureLoaded();
 	});
 
-	const term = $derived(search.trim().toLowerCase());
+	// Only for choosing the empty-state copy — the SERVER did the filtering, so
+	// these lists are rendered exactly as they arrived.
+	const term = $derived(search.trim());
 
-	function matches(fields: (string | null | undefined)[]): boolean {
-		if (!term) return true;
-		return fields.some((f) => !!f && f.toLowerCase().includes(term));
-	}
-
-	const unclearedRows = $derived(
-		(outstanding?.uncleared_payments ?? []).filter((p: UnclearedPayment) =>
-			matches([p.vendor_name, p.invoice_number, p.method, p.status])
-		)
-	);
-	const unmatchedRows = $derived(
-		(outstanding?.unmatched_debits ?? []).filter((d: UnmatchedDebit) =>
-			matches([d.counterparty_name, d.reference, d.description, d.account_identifier])
-		)
-	);
-	const discrepancyRows = $derived(
-		(outstanding?.discrepancies ?? []).filter((d: Discrepancy) =>
-			matches([d.counterparty_name, d.invoice_number, d.classification, d.account_identifier])
-		)
-	);
+	const unclearedRows = $derived(outstanding?.uncleared_payments ?? []);
+	const unmatchedRows = $derived(outstanding?.unmatched_debits ?? []);
+	const discrepancyRows = $derived(outstanding?.discrepancies ?? []);
 
 	const AGE_CHIPS = $derived([
 		{ key: '0', label: m('bankRecon.age.any') },

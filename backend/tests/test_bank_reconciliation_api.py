@@ -1358,3 +1358,35 @@ async def test_outstanding_totals_are_grouped_per_currency_never_blended(realdb)
     rows = {Decimal(str(r["amount"])): r["currency"] for r in body["uncleared_payments"]}
     assert rows.get(Decimal("100.00")) == "USD"
     assert rows.get(Decimal("250.00")) == "EUR"
+
+
+async def test_outstanding_search_narrows_counts_and_rows_together(realdb):
+    """A search term is applied in SQL, on the same WHERE the aggregates read.
+
+    A client-side filter over the returned rows cannot see a row past `?limit`,
+    so the user would be told nothing matched while the bucket header counted
+    the whole set — the failure `frontend/CLAUDE.md` § Search forbids and
+    `tests/test_paginated_list_search_legs.py` enforces."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _add_payment(mk, org_id, amount="410.00", vendor_name="Zephyr Metalworks")
+    await _add_payment(mk, org_id, amount="420.00", vendor_name="Borealis Freight")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        hit = await c.get("/api/bank-reconciliation/outstanding?search=zephyr")
+        miss = await c.get("/api/bank-reconciliation/outstanding?search=nothingmatchesthis")
+    assert hit.status_code == 200, hit.text
+    hit_body = hit.json()
+
+    names = [r["vendor_name"] for r in hit_body["uncleared_payments"]]
+    assert names == ["Zephyr Metalworks"]
+    # The COUNT narrows with the rows — this is the whole point.
+    assert hit_body["uncleared_count"] == 1
+    # …and so does the money, so the header can't overstate a filtered view.
+    assert [t["total"] for t in hit_body["uncleared_totals"]] == ["410.00"]
+    # Case-insensitive: the term was lower-case, the vendor is not.
+
+    miss_body = miss.json()
+    assert miss_body["uncleared_payments"] == []
+    assert miss_body["uncleared_count"] == 0
+    assert miss_body["uncleared_totals"] == []
