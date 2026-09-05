@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.schemas.vendor import validate_bank_routing_fields
 from app.utils.banking import (
     SEPA_COUNTRIES,
     country_from_iban,
@@ -300,3 +301,41 @@ def test_invalid_uk_account_number_rejected(account_number):
 
 def test_uk_account_number_spaces_are_ignored():
     assert validate_uk_account_number("1234 5678") == validate_uk_account_number("12345678") is True
+
+
+# --- The gate itself -------------------------------------------------------
+#
+# `validate_uk_account_number` existed, was tested, and was reached by nothing
+# in production: `validate_bank_routing_fields` — the single chokepoint every
+# bank-detail write goes through, including `approve_change_request`, where the
+# dual-control BEC sign-off is applied — checked the sort code and left the
+# account number unvalidated. These assert the pair is now validated together,
+# and that a non-UK payee is still accepted.
+
+
+def test_gate_accepts_a_well_formed_uk_payee():
+    details = {"sort_code": "12-34-56", "account_number": "12345678"}
+    assert validate_bank_routing_fields(details) is details
+
+
+def test_gate_rejects_a_uk_payee_whose_account_number_is_short():
+    # A valid sort code alongside a 5-digit account number used to clear both
+    # staging and the second-approver sign-off.
+    with pytest.raises(ValueError) as exc:
+        validate_bank_routing_fields({"sort_code": "123456", "account_number": "12345"})
+    assert "account_number" in str(exc.value)
+    # Banking data never reaches the message — the field name only.
+    assert "12345" not in str(exc.value)
+
+
+def test_gate_leaves_a_non_uk_account_number_alone():
+    # No sort code → not a UK payee. A US/IBAN `account_number` is not 8 digits
+    # and must not be refused.
+    details = {"routing_number": "021000021", "account_number": "000123456789"}
+    assert validate_bank_routing_fields(details) is details
+
+
+def test_gate_still_rejects_a_bad_sort_code_before_the_account_number():
+    with pytest.raises(ValueError) as exc:
+        validate_bank_routing_fields({"sort_code": "12345", "account_number": "12345678"})
+    assert "sort_code" in str(exc.value)
