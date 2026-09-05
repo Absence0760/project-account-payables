@@ -16,6 +16,7 @@
 		approveRequisition,
 		rejectRequisition,
 		cancelRequisition,
+		reopenRequisition,
 		convertRequisitionToPo,
 		type RequisitionListParams
 	} from '$lib/api/requisitions';
@@ -54,6 +55,11 @@
 	// convert-to-PO stays admin | ap_manager — it is the money step, and
 	// `requisitions.py::convert_to_po` gates it that way.
 	const canConvert = $derived(auth.isManager);
+	// `POST /api/requisitions/{id}/reopen` is gated
+	// `require_roles(ADMIN, AP_MANAGER, AP_CLERK)` — the CREATE set, not the
+	// decide set. Reopening is the buyer redoing their own ask, so it reuses
+	// `canCreate`; a CFO can reject but cannot reopen, and `canDecideRole` would
+	// have offered them a button that can only 403.
 
 	const PAGE_SIZE = 100;
 
@@ -76,6 +82,7 @@
 	let showCreate = $state(false);
 	let editing = $state<Requisition | null>(null);
 	let confirmDeleteId = $state<string | null>(null);
+	let reopenArmedId = $state<string | null>(null);
 	let busyId = $state<string | null>(null);
 	let glAccounts = $state<GlAccountOption[]>([]);
 
@@ -348,6 +355,25 @@
 		runAction(r.id, () => cancelRequisition(r.id), m('requisitions.toast.cancelled'), m('requisitions.toast.cancelFailed'));
 	}
 
+	// `rejected -> draft`. The armed two-click is this page's confirm pattern,
+	// and the armed label names the DESTINATION (`Draft`) rather than a bare
+	// "Confirm": a reopened requisition is back in `draft` — editable and NOT
+	// resubmitted — while the sibling /intake reopen lands in `open`. Which side
+	// of the review line the row is back on decides whether the user still owes
+	// a Submit click.
+	async function doReopen(r: Requisition) {
+		busyId = r.id;
+		try {
+			replaceRow(await reopenRequisition(r.id));
+			toast(m('requisitions.toast.reopened'), 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('requisitions.toast.reopenFailed'), 'error');
+		} finally {
+			busyId = null;
+			reopenArmedId = null;
+		}
+	}
+
 	async function doConvert(r: Requisition) {
 		busyId = r.id;
 		try {
@@ -391,9 +417,12 @@
 		);
 	}
 
+	// Outside-click un-arms any pending armed-confirm (delete, reopen).
 	function onWindowClick(e: MouseEvent) {
 		const target = e.target as Element | null;
-		if (!target?.closest('.row-action') && confirmDeleteId) confirmDeleteId = null;
+		if (target?.closest('.row-action')) return;
+		if (confirmDeleteId) confirmDeleteId = null;
+		if (reopenArmedId) reopenArmedId = null;
 	}
 </script>
 
@@ -444,6 +473,23 @@
 						{#if canDecide(r)}
 							<RowAction variant="success" onclick={() => doApprove(r)} disabled={busyId === r.id}>{m('requisitions.row.approve')}</RowAction>
 							<RowAction variant="danger" onclick={() => doReject(r)} disabled={busyId === r.id}>{m('requisitions.row.reject')}</RowAction>
+						{/if}
+						{#if canCreate && r.status === 'rejected'}
+							<RowAction
+								variant="default"
+								armed={reopenArmedId === r.id}
+								disabled={busyId === r.id}
+								title={m('requisitions.row.reopenHint')}
+								onclick={(e) => {
+									e.stopPropagation();
+									if (reopenArmedId === r.id) doReopen(r);
+									else reopenArmedId = r.id;
+								}}
+							>
+								{reopenArmedId === r.id
+									? m('requisitions.row.reopenConfirm')
+									: m('requisitions.row.reopen')}
+							</RowAction>
 						{/if}
 						{#if canConvert && r.status === 'approved'}
 							<RowAction variant="default" onclick={() => doConvert(r)} disabled={busyId === r.id}>{m('requisitions.row.convertToPo')}</RowAction>

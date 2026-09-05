@@ -30,6 +30,10 @@ open ──submit──▶ in_review ──approve──▶ approved ──conve
   `form_data.review_reason` and deliberately survives the reopen (it is the
   brief). Without that route a rejected intake was stranded: `submit`,
   `cancel` and `PATCH` all 422 from `rejected`, so the only exit was `DELETE`.
+  **The route is reachable from the product** — an armed two-click **Reopen**
+  row action on `/intake`, offered only on a `rejected` row (see Frontend
+  below). Until that shipped the route existed but nothing called it, so the
+  strand it fixes was still live for users.
 - `converted` — a `PurchaseRequisition` was created from it (terminal).
 - `cancelled` — withdrawn (terminal).
 
@@ -161,6 +165,20 @@ and a PO booked on a requisition nobody else ever saw.
 - **Cross-object links are validated** — `vendor_id` is resolved tenant- and
   entity-scoped before the insert (`404`, never an FK `500`).
 
+## Frontend
+
+- `frontend/src/routes/intake/+page.svelte` — the workspace list, with per-row
+  Submit / Approve / Reject / **Reopen** / Convert / Cancel / Delete actions.
+  **Reopen** is the rework loop (`rejected → open`): an armed two-click
+  `RowAction` whose armed label names the DESTINATION (`Reopen to Open`) rather
+  than a bare "Confirm", because the sibling `/requisitions` reopen lands in
+  `draft` instead. It is gated on the page's broad `canCreate` predicate
+  (admin | ap_manager | ap_clerk | cfo), matching `require_roles` on the route —
+  deliberately WIDER than approve/reject, since the person who redoes the ask is
+  the requester, not the reviewer.
+- `frontend/src/lib/api/intake.ts` (`reopenIntake`) +
+  `frontend/src/lib/types/intake.ts` — typed API helpers + types.
+
 ## Tests
 
 `backend/tests/test_intake.py` — CRUD, `form_data` JSONB round-trip, every
@@ -171,3 +189,9 @@ isolation, audit rows, and exact `Numeric` money round-trips.
 `backend/tests/test_procurement_delete_guards.py` — the `409` delete guards on
 both sides of the intake→requisition link, and the `vendor_id` existence +
 cross-entity refusal on create and update.
+
+`frontend/tests-e2e/intake/reopen.spec.ts` — the rework loop end-to-end: a
+rejected row offers **Reopen**, the armed copy names the `Open` destination,
+committing lands the row in `open` (server-verified) with Submit offered again;
+a non-rejected row offers no Reopen; and an **ap_clerk** still sees it, pinning
+the broad gate against a regression onto the reviewer predicate.

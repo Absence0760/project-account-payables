@@ -17,6 +17,7 @@
 		approveIntake,
 		rejectIntake,
 		cancelIntake,
+		reopenIntake,
 		convertIntakeToRequisition
 	} from '$lib/api/intake';
 	import type { IntakeSummary } from '$lib/types/intake';
@@ -45,6 +46,11 @@
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk', 'cfo'));
 	// approve / reject / convert = admin | ap_manager (the reviewers).
 	const canReview = $derived(auth.isManager);
+	// `POST /api/intake/{id}/reopen` is gated
+	// `require_roles(ADMIN, AP_MANAGER, AP_CLERK, CFO)` — the broad set, NOT the
+	// reviewer set. Reopening is the requester redoing their own ask, so it
+	// reuses `canCreate`; gating it on `canReview` would hide the rework loop
+	// from the clerk who actually has to redo the request.
 
 	let items = $state<IntakeRequest[]>([]);
 	let total = $state(0);
@@ -64,6 +70,7 @@
 	let editing = $state<IntakeRequest | null>(null);
 	let confirmDeleteId = $state<string | null>(null);
 	let rejectArmedId = $state<string | null>(null);
+	let reopenArmedId = $state<string | null>(null);
 	let busyId = $state<string | null>(null);
 
 	const STATUS_CHIPS = $derived([
@@ -299,6 +306,24 @@
 		}
 	}
 
+	// `rejected -> open`. The armed two-click is this page's confirm pattern, and
+	// the armed label names the DESTINATION (`Open`) rather than a bare
+	// "Confirm": intake lands back in `open` — editable, not yet under review —
+	// while the sibling /requisitions reopen lands in `draft`, and the user has
+	// to know which side of the review line they are back on.
+	async function onReopen(i: IntakeRequest) {
+		busyId = i.id;
+		try {
+			upsert(await reopenIntake(i.id));
+			toast(m('intake.toast.reopened'), 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('intake.toast.reopenFailed'), 'error');
+		} finally {
+			busyId = null;
+			reopenArmedId = null;
+		}
+	}
+
 	async function onConvert(i: IntakeRequest) {
 		busyId = i.id;
 		try {
@@ -317,12 +342,13 @@
 		}
 	}
 
-	// Outside-click un-arms any pending armed-confirm (delete, reject).
+	// Outside-click un-arms any pending armed-confirm (delete, reject, reopen).
 	function onWindowClick(e: MouseEvent) {
 		const target = e.target as Element | null;
 		if (!target?.closest('.row-action')) {
 			if (confirmDeleteId) confirmDeleteId = null;
 			if (rejectArmedId) rejectArmedId = null;
+			if (reopenArmedId) reopenArmedId = null;
 		}
 	}
 </script>
@@ -397,6 +423,21 @@
 						{/if}
 						{#if canReview && i.status === 'approved'}
 							<RowAction variant="default" disabled={busyId === i.id} onclick={() => onConvert(i)}>{m('intake.row.convertToRequisition')}</RowAction>
+						{/if}
+						{#if canCreate && i.status === 'rejected'}
+							<RowAction
+								variant="default"
+								armed={reopenArmedId === i.id}
+								disabled={busyId === i.id}
+								title={m('intake.row.reopenHint')}
+								onclick={(e) => {
+									e.stopPropagation();
+									if (reopenArmedId === i.id) onReopen(i);
+									else reopenArmedId = i.id;
+								}}
+							>
+								{reopenArmedId === i.id ? m('intake.row.reopenConfirm') : m('intake.row.reopen')}
+							</RowAction>
 						{/if}
 						{#if i.status === 'converted' && i.converted_requisition_id}
 							<a class="req-link" href={`/requisitions?id=${i.converted_requisition_id}`}>{m('intake.row.viewRequisition')}</a>
