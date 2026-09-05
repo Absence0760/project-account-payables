@@ -93,6 +93,13 @@
 	let tab = $state(initialTab());
 	let olderThanDays = $state(initialAge());
 	let search = $state($page.url.searchParams.get('search') ?? '');
+	/**
+	 * The Statements tab's own term, on its own URL key — the two tabs query
+	 * different endpoints (`/outstanding` vs the paginated statement list) and
+	 * search different columns, so one shared `?search=` would carry a vendor
+	 * name into an account filter (or the reverse) on every tab switch.
+	 */
+	let statementSearch = $state($page.url.searchParams.get('statement_search') ?? '');
 
 	/**
 	 * Reflect the live view state into the URL. EVERY read here is untracked:
@@ -110,6 +117,9 @@
 			else url.searchParams.delete('older_than_days');
 			if (search.trim()) url.searchParams.set('search', search.trim());
 			else url.searchParams.delete('search');
+			if (statementSearch.trim())
+				url.searchParams.set('statement_search', statementSearch.trim());
+			else url.searchParams.delete('statement_search');
 			replaceState(`${url.pathname}${url.search}`, {});
 		});
 	}
@@ -243,16 +253,37 @@
 
 	const hasMoreStatements = $derived(statements.length < statementTotal);
 
+	/**
+	 * The term the newest issued statement request carried. Seeded from the URL
+	 * the same way `statementSearch` is (not from `statementSearch` itself,
+	 * which reads as capturing a reactive value at init), so a bookmarked
+	 * `?statement_search=` doesn't fire a second load behind the mount load.
+	 */
+	let appliedStatementSearch = $state(
+		($page.url.searchParams.get('statement_search') ?? '').trim()
+	);
+
 	async function loadStatements(opts: { append?: boolean } = {}) {
 		const nextPage = opts.append ? statementPage + 1 : 1;
 		const token = statementSequence.start();
+		// Record the term this request carries, so the debounce below can tell a
+		// term already on screen from one that still needs a fetch.
+		if (!opts.append) appliedStatementSearch = untrack(() => statementSearch).trim();
 		if (opts.append) statementsLoadingMore = true;
 		else {
 			statementsLoading = true;
 			statementsError = false;
 		}
 		try {
-			const data = await listBankStatements({ page: nextPage, page_size: PAGE_SIZE });
+			const data = await listBankStatements({
+				// `untrack`: this loader is called synchronously from the mount
+				// `$effect` below, and Svelte tracks reads transitively — a plain
+				// read would make that effect depend on the term and fire an
+				// immediate, un-debounced request per keystroke (issue #168).
+				search: untrack(() => statementSearch).trim() || undefined,
+				page: nextPage,
+				page_size: PAGE_SIZE
+			});
 			if (!statementSequence.canCommit(token)) return;
 			statements = opts.append ? appendUnique(statements, data.items) : data.items;
 			statementTotal = data.total;
@@ -276,6 +307,32 @@
 	$effect(() => {
 		void loadStatements();
 	});
+
+	// The Statements term is a SERVER filter (`GET /api/bank-reconciliation
+	// ?search=`), for the same reason the Outstanding one is: this list
+	// paginates against a server `total`, so narrowing the loaded rows in the
+	// browser would report "nothing matched" for a statement on page 2 while
+	// the footer counted the whole set. Debounced, and the fetch goes through
+	// the same sequencer as every other statement load.
+	let statementSearchTimer: ReturnType<typeof setTimeout>;
+	$effect(() => {
+		const nextTerm = statementSearch.trim();
+		clearTimeout(statementSearchTimer);
+		// Nothing to do when the term already matches what the newest request
+		// carried — this is what stops the effect's FIRST run (mount, including
+		// a bookmarked ?statement_search=) firing a duplicate load.
+		if (nextTerm === appliedStatementSearch) return;
+		statementSearchTimer = setTimeout(() => {
+			syncUrl();
+			void loadStatements();
+		}, 300);
+		// Cancel on teardown: without it the timer fires after the page is gone,
+		// running replaceState + a fetch against a route the user already left.
+		return () => clearTimeout(statementSearchTimer);
+	});
+
+	/** Only for choosing the empty-state copy — the SERVER did the filtering. */
+	const statementTerm = $derived(statementSearch.trim());
 
 	const STATEMENT_COLUMNS = $derived([
 		{ label: m('bankRecon.col.account') },
@@ -640,6 +697,14 @@
 			role="tabpanel"
 			aria-labelledby="bank-recon-tab-statements"
 		>
+			<div class="filter-row">
+				<SearchBox
+					bind:value={statementSearch}
+					placeholder={m('bankRecon.search.statementsPlaceholder')}
+					ariaLabel={m('bankRecon.search.statementsAria')}
+				/>
+			</div>
+
 			{#if statementsError}
 				<p class="state-note" role="alert" data-testid="statements-error">
 					{m('bankRecon.error.statements')}
@@ -647,7 +712,12 @@
 						{m('bankRecon.error.retry')}
 					</button>
 				</p>
-			{:else if !statementsLoading && statements.length === 0}
+			{:else if !statementsLoading && statements.length === 0 && !statementTerm}
+				<!-- The onboarding affordance is for a tenant that has imported
+				     NOTHING. A search that matched nothing is a different claim,
+				     and gets the table's own empty row below instead — offering
+				     "import a statement" there would answer a question nobody
+				     asked. -->
 				<EmptyState
 					icon="🏦"
 					heading={m('bankRecon.empty.statements')}
@@ -659,8 +729,10 @@
 			{:else}
 				<DataTable
 					columns={STATEMENT_COLUMNS}
-					isEmpty={statementsLoading && statements.length === 0}
-					empty={m('common.loading')}
+					isEmpty={statements.length === 0}
+					empty={statementsLoading
+						? m('common.loading')
+						: m('bankRecon.empty.statementsFiltered')}
 					colspan={7}
 				>
 					{#snippet body()}

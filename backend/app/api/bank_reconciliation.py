@@ -457,18 +457,76 @@ async def upload_statement(
 # --------------------------------------------------------------------------- #
 
 
+def _statement_list_filters(
+    query,
+    *,
+    account_identifier: str | None,
+    search: str | None = None,
+):
+    """Apply the statement-list ``account_identifier`` / free-text filters.
+
+    ONE builder, and the list's row query and its ``total`` are both built from
+    the object it returns — so a narrowed table can never be headed by a
+    whole-set count (`docs/decisions.md` §48;
+    ``tests/test_paginated_list_search_legs.py`` is the structural guard).
+    Org scope is applied by the caller.
+
+    ``account_identifier`` stays an EXACT match: it is the same value the
+    upload form posts and the idempotency key is built from, so a caller
+    holding an account label wants that account's statements and nothing else.
+    ``search`` is the free-text sibling, and matches:
+
+    * ``account_identifier`` — the row's primary rendered label, and the reason
+      this leg exists: a partial account term ("operating", "1234") is what a
+      reviewer actually types.
+    * ``source_format`` — not a column on the tab, but the statement's own kind
+      and part of the detail header the reviewer just came from. Direct
+      analogue of the ``file_type`` leg on ``/positive-pay``; lets a tenant
+      that mixes CSV and OFX imports narrow to one.
+    * ``period_start`` / ``period_end`` rendered ISO (``YYYY-MM-DD``) — the
+      honest half of the period column. The row renders a LOCALISED date, and
+      matching that in SQL would make the result set depend on the caller's
+      browser language (the same trap ``/positive-pay`` declined for its
+      localised label), so the ISO form is matched instead: "2026-08" narrows
+      to that month regardless of locale. Rendered with ``to_char`` rather than
+      a plain cast, which would resolve against the Postgres session
+      ``DateStyle`` and could hand back ``08-15-2026`` on a non-ISO server.
+
+    ``currency`` is deliberately NOT searched: it is never shown on this tab,
+    and a three-letter code is the highest-noise substring of the set — a
+    two-character term would silently pull in every row of a currency the user
+    never mentioned.
+    """
+    if account_identifier:
+        query = query.where(BankStatement.account_identifier == account_identifier)
+    if search and search.strip():
+        term = search.strip()
+        query = query.where(
+            or_(
+                ilike_contains(BankStatement.account_identifier, term),
+                ilike_contains(BankStatement.source_format, term),
+                ilike_contains(func.to_char(BankStatement.period_start, "YYYY-MM-DD"), term),
+                ilike_contains(func.to_char(BankStatement.period_end, "YYYY-MM-DD"), term),
+            )
+        )
+    return query
+
+
 @router.get("", response_model=BankStatementListResponse)
 async def list_statements(
     account_identifier: str | None = None,
+    search: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_READ_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    query = select(BankStatement).where(BankStatement.organization_id == org_id)
-    if account_identifier:
-        query = query.where(BankStatement.account_identifier == account_identifier)
+    query = _statement_list_filters(
+        select(BankStatement).where(BankStatement.organization_id == org_id),
+        account_identifier=account_identifier,
+        search=search,
+    )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (

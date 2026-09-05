@@ -16,8 +16,18 @@ import type {
 export type { BankStatementListResponse };
 
 export interface BankStatementListParams {
-	/** Exact account identifier (the endpoint offers no free-text search). */
+	/** EXACT account identifier — the value the upload form posts. Kept for a
+	 *  caller that already holds one account label; use `search` for what a
+	 *  reviewer types. */
 	account_identifier?: string;
+	/**
+	 * Free-text term, applied SERVER-side over the account identifier, the
+	 * source format and the ISO period dates. It must stay a server filter:
+	 * the list paginates against a server `total`, so narrowing the loaded
+	 * rows in the browser would report "nothing matched" for a statement on
+	 * page 2 while the footer counted the whole set.
+	 */
+	search?: string;
 	page?: number;
 	page_size?: number;
 }
@@ -27,6 +37,7 @@ export function listBankStatements(
 ): Promise<BankStatementListResponse> {
 	const qs = new URLSearchParams();
 	if (params.account_identifier) qs.set('account_identifier', params.account_identifier);
+	if (params.search) qs.set('search', params.search);
 	qs.set('page', String(params.page ?? 1));
 	qs.set('page_size', String(params.page_size ?? 20));
 	return api.get<BankStatementListResponse>(`/api/bank-reconciliation?${qs}`);
