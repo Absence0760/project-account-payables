@@ -127,21 +127,31 @@ async def test_every_employee_role_can_read_the_roster(realdb):
     `get_current_user` — every authenticated employee can post a mention, so
     every one of them must be able to see who. A narrower read gate is the bug
     this endpoint replaces, not a hardening of it."""
+    seeded = realdb.info(TENANT).users
     for role in ("admin", "ap_manager", "ap_clerk", "cfo"):
         async with realdb.client(key=TENANT, role=role) as c:
             resp = await c.get(PATH)
         assert resp.status_code == 200, f"{role}: {resp.text}"
-        assert {u["full_name"] for u in resp.json()} >= {"admin", "ap_manager", "ap_clerk", "cfo"}
+        # Keyed on ids, never `full_name`: the harness's role users are
+        # control-plane rows shared by every test in this slot, and the realdb
+        # fixture truncates tenant data between tests but not those. Any earlier
+        # test that renames one (test_admin_user_management does exactly that)
+        # would otherwise make this fail on test ORDER rather than on behaviour.
+        offered_ids = {u["id"] for u in resp.json()}
+        expected = {str(seeded[r]) for r in ("admin", "ap_manager", "ap_clerk", "cfo")}
+        assert offered_ids >= expected, f"{role}: missing {expected - offered_ids}"
 
 
 async def test_a_clerk_is_offered(realdb):
     """The one thing that makes this endpoint different from
     `assignable-reviewers`: a clerk holds no `invoice.approve` and so is never
     an approver candidate, but is an ordinary person to mention."""
+    clerk_id = str(realdb.info(TENANT).users["ap_clerk"])
     async with realdb.client(key=TENANT, role="ap_clerk") as c:
         resp = await c.get(PATH)
     assert resp.status_code == 200
-    assert "ap_clerk" in {u["full_name"] for u in resp.json()}
+    # By id — `full_name` is an ordinary mutable field an admin can PATCH.
+    assert clerk_id in {u["id"] for u in resp.json()}
 
 
 async def test_response_carries_no_email_or_other_pii(realdb):
@@ -207,7 +217,8 @@ async def test_a_mention_from_the_roster_is_accepted(realdb):
 
     async with realdb.client(key=TENANT, role="ap_manager") as c:
         offered = (await c.get(PATH)).json()
-        target = next(u for u in offered if u["full_name"] == "ap_clerk")
+        clerk_id = str(realdb.info(TENANT).users["ap_clerk"])
+        target = next(u for u in offered if u["id"] == clerk_id)
         resp = await c.post(
             f"/api/invoices/{invoice_id}/chat",
             json={"body": "Can you check this?", "mention_user_ids": [target["id"]]},
