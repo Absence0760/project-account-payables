@@ -178,11 +178,13 @@ New keys added in a prior iteration:
   dashboard response so the pending bucket and the partial-figure disclosure
   are actually on screen — a seeded tenant reliably produces neither).
 
-  **`POST /api/analytics/forecast_variance`'s per-row `unconverted_count` +
-  `reporting_currency` still have NO consumer** — that endpoint takes a body of
-  actuals and has no UI at all yet. Whoever builds one renders the disclosure
-  the same way; until then the honesty is API-only, tracked in
-  `docs/followups.md`.
+  **`POST /api/analytics/forecast_variance` now renders the same disclosure**
+  — see [Forecast vs actual — the entry surface](#forecast-vs-actual--the-entry-surface)
+  below. The three surfaces (this card, `/cfo`'s cash position, `/cfo`'s
+  forecast-variance panel) share ONE idiom on purpose: a `role="alert"` line
+  placed above the amounts it qualifies, naming the count and the currency it
+  could not be expressed in. There is no fourth treatment, and a tooltip is not
+  one of them.
 
 ### Touchless rate — what the number means
 
@@ -204,6 +206,11 @@ understating the rate on exactly the tenants whose ERP export is slow.
 | Cleared (numerator + denominator) | `approved`, `sending_to_erp`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled` | Status alone is proof — every `VALID_TRANSITIONS` edge into these originates at `approved`, and every writer of `approved` stamps `Invoice.approval_date`. |
 | Ambiguous (`TOUCHLESS_REVIEW_EVIDENCE_STATUSES`) | `done`, `paid`, `failed` | Counts as cleared **only** with the durable `Invoice.approval_date` stamp. Without it, the invoice is in NEITHER leg. |
 | Bounced (denominator only) | `rejected` | A human sent it back. Cannot be evidence-gated — nothing ever writes an approval stamp on a rejection, and the rejected row IS the evidence a human touched it. |
+
+**And one exclusion that cuts across every row of that table:** an invoice
+carrying the `meta["imported"]` provenance marker is subtracted from whichever
+leg its status would have put it in — numerator and denominator alike. See
+§ Imported rows are outside the metric below.
 
 Why the ambiguous three need evidence:
 
@@ -234,9 +241,68 @@ The symmetric mistake is also avoided: a never-reviewed invoice is out of the
 "finished review and did not clear" would deflate the rate just as dishonestly.
 This is the same rule `failed` has always followed.
 
-#### This change MOVES a previously reported number — downward
+#### Imported rows are outside the metric — both legs
 
-Before this change, `done` and `paid` counted as cleared on status alone. Any
+The evidence gate above fixes the NUMERATOR. The denominator had the mirror of
+the same problem, and evidence cannot fix it: a CSV-imported `rejected` row
+sits in the bounced leg as though a reviewer *here* had sent it back, deflating
+the rate exactly as imported `done` rows used to inflate it — but nothing ever
+writes an approval stamp on a rejection, so gating that leg would zero the
+bounced population outright rather than exclude the imports.
+
+**Provenance settles it instead of status.** `services/csv_import` stamps
+`meta["imported"] = {"at": …, "source": "csv_import"}` on every invoice row it
+creates (see `backend/docs/csv-import.md` § Import provenance). The dashboard
+counts marked rows per status and passes them to `compute_touchless_rate` as
+`imported_pipeline`, which subtracts them from the cleared, ambiguous and
+bounced legs alike; the evidence query excludes them too. Status could never
+have done this job — `done`, `paid` and `rejected` are each reachable both by
+import and natively.
+
+The reasoning is the same one that put never-reviewed invoices in neither leg:
+the metric describes work **this platform** did. A migrated historical row is
+evidence neither for nor against that, in either direction.
+
+`imported_pipeline` is a REQUIRED keyword argument for the same reason
+`review_cleared_count` is — a caller still on the old signature raises
+`TypeError` rather than quietly publishing a rate whose denominator is padded
+with somebody else's migrated history.
+
+##### What this does NOT fix
+
+Rows imported **before** the marker shipped carry no key and stay in the
+population, on both legs, exactly as they are today. There is **no backfill**,
+and there will not be one: absence of the marker means "we do not know", and
+stamping a historical row on an inference (its status, its creation date, the
+absence of a workflow instance) is precisely the guessing this change exists to
+replace. A tenant that migrated before the marker and wants a clean figure has
+to wait for the imported cohort to age out of the reports it reads, or exclude
+it by date at the query.
+
+Nor does the marker claim to catch every non-native row: it covers the CSV
+importer, which is the only bulk path that plants invoices around the workflow
+engine today. A future backfill tool (ERP history, a migration script) must
+stamp the same key — `IMPORT_PROVENANCE_KEY`, with its own `source` — or its
+rows will read as native.
+
+#### The provenance exclusion MOVES it again — direction depends on the mix
+
+The evidence gate moved `touchless_rate` **downward** (next section). The
+provenance exclusion moves it again for any tenant that has imported since the
+marker shipped, and the **direction depends on that tenant's mix**: dropping
+imported `rejected` rows pushes the rate UP, dropping imported `done` / `paid`
+rows that had somehow been counted pushes it DOWN, and a tenant whose whole
+population is imported falls to the zero-safe `0.0` — the same answer a brand
+new tenant gets, which is the honest one.
+
+Both moves are **definition changes, not automation changes**. No workflow,
+auto-approval threshold or routing rule changed, and no invoice moved. A
+tenant that has never run a CSV import sees no change at all from this half.
+Read a dashboard delta accordingly.
+
+#### The evidence gate MOVED a previously reported number — downward
+
+Before the evidence gate, `done` and `paid` counted as cleared on status alone. Any
 tenant that uses the `new → done` shortcut, or that migrated history through
 the CSV importer, will see `touchless_rate` **drop** the first time the
 dashboard is loaded after deploy. The drop is a **definition change, not a
@@ -359,6 +425,58 @@ Drill-through (money as exact decimal strings here too — see
     Both halves are now inside one `try`, and every month-shape rejection on
     this route answers `422` rather than a mix of `400` and a crash.
 
+#### Forecast vs actual — the entry surface
+
+`frontend/src/routes/cfo/ForecastVariancePanel.svelte`, rendered on `/cfo`
+**outside** the cash-flow `{#if}` (the reasoning the budget rollup and the
+scheduled-reports panel already follow: it takes none of that page's controls,
+issues its own request, and a failed cash-flow load must not hide the only
+surface that renders this endpoint's disclosure). Role-gated `admin | cfo`
+inside the panel, matching `_CFO_ROLES` on the endpoint and the route's own
+gate.
+
+**It needs a form because the endpoint is a POST with a body.** The forecast is
+the CFO's own figure set, pasted from their FP&A tool, and nothing is
+persisted — so there is no saved forecast to `GET` and every visit starts from
+an empty editor. A `Modal` holds one row per month: an `<input type="month">`
+(which yields exactly the `YYYY-MM` the route parses, so the month half needs
+no repair) and a free-text amount.
+
+- **The amount is raw decimal text, validated ONCE at submit and refused with a
+  toast** — never `parseFloat`ed per keystroke, never repaired. `$1,200.50`,
+  `1 200`, `1.2e5` and a trailing `.` are all refused rather than stripped down
+  to a figure the CFO never typed; a month typed without an amount refuses the
+  whole submit instead of being silently sent as `0` (which would make the
+  variance equal the entire actual outflow and report a fabricated `0%`). The
+  shape check is `utils/moneyInput.ts::normalizeMoneyInput` — a regex, never
+  `Number` — so the string on the wire is the string that was typed.
+- **The disclosure renders with the figures.** `unconverted_count` is folded
+  across months (a COUNT may cross currencies; the amounts beside it may not)
+  into a `role="alert"` line, `[data-testid="forecast-variance-unconverted"]`,
+  placed ABOVE the table it qualifies and naming the response's own
+  `reporting_currency`. The month carrying the exclusion also says so on its own
+  row. Identical treatment to `/cfo`'s `unconverted-outflows` and the
+  dashboard's `discount-capture-unconverted`.
+- **`variance_pct` is never rendered as `0%` where it is not computable.** The
+  route emits `Decimal("0")` whenever `forecast <= 0`, which on screen reads as
+  "we landed exactly on plan" — the most reassuring statement available over the
+  one row carrying no information. `variancePctLabel` returns `null` for a
+  non-positive forecast and the cell renders its own not-applicable state, the
+  same rule as the fraud-rate trend's `insufficient_data` and the budget
+  rollup's `null` utilization (`../../docs/decisions.md` §34).
+- Pure derivations live in `frontend/src/routes/cfo/forecastVarianceSummary.ts`
+  (`collectForecastEntries` / `unconvertedTotal` / `variancePctLabel` /
+  `varianceTone`), unit-tested beside the route like `budgetRollupSummary.ts`;
+  the request helper is `frontend/src/lib/api/analytics.ts`. No money
+  arithmetic happens client-side — the backend owns `variance` and its
+  percentage, in `Decimal`.
+
+E2E: `frontend/tests-e2e/cfo/forecast-variance.spec.ts` (stubs the POST so the
+disclosure is actually on screen — a seeded tenant reliably produces no
+unconvertible payment, which is the state that let this ship with no consumer;
+also asserts the typed decimal string reaches the wire verbatim and that an
+unreadable amount sends no request at all).
+
 **Frontend surface**: `frontend/src/lib/components/analytics/CfoMetrics.svelte`,
 embedded in `/cfo` below the forecast/what-if/cash-position panels (a
 self-fetching component mirroring `ByEntityBreakdown` — its own `GET
@@ -366,10 +484,10 @@ self-fetching component mirroring `ByEntityBreakdown` — its own `GET
 row (DPO current, cash conversion cycle, AP balance, rebate yield %), the DPO
 6-month trend as a bar chart, an accruals breakdown, supplier concentration
 (with the flagged-vendor banner), the fraud-rate trend, and the unrealized-FX
-table when available. The per-metric drill-through endpoints
-(`/drill/spend_concentration`, `/drill/dpo`, `/forecast_variance`) are not yet
-wired into the UI — this closes the "no frontend surface at all" gap, not the
-drill-down affordance, which stays a future slice. Filed as #236.
+table when available. `/forecast_variance` has its own surface on the same route
+(`routes/cfo/ForecastVariancePanel.svelte` — see above); the two remaining
+drill-throughs (`/drill/spend_concentration`, `/drill/dpo`) are not yet wired
+into the UI — that stays a future slice. Filed as #236.
 
 ## Consolidated reporting across entities (`GET /api/analytics/by-entity`)
 

@@ -333,3 +333,57 @@ export interface DashboardDiscountCapture {
 	capture_rate_pct: number | null;
 	insufficient_data: boolean;
 }
+
+// Forecast vs actual — `POST /api/analytics/forecast_variance`.
+//
+// A POST, not a GET, because the forecast is the CALLER's: the org sends
+// `{"months": [{"month": "YYYY-MM", "forecast": "100000"}, ...]}` and the
+// backend fills in the actual completed outflow per month, then the variance.
+// **Forecasts are never persisted** — the CFO pastes from their FP&A tool, so
+// every render starts from what was typed on this visit.
+
+export interface ForecastVarianceInput {
+	/** `YYYY-MM`. A malformed month is a 422, not a silently-dropped row. */
+	month: string;
+	/**
+	 * The CALLER's own figure, as the exact decimal string it was typed as —
+	 * never a JSON number. `json.loads` decodes the body before any validator
+	 * runs, so a fractional JSON number has already been through a binary float
+	 * by the time pydantic sees it (`utils/moneyInput.ts`).
+	 */
+	forecast: MoneyString;
+}
+
+export interface ForecastVarianceRow {
+	month: string;
+	/** Echoed back from the request, quantized to 2dp. */
+	forecast: MoneyString;
+	/**
+	 * Completed payments in the month, resolved into `reporting_currency` — NOT
+	 * summed off raw `Payment.amount`, which is denominated in the invoice's
+	 * currency. See `unconverted_count`.
+	 */
+	actual: MoneyString;
+	/** `actual − forecast`. Positive = we paid out MORE than planned. */
+	variance: MoneyString;
+	/**
+	 * A percentage, not money. The backend emits `0` when the forecast is not
+	 * positive — a percentage of zero is NOT COMPUTABLE, and `0%` reads as
+	 * "exactly on plan". Render `variancePctLabel`'s not-applicable state
+	 * instead (`docs/decisions.md` §34).
+	 */
+	variance_pct: number;
+	/**
+	 * A COUNT, not money: completed payments this month whose outflow could not
+	 * be expressed in `reporting_currency`. They are EXCLUDED from `actual`
+	 * rather than added at face value, so a non-zero count means `actual` — and
+	 * therefore the variance — is a FLOOR (`docs/decisions.md` §35).
+	 */
+	unconverted_count: number;
+}
+
+export interface ForecastVariance {
+	/** The currency all three money figures on every row are denominated in. */
+	reporting_currency: string;
+	rows: ForecastVarianceRow[];
+}

@@ -5,6 +5,7 @@
 	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
 	import CfoMetrics from '$lib/components/analytics/CfoMetrics.svelte';
 	import ScheduledReportsPanel from '$lib/components/analytics/ScheduledReportsPanel.svelte';
+	import ForecastVariancePanel from './ForecastVariancePanel.svelte';
 	import { formatMoney, isNegativeAmount, isPositiveAmount, parseMoneyForLayout } from '$lib/utils/money';
 	import type { MoneyAmount } from '$lib/utils/money';
 	import { formatPeriod } from '$lib/utils/time';
@@ -468,6 +469,15 @@
 			{/if}
 		</div>
 	{/if}
+
+	<!-- Forecast vs actual. Like the budget rollup above and the scheduled
+	     reports below, it sits OUTSIDE the forecast `{#if}`: it takes none of
+	     this page's controls, issues its own request (a POST carrying the
+	     CFO's typed forecast), and a failed cash-flow load must not hide the
+	     only surface that renders `forecast_variance`'s partial-figure
+	     disclosure. Role-gated inside the panel to admin + cfo, matching the
+	     endpoint's own `_CFO_ROLES`. -->
+	<ForecastVariancePanel />
 
 	<!-- Scheduled reports — the CRUD surface for the report runner that emails
 	     these same analytics. Deliberately OUTSIDE the forecast `{#if}` above: it
