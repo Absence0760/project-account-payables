@@ -160,6 +160,33 @@ Track Usage (ExtractionUsage record)
 Transition: pending → ready_for_review
 ```
 
+### Re-extraction options (`ExtractionOptions`)
+
+`dispatch_extraction` takes two keyword flags and carries them to
+`run_extraction` in **both** dispatch modes — on the local queue tuple's 4th
+slot and as flat keys in the SQS message body. Both default to `False`, i.e. to
+the unchanged ingest behaviour, so a message written by an older producer (or a
+3-tuple already sitting in the local queue across a dev auto-reload) decodes to
+exactly what it used to do; `ExtractionOptions.from_payload` reads an absent key
+as `False`.
+
+| Flag | Effect |
+|------|--------|
+| `skip_vendor_match` | Skips `vendor_matching.match_and_link_vendor` and pins the invoice's existing `vendor_id` **and** `vendor_name` — `vendor_name` too, because that is what `PATCH /api/invoices/{id}` re-resolves a stale link from. Everything else the document says (number, dates, money, line items) is still re-read. |
+| `suppress_auto_approve` | Forces the pass to land at `ready_for_review` even when the confidence / small-amount gates would fire. |
+
+Both exist for RE-extraction of an invoice that has already been triaged once.
+Today the only caller is the supplier-portal resubmit
+(`POST /api/portal/invoices/{id}/resubmit`), which sets both: the fuzzy matcher
+re-run over a corrected document can re-link the invoice to a **different**
+supplier — dropping it out of the vendor's own portal list and re-pointing the
+payee the payment run reads bank details from — and a human already rejected
+this document, so its replacement must not be approved unattended. See
+`docs/supplier-portal.md` § *Resubmission re-extracts, under two constraints*.
+
+A new option belongs on `ExtractionOptions` rather than as another positional
+tuple slot, so the queue tuple's shape stops changing.
+
 ### Which separator is the decimal point
 
 A vision model transcribes what the page says, and an invoice printed in most of

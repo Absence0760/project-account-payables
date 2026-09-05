@@ -10,7 +10,9 @@ import { currentTenantSlug, deleteInvoicesWhere, expect, tenantPsql, test } from
  *    list renders it under the status pill, never the rejecting employee's name.
  * 2. A "Revise & resubmit" file control on the rejected row swaps the document
  *    on the SAME invoice (`POST /portal/invoices/{id}/resubmit`) and sends it
- *    back into the pipeline.
+ *    back into the pipeline — which now RE-EXTRACTS the corrected document
+ *    (pinned to the same vendor), so the invoice leaves `rejected` and its
+ *    extracted fields may legitimately change.
  * 3. A processing-phase invoice shows a `waiting_on` line ("Awaiting your
  *    customer's review …") beyond the phase chip.
  *
@@ -50,17 +52,30 @@ function portalVendor(): { vendorId: string; orgId: string } {
 	return { vendorId, orgId };
 }
 
+// Ids this file seeded. Cleanup is keyed on THEM, not on the invoice number: a
+// resubmit now re-extracts the corrected document, so `invoice_number` is no
+// longer stable across the test and a `LIKE 'E2E-REJ-%'` scope would strand the
+// very row it was meant to remove. The LIKE sweep is kept as a second pass, for
+// strays a previously-crashed run left behind.
+const seeded: string[] = [];
+
 function cleanup() {
-	// Resubmit creates a workflow instance + review step FK-referencing the
-	// invoice, so clear those before the invoices. The invoice number is
-	// stable (resubmit does NOT re-extract), so the LIKE scope holds.
-	const scope = `SELECT id FROM invoices WHERE invoice_number LIKE 'E2E-REJ-%'`;
-	tenantPsql(
-		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id IN (${scope}))`
-	);
-	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id IN (${scope})`);
-	tenantPsql(`DELETE FROM exceptions WHERE invoice_id IN (${scope})`);
-	deleteInvoicesWhere(`invoice_number LIKE 'E2E-REJ-%'`);
+	const predicates = [`invoice_number LIKE 'E2E-REJ-%'`];
+	if (seeded.length > 0) {
+		predicates.unshift(`id IN (${seeded.map((id) => `'${id}'`).join(',')})`);
+	}
+	for (const predicate of predicates) {
+		// Resubmit creates a workflow instance + step FK-referencing the invoice,
+		// so clear those before the invoices themselves.
+		const scope = `SELECT id FROM invoices WHERE ${predicate}`;
+		tenantPsql(
+			`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id IN (${scope}))`
+		);
+		tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id IN (${scope})`);
+		tenantPsql(`DELETE FROM exceptions WHERE invoice_id IN (${scope})`);
+		deleteInvoicesWhere(predicate);
+	}
+	seeded.length = 0;
 }
 
 test.afterEach(cleanup);
@@ -70,20 +85,22 @@ test('a rejected invoice tells the vendor why', async ({ page }) => {
 	cleanup();
 
 	try {
+		const invId = crypto.randomUUID();
+		seeded.push(invId);
 		tenantPsql(
-			`WITH inv AS (
-			   INSERT INTO invoices
-			     (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
-			      rejected_by, organization_id, vendor_id, created_at, updated_at)
-			   VALUES (gen_random_uuid(), gen_random_uuid(), '${NUM}', 'E2E Rej Vendor',
-			           100, 'USD', 'rejected', 'Alice Approver', '${orgId}', '${vendorId}',
-			           now() + interval '1 hour', now())
-			   RETURNING id)
-			 INSERT INTO exceptions
+			`INSERT INTO invoices
+			   (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
+			    rejected_by, organization_id, vendor_id, created_at, updated_at)
+			 VALUES ('${invId}', gen_random_uuid(), '${NUM}', 'E2E Rej Vendor',
+			         100, 'USD', 'rejected', 'Alice Approver', '${orgId}', '${vendorId}',
+			         now() + interval '1 hour', now())`
+		);
+		tenantPsql(
+			`INSERT INTO exceptions
 			   (id, invoice_id, exception_type, severity, description, status,
 			    organization_id, created_at, updated_at)
-			 SELECT gen_random_uuid(), inv.id, 'review_rejected', 'warning',
-			        '${REASON}', 'open', '${orgId}', now(), now() FROM inv`
+			 VALUES (gen_random_uuid(), '${invId}', 'review_rejected', 'warning',
+			         '${REASON}', 'open', '${orgId}', now(), now())`
 		);
 
 		await portalSignIn(page);
@@ -105,6 +122,7 @@ test('the vendor can revise & resubmit a rejected invoice', async ({ page }) => 
 
 	try {
 		const invId = crypto.randomUUID();
+		seeded.push(invId);
 		tenantPsql(
 			`INSERT INTO invoices
 			   (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
@@ -159,11 +177,13 @@ test('a processing-phase invoice shows a "waiting on" line', async ({ page }) =>
 	cleanup();
 	const num = `E2E-REJ-WAIT-${Date.now()}`;
 	try {
+		const invId = crypto.randomUUID();
+		seeded.push(invId);
 		tenantPsql(
 			`INSERT INTO invoices
 			   (id, correlation_id, invoice_number, vendor_name, amount, currency, status,
 			    organization_id, vendor_id, created_at, updated_at)
-			 VALUES (gen_random_uuid(), gen_random_uuid(), '${num}', 'E2E Wait Vendor',
+			 VALUES ('${invId}', gen_random_uuid(), '${num}', 'E2E Wait Vendor',
 			         100, 'USD', 'ready_for_review', '${orgId}', '${vendorId}',
 			         now() - interval '4 days', now() - interval '4 days')`
 		);

@@ -124,6 +124,40 @@ async def test_process_message_connects_to_org_db_name_not_control():
     )
 
 
+async def test_process_message_honours_the_re_extraction_options_on_the_body():
+    """`lambda` mode must obey the same guards `local` mode does.
+
+    The dispatcher puts `skip_vendor_match` / `suppress_auto_approve` on the SQS
+    body for a supplier resubmission. A consumer that ignores them re-links the
+    invoice to a different vendor (dropping it out of the supplier's own portal
+    list) and re-enters auto-approve — letting a rejected invoice be laundered
+    past the reviewer who rejected it. The flags travelling but not being read
+    is the failure this pins."""
+    body = _body(skip_vendor_match=True, suppress_auto_approve=True)
+    invoice = SimpleNamespace(id=uuid.UUID(body["invoice_id"]))
+    org = SimpleNamespace(id=uuid.UUID(body["org_id"]), db_name="feoh_acme")
+    with _harness(org=org, invoice=invoice) as h:
+        await extraction_lambda._process_message(body)
+
+    kwargs = h.run_extraction.await_args.kwargs
+    assert kwargs["skip_vendor_match"] is True
+    assert kwargs["suppress_auto_approve"] is True
+
+
+async def test_process_message_defaults_the_options_off_for_a_legacy_body():
+    """A message enqueued before the flags existed must decode to today's
+    behaviour, not to the guarded one — an absent key is False, never True."""
+    body = _body()
+    invoice = SimpleNamespace(id=uuid.UUID(body["invoice_id"]))
+    org = SimpleNamespace(id=uuid.UUID(body["org_id"]), db_name="feoh_acme")
+    with _harness(org=org, invoice=invoice) as h:
+        await extraction_lambda._process_message(body)
+
+    kwargs = h.run_extraction.await_args.kwargs
+    assert kwargs["skip_vendor_match"] is False
+    assert kwargs["suppress_auto_approve"] is False
+
+
 # ---------------------------------------------------------------------------
 # short-circuits
 # ---------------------------------------------------------------------------

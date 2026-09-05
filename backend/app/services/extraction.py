@@ -352,6 +352,8 @@ async def run_extraction(
     *,
     actor_id: uuid.UUID | None = None,
     org_settings: dict | None = None,
+    skip_vendor_match: bool = False,
+    suppress_auto_approve: bool = False,
 ) -> None:
     """Extract invoice fields from the uploaded file and update the invoice.
 
@@ -362,11 +364,39 @@ async def run_extraction(
     migration creates it in the control plane, and ``services/billing``'s
     ``rollup_usage`` reads it from the tenant DB — the same place the sibling
     meter ``card_rebates`` lives.
+
+    Both keyword flags default to ``False`` — i.e. to the unchanged ingest
+    behaviour — and exist for RE-extraction of an invoice that has already been
+    triaged once (today: the supplier-portal resubmit of a rejected invoice,
+    ``POST /api/portal/invoices/{id}/resubmit``):
+
+    ``skip_vendor_match``
+        Keep the payee the invoice is already bound to instead of re-resolving
+        it from the corrected document. ``vendor_matching.match_and_link_vendor``
+        is a fuzzy matcher: run again over a re-typed vendor name it can land
+        ``Invoice.vendor_id`` on a DIFFERENT supplier, which (a) drops the
+        invoice out of the ``vendor_id ==``-scoped supplier-portal list, so the
+        vendor loses sight of their own resubmission, and (b) silently re-points
+        the payee whose ``Vendor.bank_details`` the payment run reads. Also
+        pins ``vendor_name``, because that is the field ``PATCH /api/invoices/{id}``
+        re-resolves a stale link from — leaving it rewritten would just move the
+        re-link to the reviewer's next save.
+
+    ``suppress_auto_approve``
+        Never auto-approve out of this pass. A resubmission is a document a human
+        already REJECTED; letting the unattended confidence / small-amount gates
+        approve the replacement would let a supplier launder a rejected invoice
+        past the reviewer who rejected it. The invoice lands at
+        ``ready_for_review`` and a human decides again.
     """
     # Cache IDs before try block — after rollback, invoice attrs may be expired
     invoice_id = invoice.id
     invoice_org_id = invoice.organization_id
     invoice_entity_id = invoice.entity_id
+    # The payee this invoice is already bound to, captured before the extracted
+    # fields land on the row (see `skip_vendor_match` above).
+    preserved_vendor_id = invoice.vendor_id
+    preserved_vendor_name = invoice.vendor_name
 
     try:
         config = _resolve_extraction_config(org_settings)
@@ -499,6 +529,17 @@ async def run_extraction(
         # Apply extracted fields to invoice
         _apply_extraction(invoice, result, amount_convention, org_settings=org_settings)
 
+        if skip_vendor_match:
+            # Restore the bound payee's identity immediately: `_apply_extraction`
+            # writes `vendor_name` straight off the document, and that field is
+            # what `PATCH /api/invoices/{id}` re-resolves a stale vendor link
+            # from. Pinning it here is what makes preserving `vendor_id` below
+            # actually hold — otherwise the re-link just happens on the
+            # reviewer's next save. Everything else the document says (numbers,
+            # dates, money, line items) is re-read, which is the whole point.
+            invoice.vendor_name = preserved_vendor_name
+            invoice.vendor_id = preserved_vendor_id
+
         # Self-correction pass — verify arithmetic, date ordering, line-item
         # math.  Lowers confidence on suspect fields and adds warnings.
         from app.services.extraction_self_correction import run_self_correction
@@ -613,13 +654,27 @@ async def run_extraction(
             )
 
         # Vendor matching
-        from app.services.vendor_matching import match_and_link_vendor
+        if skip_vendor_match:
+            # Re-extraction of an already-bound invoice: read the existing link
+            # rather than re-deriving one. See this function's docstring.
+            from app.models.vendor import Vendor as _Vendor
 
-        vendor, vendor_action = await match_and_link_vendor(
-            db,
-            invoice,
-            invoice.organization_id,
-        )
+            vendor = (
+                (
+                    await db.execute(sa_select(_Vendor).where(_Vendor.id == preserved_vendor_id))
+                ).scalar_one_or_none()
+                if preserved_vendor_id
+                else None
+            )
+            vendor_action = "preserved"
+        else:
+            from app.services.vendor_matching import match_and_link_vendor
+
+            vendor, vendor_action = await match_and_link_vendor(
+                db,
+                invoice,
+                invoice.organization_id,
+            )
 
         # Per-vendor correction cache: overlay cached priors (currency, tax
         # rate, payment terms, etc.) onto low-confidence extracted fields
@@ -779,6 +834,17 @@ async def run_extraction(
             )
             if auto_approved:
                 target_status = InvoiceStatus.approved
+
+        if suppress_auto_approve and auto_approved:
+            # A human already rejected this document once (see the docstring).
+            # Fall back to review rather than approving the replacement
+            # unattended.
+            auto_approved = False
+            target_status = InvoiceStatus.ready_for_review
+            logger.info(
+                "[extraction] auto-approve suppressed for re-extracted invoice %s",
+                invoice_id,
+            )
 
         if auto_approved:
             invoice.approval_date = utc_today()

@@ -52,6 +52,7 @@ from app.schemas.portal import (
     PortalChatThreadResponse,
     PortalCompanyInfoResponse,
     PortalCompanyInfoUpdateRequest,
+    PortalCurrencyTotal,
     PortalDiscountOfferListResponse,
     PortalDiscountOfferResponse,
     PortalDiscountTier,
@@ -67,6 +68,7 @@ from app.schemas.portal import (
     PortalPOLineItem,
     PortalPOListItem,
     PortalPOListResponse,
+    PortalSummaryResponse,
     PortalTaxFormResponse,
     PortalTaxIdChangeRequest,
 )
@@ -280,6 +282,42 @@ def _date_range_clauses(column, date_from: date | None, date_to: date | None) ->
     return clauses
 
 
+def _portal_invoice_filters(
+    query,
+    *,
+    status_filter: list[str] | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+):
+    """The `GET /portal/invoices` OPTIONAL filter set, in ONE place.
+
+    `GET /portal/summary` runs the same builder, so the home page's whole-set
+    counts and the list they link into can never describe different sets — a
+    filter that narrows one narrows the other.
+
+    The `Invoice.vendor_id == vu.vendor_id` ownership clause is deliberately
+    NOT applied here: it stays visible at each endpoint, exactly as it is in
+    `get_my_invoice` / `list_my_payments` / `_vendor_offer_filter`, and the
+    source-contract tests in `tests/test_vendor_portal_isolation.py` read each
+    call site for it. Everything this helper adds can only narrow that scope
+    further — it never widens.
+    """
+    valid_statuses = {s.value for s in InvoiceStatus}
+    wanted = [s for s in (status_filter or []) if s in valid_statuses]
+    if wanted:
+        query = query.where(Invoice.status.in_(wanted))
+
+    number_match = _invoice_number_ilike(search or "")
+    if number_match is not None:
+        query = query.where(number_match)
+
+    # Range is on `created_at` — the "Submitted" date the list column shows.
+    for clause in _date_range_clauses(Invoice.created_at, date_from, date_to):
+        query = query.where(clause)
+    return query
+
+
 @router.get("/invoices", response_model=PortalInvoiceListResponse)
 async def list_my_invoices(
     pagination: PaginationParams = Depends(pagination_params),
@@ -307,20 +345,13 @@ async def list_my_invoices(
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
-    query = select(Invoice).where(Invoice.vendor_id == vu.vendor_id)
-
-    valid_statuses = {s.value for s in InvoiceStatus}
-    wanted = [s for s in (status_filter or []) if s in valid_statuses]
-    if wanted:
-        query = query.where(Invoice.status.in_(wanted))
-
-    number_match = _invoice_number_ilike(search or "")
-    if number_match is not None:
-        query = query.where(number_match)
-
-    # Range is on `created_at` — the "Submitted" date the list column shows.
-    for clause in _date_range_clauses(Invoice.created_at, date_from, date_to):
-        query = query.where(clause)
+    query = _portal_invoice_filters(
+        select(Invoice).where(Invoice.vendor_id == vu.vendor_id),
+        status_filter=status_filter,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
@@ -607,17 +638,33 @@ async def resubmit_invoice(
     """Revise & resubmit a REJECTED invoice with a corrected document.
 
     Reuses the same invoice row — so it never trips the duplicate check against
-    its own prior version, the AP reviewer keeps the whole history, and the
-    invoice stays THIS vendor's (a fresh extraction pass could re-link
-    `vendor_id` to a different supplier and drop the invoice out of the portal
-    list). It swaps the source file, resolves the open `review_rejected`
-    exception, and puts the invoice straight back in front of a reviewer at
-    `ready_for_review` — the reviewer checks the new document and re-approves
-    or corrects. 409 for any status other than `rejected` (a vendor can't
-    recall an invoice AP is still working, or one already paid).
+    its own prior version, and the AP reviewer keeps the whole history. It swaps
+    the source file, resolves the open `review_rejected` exception, and puts the
+    invoice back in front of a reviewer — the reviewer checks the new document
+    and re-approves or corrects. 409 for any status other than `rejected` (a
+    vendor can't recall an invoice AP is still working, or one already paid).
 
-    Auto re-extracting the corrected document is deferred (docs/followups.md) —
-    it needs to be constrained not to move the vendor link.
+    **The corrected document is re-extracted** (when the invoice's frozen
+    workflow snapshot has the extraction step on), so the reviewer sees the new
+    PDF beside the numbers that PDF actually carries rather than the stale
+    fields from the version they rejected. Two constraints make that safe, both
+    carried by `dispatch_extraction` into `run_extraction`:
+
+    * `skip_vendor_match=True` — a fresh matching pass could re-link
+      `Invoice.vendor_id` to a different supplier, which drops the invoice out
+      of this `vendor_id ==`-scoped portal (the vendor loses sight of their own
+      resubmission) and re-points the payee the payment run reads bank details
+      from. The existing link and `vendor_name` are pinned.
+    * `suppress_auto_approve=True` — a human REJECTED this document; the
+      unattended confidence / small-amount gates must not approve its
+      replacement. The invoice lands at `ready_for_review` either way.
+
+    `rejected → pending` is not a legal transition, so the extraction path takes
+    the documented rework loop `rejected → new → pending` (two honest audit
+    rows: the vendor's resubmission, then the extraction dispatch) and
+    `run_extraction` performs the final `pending → ready_for_review`. With
+    extraction disabled the invoice goes straight to `ready_for_review` as
+    before.
     """
     inv = await _portal_invoice_or_404(db, invoice_id, vu)
     if inv.status != InvoiceStatus.rejected:
@@ -674,22 +721,64 @@ async def resubmit_invoice(
             invoice=inv,
         )
 
-    await transition_invoice(
-        db,
-        inv,
-        InvoiceStatus.ready_for_review,
-        actor_id=None,
-        action_name="invoice.resubmitted_by_vendor",
-        details=source_details,
-    )
-
     instance = await get_workflow_instance(db, inv.id)
     if instance is None:
         instance = await create_workflow_instance(db, inv)
-    await create_workflow_step(db, instance, "review")
-    await refresh_warnings(db, inv)
-    await db.commit()
-    await db.refresh(inv)
+
+    # Read the invoice's OWN frozen snapshot, not the live definition — an
+    # in-flight invoice runs the pipeline it was created under.
+    extraction_enabled = await is_step_enabled(
+        db, vendor.organization_id, "extraction", invoice_id=inv.id
+    )
+
+    if extraction_enabled:
+        await transition_invoice(
+            db,
+            inv,
+            InvoiceStatus.new,
+            actor_id=None,
+            action_name="invoice.resubmitted_by_vendor",
+            details=source_details,
+        )
+        await transition_invoice(
+            db,
+            inv,
+            InvoiceStatus.pending,
+            actor_id=None,
+            action_name="invoice.extraction_dispatched",
+            details={"trigger": "supplier_portal_resubmit", **source_details},
+        )
+        await create_workflow_step(db, instance, "upload")
+        # `refresh_warnings` is deliberately NOT called here: `run_extraction`
+        # runs it as its own last step, against the re-read fields, so calling
+        # it now would only recompute warnings for the version being replaced.
+        await db.commit()
+        await db.refresh(inv)
+
+        # After the commit — the worker opens its own session and would
+        # otherwise read the pre-commit row (same ordering as `submit_invoice`).
+        await dispatch_extraction(
+            inv.id,
+            vendor.organization_id,
+            None,
+            skip_vendor_match=True,
+            suppress_auto_approve=True,
+        )
+        message = "Invoice resubmitted. Re-reading the corrected document."
+    else:
+        await transition_invoice(
+            db,
+            inv,
+            InvoiceStatus.ready_for_review,
+            actor_id=None,
+            action_name="invoice.resubmitted_by_vendor",
+            details=source_details,
+        )
+        await create_workflow_step(db, instance, "review")
+        await refresh_warnings(db, inv)
+        await db.commit()
+        await db.refresh(inv)
+        message = "Invoice resubmitted. Awaiting AP review."
 
     # Best-effort: drop the superseded file object if the new one has a
     # different key (same filename overwrites in place).
@@ -702,7 +791,7 @@ async def resubmit_invoice(
     return {
         "id": str(inv.id),
         "status": inv.status.value,
-        "message": "Invoice resubmitted. Awaiting AP review.",
+        "message": message,
     }
 
 
@@ -2204,3 +2293,135 @@ async def get_portal_chat_file(
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
     return Response(content=content, media_type=content_type)
+
+
+# ---------- Home summary ----------
+#
+# Declared last because it composes helpers from every section above
+# (`_portal_invoice_filters`, `_vendor_offer_filter`, `_pending_change`). Route
+# order is irrelevant here: `/portal` has no top-level parametric route that
+# could swallow the literal `/summary` segment.
+
+
+# Vendor-facing buckets over `InvoiceStatus`, collapsing the workflow engine the
+# same way `frontend/src/lib/types/portalStatus.ts` collapses it for display.
+# Every status belongs to exactly ONE bucket — `tests/test_portal_summary.py`
+# fails the moment a new `InvoiceStatus` is added without one, so a new state
+# can never quietly fall out of a supplier's own totals.
+#
+# Only `action_required` is a bucket the SUPPLIER can move (a rejected invoice
+# they can resubmit). `failed` is a system retry state, not a rejection, so it
+# sits with the customer.
+_SUMMARY_ACTION_REQUIRED_STATUSES = (InvoiceStatus.rejected,)
+_SUMMARY_PAID_STATUSES = (InvoiceStatus.paid,)
+# `done` is reachable straight from `approved` (a workflow with no ERP step and
+# no scheduled payment), so it does NOT imply payment and gets its own bucket
+# rather than inflating "Paid" with an assertion that may not be true.
+_SUMMARY_COMPLETED_STATUSES = (InvoiceStatus.done,)
+_SUMMARY_IN_PROGRESS_STATUSES = tuple(
+    s
+    for s in InvoiceStatus
+    if s
+    not in {
+        *_SUMMARY_ACTION_REQUIRED_STATUSES,
+        *_SUMMARY_PAID_STATUSES,
+        *_SUMMARY_COMPLETED_STATUSES,
+    }
+)
+
+
+@router.get("/summary", response_model=PortalSummaryResponse)
+async def portal_summary(
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """At-a-glance figures for the supplier-portal home.
+
+    Answers the two questions a supplier opens the portal with — *is anything
+    waiting on me?* and *where is my money?* — without paging a list. Every
+    query is vendor-scoped through the SAME helpers the list endpoints use
+    (`_portal_invoice_filters`, `_vendor_offer_filter`, `_pending_change`), so a
+    figure here can never describe a different set from the page it links to,
+    and one vendor can never see another's numbers — every query AND-s
+    `Invoice.vendor_id == vu.vendor_id` (`_portal_invoice_filters` can only
+    narrow further, never widen).
+
+    PII-free: counts, currency codes and money only. No AP employee's name, no
+    rejection text, and no internal status string — the buckets are the same
+    vendor-facing collapse the portal already renders.
+    """
+    status_rows = (
+        await db.execute(
+            _portal_invoice_filters(
+                select(Invoice.status, func.count())
+                .select_from(Invoice)
+                .where(Invoice.vendor_id == vu.vendor_id)
+            ).group_by(Invoice.status)
+        )
+    ).all()
+    counts: dict[str, int] = {
+        (row_status.value if hasattr(row_status, "value") else str(row_status)): int(n)
+        for row_status, n in status_rows
+    }
+
+    def _bucket(statuses) -> int:
+        return sum(counts.get(s.value, 0) for s in statuses)
+
+    # GROUP BY the UPPERCASED code: a row written before the write schemas
+    # normalized can hold `usd` beside a neighbour's `USD`, which would render
+    # as the same currency twice with the money split between the two entries.
+    currency_key = func.upper(Invoice.currency)
+    currency_rows = (
+        await db.execute(
+            _portal_invoice_filters(
+                select(
+                    currency_key,
+                    func.coalesce(func.sum(Invoice.amount), 0),
+                    func.count(),
+                )
+                .select_from(Invoice)
+                .where(Invoice.vendor_id == vu.vendor_id)
+            )
+            .where(Invoice.status.in_(_SUMMARY_IN_PROGRESS_STATUSES))
+            .group_by(currency_key)
+            .order_by(currency_key)
+        )
+    ).all()
+
+    open_offers = (
+        await db.execute(
+            select(func.count())
+            .select_from(DiscountOffer)
+            .where(_vendor_offer_filter(vu), DiscountOffer.status == OFFER_STATUS_OFFERED)
+        )
+    ).scalar() or 0
+
+    pending = await _pending_change(db, vu.vendor_id)
+
+    return PortalSummaryResponse(
+        invoices_total=sum(counts.values()),
+        invoices_action_required=_bucket(_SUMMARY_ACTION_REQUIRED_STATUSES),
+        invoices_in_progress=_bucket(_SUMMARY_IN_PROGRESS_STATUSES),
+        invoices_paid=_bucket(_SUMMARY_PAID_STATUSES),
+        invoices_completed=_bucket(_SUMMARY_COMPLETED_STATUSES),
+        outstanding_by_currency=[
+            PortalCurrencyTotal(
+                currency=str(currency or "").upper(),
+                # `Decimal` in, exact string out — the money never touches a float.
+                total=str(Decimal(total_amount)),
+                count=int(n),
+            )
+            for currency, total_amount, n in currency_rows
+        ],
+        open_discount_offers=int(open_offers),
+        pending_change=(
+            PortalPendingChange(
+                id=str(pending.id),
+                change_type=pending.change_type,
+                status=pending.status,
+                created_at=pending.created_at,
+            )
+            if pending
+            else None
+        ),
+    )

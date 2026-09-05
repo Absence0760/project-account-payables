@@ -23,7 +23,7 @@
 		if (portalAuth.user?.must_change_password) {
 			goto('/portal/change-password');
 		} else {
-			goto('/portal/invoices');
+			goto('/portal');
 		}
 	}
 

@@ -54,13 +54,25 @@ async def _process_message(body: dict) -> None:
         try:
             from app.models.invoice import Invoice
             from app.services.extraction import run_extraction
+            from app.services.extraction_dispatch import ExtractionOptions
 
             result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
             invoice = result.scalar_one_or_none()
             if not invoice:
                 return
 
-            await run_extraction(db, invoice, actor_id=actor_id)
+            # The dispatcher puts the re-extraction guards on the SQS body;
+            # ignoring them here would make `lambda` mode re-link the vendor and
+            # re-enter auto-approve on a supplier resubmission, which is exactly
+            # what the flags exist to prevent. Absent keys decode to False.
+            options = ExtractionOptions.from_payload(body)
+            await run_extraction(
+                db,
+                invoice,
+                actor_id=actor_id,
+                skip_vendor_match=options.skip_vendor_match,
+                suppress_auto_approve=options.suppress_auto_approve,
+            )
         except Exception:
             await db.rollback()
             raise
