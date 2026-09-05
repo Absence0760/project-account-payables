@@ -105,6 +105,27 @@ _APPROVED_STATUSES = (
 )
 
 
+def _vendor_in_scope(vendor_id: uuid.UUID, entity_id: uuid.UUID | None):
+    """Vendor lookup narrowed to the caller's selected entity.
+
+    Entity isolation is a data-layer rule, not a UI one: without this a steward
+    working under subsidiary A could enrich — and, via the apply endpoint,
+    WRITE onto (``name`` / ``address`` / ``website``, and a ``name`` change
+    re-screens) — subsidiary B's vendor simply by knowing its id.
+
+    ``include_shared=True`` matches ``services/vendor_matching._candidate_query``:
+    a NULL ``entity_id`` on ``vendors`` means *unstamped* (a pre-multi-entity
+    row, or one auto-created from an entity-less invoice), not "shared" as it
+    does on ``gl_accounts``, and it must stay reachable from every entity or a
+    legacy supplier becomes invisible to the stewardship tools that exist to
+    clean it up. ``entity_id is None`` (consolidated view / single-entity
+    tenant) is a passthrough — unchanged behaviour.
+    """
+    return apply_entity_scope(
+        select(Vendor).where(Vendor.id == vendor_id), Vendor, entity_id, include_shared=True
+    )
+
+
 def _enrichment_settings(org: Organization) -> dict:
     """Merge org overrides (``settings.enrichment``) over the defaults.
 
@@ -415,7 +436,7 @@ async def vendor_score(
     entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(*_SCORE_ROLES)),
 ):
-    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    vendor = (await db.execute(_vendor_in_scope(vendor_id, entity_id))).scalar_one_or_none()
     if vendor is None:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
@@ -691,7 +712,7 @@ async def enrich_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    entity_id: uuid.UUID | None = Depends(get_entity_id),  # noqa: ARG001 — tenant chokepoint
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(*_ENRICH_ROLES)),
 ):
     """Enrich a vendor's firmographics from an external source (D&B / Clearbit).
@@ -707,8 +728,13 @@ async def enrich_vendor(
     a steward reviews and applies selectively. No raw ``tax_id`` ever leaves the
     service: the input id is passed to the provider as a match key, but only a
     masked ``***<last4>`` is ever returned, and no PII enters the logs.
+
+    Tenant-scoped via ``get_tenant_db`` + ``get_tenant``, and **entity-scoped**:
+    the vendor lookup runs through ``_vendor_in_scope``, so a steward on
+    subsidiary A gets the same opaque 404 for subsidiary B's vendor as for one
+    that doesn't exist.
     """
-    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    vendor = (await db.execute(_vendor_in_scope(vendor_id, entity_id))).scalar_one_or_none()
     if vendor is None:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
@@ -780,7 +806,7 @@ async def apply_vendor_enrichment(
     body: VendorEnrichmentApplyRequest,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    entity_id: uuid.UUID | None = Depends(get_entity_id),  # noqa: ARG001 — tenant chokepoint
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(*_ENRICH_ROLES)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
@@ -800,9 +826,12 @@ async def apply_vendor_enrichment(
     spurious audit row (200 with an empty ``applied`` map).
 
     RBAC: admin / ap_manager / cfo (matches who can mutate vendors / who can run
-    the enrich action). Tenant-scoped via ``get_tenant_db`` + ``get_tenant``.
+    the enrich action). Tenant-scoped via ``get_tenant_db`` + ``get_tenant`` and
+    **entity-scoped** via ``_vendor_in_scope`` — this endpoint WRITES (and a
+    ``name`` change re-screens), so a cross-entity id is the same opaque 404 as
+    an unknown one.
     """
-    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    vendor = (await db.execute(_vendor_in_scope(vendor_id, entity_id))).scalar_one_or_none()
     if vendor is None:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
