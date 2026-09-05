@@ -14,7 +14,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.52,<3",
     "asyncpg>=0.31.0,<1",
     "alembic>=1.19.1,<2",
-    "pydantic>=2.13.4,<3",
+    "pydantic>=2.13.5,<3",
     # >=2.14.2 fixes GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource follows
     # symlinks outside secrets_dir).
     "pydantic-settings>=2.15.0,<3",
