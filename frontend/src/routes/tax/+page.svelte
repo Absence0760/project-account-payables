@@ -7,6 +7,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
 	import VendorTaxModal from '$lib/components/modals/VendorTaxModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { formatMoney, isPositiveAmount, sumMoney } from '$lib/utils/money';
@@ -407,25 +408,27 @@
 						<td class="muted">{r.tax_classification ?? '—'}</td>
 						<td class="center">
 							{#if r.is_1099_eligible}
-								<span class="chip chip-on">{m('tax.chip.eligible')}</span>
+								<Badge tone="success" variant="chip-on">{m('tax.chip.eligible')}</Badge>
 							{:else}
-								<span class="chip chip-off">{m('tax.chip.no')}</span>
+								<Badge tone="muted" variant="chip-off">{m('tax.chip.no')}</Badge>
 							{/if}
 						</td>
 						<td class="center">
 							{#if r.w9_on_file}
-								<span class="chip chip-on" title={formatDate(r.w9_received_date)}>{m('tax.chip.onFile')}</span>
+								<Badge tone="success" variant="chip-on" title={formatDate(r.w9_received_date)}>
+									{m('tax.chip.onFile')}
+								</Badge>
 							{:else}
-								<span class="chip chip-warn">{m('tax.chip.missing')}</span>
+								<Badge tone="danger" variant="chip-warn">{m('tax.chip.missing')}</Badge>
 							{/if}
 						</td>
 						<td class="center">
 							{#if isTinVerified(r)}
-								<span class="chip chip-on">{m('tax.chip.verified')}</span>
+								<Badge tone="success" variant="chip-on">{m('tax.chip.verified')}</Badge>
 							{:else if r.tax_id}
-								<span class="chip chip-warn">{m('tax.chip.unverified')}</span>
+								<Badge tone="danger" variant="chip-warn">{m('tax.chip.unverified')}</Badge>
 							{:else}
-								<span class="chip chip-warn">{m('tax.chip.missing')}</span>
+								<Badge tone="danger" variant="chip-warn">{m('tax.chip.missing')}</Badge>
 							{/if}
 						</td>
 						<td class="right mono">{r.payment_count}</td>
@@ -736,34 +739,6 @@
 
 	.vendor {
 		font-weight: 500;
-	}
-
-	.chip {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 10px;
-		font-size: 0.72rem;
-		font-weight: 600;
-		white-space: nowrap;
-	}
-
-	/* Not `<Badge>`: these are dense yes/no compliance chips in a wide table,
-	   three to a row — they keep their own quieter metrics (0.72rem, sentence
-	   case) for the same reason `ui/ScreeningBadge` does. `.chip-off` was
-	   already on the palette pairs; its two siblings now match. */
-	.chip-on {
-		background: var(--success-tint);
-		color: var(--success-on-tint);
-	}
-
-	.chip-off {
-		background: var(--muted-tint);
-		color: var(--muted-on-tint);
-	}
-
-	.chip-warn {
-		background: var(--danger-tint);
-		color: var(--danger-on-tint);
 	}
 
 	.row-flag {

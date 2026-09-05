@@ -7,11 +7,19 @@ import { extractStyleBlocks, type StyleSource } from './cssAudit';
  *
  * `ui/Badge.svelte` owns the `background: var(--<tone>-tint); color:
  * var(--<tone>-on-tint)` recipe. 205 CSS rules hand-rolled it in 44 spellings of
- * the same five tones before it existed; roughly two thirds have moved onto the
- * primitive, and the rest move in **attributable tranches** — the shared tokens
- * standardise on alpha `.15`, so converting a `.1` or `.12` rule visibly
- * strengthens that badge, and landing them all at once would make any visual
- * complaint impossible to trace to a commit.
+ * the same five tones before it existed. They moved onto the primitive in
+ * **attributable tranches** — the shared tokens standardise on alpha `.15`, so
+ * converting a `.1` or `.12` rule visibly strengthens that badge, and landing
+ * them all at once would have made any visual complaint impossible to trace to
+ * a commit.
+ *
+ * **The tranches are finished.** Every entry left in `BASELINE` is a deliberate
+ * keep carrying its own reason — a pill with metrics a shared primitive cannot
+ * serve (an inline annotation beside a name, a canvas edge label, a filled
+ * tier chip), or a container with a child control. Each still takes the palette
+ * pairs, so none of them can drift off-tone. There is no work queued here: a
+ * NEW non-zero entry is a keep that has to argue for itself in a comment, not a
+ * tranche waiting to land.
  *
  * That is what makes a ratchet the right guard rather than a hard zero. It:
  *
@@ -84,6 +92,12 @@ const BASELINE: Record<string, number> = {
 	// TRUE/FALSE edge labels sized to sit on a canvas connector, where a status
 	// pill's metrics would swamp the node.
 	'lib/components/workflow-builder/WorkflowCanvas.svelte': 2,
+	// `.priors-badge` is an inline extraction-PROVENANCE annotation
+	// ("RAG·2·cache·3") sitting beside the vendor NAME in a fixed-width
+	// `overflow: hidden` cell — the `.you-badge` case again. A status pill's
+	// metrics would crowd out the name it annotates, and `Badge`'s uppercase
+	// would shout a figure that is deliberately quiet. Takes the palette pair.
+	'routes/invoices/+page.svelte': 1,
 	// "The plan you already have" / "the default card" — markers inside a radio
 	// label and a table cell, both a register smaller than a status pill.
 	'routes/billing/+page.svelte': 2,
@@ -95,18 +109,38 @@ const BASELINE: Record<string, number> = {
 	// `.chip-remove:hover` is a hover STEP that has to read stronger than the
 	// chip it sits inside, so a tone token would make it invisible.
 	'routes/workflows/[id]/+page.svelte': 2,
-
-	// --- Still to convert ---------------------------------------------------
-	'routes/discounts/+page.svelte': 4,
-	'routes/invoices/+page.svelte': 1,
-	'routes/tax/+page.svelte': 3,
-	'routes/vendor-statements/+page.svelte': 1,
-	'routes/vendors/+page.svelte': 3
 };
 
 /** Files a tranche took to zero. A rule reappearing here is a regression. */
 const CONVERTED = [
 	'routes/admin/webhooks/+page.svelte',
+	// The offer-status pill; its tone map went to `types/discounts.ts` beside the
+	// `DiscountStatus` union it is keyed on, because `accepted` (amber) vs
+	// `captured` (green) is the distinction between money committed and money
+	// actually saved — not a shade the page should be free to pick.
+	'routes/discounts/+page.svelte',
+	// The three yes/no 1099-compliance chips. They sit in their OWN centred
+	// columns rather than beside a name, so the primitive's metrics cost the
+	// table nothing — the "dense chip" concession `ScreeningBadge` earns does
+	// not apply here. Eligible/On file/Verified are `success`, the W-9 and TIN
+	// gaps `danger`, and "not eligible" stays `muted`: it is the absence of an
+	// obligation, not a compliance failure, and flattening the two onto one
+	// tone would make a vendor we owe no form for read like a vendor we are
+	// missing a form FROM.
+	'routes/tax/+page.svelte',
+	// The per-run discrepancy COUNT pill. Kept apart from the `VendorStatementReconModal`
+	// summary-row counts above, which stay hand-rolled: those are read as a
+	// GROUP at their own denser metrics, this one is a single figure in its own
+	// numeric column. The zero case is deliberately left un-badged.
+	'routes/vendor-statements/+page.svelte',
+	// The vendor lifecycle pill, the last of the tranches. Its tone map went to
+	// `types/vendor.ts` because `VendorModal` is the detail view of the same row
+	// and would otherwise be free to tint it differently; `.status-badge` is
+	// kept as a `variant` because `tests-e2e/vendors/bulk.spec.ts` selects on it.
+	// The neighbouring `.source-badge` (Manual / ERP Sync / AI Extracted) is
+	// deliberately untouched: it is flat `var(--bg)`, so it was never the tinted
+	// recipe, and it reads a register quieter than the status beside it on purpose.
+	'routes/vendors/+page.svelte',
 	// Converted with `types/payment.ts` and `/payments` as one move, because it
 	// badges the SAME `PaymentStatus` union and the same run statuses — the two
 	// tone maps now live beside `PAYMENT_STATUS_LABELS` in the shared types
@@ -152,9 +186,10 @@ describe('tinted-badge conversion ratchet', () => {
 		// The audit's own regression test: a file everyone agrees still
 		// hand-rolls must be found. Without it, breaking the parser turns this
 		// whole suite green — every `toBe(0)` below would pass vacuously.
-		// Repointed from `/expenses` when that file converted; it must always
-		// name a file still carrying a non-zero baseline above.
-		expect(counts['routes/vendors/+page.svelte']).toBeGreaterThan(0);
+		// Repointed from `/vendors` when the last tranche converted. Now anchored
+		// on a PERMANENT keep rather than a conversion target, so it cannot be
+		// invalidated by the next file that lands at zero.
+		expect(counts['lib/components/ui/ScreeningBadge.svelte']).toBeGreaterThan(0);
 	});
 
 	it.each(CONVERTED)('%s stays on the shared primitive', (path) => {

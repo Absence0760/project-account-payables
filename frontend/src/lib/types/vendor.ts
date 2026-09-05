@@ -270,6 +270,32 @@ export interface VendorMergeResponse {
 	merged_at: string;
 }
 
+import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+
+/**
+ * Badge tone per vendor lifecycle status (`Vendor.status`).
+ *
+ * Keyed on `string` because the column is untyped on the wire — an unknown
+ * value falls back to `neutral` at the call site rather than rendering a BLANK
+ * badge, which is how an unlisted status disappears (`types/payment.ts` records
+ * the same trap for `pending_compliance`).
+ *
+ * Lives here rather than on `/vendors` so the list page and `VendorModal` — the
+ * detail view of the same row — cannot end up tinting one vendor two ways. This
+ * is the ONLY thing that says a `rejected` vendor is red: `.rejected td` fades
+ * the row by 4% and nothing else in the table repeats the state.
+ */
+export const VENDOR_STATUS_TONES: Record<string, BadgeTone> = {
+	active: 'success',
+	// Unverified is work owed before this payee can be trusted with money, not
+	// a failure — amber, the same register the row tint uses.
+	unverified: 'warning',
+	// Inactive is a vendor deliberately retired: the absence of a signal, so a
+	// flat chip rather than a tint (it was already `var(--bg)`).
+	inactive: 'neutral',
+	rejected: 'danger'
+};
+
 export const SCREENING_STATUS_LABELS: Record<ScreeningStatus, string> = {
 	unscreened: 'Unscreened',
 	clear: 'Clear',
