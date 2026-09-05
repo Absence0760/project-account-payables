@@ -72,6 +72,7 @@ from app.schemas.portal import (
     PortalTaxFormResponse,
     PortalTaxIdChangeRequest,
 )
+from app.schemas.vendor import validate_bank_routing_fields
 from app.services import discount_offers as offers_svc
 from app.services.audit_dispatch import dispatch_audit
 from app.services.exception_lifecycle import record_decision
@@ -1424,6 +1425,14 @@ async def request_bank_change(
         raise HTTPException(status_code=404, detail="Vendor not found")
     if not body.bank_details:
         raise HTTPException(status_code=400, detail="bank_details is required")
+    try:
+        # The same structural gate the AP staging path uses — one helper, so a
+        # supplier-submitted wire ABA is checked exactly as an AP-submitted one.
+        # Raised here rather than in the schema so the 4xx body names only the
+        # offending FIELD and never echoes the submitted banking data.
+        validate_bank_routing_fields(body.bank_details)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     account = str(body.bank_details.get("account_number") or "")
     last4 = account[-4:] if len(account) >= 4 else None
