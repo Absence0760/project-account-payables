@@ -106,11 +106,20 @@ _IMPORTABLE_INVOICE_STATUSES = frozenset({"new", "done", "paid", "rejected"})
 # * `source` names the writer, so a future importer (an ERP backfill, a
 #   migration tool) marks rows the same way and is distinguishable.
 #
-# The marker is only ever written going forward and is NEVER backfilled: a row
-# that predates it carries no key and is read as native, because absence means
-# "we do not know", and inventing provenance for a historical row is exactly
-# the guessing this exists to avoid. See `backend/docs/analytics.md`
-# § Imported rows are outside the metric.
+# This importer only ever writes the marker going forward, and nothing
+# backfills it from the DATA: a row that predates it carries no key and is read
+# as native, because absence means "we do not know", and inferring provenance
+# for a historical row is exactly the guessing this exists to avoid.
+#
+# What a PERSON knows, the data cannot supply — so there is one other writer:
+# `scripts/backfill_import_provenance.py`, where an operator ASSERTS the cutover
+# date of a migration they ran. It stamps `source="operator_backfill"` with
+# `asserted: true`, which is the `source`-names-the-writer rule above doing its
+# job: a declared provenance stays distinguishable from a recorded one. It reads
+# `_IMPORTABLE_INVOICE_STATUSES` from this module rather than restating it, and
+# only ever REFUSES to mark — never marks a row this importer could not have
+# created. See `backend/docs/analytics.md` § Imported rows are outside the
+# metric.
 IMPORT_PROVENANCE_KEY = "imported"
 IMPORT_PROVENANCE_SOURCE = "csv_import"
 
