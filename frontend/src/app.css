@@ -601,10 +601,13 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
  * control is exempt under 1.4.3, but an ENABLED Delete button on a paused
  * row is not, and it should not read as unavailable either.
  *
- * The three call sites dropped their own `.inactive` / `.revoked` classes when
- * they moved here: those carried nothing but the fade, and no spec selected on
- * them. Keep a page-local semantic class alongside `row-muted` only if
- * something actually reads it. Guard: src/lib/a11y/opacityAudit.test.ts. */
+ * Two of the three call sites dropped their own `.revoked` / status classes
+ * when they moved here: those carried nothing but the fade. `UsersPanel` KEEPS
+ * `.inactive` alongside `row-muted`, because `admin/users.spec.ts` and
+ * `scim/provisioning.spec.ts` both select on it — the class is an identity, not
+ * a colour. That is the rule: keep a page-local semantic class alongside
+ * `row-muted` whenever something actually reads it, and check the e2e suite
+ * before assuming nothing does. Guard: src/lib/a11y/opacityAudit.test.ts. */
 .grid-container tr.row-muted td:not(.actions) {
 	color: var(--text-muted);
 }
