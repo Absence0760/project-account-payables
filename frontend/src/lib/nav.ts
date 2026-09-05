@@ -157,6 +157,18 @@ export const NAV: NavEntry[] = [
 			{ label: 'Recurring', labelKey: 'nav.recurring', href: '/recurring', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Statements', labelKey: 'nav.statements', href: '/vendor-statements', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Positive Pay', labelKey: 'nav.positivePay', href: '/positive-pay', roles: ['admin', 'ap_manager', 'cfo'] },
+			// Bank reconciliation — import a bank statement and confirm every
+			// payment we think we made actually cleared. Sits beside Positive Pay
+			// (the other treasury/bank-file surface) deliberately.
+			//
+			// ap_clerk IS included here, unlike Positive Pay: `api/bank_reconciliation
+			// .py::_READ_ROLES` is (ADMIN, AP_MANAGER, AP_CLERK, CFO) — a clerk works
+			// the reconciliation queue. Every mutating control on the page is gated
+			// further on `auth.isManager`, matching that router's `_WRITE_ROLES`
+			// (admin | ap_manager — treasury-adjacent, clerks excluded), so the page
+			// renders read-only for a clerk and hiding the row would be a dead end
+			// rather than a gate.
+			{ label: 'Bank Reconciliation', labelKey: 'bankRecon.navLabel', href: '/bank-reconciliation', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			// Platform billing — the AP platform's OWN subscription / plan / usage
 			// (control-plane), distinct from the customer AP money path above.
 			// Admin/CFO only (the backend GET /api/billing/subscription 403s the rest).

@@ -96,12 +96,90 @@ the retry the loser would 500 and lose every other line on its file.
   add `include_shared=True` to the exceptions query? something else?) — not a
   default worth guessing at silently, since guessing wrong ships a queue item
   most multi-entity tenants would never see.
-- **Frontend page.** No `/bank-reconciliation` route ships yet in the SPA;
-  the API is usable today via any HTTP client / the `/docs` Swagger UI. A
-  dedicated page (statement list, upload form, transaction match-review
-  table) is tracked as its own follow-up — same shape as `/vendor-statements`.
 - **OFX / camt.053 import.** `source_format` already carries the value;
   only the CSV parser is implemented.
+
+## Frontend (`/bank-reconciliation`)
+
+`frontend/src/routes/bank-reconciliation/` — two tabs, because the surface
+answers two different questions.
+
+| Piece | File |
+|---|---|
+| Page (tabs, KPIs, the three outstanding buckets, statement list) | `routes/bank-reconciliation/+page.svelte` |
+| Statement detail + per-line resolve | `routes/bank-reconciliation/StatementDetailModal.svelte` |
+| CSV import | `routes/bank-reconciliation/ImportStatementModal.svelte` |
+| Typed API helpers | `lib/api/bankReconciliation.ts` |
+| Response shapes + the pure match-state derivation | `lib/types/bankReconciliation.ts` |
+| i18n | the `bankRecon.` namespace in all six `lib/i18n/locales/*.ts` |
+| Nav | `lib/nav.ts` — under **Billing**, beside Positive Pay |
+
+**Outstanding** is the default tab: the `/outstanding` worksheet rendered as
+its three buckets, each headed by its whole-set count + total. `?older_than_days=`
+is a SERVER filter (chips: any / 7 / 30 / 60, URL-backed); the free-text box is
+a CLIENT filter over the rows already in hand, which is safe because a bucket
+arrives whole in one response — and each bucket prints a truncation line
+whenever `?limit` capped its rows below the count above it, so a filtered view
+can never quietly claim less money than the KPI does.
+
+**Statements** is the per-file view (account, period, lines, reconciled,
+discrepancy count, imported), paginated with load-more, and the way into the
+transaction table.
+
+### Confidence is rendered as a judgment, not a number
+
+`lib/types/bankReconciliation.ts::transactionMatchState` collapses a row's
+four match fields (`direction`, `matched_payment_id`, `match_method`,
+`match_confidence`) into one of `credit` / `unmatched` / `discrepancy` /
+`confirmed` / `probable` / `suggested`, and the row renders from THAT — never
+from `matched_payment_id` alone. Two rules the pure function encodes, both
+unit-tested in `bankReconciliation.test.ts`:
+
+- a 50–79 `fuzzy_vendor` hit is `suggested`, tinted amber and captioned "a
+  suggestion, not a fact" — it is a vendor-name coincidence a human still owes
+  a decision on, and green would be the UI asserting something the matcher
+  never claimed. A linked row carrying NO confidence figure is `suggested`
+  too: absence of evidence is not evidence of a match;
+- `is_reconciled` (the backend's own predicate) outranks `match_method`, so a
+  linked line the server calls unreconciled reads as a discrepancy even when
+  its method is one this frontend has never heard of. An unknown method
+  degrades to "a human needs to look", never to a clean tick.
+
+### The resolve affordance
+
+Mutate controls render only for admin / ap_manager (`auth.isManager`), mirroring
+`_WRITE_ROLES`; a clerk sees every figure and no button, and the backend refuses
+regardless.
+
+| Row state | Controls |
+|---|---|
+| `suggested` | **Confirm** (re-sends the row's EXISTING `matched_payment_id`, so the server re-runs `classify_discrepancy` and stamps the human's own decision at confidence 100) + **Clear** |
+| `discrepancy` / `confirmed` / `probable` | **Clear** (re-point by clearing, then matching) |
+| `unmatched` debit | **Match** — opens an inline picker |
+| credit | none (only a debit can clear a payment; `/resolve` 409s) |
+
+The picker's candidate list is `/outstanding`'s `uncleared_payments` bucket,
+which is exactly "payments our books say went out that no bank line claims" —
+the only payments a debit can legitimately be pointed at. Anything already
+claimed would be refused by the one-payment-one-line invariant, so offering it
+would be offering a dead end.
+
+**Known gap:** `UnclearedPaymentResponse` carries no per-row `currency` (both
+other buckets do), so the uncleared rows — and `uncleared_total`, which the
+backend sums across currencies — render in the org's reporting currency. A
+multi-currency tenant can therefore see the wrong symbol on that bucket only.
+The durable fix is a `currency` field on that schema (the invoice's, the same
+side of the settlement pair the matcher compares against) plus a per-currency
+total; it is called out at the render site rather than guessed at.
+
+### Tests
+
+`frontend/tests-e2e/bank-reconciliation/bank-reconciliation.spec.ts` — renders
+the worksheet, the age filter as a server filter + URL round-trip, import →
+list → detail → the unmatched line, the match round-trip (asserting the payment
+id the UI sends), the fuzzy-match "suggestion, not a fact" treatment, and the
+clerk read-only gate. `frontend/src/lib/types/bankReconciliation.test.ts` pins
+the pure match-state derivation.
 
 ## CSV importer
 
