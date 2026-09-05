@@ -19,6 +19,7 @@ from app.models.virtual_card import CardRebate, VirtualCard
 from app.schemas.dashboard import DashboardResponse
 from app.services.analytics import (
     OPEN_AP_STATUSES,
+    TOUCHLESS_REVIEW_EVIDENCE_STATUSES,
     compute_touchless_rate,
     discount_window_open,
 )
@@ -368,31 +369,32 @@ async def get_dashboard(
         if unconverted:
             upcoming_unconverted_count += 1
 
-    # Touchless rate — share of invoices that cleared review straight through
-    # out of every invoice that has FINISHED the review stage. Both legs are
-    # defined once, in `services/analytics` (`TOUCHLESS_CLEARED_STATUSES` /
+    # Touchless rate — the share of invoices that PASSED REVIEW without a human
+    # touching them, out of every invoice that provably finished review. All
+    # three legs are defined once, in `services/analytics`
+    # (`TOUCHLESS_CLEARED_STATUSES` / `TOUCHLESS_REVIEW_EVIDENCE_STATUSES` /
     # `TOUCHLESS_BOUNCED_STATUSES`), because the hand-written copy that used to
-    # live here had drifted: `sending_to_erp` is reachable ONLY from `approved`
-    # yet appeared in neither leg, so an invoice in the ERP export hop dropped
-    # out of a board metric it had already earned a place in — understating the
-    # rate on exactly the tenants whose ERP export is slow.
+    # live here had drifted.
     #
-    # `failed` is the one status the pipeline map can't classify: it is
-    # reachable from `pending` (extraction failed, never reviewed) AND from
-    # `sending_to_erp` (approved, then the export failed). The durable
-    # `Invoice.approval_date` stamp separates them — see `compute_touchless_rate`.
-    failed_cleared_q = await db.execute(
+    # Several statuses the pipeline map reports cannot be classified by status
+    # alone — `done` (the `new -> done` shortcut skips approval outright, and
+    # it is the CSV importer's default landing state), `paid` (CSV-importable
+    # too) and `failed` (reachable from `pending` — extraction failed, never
+    # reviewed — as well as from `sending_to_erp`). The durable
+    # `Invoice.approval_date` stamp is the positive evidence that review
+    # actually happened; only the stamped ones count as cleared, and the rest
+    # sit in neither leg.
+    review_cleared_q = await db.execute(
         _inv(
             select(func.count()).where(
-                Invoice.status == "failed",
+                Invoice.status.in_(TOUCHLESS_REVIEW_EVIDENCE_STATUSES),
                 Invoice.approval_date.isnot(None),
             )
         )
     )
     touchless_rate = compute_touchless_rate(
         pipeline,
-        failed_cleared_count=int(failed_cleared_q.scalar() or 0),
-        failed_total_count=pipeline.get("failed"),
+        review_cleared_count=int(review_cleared_q.scalar() or 0),
     )
 
     # Payment totals — separate queries to avoid complex CASE expressions

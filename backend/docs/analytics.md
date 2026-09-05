@@ -91,24 +91,11 @@ Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
   `current` (unknowable, so not overdue) rather than being silently dropped;
   otherwise the bands stop summing to the balance the moment one open invoice
   is missing a due date.
-- `touchless_rate` — straight-through-processing rate: invoices that cleared
-  review without manual rework (reached `approved` or beyond) over every
-  invoice that has finished review (those same states **plus** `rejected`).
-  The numerator is a strict subset of the denominator, so the value is always
-  in `[0, 100]` — it can never go negative. **Both legs are declared once**, in
-  `services/analytics` (`TOUCHLESS_CLEARED_STATUSES` /
-  `TOUCHLESS_BOUNCED_STATUSES` / `compute_touchless_rate`), because the
-  hand-written copy that used to live in `api/dashboard` had drifted:
-  `sending_to_erp` is reachable ONLY from `approved`, yet it appeared in
-  neither leg, so an invoice sitting in the ERP export hop dropped out of the
-  metric it had already earned a place in — understating the rate on exactly
-  the tenants whose ERP export is slow. `failed` is the one status the pipeline
-  map cannot classify on its own: `VALID_TRANSITIONS` reaches it BOTH from
-  `pending` (extraction failed — never reviewed) and from `sending_to_erp`
-  (approved, then the export failed). The durable `Invoice.approval_date` stamp
-  separates them — a stamped `failed` invoice counts in both legs, an
-  extraction failure in neither, because an invoice that never finished review
-  is evidence neither for nor against touchless processing.
+- `touchless_rate` — straight-through-processing rate. **Definition: the share
+  of invoices that PASSED REVIEW without a human touching them, out of every
+  invoice that provably finished review.** See § Touchless rate — what the
+  number means below; that section also records the day this definition
+  changed and which way the number moved.
 - `monthly_trend` — invoice count + amount (+ `reporting_amount`) per calendar
   month, for the **last six calendar months**. The window is anchored to the
   1st of the month five months back, not `today - 180 days`: a rolling day
@@ -163,6 +150,70 @@ New keys added in a prior iteration:
   `reporting_currency` and resolved by `currency_conversion.reporting_amount_for_row`;
   a row with no usable rate lock contributes face value and is counted on
   `unconverted_count` rather than dropped (`docs/decisions.md` §35).
+
+### Touchless rate — what the number means
+
+`touchless_rate` is a claim about **how much work the machine did instead of a
+person**. That makes its numerator's *population* — not just its arithmetic —
+part of the metric's meaning, so it is stated here and encoded once, in
+`services/analytics` (`TOUCHLESS_CLEARED_STATUSES` /
+`TOUCHLESS_REVIEW_EVIDENCE_STATUSES` / `TOUCHLESS_BOUNCED_STATUSES` /
+`compute_touchless_rate`). The hand-written copy that used to live in
+`api/dashboard` had already drifted once — `sending_to_erp` is reachable ONLY
+from `approved`, yet it appeared in neither leg, so an invoice sitting in the
+ERP export hop dropped out of a metric it had already earned a place in,
+understating the rate on exactly the tenants whose ERP export is slow.
+
+**The definition: "passed review without human touch."**
+
+| Leg | Statuses | Rule |
+|---|---|---|
+| Cleared (numerator + denominator) | `approved`, `sending_to_erp`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled` | Status alone is proof — every `VALID_TRANSITIONS` edge into these originates at `approved`, and every writer of `approved` stamps `Invoice.approval_date`. |
+| Ambiguous (`TOUCHLESS_REVIEW_EVIDENCE_STATUSES`) | `done`, `paid`, `failed` | Counts as cleared **only** with the durable `Invoice.approval_date` stamp. Without it, the invoice is in NEITHER leg. |
+| Bounced (denominator only) | `rejected` | A human sent it back. Cannot be evidence-gated — nothing ever writes an approval stamp on a rejection, and the rejected row IS the evidence a human touched it. |
+
+Why the ambiguous three need evidence:
+
+- **`done`** — `new → done` is a legal transition that skips approval outright,
+  and it is the default landing status of the Day-0 CSV importer
+  (`services/csv_import`), which bypasses the workflow engine entirely.
+- **`paid`** — normally only reachable from `payment_scheduled`, but
+  `csv_import._IMPORTABLE_INVOICE_STATUSES` allows it too, for the same Day-0
+  historical migration.
+- **`failed`** — `VALID_TRANSITIONS` reaches it BOTH from `pending` (extraction
+  failed, never reviewed) and from `sending_to_erp` (approved, then the ERP
+  export blew up). This leg predates the others and is unchanged.
+
+#### Why "passed review", not "reached a terminal state"
+
+The alternative reading — *reached a terminal state without human touch* —
+would keep counting the `new → done` shortcut and the imported historical rows,
+because nobody touched those either. It was rejected because the metric is read
+as an automation KPI: it is quoted to leadership as evidence the platform is
+doing the approving. An invoice that never entered review is not evidence the
+machine approved it; it is evidence the invoice was never approved at all.
+Counting it inflates precisely the figure being trusted, and it inflates it
+hardest for the tenant that just migrated ten thousand historical invoices on
+day one — the tenant with the *least* automation to show.
+
+The symmetric mistake is also avoided: a never-reviewed invoice is out of the
+**denominator** too, not parked in the bounced leg. Counting it as
+"finished review and did not clear" would deflate the rate just as dishonestly.
+This is the same rule `failed` has always followed.
+
+#### This change MOVES a previously reported number — downward
+
+Before this change, `done` and `paid` counted as cleared on status alone. Any
+tenant that uses the `new → done` shortcut, or that migrated history through
+the CSV importer, will see `touchless_rate` **drop** the first time the
+dashboard is loaded after deploy. The drop is a **definition change, not a
+regression in automation** — no workflow, auto-approval threshold or routing
+rule changed, and no invoice moved. A tenant whose invoices all travel the
+normal `ready_for_review → approved → …` path sees no change at all, because
+every one of those rows carries the approval stamp.
+
+If a dashboard delta needs explaining, the honest sentence is: *the metric
+stopped counting invoices that never went through approval.*
 
 ## CFO metrics (`GET /api/analytics/cfo`)
 
@@ -730,8 +781,9 @@ the cadence anchoring).
 | `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address; **cadence anchoring** — 30 late ticks in a row leave the 09:00 slot at 09:00, a dormant fortnight catches up to ONE next slot rather than 14 sends, an exactly-due slot still moves forward (no busy-loop), a future slot takes exactly one step, a naive `scheduled_for` reads as UTC |
 | `tests/test_scheduled_reports_api.py` | 23 cases — CRUD round-trip; the created row is what `list_due_schedules` picks up; `report_type` / `cadence` validated against the runner's own registries (create AND patch); recipient list shape-checked / de-duped / bounded / non-empty; our validator message names no address; RBAC (mutations admin-only, reads admin+cfo, ap_manager/ap_clerk refused); tenant isolation (list, get, patch); PII-free audit rows carrying the recipient COUNT; re-enabling a 5-strike-disabled row clears the stale `[retry N]` marker |
 | `tests/test_utc_today.py` | Drift guard — `utc_today()` is the UTC calendar date; an AST scan fails on any `date.today()` / `datetime.today()` / `datetime.date.today()` reappearing in the modules that have converged on it (the cash-flow stack, plus the AP surfaces: discounts, portal, dashboard, payments queue, recurring, workflow, review, extraction, invoice warnings, 1099, Positive Pay, the exporters). The scanner itself is a tested helper — the module-attribute spelling `datetime.date.today()` slipped past the first version, which is how two Positive Pay modules could have been listed as converged while still reading local time, and naive `datetime.now().date()` isn't spelled `today` at all |
+| `tests/test_touchless_rate_population.py` | The touchless numerator's POPULATION (as opposed to its arithmetic): a `new -> done` shortcut and a CSV-imported `paid` are in neither leg, a genuinely approved `done` still is, a rejection is denominator-only exactly as before, and the never-reviewed rows leaving the denominator are the ONLY denominator movement. Plus structural guards re-derived from `VALID_TRANSITIONS` and `csv_import._IMPORTABLE_INVOICE_STATUSES`, so a new legal edge or a newly-importable status cannot quietly re-widen the metric |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
-| `tests/test_dashboard_aggregates.py` | Real-Postgres guards for the four aggregates that were each wrong in their own way: `total_paid` vs its converted `total_paid_reporting` counterpart under mixed currency; `discount_capture`'s elapsed-window gate (open window → `pending`, elapsed → still a `missed`) and its reporting-currency amounts + `unconverted_count`; `touchless_rate` counting `sending_to_erp` and an approval-stamped `failed` while ignoring an extraction-failed one; `monthly_trend` returning six WHOLE calendar months with no partial oldest bar and no seventh stub bucket (both window shapes pinned against a frozen `utc_today`) |
+| `tests/test_dashboard_aggregates.py` | Real-Postgres guards for the four aggregates that were each wrong in their own way: `total_paid` vs its converted `total_paid_reporting` counterpart under mixed currency; `discount_capture`'s elapsed-window gate (open window → `pending`, elapsed → still a `missed`) and its reporting-currency amounts + `unconverted_count`; `touchless_rate` counting `sending_to_erp` and an approval-stamped `failed` while ignoring an extraction-failed one, and excluding a `done`/`paid` row that reached its terminal status without ever being approved; `monthly_trend` returning six WHOLE calendar months with no partial oldest bar and no seventh stub bucket (both window shapes pinned against a frozen `utc_today`) |
 | `tests/test_analytics_trend_insufficient_data.py` | The two "reported a comfortable number where there was none" surfaces: `compute_fraud_rate_trend` returning `None` + `insufficient_data` for a zero-invoice month (including the zero-invoices-with-exceptions shape) while still reporting a genuine 0%, and end-to-end `null` on the `/cfo` wire; `/forecast_variance` resolving `actual` into the reporting currency under mixed currency, excluding-and-disclosing an unexpressible payment, and answering `422` (not `500`) for `2026-13` / `2026-00` / `2026-99` / `0000-01` / `2026/07` |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |

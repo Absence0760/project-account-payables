@@ -81,9 +81,10 @@ def _mk_db(*results):
 #   5.  aging rows (bucket, sum, sum_rep) — SQL-bucketed → .all()
 #   6.  trend rows (month, count, sum, sum_rep) — SQL group → .all()
 #   7.  upcoming payment rows (+ currency/reporting cols)  → .all()
-#   7a. `failed` invoices carrying an approval stamp      → .scalar()
-#       (the touchless-rate split — `failed` is reachable both pre- and
-#       post-review, see `analytics.compute_touchless_rate`)
+#   7a. invoices in an AMBIGUOUS status carrying an approval stamp → .scalar()
+#       (the touchless-rate numerator's evidence — `done`, `paid` and
+#       `failed` are each reachable both through review and around it, see
+#       `analytics.compute_touchless_rate`)
 #   8.  total paid                        → .scalar()
 #   9.  total pending                     → .scalar()
 #  10.  reporting total paid              → .one() → (amount, unconverted_count)
@@ -102,7 +103,7 @@ def _full_results(
     aging=(),
     trend=(),
     upcoming=(),
-    failed_cleared=0,
+    review_cleared=0,
     paid=Decimal("0"),
     pending=Decimal("0"),
     reporting_paid=(Decimal("0"), 0),
@@ -119,7 +120,7 @@ def _full_results(
         _r(all_=list(aging)),
         _r(all_=list(trend)),
         _r(all_=list(upcoming)),
-        _r(scalar=failed_cleared),
+        _r(scalar=review_cleared),
         _r(scalar=paid),
         _r(scalar=pending),
         _r(one=reporting_paid),
@@ -145,12 +146,16 @@ def _full_results(
 
 
 # ---------------------------------------------------------------------------
-# Touchless rate — straight-through-processing share. Numerator =
-# auto-processed (approved-or-beyond); denominator = numerator + rejected
-# (everything that finished review). The numerator is a strict subset of the
+# Touchless rate — straight-through-processing share. Numerator = invoices
+# that PASSED REVIEW untouched; denominator = numerator + rejected (everything
+# that provably finished review). The numerator is a strict subset of the
 # denominator, so the rate is ALWAYS in [0, 100] and can never go negative
 # (BUG 9 regression — the old formula subtracted rejected from a numerator
 # whose base didn't include rejected, yielding e.g. -4900%).
+#
+# These pin the ARITHMETIC. The numerator's POPULATION — which statuses need
+# the `Invoice.approval_date` stamp before they count as cleared — is pinned
+# in `test_touchless_rate_population.py`.
 # ---------------------------------------------------------------------------
 
 
@@ -160,6 +165,11 @@ async def test_touchless_rate_counts_rejected_in_denominator():
     auto_processed = 80
     reviewed_total = 80 + 20 = 100
     rate = 80 / 100 * 100 = 80%
+
+    The 30 `paid`/`done` invoices all carry the approval stamp, so all 80 are
+    evidenced — `review_cleared=30`. (Strip that evidence and the numerator
+    correctly drops to the 50 that are mid-pipeline; see
+    `test_touchless_rate_population.py`.)
     """
     pipeline_rows = [
         (InvoiceStatus.approved, 30),
@@ -168,7 +178,7 @@ async def test_touchless_rate_counts_rejected_in_denominator():
         (InvoiceStatus.done, 10),
         (InvoiceStatus.rejected, 20),
     ]
-    db = _mk_db(*_full_results(pipeline=pipeline_rows))
+    db = _mk_db(*_full_results(pipeline=pipeline_rows, review_cleared=30))
     result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["touchless_rate"] == 80.0
     assert result["pipeline"]["rejected"] == 20
@@ -191,12 +201,13 @@ async def test_touchless_rate_never_goes_negative_with_many_rejections():
 
 @pytest.mark.asyncio
 async def test_touchless_rate_is_100_with_no_rejections():
-    """Every invoice that finished review was auto-processed → 100%."""
+    """Every invoice that finished review was auto-processed → 100%. The five
+    `paid` ones carry the approval stamp (`review_cleared=5`)."""
     pipeline_rows = [
         (InvoiceStatus.approved, 5),
         (InvoiceStatus.paid, 5),
     ]
-    db = _mk_db(*_full_results(pipeline=pipeline_rows))
+    db = _mk_db(*_full_results(pipeline=pipeline_rows, review_cleared=5))
     result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["touchless_rate"] == 100.0
 

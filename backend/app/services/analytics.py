@@ -353,61 +353,77 @@ def compute_discount_capture(invoice_rows: list) -> DiscountCaptureMetrics:
 # Touchless (straight-through-processing) rate
 # ---------------------------------------------------------------------------
 #
-# The population is "every invoice that has FINISHED the review stage".
-# Numerator = the ones that cleared it without a human bouncing them back.
-# Stated once, here, because the dashboard carried a hand-written copy that
-# had drifted: `sending_to_erp` — reachable ONLY from `approved` — was in
-# neither leg, so an invoice sitting in the ERP export hop vanished from the
-# board metric it had already earned a place in.
+# DEFINITION (decided, not inherited — see `docs/analytics.md`):
+#   "passed review without human touch".
+#
+# The population is every invoice that PROVABLY reached and finished the
+# review stage. The numerator is the ones that cleared it without a human
+# bouncing them back; the denominator adds the ones a human rejected. An
+# invoice that never entered review is in NEITHER leg — it is evidence
+# neither for nor against touchless processing.
+#
+# The rate is a claim about how much work the machine did instead of a
+# person, so the numerator requires POSITIVE EVIDENCE that review happened.
+# A terminal status is not that evidence: `new -> done` is a legal
+# `VALID_TRANSITIONS` edge that skips approval outright, and the Day-0 CSV
+# importer (`services/csv_import`) plants historical rows straight at `done`
+# (its default) or `paid` without the workflow engine running at all.
+# Counting those as "cleared review" inflates exactly the figure leadership
+# reads.
 
-# Statuses an invoice can only be in because review finished and it cleared.
-# `done` is included as it always has been: it is terminal and is normally
-# reached through approval.
+# Statuses an invoice can ONLY be in because review finished and it cleared:
+# every `VALID_TRANSITIONS` edge into them originates at `approved`, and every
+# writer of `approved` stamps `Invoice.approval_date`. Status alone is proof
+# here, so no extra evidence is needed.
 TOUCHLESS_CLEARED_STATUSES: tuple[str, ...] = (
     "approved",
     "sending_to_erp",
     "sent_to_erp",
     "posted_in_erp",
     "payment_scheduled",
-    "paid",
-    "done",
 )
 
-# Review finished and the invoice did NOT clear — denominator only.
+# Statuses reachable EITHER through review or around it — status alone proves
+# nothing, so these count as cleared only with the approval stamp:
+#   `done`   — `new -> done` skips approval; CSV import's default landing state.
+#   `paid`   — normally only from `payment_scheduled`, but CSV-importable too.
+#   `failed` — from `pending` (extraction failed, never reviewed) OR from
+#              `sending_to_erp` (approved, then the ERP export blew up).
+# The caller supplies how many of these carry the durable `Invoice.approval_date`
+# stamp (written on every approval path, never cleared); the rest are out of the
+# population entirely.
+TOUCHLESS_REVIEW_EVIDENCE_STATUSES: tuple[str, ...] = ("done", "paid", "failed")
+
+# Review finished and the invoice did NOT clear — denominator only. There is
+# no approval stamp on a rejection (nothing writes one), so this leg cannot be
+# evidence-gated the way the cleared leg is; a rejected row IS the evidence
+# that a human touched it.
 TOUCHLESS_BOUNCED_STATUSES: tuple[str, ...] = ("rejected",)
 
 
-def compute_touchless_rate(
-    pipeline: dict,
-    *,
-    failed_cleared_count: int = 0,
-    failed_total_count: int | None = None,
-) -> float:
+def compute_touchless_rate(pipeline: dict, *, review_cleared_count: int) -> float:
     """Straight-through-processing share, in [0, 100].
 
     `pipeline` is the dashboard's `{status: count}` map.
 
-    `failed` is the one status this cannot read on its own: an invoice
-    reaches it EITHER from `pending` (extraction failed — it never got near
-    review) or from `sending_to_erp` (approved, then the ERP export failed) —
-    both edges are in `workflow_engine.VALID_TRANSITIONS`. Status alone
-    cannot separate them, so the caller passes `failed_cleared_count`: the
-    `failed` invoices carrying a durable approval stamp
-    (`Invoice.approval_date`, written on every approval path and never
-    cleared). Those count in BOTH legs; the extraction failures count in
-    neither, because an invoice that never finished review is evidence
-    neither for nor against touchless processing.
+    `review_cleared_count` is the number of invoices sitting in a
+    `TOUCHLESS_REVIEW_EVIDENCE_STATUSES` status that carry a durable
+    `Invoice.approval_date` stamp — the positive evidence that the invoice
+    actually reached and cleared the approval step rather than arriving at a
+    terminal status around it. It is a REQUIRED argument, not a defaulted one:
+    a caller that forgets it must fail loudly rather than quietly re-publish
+    the old, wider number.
 
     The numerator is a strict subset of the denominator, so the rate can
     never go negative (BUG 9).
     """
     cleared = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_CLEARED_STATUSES)
     bounced = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_BOUNCED_STATUSES)
-    approved_failed = int(failed_cleared_count or 0)
-    if failed_total_count is not None:
-        # Never claim more cleared-failures than there are failures.
-        approved_failed = min(approved_failed, int(failed_total_count))
-    cleared += approved_failed
+    # Never claim more evidenced-cleared invoices than there are invoices in
+    # those statuses (both figures come from the same snapshot, so this is
+    # belt-and-braces against a caller passing an unrelated count).
+    ambiguous_total = sum(int(pipeline.get(s, 0) or 0) for s in TOUCHLESS_REVIEW_EVIDENCE_STATUSES)
+    cleared += max(0, min(int(review_cleared_count or 0), ambiguous_total))
     reviewed_total = cleared + bounced
     if reviewed_total <= 0:
         return 0.0

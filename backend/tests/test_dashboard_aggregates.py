@@ -9,7 +9,10 @@ way, pinned against a real Postgres tenant.
   3. `touchless_rate` omitted `sending_to_erp` from both legs, so an invoice
      sitting in the ERP export hop vanished from a metric it had already
      earned a place in; `failed` was omitted wholesale even though half the
-     invoices in it are approved ones whose ERP export failed.
+     invoices in it are approved ones whose ERP export failed; and `done` /
+     `paid` counted as "cleared review" on status alone, even for the rows
+     that reached them WITHOUT ever being approved (`new -> done`, or a CSV
+     import that bypasses the workflow engine).
   4. `monthly_trend` bounded a CALENDAR-MONTH `GROUP BY` with a rolling
      180-day window — two units that never line up, so the oldest bar was a
      partial slice of a month (or a seventh, stub bucket).
@@ -353,6 +356,70 @@ async def test_touchless_rate_ignores_a_failed_invoice_that_never_reached_review
         body = (await c.get("/api/dashboard")).json()
 
     assert body["touchless_rate"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_excludes_a_done_invoice_that_skipped_approval(realdb):
+    """`new -> done` is a legal transition that skips approval outright (and
+    the Day-0 CSV importer lands historical rows there by default). Such an
+    invoice never cleared review — it bypassed it — so counting it as
+    touchless inflates a board-reported automation figure.
+
+    One shortcut `done` (no approval stamp) + one rejected. Pre-fix the `done`
+    row counted as cleared and the rate read 50.0%; it is now out of the
+    population entirely, and with nothing left that cleared review the honest
+    answer is 0.0%.
+    """
+    await _seed_statuses(
+        realdb,
+        [(InvoiceStatus.done, False), (InvoiceStatus.rejected, False)],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["pipeline"]["done"] == 1
+    assert body["touchless_rate"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_counts_a_done_invoice_that_cleared_a_real_approval(realdb):
+    """The other `done`: approved (untouched) and carried through to terminal.
+    It has the durable `approval_date` stamp, so it counts exactly as before —
+    the change narrows the numerator, it does not gut it."""
+    await _seed_statuses(
+        realdb,
+        [(InvoiceStatus.done, True), (InvoiceStatus.rejected, False)],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["touchless_rate"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_excludes_an_imported_paid_invoice(realdb):
+    """`services/csv_import` may also land a historical row straight at `paid`,
+    bypassing the workflow engine — the same hole as `done`. One imported
+    `paid` (unstamped) + one genuine untouched approval: the rate is 100% off
+    the ONE invoice that really cleared review, not 100% off two.
+    """
+    await _seed_statuses(
+        realdb,
+        [(InvoiceStatus.paid, False), (InvoiceStatus.approved, True)],
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["pipeline"]["paid"] == 1
+    assert body["touchless_rate"] == 100.0
+
+    # And it is genuinely absent from BOTH legs, not just the numerator: an
+    # unstamped `paid` sitting beside a rejection cannot drag the rate down
+    # either, because it never finished review.
+    await _seed_statuses(realdb, [(InvoiceStatus.rejected, False)])
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+    assert body["touchless_rate"] == 50.0
 
 
 # ---------------------------------------------------------------------------
