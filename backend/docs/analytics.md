@@ -272,19 +272,83 @@ with somebody else's migrated history.
 ##### What this does NOT fix
 
 Rows imported **before** the marker shipped carry no key and stay in the
-population, on both legs, exactly as they are today. There is **no backfill**,
-and there will not be one: absence of the marker means "we do not know", and
-stamping a historical row on an inference (its status, its creation date, the
-absence of a workflow instance) is precisely the guessing this change exists to
-replace. A tenant that migrated before the marker and wants a clean figure has
-to wait for the imported cohort to age out of the reports it reads, or exclude
-it by date at the query.
+population, on both legs. There is no **automatic** backfill, and there will not
+be one: absence of the marker means "we do not know", and stamping a historical
+row on an inference (its status, its creation date, the absence of a workflow
+instance) is precisely the guessing this change exists to replace. What the data
+cannot supply, a person can — see the operator-run tool in the next section.
 
 Nor does the marker claim to catch every non-native row: it covers the CSV
 importer, which is the only bulk path that plants invoices around the workflow
 engine today. A future backfill tool (ERP history, a migration script) must
 stamp the same key — `IMPORT_PROVENANCE_KEY`, with its own `source` — or its
 rows will read as native.
+
+##### Backfilling the marker for pre-marker imports — the operator asserts the cutover
+
+`backend/scripts/backfill_import_provenance.py` closes the gap above the only
+way it can be closed honestly: **an operator who knows when the migration ran
+asserts the cutover, and the tool stamps what falls before it.** Nothing is
+inferred from the rows.
+
+```bash
+# from backend/ — dry run, the default: reports, writes nothing
+python scripts/backfill_import_provenance.py --tenant acme --cutover 2026-09-05
+
+# stamp it
+python scripts/backfill_import_provenance.py --tenant acme --cutover 2026-09-05 --apply
+
+# a full ISO-8601 instant works too, when midnight UTC is the wrong boundary
+python scripts/backfill_import_provenance.py --tenant acme \
+    --cutover 2026-09-05T18:30:00+00:00 --apply
+```
+
+It writes the importer's own reserved key so every existing reader
+(`imported_invoice_clause`, `native_invoice_clause`, the dashboard's
+`imported_pipeline`) sees it with no code change:
+
+```json
+{"at": "2026-09-05T00:00:00+00:00",
+ "source": "operator_backfill",
+ "asserted": true,
+ "stamped_at": "2026-09-14T11:02:41+00:00"}
+```
+
+`source` names this writer rather than `csv_import`, and `asserted: true` says
+`at` is what somebody **declared**, not what was observed — so a later reader can
+always tell an asserted marker from one the importer wrote at the moment of
+import.
+
+Safety properties, each enforced in the tool rather than left to the runbook:
+
+| Property | How |
+|---|---|
+| Dry run is the default | `--apply` is the only mutating switch; without it the session is rolled back and no audit row is written |
+| One named tenant | `--tenant <slug>` is required and resolves a single org; there is no "all tenants" mode |
+| Date-bounded | `Invoice.created_at < cutover`, **strictly** before — a row created exactly on the cutover instant is native |
+| Never stamps a provably-native row | Only statuses `csv_import` can actually land (`_IMPORTABLE_INVOICE_STATUSES` — `new` / `done` / `paid` / `rejected`, read from that module, not restated) are stampable. A pre-cutover row sitting in `ready_for_review` or `sending_to_erp` could only have got there through the workflow engine **here**, so it is reported as skipped, with its status, and left alone |
+| Idempotent | Candidates are selected through `csv_import.native_invoice_clause()`, so an already-marked row is excluded in SQL (and re-checked in Python); a re-run stamps 0 |
+| Never overwrites | An existing marker is left byte-for-byte alone, whoever wrote it — the tool only ever adds the key to a row that lacks it |
+| Cutover sanity | A cutover in the future is refused: a migration that has not run cannot have produced historical rows, and that date would stamp the tenant's live invoices |
+| Audited | A stamping run appends one `invoice.import_provenance_backfilled` row to the tenant trail — counts, statuses, the asserted cutover and the created-at range only, never an invoice number, vendor or amount |
+| PII-free output | The console report is counts and statuses; the same discipline as the audit manifest |
+
+The "never stamps a provably-native row" guard is not the rejected "identify
+imports by status" inference in disguise: it never *marks* a row, it only refuses to. A refusal leaves the row
+exactly as it reads today — unmarked, counted as native — which is the
+documented default direction to be wrong in. It exists because a date bound
+alone over-captures: on a dev tenant, a cutover of today proposed 90 rows, 58 of
+them live pipeline invoices the importer could not have created.
+
+**The caveat, stated plainly: the operator's assertion is the source of truth,
+and a wrong date mis-stamps rows.** A cutover later than the real migration
+stamps native invoices as imported and shrinks the metric's population; an
+earlier one leaves imported rows counted as native. Neither is detectable from
+the data — that is the whole reason the assertion has to come from a person.
+Check the date against the migration runbook, run the dry run first (its
+created-at range and per-status counts are there to be sanity-checked against
+what you remember migrating), and only then pass `--apply`. Stamping is not
+reversible by the tool.
 
 #### The provenance exclusion MOVES it again — direction depends on the mix
 
@@ -933,6 +997,7 @@ the cadence anchoring).
 | `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address; **cadence anchoring** — 30 late ticks in a row leave the 09:00 slot at 09:00, a dormant fortnight catches up to ONE next slot rather than 14 sends, an exactly-due slot still moves forward (no busy-loop), a future slot takes exactly one step, a naive `scheduled_for` reads as UTC |
 | `tests/test_scheduled_reports_api.py` | 23 cases — CRUD round-trip; the created row is what `list_due_schedules` picks up; `report_type` / `cadence` validated against the runner's own registries (create AND patch); recipient list shape-checked / de-duped / bounded / non-empty; our validator message names no address; RBAC (mutations admin-only, reads admin+cfo, ap_manager/ap_clerk refused); tenant isolation (list, get, patch); PII-free audit rows carrying the recipient COUNT; re-enabling a 5-strike-disabled row clears the stale `[retry N]` marker |
 | `tests/test_utc_today.py` | Drift guard — `utc_today()` is the UTC calendar date; an AST scan fails on any `date.today()` / `datetime.today()` / `datetime.date.today()` reappearing in the modules that have converged on it (the cash-flow stack, plus the AP surfaces: discounts, portal, dashboard, payments queue, recurring, workflow, review, extraction, invoice warnings, 1099, Positive Pay, the exporters). The scanner itself is a tested helper — the module-attribute spelling `datetime.date.today()` slipped past the first version, which is how two Positive Pay modules could have been listed as converged while still reading local time, and naive `datetime.now().date()` isn't spelled `today` at all |
+| `tests/test_import_provenance_backfill.py` | The operator-run pre-marker backfill (`scripts/backfill_import_provenance.py`): cutover parsing (date vs ISO instant, naive-as-UTC, future and unparseable refused, no default — the operator must assert it); the marker's shape and its `asserted` flag; and on real Postgres — dry run is the default and writes neither marker nor audit row, `--apply` stamps only un-marked rows created strictly before the cutover (a row exactly on it is native), a re-run stamps 0 and leaves an existing `csv_import` marker byte-for-byte alone, a pre-cutover row in a status the importer cannot produce is reported and never stamped (and that status set is read from `csv_import`, not restated), the manifest audit row carries counts but no invoice number or vendor, and the stamped rows leave the touchless population through `imported_invoice_clause` itself |
 | `tests/test_touchless_rate_population.py` | The touchless numerator's POPULATION (as opposed to its arithmetic): a `new -> done` shortcut and a CSV-imported `paid` are in neither leg, a genuinely approved `done` still is, a rejection is denominator-only exactly as before, and the never-reviewed rows leaving the denominator are the ONLY denominator movement. Plus structural guards re-derived from `VALID_TRANSITIONS` and `csv_import._IMPORTABLE_INVOICE_STATUSES`, so a new legal edge or a newly-importable status cannot quietly re-widen the metric |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
 | `tests/test_dashboard_aggregates.py` | Real-Postgres guards for the four aggregates that were each wrong in their own way: `total_paid` vs its converted `total_paid_reporting` counterpart under mixed currency; `discount_capture`'s elapsed-window gate (open window → `pending`, elapsed → still a `missed`) and its reporting-currency amounts + `unconverted_count`; `touchless_rate` counting `sending_to_erp` and an approval-stamped `failed` while ignoring an extraction-failed one, and excluding a `done`/`paid` row that reached its terminal status without ever being approved; `monthly_trend` returning six WHOLE calendar months with no partial oldest bar and no seventh stub bucket (both window shapes pinned against a frozen `utc_today`) |
