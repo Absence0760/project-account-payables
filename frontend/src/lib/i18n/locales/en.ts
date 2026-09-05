@@ -1262,6 +1262,41 @@ export const en = {
 		'Partial: {n, plural, one {# linked requisition, PO or invoice is} other {# linked requisitions, POs or invoices are}} denominated in another currency than the budget and excluded — committed and actual below are a floor, not the full picture. Re-denominate them, or read them on the budget itself.',
 	'cfo.budgets.empty': 'No budgets have been set up yet.',
 	'cfo.budgets.loadFailed': 'Failed to load budget vs actual.',
+	// Forecast vs actual (`POST /api/analytics/forecast_variance`). The forecast
+	// is the CFO's own, pasted from their FP&A tool and never persisted.
+	'cfo.forecastVariance.title': 'Forecast vs actual',
+	'cfo.forecastVariance.hint':
+		'Enter the outflow you forecast per month; we fill in what actually left. Nothing is saved — the forecast lives only on this screen.',
+	'cfo.forecastVariance.enter': 'Enter forecast',
+	'cfo.forecastVariance.edit': 'Edit forecast',
+	'cfo.forecastVariance.empty': 'No forecast entered yet.',
+	'cfo.forecastVariance.loadFailed': 'Failed to compare the forecast against actuals.',
+	'cfo.forecastVariance.unconverted':
+		'Partial: {n, plural, one {# completed payment} other {# completed payments}} could not be expressed in {currency} and are excluded from the actuals below — every actual and variance here is a floor, not the full figure. Book the missing rate before acting on them.',
+	'cfo.forecastVariance.rowUnconverted':
+		'{n, plural, one {# payment excluded} other {# payments excluded}}',
+	'cfo.forecastVariance.kpiMonths': 'Months compared',
+	'cfo.forecastVariance.kpiCurrency': 'Reporting currency',
+	'cfo.forecastVariance.colMonth': 'Month',
+	'cfo.forecastVariance.colForecast': 'Forecast',
+	'cfo.forecastVariance.colActual': 'Actual',
+	'cfo.forecastVariance.colVariance': 'Variance',
+	'cfo.forecastVariance.colVariancePct': 'Variance %',
+	'cfo.forecastVariance.noVariancePct': 'no forecast to compare against',
+	'cfo.forecastVariance.modalTitle': 'Enter your forecast',
+	'cfo.forecastVariance.modalHint':
+		'One row per month. Type each amount as a plain number — no currency symbol, no thousands separators.',
+	'cfo.forecastVariance.fieldMonth': 'Month',
+	'cfo.forecastVariance.fieldForecast': 'Forecast outflow',
+	'cfo.forecastVariance.forecastPlaceholder': 'e.g. 250000',
+	'cfo.forecastVariance.ariaMonth': 'Month for row {n}',
+	'cfo.forecastVariance.ariaForecast': 'Forecast outflow for row {n}',
+	'cfo.forecastVariance.addRow': 'Add month',
+	'cfo.forecastVariance.removeRow': 'Remove row {n}',
+	'cfo.forecastVariance.submit': 'Compare',
+	'cfo.forecastVariance.submitting': 'Comparing…',
+	'cfo.forecastVariance.errorEmpty': 'Enter at least one month and its forecast.',
+	'cfo.forecastVariance.errorMonth': 'Pick a month for every row you filled in.',
 	'cfo.position.colPeriod': 'Period',
 	'cfo.position.colOpening': 'Opening',
 	'cfo.position.colOutflow': 'Outflow',
@@ -1960,6 +1995,8 @@ export const en = {
 	'bankRecon.age.days': 'Over {days} days',
 	'bankRecon.search.placeholder': 'Filter by vendor, reference or account...',
 	'bankRecon.search.aria': 'Filter outstanding reconciliation items',
+	'bankRecon.search.statementsPlaceholder': 'Search statements by account, format or period...',
+	'bankRecon.search.statementsAria': 'Search bank statements',
 	'bankRecon.section.uncleared': 'Uncleared payments',
 	'bankRecon.section.unclearedHelp':
 		'Our books say the money went out. No bank line claims it yet.',
@@ -1976,6 +2013,7 @@ export const en = {
 	'bankRecon.empty.statements': 'No bank statements imported yet',
 	'bankRecon.empty.statementsDesc':
 		'Import a CSV statement from your bank and we will match its debits against the payments we made.',
+	'bankRecon.empty.statementsFiltered': 'No statements match your search.',
 	'bankRecon.truncated': 'Showing {shown} of {total}. Narrow the filter to see the rest.',
 	'bankRecon.error.load': 'Couldn’t load reconciliation data.',
 	'bankRecon.error.statements': 'Couldn’t load bank statements.',
