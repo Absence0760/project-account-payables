@@ -18,6 +18,14 @@ import {
  *   - `partial` → status partial + quality_hold INFO (pay-only-accepted)
  * These specs create the inspection through the real POST /api/inspections
  * route, then re-run the matcher and pin the gate outcome + exception routing.
+ *
+ * They stay on the API deliberately: what they pin is the MATCHER's gate, and
+ * routing each one through the form would make a matcher regression fail as a
+ * UI failure (and re-test the same three form paths four times over).
+ * `inspection-ui.spec.ts` is the other half — it records a pass, a fail and a
+ * partial acceptance through `/goods-receipts` and then asserts these same
+ * matcher outcomes, so the entry path is covered without weakening what is
+ * asserted here.
  */
 
 async function createInspection(

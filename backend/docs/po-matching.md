@@ -306,6 +306,65 @@ approval queue as clean, with no log line to notice. Bools are still rejected
 (`true` would resolve to a 1% tolerance nobody asked for) and so are non-finite
 values; both fall through rather than becoming a rule.
 
+### Where an inspection is entered (the UI)
+
+`/goods-receipts` is the entry surface, because an inspection is tied to a
+goods receipt. The page has two tabs:
+
+- **Receipts** — the deliveries (unchanged). A receipt's detail modal grew a
+  **Quality Inspections** panel listing that receipt's rows newest-first (the
+  order the matcher itself picks from) plus a **Record inspection** button that
+  opens the form with the receipt already fixed.
+- **Inspections** — every `QualityInspection` the tenant holds, with a
+  **Sync from QMS** action and a **+ Record Inspection** action. This flat list
+  is not a convenience: a synced row often resolves to neither a receipt nor a
+  PO (`_resolve_gr_id` / `_resolve_po_id` return `None` when the QMS names a
+  document this tenant does not hold), and such a row exists nowhere else in
+  the app. It renders as **Not linked**, titled with what that means — PO
+  matching will never read it.
+
+Three things the form encodes, each of them a property of the matcher rather
+than a UI preference:
+
+- **`partial` requires an accepted quantity.** The matcher renders the figure
+  into its `Partial acceptance: N of ordered quantity accepted` issue, and
+  falls back to the word `part` when there is none — true, and useless to
+  whoever works the resulting `quality_hold`. The three outcomes are a radio
+  group, each labelled with what it does to the match (`pass` leaves it alone,
+  `fail` drops it to `mismatch` and blocks payment, `partial` drops it to
+  `partial`).
+- **A receipt is mandatory in the form**, even though `POST /api/inspections`
+  accepts a body with neither `gr_id` nor `po_id`. The matcher only ever reads
+  an inspection through the matched receipt's `gr_id`, or through a PO-level
+  row whose `gr_id` IS NULL — so an unlinked row is invisible to the match it
+  was recorded for. Offering that as a form option would let someone record a
+  failed inspection, see it listed, and watch the invoice pay anyway. The
+  receipt carries the PO, so both ids go up together.
+- **The panel does not claim an inspection is always required.** Whether one is
+  mandatory before payment is resolved per invoice by `services/matching_rules`
+  (vendor rule → commodity/GL rule → org default), so the standing hint says
+  exactly that.
+
+Quantities are held and sent as the **raw text** the inspector typed, validated
+by shape (`\d{1,8}(\.\d{1,4})?`, matching the `Numeric(12, 4)` column) rather
+than parsed through `Number` — the same discipline the money inputs use, and
+the reason the fields are `type="text" inputmode="decimal"` (Svelte's
+`bind:value` on a `type="number"` input hands back a JS number).
+
+**RBAC mirrors the router**: reading the list is open to any authenticated user
+(`get_current_user`), while recording and syncing are admin / ap_manager, gated
+in the page on `auth.isManager`. A clerk sees every inspection and no button;
+`require_roles` refuses the write regardless.
+
+**The Sync action reports what the sync did**, not merely that it ran: the
+counts on success, `already up to date` when a re-pull matched what is stored
+(the upsert is idempotent on `(org, inspection_number)`), an explicit "the
+provider returned no inspections" when `fetched` is 0, and — for both 409s — the
+backend's own explanation verbatim, because *that* is the outcome an operator
+asked for. Frontend module: `frontend/src/lib/api/inspections.ts`; UI:
+`frontend/src/routes/goods-receipts/` (`+page.svelte` +
+`RecordInspectionModal.svelte`).
+
 ### QMS integration (inspection sync)
 
 Quality-inspection rows can be pulled from an external QMS / LIMS rather than
@@ -460,6 +519,13 @@ PATCH→`refresh_warnings`→`match_invoice_to_po` path (PO/GR rows seeded via
   different tenant).
 - `inspections-api.spec.ts` — `/api/inspections` create/list/detail round-trip,
   result-enum + bad-uuid 400s, 404, and the create RBAC gate (clerk denied).
+- `inspection-ui.spec.ts` — the same three gate outcomes driven through the
+  **app** instead of the API: a `pass` recorded from a receipt's detail modal, a
+  `fail` recorded from the Inspections tab (with the notes typed into the form
+  quoted back in the match issue), a `partial` carrying its accepted quantity,
+  the clerk role gate on both mutate controls, and the Sync-from-QMS action —
+  its 409 refusal when no QMS is configured, its counts, and its
+  "already up to date" report on an idempotent re-run.
 
 `goods-receipts/three-way-feed.spec.ts` proves a GR actually changes the match
 outcome (presence → 3-way; short receipt → `partial`).
@@ -476,6 +542,7 @@ outcome (presence → 3-way; short receipt → `partial`).
 | Configurable `require_inspection` per org (`Organization.settings.matching.require_inspection`) | Done |
 | Inspections API (`/api/inspections` list/create/detail) | Done |
 | Inspection display in invoice modal (Quality Inspection sub-panel) | Done |
+| Inspection **entry** UI (`/goods-receipts` → Inspections tab + receipt detail panel) | Done |
 | QMS integration (`qms_adapters` mock + generic skeleton, `qms_sync` sweep, `POST /api/inspections/sync`) | Done |
 | Per-vendor / per-commodity match rules (`services/matching_rules.py`, vendor/GL `require_inspection` + `tolerance_pct` overrides) | Done |
 | Tolerance configuration | Done (5% default) |
