@@ -288,3 +288,48 @@ export interface AnalyticsByEntity {
 	entities: EntityRollupRow[];
 	consolidated: EntityMetrics;
 }
+
+// Early-payment discount capture — the `discount_capture` block of
+// `GET /api/dashboard` (`services/analytics.compute_discount_capture`).
+//
+// **A three-way fold, not two.** An eligible invoice is `missed` only once its
+// discount window has ELAPSED without being captured; while the deadline is
+// still ahead it is `pending` — still fully on the table. Rendering
+// captured-vs-missed alone reports live opportunities as forgone savings.
+//
+// The figures to RENDER are `*_amount_reporting`, denominated in
+// `reporting_currency`. The bare `*_amount` fields are per-row FACE values and
+// mix currencies the moment one eligible invoice is foreign — they are typed
+// here so the shape is honest, not because a surface should show them.
+
+export interface DashboardDiscountCapture {
+	eligible_count: number;
+	captured_count: number;
+	missed_count: number;
+	/** Windows still OPEN — capturable, never counted as a miss. */
+	pending_count: number;
+	/** Per-row face value; mixes currencies. Render the `_reporting` twin. */
+	captured_amount: MoneyString;
+	missed_amount: MoneyString;
+	pending_amount: MoneyString;
+	/** The currency the three `_reporting` figures below are denominated in. */
+	reporting_currency: string;
+	captured_amount_reporting: MoneyString;
+	missed_amount_reporting: MoneyString;
+	pending_amount_reporting: MoneyString;
+	/**
+	 * A COUNT, not money: eligible rows with no usable rate lock, contributing
+	 * FACE value to the three `_reporting` figures rather than being dropped.
+	 * Non-zero means those figures mix currencies — say so at the point of
+	 * reading (`docs/decisions.md` §35).
+	 */
+	unconverted_count: number;
+	/**
+	 * Captured / (captured + missed), as a percentage — `null`, never `0`, when
+	 * nothing has been DECIDED yet. "We have not missed a discount yet" and "we
+	 * captured none of the discounts we could have" are opposite facts and 0%
+	 * renders as the bad one. Read `insufficient_data`, never a zero.
+	 */
+	capture_rate_pct: number | null;
+	insufficient_data: boolean;
+}

@@ -7,6 +7,7 @@ import type {
 	BudgetCheck,
 	BudgetCreate,
 	BudgetListResponse,
+	BudgetRollup,
 	BudgetSpend,
 	BudgetSummary,
 	BudgetUpdate
@@ -43,6 +44,21 @@ export function getBudgetSummary(
 	if (params.search) qs.set('search', params.search);
 	const suffix = qs.toString() ? `?${qs}` : '';
 	return api.get<BudgetSummary>(`/api/budgets/summary${suffix}`);
+}
+
+// Org-wide budget-vs-actual — allocated / committed / actual / remaining per
+// currency across the WHOLE filtered set, computed on read. Same filters as
+// `listBudgets`, so the CFO rollup and the budgets table can't describe
+// different sets. Never add two `by_currency` rows together.
+export function getBudgetRollup(
+	params: Pick<BudgetListParams, 'dimension' | 'period' | 'search'> = {}
+): Promise<BudgetRollup> {
+	const qs = new URLSearchParams();
+	if (params.dimension) qs.set('dimension', params.dimension);
+	if (params.period) qs.set('period', params.period);
+	if (params.search) qs.set('search', params.search);
+	const suffix = qs.toString() ? `?${qs}` : '';
+	return api.get<BudgetRollup>(`/api/budgets/rollup${suffix}`);
 }
 
 export function getBudget(id: string): Promise<Budget> {

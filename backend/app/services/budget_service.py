@@ -113,6 +113,18 @@ REALISED_INVOICE_STATUSES: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class _Leg:
+    """One spend leg's exact total plus the rows it REFUSED.
+
+    ``excluded`` is a COUNT, not money: rows linked to (or matching) this budget
+    whose currency is not the budget's — or is NULL. They are deliberately not
+    summed (the legs never convert) and deliberately not forgotten."""
+
+    total: Decimal
+    excluded: int
+
+
+@dataclass(frozen=True)
 class BudgetSpend:
     """Computed spend rollup for one budget. All money is exact ``Decimal``."""
 
@@ -122,11 +134,25 @@ class BudgetSpend:
     remaining: Decimal
     utilization_pct: Decimal
     currency: str
+    # How many rows the three legs REFUSED for being denominated in another
+    # currency than the budget (or carrying no currency at all). The legs never
+    # convert, so excluding is the right call — but a figure that quietly left
+    # rows out reads exactly like a complete one, which is the defect the
+    # `unconverted_count` disclosures elsewhere exist to prevent. Non-zero means
+    # `committed` / `actual` describe PART of the linked activity; the reader
+    # has to be told at the point of reading (`docs/decisions.md` §35).
+    excluded_row_count: int = 0
 
 
 def _q(value) -> Decimal:
-    """Coerce a possibly-``None`` SUM result to a 2dp ``Decimal``."""
-    return Decimal(value if value is not None else 0)
+    """Coerce a possibly-``None`` SUM result to a 2dp ``Decimal``.
+
+    The quantize is load-bearing, not cosmetic: a ``coalesce(SUM(...), 0)`` over
+    an empty set comes back as the integer ``0``, so an un-quantized leg
+    serialised as ``"0"`` next to a sibling's ``"260.05"`` in the same rollup.
+    Every money column behind these SUMs is ``Numeric(15, 2)``, so 2dp is the
+    scale the data already has — this only pins the empty case to it."""
+    return Decimal(value if value is not None else 0).quantize(Decimal("0.01"))
 
 
 # Why the two `budget_id`-keyed legs below are NOT entity-scoped, unlike the
@@ -147,37 +173,43 @@ def _q(value) -> Decimal:
 # exact"; the legs never convert).
 
 
-async def _committed_requisition_total(db: AsyncSession, budget: Budget) -> Decimal:
+async def _committed_requisition_total(db: AsyncSession, budget: Budget) -> _Leg:
     """Leg 1 — open, un-converted requisitions linked to this budget."""
-    query = select(func.coalesce(func.sum(PurchaseRequisition.total), 0)).where(
+    matches = PurchaseRequisition.currency == budget.currency
+    query = select(
+        func.coalesce(func.sum(PurchaseRequisition.total).filter(matches), 0),
+        func.count().filter(matches.isnot(True)),
+    ).where(
         PurchaseRequisition.budget_id == budget.id,
         PurchaseRequisition.status.in_(OPEN_COMMITMENT_REQ_STATUSES),
-        PurchaseRequisition.currency == budget.currency,
     )
-    total = (await db.execute(query)).scalar_one()
-    return _q(total)
+    total, excluded = (await db.execute(query)).one()
+    return _Leg(_q(total), int(excluded or 0))
 
 
-async def _committed_po_total(db: AsyncSession, budget: Budget) -> Decimal:
+async def _committed_po_total(db: AsyncSession, budget: Budget) -> _Leg:
     """Leg 2 — POs that this budget's converted requisitions turned into."""
+    # PurchaseOrder carries no currency; the requisition it converted from does,
+    # and the two share it.
+    matches = PurchaseRequisition.currency == budget.currency
     query = (
-        select(func.coalesce(func.sum(PurchaseOrder.total), 0))
+        select(
+            func.coalesce(func.sum(PurchaseOrder.total).filter(matches), 0),
+            func.count().filter(matches.isnot(True)),
+        )
         .select_from(PurchaseRequisition)
         .join(PurchaseOrder, PurchaseOrder.id == PurchaseRequisition.converted_po_id)
         .where(
             PurchaseRequisition.budget_id == budget.id,
             PurchaseRequisition.status == RequisitionStatus.converted,
             PurchaseOrder.status.notin_(_DEAD_PO_STATUSES),
-            # PurchaseOrder carries no currency; the requisition it converted
-            # from does, and the two share it.
-            PurchaseRequisition.currency == budget.currency,
         )
     )
-    total = (await db.execute(query)).scalar_one()
-    return _q(total)
+    total, excluded = (await db.execute(query)).one()
+    return _Leg(_q(total), int(excluded or 0))
 
 
-async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> Decimal:
+async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> _Leg:
     """Realised invoice spend matched to this budget's dimension.
 
     Every budget dimension maps to a matching ``Invoice`` column (see module
@@ -185,14 +217,11 @@ async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> Decimal:
     / ``project`` — contribute actual spend."""
     match_col = _DIMENSION_MATCH_COLUMN.get(budget.dimension)
     if match_col is None:
-        return Decimal(0)
+        return _Leg(Decimal(0), 0)
 
     conditions = [
         match_col == budget.dimension_value,
         Invoice.status.in_(REALISED_INVOICE_STATUSES),
-        # Only sum invoices in the budget's own currency — the legs never
-        # convert, so mixing currencies would add unlike face values.
-        Invoice.currency == budget.currency,
     ]
     # Bound realised spend to the budget's own period so two budgets tracking the
     # same dimension in different periods don't both report all-time spend. Only
@@ -200,10 +229,17 @@ async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> Decimal:
     if budget.period_start is not None and budget.period_end is not None:
         conditions.append(Invoice.invoice_date.between(budget.period_start, budget.period_end))
 
-    query = select(func.coalesce(func.sum(Invoice.amount), 0)).where(*conditions)
+    # Only sum invoices in the budget's own currency — the legs never convert,
+    # so mixing currencies would add unlike face values. The refused rows are
+    # COUNTED rather than forgotten (see `BudgetSpend.excluded_row_count`).
+    matches = Invoice.currency == budget.currency
+    query = select(
+        func.coalesce(func.sum(Invoice.amount).filter(matches), 0),
+        func.count().filter(matches.isnot(True)),
+    ).where(*conditions)
     query = apply_entity_scope(query, Invoice, budget.entity_id)
-    total = (await db.execute(query)).scalar_one()
-    return _q(total)
+    total, excluded = (await db.execute(query)).one()
+    return _Leg(_q(total), int(excluded or 0))
 
 
 async def compute_budget_spend(db: AsyncSession, budget: Budget) -> BudgetSpend:
@@ -212,10 +248,11 @@ async def compute_budget_spend(db: AsyncSession, budget: Budget) -> BudgetSpend:
     All three aggregates SUM in Postgres over ``Numeric`` columns; the arithmetic
     here is ``Decimal`` only. Never float."""
     allocated = _q(budget.amount)
-    committed = await _committed_requisition_total(db, budget) + await _committed_po_total(
-        db, budget
-    )
-    actual = await _actual_invoice_total(db, budget)
+    req_leg = await _committed_requisition_total(db, budget)
+    po_leg = await _committed_po_total(db, budget)
+    actual_leg = await _actual_invoice_total(db, budget)
+    committed = req_leg.total + po_leg.total
+    actual = actual_leg.total
     remaining = allocated - committed - actual
 
     if allocated > 0:
@@ -230,4 +267,130 @@ async def compute_budget_spend(db: AsyncSession, budget: Budget) -> BudgetSpend:
         remaining=remaining,
         utilization_pct=utilization,
         currency=budget.currency,
+        excluded_row_count=req_leg.excluded + po_leg.excluded + actual_leg.excluded,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Org-wide rollup — allocated vs committed vs actual across many budgets
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BudgetCurrencyRollup:
+    """One currency's slice of the org-wide budget-vs-actual rollup.
+
+    Every figure is the exact sum of the per-budget ``BudgetSpend`` values for
+    budgets denominated in ``currency``. Nothing is ever added ACROSS
+    currencies and nothing is FX-converted here — an exchange rate fetched on a
+    read makes the answer non-deterministic (``backend/docs/multi-currency.md``),
+    and a blended figure is not denominated in anything real.
+    """
+
+    currency: str
+    budget_count: int
+    allocated: Decimal
+    committed: Decimal
+    actual: Decimal
+    remaining: Decimal
+    # ``None``, never ``0``, when this currency's budgets allocate nothing at
+    # all: "0% of the budget is used" and "there is no budget to use" are
+    # opposite facts, and 0% renders as the reassuring one. Same rule
+    # ``analytics.compute_discount_capture`` applies to ``capture_rate_pct``
+    # (``docs/decisions.md`` §34).
+    utilization_pct: Decimal | None
+    over_budget_count: int
+    excluded_row_count: int
+
+
+@dataclass(frozen=True)
+class BudgetRollup:
+    """Org-wide budget-vs-actual rollup over a set of budgets.
+
+    ``insufficient_data`` is true when the filtered set holds no budgets at all
+    — the caller renders "no budgets" rather than a row of confident zeros.
+    ``excluded_row_count`` is the whole-set total of the per-currency
+    disclosures: non-zero means the committed/actual figures below describe
+    PART of the linked activity, and the surface rendering them must say so.
+    """
+
+    budget_count: int
+    by_currency: list[BudgetCurrencyRollup]
+    excluded_row_count: int
+    insufficient_data: bool
+
+
+def _resolve_currency(code: str | None) -> str:
+    """Uppercase a budget's currency code; blank/NULL falls back to ``USD``.
+
+    Matches how ``api/budgets.py::budget_summary`` keys its group-by, so the
+    rollup and the allocation KPI bucket the same rows the same way."""
+    return (code or "").strip().upper() or "USD"
+
+
+async def compute_budget_rollup(db: AsyncSession, budgets: "list[Budget]") -> BudgetRollup:
+    """Fold ``compute_budget_spend`` over ``budgets``, grouped by currency.
+
+    Compute-on-read like the per-budget rollup it is built from — there is no
+    stored running total to drift. Cost is three aggregate queries per budget;
+    the set is deliberately the WHOLE filtered set rather than a page, because a
+    partial rollup presented as an org-wide total is exactly the dishonesty the
+    per-currency grouping exists to prevent.
+
+    Ordering is by currency code ascending — deterministic, and stable as the
+    amounts move (a total-ordered list would reshuffle between reads).
+    """
+    buckets: dict[str, dict] = {}
+    for budget in budgets:
+        spend = await compute_budget_spend(db, budget)
+        code = _resolve_currency(budget.currency)
+        b = buckets.setdefault(
+            code,
+            {
+                "budget_count": 0,
+                "allocated": Decimal(0),
+                "committed": Decimal(0),
+                "actual": Decimal(0),
+                "over_budget_count": 0,
+                "excluded_row_count": 0,
+            },
+        )
+        b["budget_count"] += 1
+        b["allocated"] += spend.allocated
+        b["committed"] += spend.committed
+        b["actual"] += spend.actual
+        b["excluded_row_count"] += spend.excluded_row_count
+        if spend.remaining < 0:
+            b["over_budget_count"] += 1
+
+    by_currency = []
+    for code in sorted(buckets):
+        b = buckets[code]
+        allocated: Decimal = b["allocated"]
+        committed: Decimal = b["committed"]
+        actual: Decimal = b["actual"]
+        utilization = (
+            ((committed + actual) / allocated * Decimal(100)).quantize(Decimal("0.01"))
+            if allocated > 0
+            else None
+        )
+        by_currency.append(
+            BudgetCurrencyRollup(
+                currency=code,
+                budget_count=b["budget_count"],
+                allocated=allocated,
+                committed=committed,
+                actual=actual,
+                remaining=allocated - committed - actual,
+                utilization_pct=utilization,
+                over_budget_count=b["over_budget_count"],
+                excluded_row_count=b["excluded_row_count"],
+            )
+        )
+
+    return BudgetRollup(
+        budget_count=len(budgets),
+        by_currency=by_currency,
+        excluded_row_count=sum(c.excluded_row_count for c in by_currency),
+        insufficient_data=len(budgets) == 0,
     )

@@ -151,6 +151,39 @@ New keys added in a prior iteration:
   a row with no usable rate lock contributes face value and is counted on
   `unconverted_count` rather than dropped (`docs/decisions.md` §35).
 
+  **Frontend surface**: the dashboard (`frontend/src/routes/+page.svelte`) —
+  an `Early-payment discounts` card rendering all three buckets with their
+  reporting-currency amounts, plus a `Discounts captured` KPI card. Typed as
+  `DashboardDiscountCapture` in `frontend/src/lib/types/analytics.ts`.
+
+  Three contracts the UI encodes, each of which would reintroduce a defect the
+  backend fix removed if a later slice "simplified" it:
+
+  - **`unconverted_count` renders WITH the figure, not in a tooltip.** A
+    non-zero count means the amounts mix currencies, so the card carries a
+    `role="alert"` line (`[data-testid="discount-capture-unconverted"]`) and
+    the KPI card's `sub` qualifier carries the same fact — outranking the
+    capture rate there, because a rate is context while an unconverted count
+    means the headline is partial. Matches how `/cfo`'s cash-position card
+    presents its own `unconverted_count`.
+  - **The amounts are labelled with the payload's OWN `reporting_currency`**,
+    via a local `fmtIn` — never the separately-fetched org-settings currency
+    the other dashboard KPIs use, which would let the page print "no exchange
+    rate into GBP" above a column of `$`. Same rule, same name, as `/cfo`.
+  - **`insufficient_data` renders as its own sentence, never `0%`.** "No
+    discount window has closed yet" and "we captured none of them" are
+    opposite facts.
+
+  E2E: `frontend/tests-e2e/dashboard/discount-capture.spec.ts` (stubs the
+  dashboard response so the pending bucket and the partial-figure disclosure
+  are actually on screen — a seeded tenant reliably produces neither).
+
+  **`POST /api/analytics/forecast_variance`'s per-row `unconverted_count` +
+  `reporting_currency` still have NO consumer** — that endpoint takes a body of
+  actuals and has no UI at all yet. Whoever builds one renders the disclosure
+  the same way; until then the honesty is API-only, tracked in
+  `docs/followups.md`.
+
 ### Touchless rate — what the number means
 
 `touchless_rate` is a claim about **how much work the machine did instead of a

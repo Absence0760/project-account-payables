@@ -78,6 +78,13 @@ export interface BudgetSpend {
 	remaining: MoneyAmount;
 	/** A percentage, not money. */
 	utilization_pct: number;
+	/**
+	 * A COUNT, not money: requisitions / POs / invoices that match this budget
+	 * but are denominated in another currency, so the spend legs refused them
+	 * rather than adding unlike face values. Non-zero means `committed` /
+	 * `actual` are a FLOOR — render the disclosure beside the figure.
+	 */
+	excluded_row_count: number;
 }
 
 /** One currency's slice of `GET /api/budgets/summary`. */
@@ -137,3 +144,49 @@ export interface BudgetCreate {
 }
 
 export type BudgetUpdate = Partial<BudgetCreate>;
+
+// `GET /api/budgets/rollup` — the org-wide, whole-set counterpart of
+// `/{id}/spend`: allocated vs committed vs actual across every budget matching
+// the SAME dimension/period/search filters as the list, grouped by currency.
+//
+// Money here is `MoneyString` — an EXACT decimal string, not a JSON number.
+// The per-budget `BudgetSpend` above predates that convention and still
+// arrives as `float`; these are org-wide totals a CFO reads off a dashboard, so
+// they never round-trip through a binary float. Never add two rows together:
+// they are denominated in different currencies and nothing converts them.
+
+/** One currency's slice of the org-wide budget-vs-actual rollup. */
+export interface BudgetCurrencyRollup {
+	currency: string;
+	/** A row count, not money. */
+	budget_count: number;
+	allocated: MoneyString;
+	committed: MoneyString;
+	actual: MoneyString;
+	/** `allocated - committed - actual`; negative = overspend. */
+	remaining: MoneyString;
+	/**
+	 * A percentage, not money — and `null`, never `'0.00'`, when this currency
+	 * allocates nothing at all. "0% used" and "there is nothing to use" are
+	 * opposite facts and 0% renders as the reassuring one.
+	 */
+	utilization_pct: string | null;
+	/** Budgets in this currency whose `remaining` went negative. A count. */
+	over_budget_count: number;
+	/** A count — see `BudgetSpend.excluded_row_count`. */
+	excluded_row_count: number;
+}
+
+export interface BudgetRollup {
+	/** A row count, not money. */
+	budget_count: number;
+	by_currency: BudgetCurrencyRollup[];
+	/**
+	 * Whole-set total of the per-currency disclosures. Non-zero means the
+	 * figures above are a floor, and the surface must SAY so beside them rather
+	 * than presenting a partial total as a whole one.
+	 */
+	excluded_row_count: number;
+	/** No budgets at all — a distinct state from a row of confident zeros. */
+	insufficient_data: boolean;
+}

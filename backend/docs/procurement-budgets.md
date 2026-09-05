@@ -86,11 +86,75 @@ Every list/read is entity-scoped (`X-Entity-ID`) and tenant-isolated
 | GET | `/budgets` | Paginated, entity-scoped list. Filters: `dimension`, `period`; `search` (ILIKE on name + dimension_value). |
 | GET | `/budgets/summary` | Whole-set KPI rollup — count + per-currency allocation totals (exact decimal strings, never a cross-currency SUM, never FX-converted). Shares `_budget_list_filters` with the list so the `/budgets` "Total allocated" card can't describe a different set than the table. Groups are ordered by currency code, and each page headlines the first one with the rest on a sub-line — so which currency headlines is alphabetical, never largest-total. |
 | POST | `/budgets` | Create. Audited `budget.created`. |
+| GET | `/budgets/rollup` | **Org-wide budget vs actual** — whole-set allocated / committed / actual / remaining, grouped by currency, computed on read. Shares `_budget_list_filters` + the entity scope with the list. Money is exact decimal strings; never summed across currencies, never FX-converted on a read. Rendered on `/cfo`. |
 | GET | `/budgets/check` | Overspend pre-check (query `budget_id` + `amount`). |
 | GET | `/budgets/{id}` | Detail. |
 | GET | `/budgets/{id}/spend` | Computed allocated / committed / actual / remaining / utilization rollup. |
 | PATCH | `/budgets/{id}` | Update changed fields. Audited `budget.updated`. |
 | DELETE | `/budgets/{id}` | Delete. Audited `budget.deleted`. |
+
+### `GET /budgets/rollup` contract
+
+The CFO's consolidated view. Before it, the only budget-vs-actual surfaces were
+the standalone `/budgets` page and the per-budget `GET /{id}/spend`, so an
+org-wide "allocated vs committed vs actual" meant opening budgets one at a time.
+
+```
+GET /api/budgets/rollup?dimension=&period=&search=
+→ {
+    budget_count,                # rows in the filtered set
+    by_currency: [{
+      currency, budget_count,
+      allocated, committed, actual, remaining,   # exact decimal STRINGS
+      utilization_pct,           # string, or null — see below
+      over_budget_count,         # budgets whose remaining went negative
+      excluded_row_count
+    }],
+    excluded_row_count,          # whole-set total of the per-currency counts
+    insufficient_data            # true when the filtered set holds no budgets
+  }
+```
+
+- **Computed on read**, like the rest of this router: `compute_budget_rollup`
+  folds `compute_budget_spend` over the matching budgets. There is no stored
+  running total to drift, and the cost is three aggregate queries per budget.
+  The set is deliberately the **whole filtered set**, not a page — a partial
+  rollup presented as an org-wide total is exactly the dishonesty the
+  per-currency grouping exists to prevent.
+- **Money is grouped by currency and serialised as exact decimal strings.**
+  Unlike the per-budget `BudgetSpendResponse` (which predates the string
+  convention and stays `float` for API back-compat), these are org-wide totals
+  read off a dashboard, so they never round-trip through a binary float. Rows
+  are ordered by currency code ascending — deterministic, and stable as the
+  amounts move.
+- **`utilization_pct` is `null`, never `"0.00"`, when a currency allocates
+  nothing at all.** "0% of the budget is used" and "there is no budget to use"
+  are opposite facts and 0% renders as the reassuring one — the same rule
+  `analytics.compute_discount_capture` applies to `capture_rate_pct`
+  (`../../docs/decisions.md` §34). `insufficient_data` is the same distinction
+  at the top level: an empty set reads as "no budgets", not a row of confident
+  zeros.
+- **RBAC + scope** are the list's own: read `admin` / `ap_manager` / `cfo`,
+  entity-scoped via `X-Entity-ID`, tenant-isolated per-tenant DB session. It
+  runs the SAME `_budget_list_filters`, so the rollup can never describe a
+  different set than the table.
+
+### Currency-excluded rows are disclosed, not forgotten
+
+Every spend leg is scoped by currency (the legs never convert), so a
+requisition, PO or invoice denominated in another currency than its budget is
+**excluded** from `committed` / `actual`. That is the right call — summing
+unlike face values would be worse — but a figure that quietly left rows out
+reads exactly like a complete one.
+
+`BudgetSpend.excluded_row_count` counts them, across all three legs, using a
+Postgres `FILTER` clause on the same aggregate query (so it costs no extra
+round trip). A currency that is NULL counts as excluded too — `(currency = 'X')
+IS NOT TRUE`, not `<> 'X'`, which would swallow the NULL. The count surfaces on
+BOTH `GET /{id}/spend` and `GET /rollup` (per currency and whole-set), and
+`/cfo` renders it as a `role="alert"` line above the table naming the figures
+as a **floor** — the same idiom the cash-position card uses for its
+`unconverted_count` outflows. See `../../docs/decisions.md` §35.
 
 ### `GET /budgets/check` contract
 
@@ -113,6 +177,18 @@ decides whether to warn or hard-stop. All math is `Decimal`; an unknown
 `budget_id` is a 404.
 
 ## Frontend
+
+**`/cfo` — org-wide budget vs actual.** A `Budget vs actual` card over
+`GET /budgets/rollup`, rendered OUTSIDE the cash-flow `{#if}` (an independent
+fetch taking none of that page's controls, so a failed forecast must not hide
+the only consolidated allocated-vs-spent view — same reasoning as
+`ScheduledReportsPanel`). One table row per currency, each formatted in its
+OWN currency; an overspent `remaining` is tinted and a breach banner counts the
+over-budget budgets across currencies (a COUNT may cross currencies; the
+amounts beside it may not). The `excluded_row_count` disclosure sits above the
+table. Pure display helpers + their vitest guard live in
+`routes/cfo/budgetRollupSummary.{ts,test.ts}`; e2e in
+`tests-e2e/cfo/budget-rollup.spec.ts`.
 
 `/budgets` workspace: a KPI row (total allocated / budget count / dimension
 count), a `FilterChips` row by dimension + a `SearchBox`, and a `DataTable` of

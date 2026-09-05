@@ -5,7 +5,7 @@
 	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
 	import CfoMetrics from '$lib/components/analytics/CfoMetrics.svelte';
 	import ScheduledReportsPanel from '$lib/components/analytics/ScheduledReportsPanel.svelte';
-	import { formatMoney, isPositiveAmount, parseMoneyForLayout } from '$lib/utils/money';
+	import { formatMoney, isNegativeAmount, isPositiveAmount, parseMoneyForLayout } from '$lib/utils/money';
 	import type { MoneyAmount } from '$lib/utils/money';
 	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -13,6 +13,9 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { untrack } from 'svelte';
 	import { openingBalanceSkipKey } from './openingBalanceNotice';
+	import { formatUtilization, overBudgetCount } from './budgetRollupSummary';
+	import { getBudgetRollup } from '$lib/api/budgets';
+	import type { BudgetRollup } from '$lib/types/budget';
 	import type {
 		CashflowForecast,
 		CashflowGranularity,
@@ -30,6 +33,17 @@
 	let position = $state<CashPosition | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+
+	// Org-wide budget-vs-actual. Fetched INDEPENDENTLY of the cash-flow panels
+	// and rendered outside their `{#if}` — same reasoning as
+	// `ScheduledReportsPanel`: it takes no control input from this page, and a
+	// failed forecast must not take the only consolidated budget view down with
+	// it. `null` = not loaded yet; `insufficient_data` = loaded and there are no
+	// budgets, which is a different statement and gets different copy.
+	let budgetRollup = $state<BudgetRollup | null>(null);
+	let budgetRollupError = $state(false);
+
+	const budgetsOverCount = $derived(overBudgetCount(budgetRollup));
 
 	function fmt(amount: MoneyAmount): string {
 		return formatMoney(amount, { currency: orgCurrency.currency, whole: true });
@@ -127,6 +141,19 @@
 		void granularity;
 		void horizonDays;
 		load();
+	});
+
+	// One-shot: the rollup takes none of this page's controls, so it neither
+	// re-fires nor needs the request sequencer.
+	$effect(() => {
+		getBudgetRollup()
+			.then((r) => {
+				budgetRollup = r;
+				budgetRollupError = false;
+			})
+			.catch(() => {
+				budgetRollupError = true;
+			});
 	});
 
 	// The two free-text money inputs are debounced — one request per pause, not
@@ -368,6 +395,80 @@
 		<ByEntityBreakdown />
 	{/if}
 
+	<!-- Org-wide budget vs actual. Deliberately OUTSIDE the forecast `{#if}`
+	     above, like the scheduled-reports panel below: it is an independent
+	     fetch taking none of this page's controls, and a failed cash-flow load
+	     must not hide the only consolidated allocated-vs-spent view.
+
+	     Figures are grouped BY CURRENCY and never added across one — the
+	     backend refuses to convert on a read, so a blended row would be
+	     denominated in nothing real. Anything the spend legs had to leave out
+	     is disclosed above the table, in the same `.cf-skipped` idiom the
+	     cash-position card uses for its unconverted outflows. -->
+	{#if budgetRollupError}
+		<div class="chart-card" data-testid="budget-rollup">
+			<h2>{m('cfo.budgets.title')}</h2>
+			<p class="cf-error" role="alert">{m('cfo.budgets.loadFailed')}</p>
+		</div>
+	{:else if budgetRollup}
+		<div class="chart-card" data-testid="budget-rollup">
+			<h2>{m('cfo.budgets.title')}</h2>
+			<!-- The disclosure sits ABOVE the numbers it qualifies, not in a
+			     tooltip: a requisition / PO / invoice denominated in another
+			     currency than its budget is REFUSED by the spend legs (they
+			     never convert), so a non-zero count means committed and actual
+			     below are a floor, not the whole picture. -->
+			{#if budgetRollup.excluded_row_count > 0}
+				<p class="cf-skipped" role="alert" data-testid="budget-rollup-excluded">
+					{m('cfo.budgets.excluded', { n: budgetRollup.excluded_row_count })}
+				</p>
+			{/if}
+			{#if budgetRollup.insufficient_data}
+				<p class="empty">{m('cfo.budgets.empty')}</p>
+			{:else}
+				{#if budgetsOverCount > 0}
+					<p class="cf-breach" role="alert" data-testid="budget-rollup-over">
+						{m('cfo.budgets.overBudget', { n: budgetsOverCount })}
+					</p>
+				{/if}
+				<table class="cf-table">
+					<thead>
+						<tr>
+							<th>{m('cfo.budgets.colCurrency')}</th>
+							<th class="num">{m('cfo.budgets.colAllocated')}</th>
+							<th class="num">{m('cfo.budgets.colCommitted')}</th>
+							<th class="num">{m('cfo.budgets.colActual')}</th>
+							<th class="num">{m('cfo.budgets.colRemaining')}</th>
+							<th class="num">{m('cfo.budgets.colUtilization')}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each budgetRollup.by_currency as row (row.currency)}
+							{@const utilization = formatUtilization(row.utilization_pct)}
+							<tr>
+								<td>
+									{row.currency}
+									<span class="cf-row-sub"
+										>{m('cfo.budgets.budgetCount', { n: row.budget_count })}</span
+									>
+								</td>
+								<td class="num">{fmtIn(row.allocated, row.currency)}</td>
+								<td class="num">{fmtIn(row.committed, row.currency)}</td>
+								<td class="num">{fmtIn(row.actual, row.currency)}</td>
+								<!-- `remaining` is the BACKEND's subtraction, in Decimal; the
+								     predicate only decides whether to tint it. -->
+								<td class="num" class:over={isNegativeAmount(row.remaining)}
+									>{fmtIn(row.remaining, row.currency)}</td
+								>
+								<td class="num">{utilization ?? m('cfo.budgets.noUtilization')}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+		</div>
+	{/if}
+
 	<!-- Scheduled reports — the CRUD surface for the report runner that emails
 	     these same analytics. Deliberately OUTSIDE the forecast `{#if}` above: it
 	     is an independent fetch, and a failed cash-flow load must not take the
@@ -553,6 +654,20 @@
 		font-weight: 600;
 	}
 	.cf-breach {
+		color: var(--danger);
+		font-weight: 600;
+	}
+	/* Secondary detail inside a table cell (the per-currency budget count) —
+	   muted on `--surface`, which clears 4.5:1 (see frontend/CLAUDE.md §
+	   Colour tokens). */
+	.cf-row-sub {
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		margin-left: 6px;
+	}
+	/* An overspent allocation. `--danger` is the on-a-dark-surface text token;
+	   never its `-strong` companion, which is a FILL. */
+	.cf-table td.num.over {
 		color: var(--danger);
 		font-weight: 600;
 	}
