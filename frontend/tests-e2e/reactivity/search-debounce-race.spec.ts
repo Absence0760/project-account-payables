@@ -23,6 +23,22 @@ import { expect, test } from '../fixtures/helpers';
  *       immediate un-debounced request per keystroke.
  *   (b) a slow response for an earlier search term that resolves AFTER a
  *       faster later one is discarded — the final list stays correct.
+ *
+ * `/requisitions` and `/expenses` are here because their guards were written
+ * locally in `tests-e2e/{requisitions,expenses}/search-scope.spec.ts` — as
+ * hand-rolled copies of (a) — purely to avoid a merge conflict on this shared
+ * file during a parallel round. Two copies of a technique drift; one table does
+ * not. Those files keep the tests that are genuinely their own (server-side
+ * search reaching a later page, the empty state, the CSV term, and the
+ * requisitions sequencing test, which waits on a real issued-request signal and
+ * is stronger than (b) rather than a copy of it).
+ *
+ * Those two routes also carry a failure mode the other four do not, and it is
+ * the reason (a) has to TYPE rather than `fill()`: they hold an `appliedSearch`
+ * state that cancels a pending debounce once the term it names has already been
+ * requested. So an untracked-read slip there does not produce a duplicate
+ * request — it produces one un-debounced request per keystroke and NO debounced
+ * one, which a single-write `fill()` cannot distinguish from correct behaviour.
  */
 
 interface RouteCase {
@@ -33,6 +49,20 @@ interface RouteCase {
 	/** Extra setup after `page.goto(route)` before the search box is usable
 	 *  (e.g. switching to the History tab on /payments). */
 	beforeSearch?: (page: import('@playwright/test').Page) => Promise<void>;
+	/** Why this route's response-sequencing half is NOT generated here — a
+	 *  reason string, never a boolean. Set it only when a stronger test for the
+	 *  same failure already exists elsewhere; generating a weaker copy beside it
+	 *  is the duplication this table was consolidated to remove. */
+	sequencingCoveredElsewhere?: string;
+	/** A real signal that the mount fetch has RENDERED, awaited before the
+	 *  debounce test's measurement window opens. Prefer this to relying on the
+	 *  400ms settle wait alone: the search box is visible before the list
+	 *  arrives, so without it the wait is a guess about when the mount request
+	 *  lands, and a late one would show up as a phantom keystroke request. New
+	 *  cases should supply it. Used by the debounce test ONLY — the sequencing
+	 *  test passes unmatched terms through to the real backend, where the row
+	 *  count is the tenant's, not the case's. */
+	settle?: (page: import('@playwright/test').Page) => Promise<void>;
 	/** Build a fulfill body for a given search term + a unique marker string
 	 *  embedded in the one row returned, keyed so the test can assert on it. */
 	buildBody: (searchTerm: string, marker: string) => string;
@@ -139,6 +169,104 @@ const CASES: RouteCase[] = [
 			})
 	},
 	{
+		// Folded in from `tests-e2e/requisitions/search-scope.spec.ts`, which
+		// hand-rolled this same measurement locally. See the header for the
+		// `appliedSearch` failure mode this route and /expenses share.
+		name: 'requisitions',
+		route: '/requisitions',
+		apiPathname: '/api/requisitions',
+		searchPlaceholder: 'Search requisitions...',
+		// `tests-e2e/requisitions/search-scope.spec.ts` already guards the
+		// sequencing half, and does it better: it waits on a real
+		// "the held request was issued" signal rather than guessing when the
+		// debounce fired, and asserts row counts rather than the absence of a
+		// marker string. Generating the generic copy alongside it would put two
+		// tests for one failure back into the tree.
+		sequencingCoveredElsewhere:
+			'tests-e2e/requisitions/search-scope.spec.ts — signal-driven, stronger',
+		settle: async (page) => {
+			await expect(page.locator('table tbody tr.clickable')).toHaveCount(1);
+		},
+		buildBody: (searchTerm, marker) =>
+			JSON.stringify({
+				items: [
+					{
+						id: `00000000-0000-4000-9000-${marker}`,
+						requisition_number: marker,
+						title: `row for "${searchTerm}"`,
+						requester_user_id: '00000000-0000-4000-9999-000000000001',
+						department: 'Engineering',
+						status: 'draft',
+						needed_by: null,
+						justification: null,
+						vendor_id: null,
+						contract_id: null,
+						budget_id: null,
+						total: 100,
+						currency: 'USD',
+						notes: null,
+						submitted_at: null,
+						approved_at: null,
+						approved_by: null,
+						rejection_reason: null,
+						converted_po_id: null,
+						line_items: [],
+						created_at: '2026-03-01T00:00:00Z',
+						updated_at: '2026-03-01T00:00:00Z'
+					}
+				],
+				total: 1,
+				page: 1,
+				page_size: 20
+			})
+	},
+	{
+		// Folded in from `tests-e2e/expenses/search-scope.spec.ts`. No
+		// `beforeSearch`: /expenses is a five-tab page and the search box lives
+		// inside the Expenses panel, which is the DEFAULT tab — so this case
+		// depends on that default rather than on a click, unlike /payments.
+		name: 'expenses',
+		route: '/expenses',
+		apiPathname: '/api/expenses',
+		searchPlaceholder: 'Search expenses...',
+		settle: async (page) => {
+			await expect(page.locator('table tbody tr.clickable')).toHaveCount(1);
+		},
+		buildBody: (searchTerm, marker) =>
+			JSON.stringify({
+				items: [
+					{
+						id: `00000000-0000-4000-8000-${marker}`,
+						report_id: null,
+						expense_date: '2026-03-01',
+						merchant: marker,
+						category: 'Travel',
+						description: `row for "${searchTerm}"`,
+						amount: 11,
+						currency: 'USD',
+						converted_amount: null,
+						converted_currency: null,
+						converted_fx_rate: null,
+						converted_fx_locked_at: null,
+						gl_account_id: null,
+						receipt_file_key: null,
+						receipt_url: null,
+						payment_method: 'out_of_pocket',
+						card_transaction_id: null,
+						policy_violations: null,
+						status: 'draft',
+						reimbursable: true,
+						mileage_miles: null,
+						created_at: '2026-03-01T00:00:00Z',
+						updated_at: '2026-03-01T00:00:00Z'
+					}
+				],
+				total: 1,
+				page: 1,
+				page_size: 20
+			})
+	},
+	{
 		name: 'payments (history tab)',
 		route: '/payments',
 		apiPathname: '/api/payments',
@@ -194,6 +322,9 @@ for (const c of CASES) {
 
 			const search = page.getByPlaceholder(c.searchPlaceholder);
 			await expect(search).toBeVisible();
+			// A real "the mount fetch rendered" signal where the case offers
+			// one — the box is visible well before the list arrives.
+			if (c.settle) await c.settle(page);
 
 			// Let whatever mount-time fetch(es) fire and settle before measuring.
 			await page.waitForTimeout(400);
@@ -217,6 +348,11 @@ for (const c of CASES) {
 				'acme'
 			]);
 		});
+
+		// Not `test.skip` — this is not a masked failure but a test we decline
+		// to GENERATE, because a stronger one for the same failure already
+		// exists (see `sequencingCoveredElsewhere`).
+		if (c.sequencingCoveredElsewhere) return;
 
 		test(`${c.name}: a stale slow response cannot clobber a fresher one that resolves first`, async ({
 			page
@@ -258,6 +394,11 @@ for (const c of CASES) {
 
 			const search = page.getByPlaceholder(c.searchPlaceholder);
 			await expect(search).toBeVisible();
+			// No `c.settle` here: this test's handler deliberately passes every
+			// term but 'acm'/'acme' through to the real backend, so the mount
+			// response is the shard tenant's own data and its row count is not
+			// something a case can state. `settle` describes the fully-stubbed
+			// world of the test above.
 			await page.waitForTimeout(400); // let the mount-time fetch(es) settle
 
 			// Type "acm" and let its debounced request fire (and hang, gated).
