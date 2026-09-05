@@ -115,8 +115,14 @@ invoice names as **seller**, the sender is us — the document's **buyer**.
 `PEPPOL_BIS_BILLING_DOCTYPE`, which *asserts* EN 16931 / BIS Billing 3.0
 conformance, so `assert_bis3_conformant` runs before `generate_ubl`: a document
 that provably does not meet the profile (no endpoint id, no VAT breakdown, a
-line with no VAT category, a seller with no country) never leaves the building.
-PII-free `field: code` body, mapped to 422 at the route. See
+line with no VAT category, a seller with no country, **or arithmetic that does
+not add up**) never leaves the building. That last one is not a rounding
+nicety: the check now evaluates the EN 16931 calculation rules, and adding them
+is what caught the generator mapping `subtotal` into both BT-106 and BT-109 —
+so every invoice carrying a discount or a shipping charge used to go out
+contradicting itself while we stamped the conformance claim on it.
+PII-free `field: code` body — `code` is the rule id a receiving Access Point's
+own validator would name (`BR-CO-15`) — mapped to 422 at the route. See
 `backend/docs/e-invoicing.md` § PEPPOL BIS Billing 3.0 conformance.
 
 The buyer identity is built by the existing

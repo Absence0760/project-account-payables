@@ -14,17 +14,30 @@ So this module holds two things, and `generate.generate_ubl` uses both:
 2. :func:`bis3_conformance_errors` — the mandatory-element check that decides
    whether we are entitled to declare them.
 
-**Scope, stated honestly.** This is a *mandatory-element* check, not the
-official Schematron. It covers the BIS/EN 16931 business rules whose inputs the
-normalized :class:`EInvoiceDocument` actually carries — the ones that were
-missing when this was written (no endpoint ids on either party, tax subtotals
-without their amounts, invoice lines with no VAT category) plus the core
-required fields. It does not evaluate the calculation rules (BR-CO-*), code-list
-membership, or anything needing data the model has no slot for. A document that
-passes here can still fail the official validator; a document that FAILS here
-provably does not conform, which is what makes the conditional declaration
-sound. Vendoring the official Schematron and running it in CI is the next rung
-and is tracked in ``docs/followups.md``.
+**Scope, stated honestly.** This is not the official Schematron. It is three
+layers, each pure and each over the same normalized :class:`EInvoiceDocument`:
+
+1. the **mandatory-element** check in this module — the fields BIS Billing 3.0
+   requires and the model carries (endpoint ids on both parties, complete tax
+   subtotals, a VAT category on every line, the four monetary totals);
+2. the **calculation rules** (BR-CO-10/13/14/15/16/17/25/26,
+   PEPPOL-EN16931-R120 and the per-VAT-category BR-<x>-01/-05/-08 family) in
+   :mod:`app.services.e_invoice.en16931_rules` — the arithmetic a receiver's
+   validator recomputes; and
+3. **code-list membership** (BR-CL-01/03/14/17/18 and BR-CO-09) via
+   :mod:`app.services.e_invoice.codelists`.
+
+What is still *not* evaluated is written down rather than left to be
+rediscovered: the rules needing data the model has no slot for (allowance and
+charge detail, invoicing periods, VAT point dates) are tabulated in
+``en16931_rules``'s docstring, and the code lists we hold only partially (UN/ECE
+Rec 20 units, UNCL4461 payment means, the CEF EAS schemes) get a shape check
+instead of a membership claim — a partial list would refuse documents that do
+conform, and this gate hard-refuses a PEPPOL send. So: a document that passes
+here can still fail the official validator; a document that FAILS here provably
+does not conform, which is what makes the conditional declaration sound.
+Vendoring the official Schematron and running it in CI is the remaining rung and
+is tracked in ``docs/followups.md``.
 
 PII invariant: every :class:`FieldError` names the field path and a generic
 code, never a value — identical to :mod:`app.services.e_invoice.validate`.
@@ -32,6 +45,7 @@ code, never a value — identical to :mod:`app.services.e_invoice.validate`.
 
 from __future__ import annotations
 
+from app.services.e_invoice.en16931_rules import calculation_errors, code_list_errors
 from app.services.e_invoice.model import EInvoiceDocument, EInvoiceParty
 from app.services.e_invoice.validate import EInvoiceValidationError, FieldError
 
@@ -52,7 +66,11 @@ BIS3_PROFILE_ID = "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"
 def _party_errors(prefix: str, party: EInvoiceParty) -> list[FieldError]:
     errors: list[FieldError] = []
     if not party.name:
-        errors.append(FieldError(f"{prefix}.name", "missing", "BIS 3.0 requires the party name"))
+        errors.append(
+            FieldError(
+                f"{prefix}.name", "missing", "BR-06 / BR-07: BIS 3.0 requires the party name"
+            )
+        )
     # BT-34 (seller) / BT-49 (buyer) electronic address. PEPPOL-EN16931-R020 /
     # R010 make both mandatory, and the EAS scheme id is part of the address —
     # an endpoint value with no scheme identifies nothing.
@@ -61,7 +79,7 @@ def _party_errors(prefix: str, party: EInvoiceParty) -> list[FieldError]:
             FieldError(
                 f"{prefix}.endpoint_id",
                 "missing",
-                "BIS 3.0 requires the party's electronic address (EndpointID)",
+                "PEPPOL-EN16931-R010 / R020: the party's electronic address (EndpointID)",
             )
         )
     elif not party.endpoint_scheme_id:
@@ -69,7 +87,7 @@ def _party_errors(prefix: str, party: EInvoiceParty) -> list[FieldError]:
             FieldError(
                 f"{prefix}.endpoint_scheme_id",
                 "missing",
-                "The electronic address requires its EAS scheme identifier",
+                "PEPPOL-EN16931-R010 / R020: the address requires its EAS scheme identifier",
             )
         )
     # BR-09 / BR-11 — each party's postal address must carry a country code.
@@ -78,91 +96,110 @@ def _party_errors(prefix: str, party: EInvoiceParty) -> list[FieldError]:
             FieldError(
                 f"{prefix}.country_code",
                 "missing",
-                "BIS 3.0 requires the party's country code",
+                "BR-09 / BR-11: BIS 3.0 requires the party's country code",
             )
         )
     return errors
 
 
-def bis3_conformance_errors(doc: EInvoiceDocument) -> list[FieldError]:
-    """Mandatory-element check for PEPPOL BIS Billing 3.0. Empty list = passes.
+def _mandatory_element_errors(doc: EInvoiceDocument) -> list[FieldError]:
+    """Layer 1 — the fields BIS Billing 3.0 requires and the model carries.
 
-    Pure: no IO, no clock. See the module docstring for exactly what this does
-    and does not cover.
+    Each message names the EN 16931 / PEPPOL rule id so a failure is
+    diagnosable against the receiver's own validator. The ``code`` stays
+    ``"missing"``: it is the established contract for these checks, and callers
+    (and ``str(EInvoiceValidationError)``) read it.
     """
     errors: list[FieldError] = []
 
     if not doc.invoice_number:
-        errors.append(FieldError("invoice_number", "missing", "BIS 3.0 requires the invoice id"))
+        errors.append(FieldError("invoice_number", "missing", "BR-02: an invoice needs its number"))
     if doc.issue_date is None:
-        errors.append(FieldError("issue_date", "missing", "BIS 3.0 requires the issue date"))
+        errors.append(FieldError("issue_date", "missing", "BR-03: an invoice needs its issue date"))
     if not doc.currency:
         errors.append(
-            FieldError("currency", "missing", "BIS 3.0 requires the document currency code")
+            FieldError("currency", "missing", "BR-05: an invoice needs its currency code")
         )
 
     errors.extend(_party_errors("seller", doc.seller))
     errors.extend(_party_errors("buyer", doc.buyer))
 
-    # BR-CO-10 / BR-CO-13 / BR-CO-15 / BR-15 — the four monetary totals.
-    for field_name in (
-        "line_extension_amount",
-        "tax_exclusive_amount",
-        "tax_inclusive_amount",
-        "payable_amount",
+    # BR-12 / BR-13 / BR-14 / BR-15 — the four LegalMonetaryTotal amounts. The
+    # arithmetic tying them together is BR-CO-10/13/15/16, in `en16931_rules`.
+    for field_name, rule in (
+        ("line_extension_amount", "BR-12"),
+        ("tax_exclusive_amount", "BR-13"),
+        ("tax_inclusive_amount", "BR-14"),
+        ("payable_amount", "BR-15"),
     ):
         if getattr(doc, field_name) is None:
             errors.append(
                 FieldError(
                     field_name,
                     "missing",
-                    "BIS 3.0 requires this LegalMonetaryTotal amount",
+                    f"{rule}: BIS 3.0 requires this LegalMonetaryTotal amount",
                 )
             )
 
-    # BR-CO-14 — the document tax total, and one complete VAT breakdown per
-    # category. A `cac:TaxSubtotal` needs BOTH amounts and its category; the
-    # generator used to emit one carrying only `TaxCategory/Percent`.
+    # The document tax total, and one complete VAT breakdown per category. A
+    # `cac:TaxSubtotal` needs BOTH amounts and its category; the generator used
+    # to emit one carrying only `TaxCategory/Percent`.
     if doc.tax_total is None:
-        errors.append(FieldError("tax_total", "missing", "BIS 3.0 requires the document tax total"))
+        errors.append(
+            FieldError("tax_total", "missing", "BR-CO-14: an invoice needs its total VAT amount")
+        )
     if not doc.taxes:
-        errors.append(FieldError("taxes", "missing", "BIS 3.0 requires a VAT breakdown"))
+        errors.append(
+            FieldError("taxes", "missing", "BR-CO-18: an invoice needs a VAT breakdown group")
+        )
     for i, tax in enumerate(doc.taxes):
         if tax.taxable_amount is None:
             errors.append(
-                FieldError(f"taxes[{i}].taxable_amount", "missing", "VAT breakdown needs its base")
+                FieldError(
+                    f"taxes[{i}].taxable_amount", "missing", "BR-45: VAT breakdown needs its base"
+                )
             )
         if tax.tax_amount is None:
             errors.append(
-                FieldError(f"taxes[{i}].tax_amount", "missing", "VAT breakdown needs its amount")
+                FieldError(
+                    f"taxes[{i}].tax_amount", "missing", "BR-46: VAT breakdown needs its amount"
+                )
             )
         if not tax.category:
             errors.append(
                 FieldError(
-                    f"taxes[{i}].category", "missing", "VAT breakdown needs its category code"
+                    f"taxes[{i}].category", "missing", "BR-47: VAT breakdown needs its category"
                 )
             )
 
     if not doc.lines:
-        errors.append(FieldError("lines", "missing", "BIS 3.0 requires at least one invoice line"))
+        errors.append(FieldError("lines", "missing", "BR-16: an invoice needs at least one line"))
     for i, line in enumerate(doc.lines):
         if not line.line_id:
-            errors.append(FieldError(f"lines[{i}].line_id", "missing", "Invoice line needs an id"))
+            errors.append(
+                FieldError(f"lines[{i}].line_id", "missing", "BR-21: invoice line needs an id")
+            )
         if line.quantity is None:
             errors.append(
-                FieldError(f"lines[{i}].quantity", "missing", "Invoice line needs a quantity")
+                FieldError(
+                    f"lines[{i}].quantity", "missing", "BR-22: invoice line needs a quantity"
+                )
             )
         if line.line_total is None:
             errors.append(
-                FieldError(f"lines[{i}].line_total", "missing", "Invoice line needs a net amount")
+                FieldError(
+                    f"lines[{i}].line_total", "missing", "BR-24: invoice line needs a net amount"
+                )
             )
         if line.unit_price is None:
             errors.append(
-                FieldError(f"lines[{i}].unit_price", "missing", "Invoice line needs a price")
+                FieldError(f"lines[{i}].unit_price", "missing", "BR-26: invoice line needs a price")
             )
         if not line.description:
             errors.append(
-                FieldError(f"lines[{i}].description", "missing", "Invoice line needs an item name")
+                FieldError(
+                    f"lines[{i}].description", "missing", "BR-25: invoice line needs an item name"
+                )
             )
         # BT-151 / BT-152 — the invoiced item's VAT category and rate
         # (`cac:Item/cac:ClassifiedTaxCategory`). Without them the line states
@@ -172,14 +209,38 @@ def bis3_conformance_errors(doc: EInvoiceDocument) -> list[FieldError]:
                 FieldError(
                     f"lines[{i}].tax_category",
                     "missing",
-                    "Invoice line needs its VAT category code",
+                    "BR-CO-04: invoice line needs its VAT category code",
                 )
             )
         if line.tax_rate is None:
             errors.append(
-                FieldError(f"lines[{i}].tax_rate", "missing", "Invoice line needs its VAT rate")
+                FieldError(
+                    f"lines[{i}].tax_rate", "missing", "BR-CO-04: invoice line needs its VAT rate"
+                )
             )
 
+    return errors
+
+
+def bis3_conformance_errors(doc: EInvoiceDocument) -> list[FieldError]:
+    """Conformance check for PEPPOL BIS Billing 3.0. Empty list = passes.
+
+    Three layers, in the order a reader would want them: the mandatory
+    elements, then the code-list membership of what is present, then the
+    calculation rules over the amounts. Pure — no IO, no clock, no float. See
+    the module docstring for exactly what this does and does not cover.
+
+    Contract, unchanged for existing callers: a ``list[FieldError]``, empty
+    when there is nothing to object to, every entry PII-free. The
+    mandatory-element entries keep ``code == "missing"``; the rules added on
+    top carry their **rule id as the code** (``"BR-CO-10"``,
+    ``"PEPPOL-EN16931-R120"``), so the PII-free ``"field: code"`` join that
+    :class:`EInvoiceValidationError` renders — and the 422 body the export and
+    PEPPOL-send routes return — names the rule a receiver's validator names.
+    """
+    errors = _mandatory_element_errors(doc)
+    errors.extend(code_list_errors(doc))
+    errors.extend(calculation_errors(doc))
     return errors
 
 

@@ -37,6 +37,7 @@ async def _seed_invoice(
                 amount=Decimal("119.00"),
                 currency="EUR",
                 invoice_date=date(2026, 1, 1),
+                due_date=date(2026, 1, 31),
                 subtotal=Decimal("100.00"),
                 tax_amount=Decimal("19.00"),
                 tax_rate=Decimal("19.00"),
