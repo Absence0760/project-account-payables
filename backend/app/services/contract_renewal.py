@@ -27,6 +27,13 @@ Only ``active`` contracts are matched, and expiring one moves it out of
 guard is the dedupe, exactly like the ``renewal_alert_sent_at`` marker above
 and the ``offered`` status guard in ``discount_auto_trigger``.
 
+The alert pass's lead window is a real SQL predicate
+(:func:`lead_window_predicate`), not a coarse date pre-filter refined in Python:
+it used to select every ``active`` contract whose ``end_date`` fell inside
+``today + 3650 days`` — i.e. effectively all of them — and discard the
+out-of-window rows after loading. See ``backend/docs/background-sweeps.md``
+§ Locking.
+
 Mirrors the ``audit_log_shipper`` pattern: long-lived asyncio task started in
 ``main.lifespan``, fresh per-tenant engine, one tenant's failure logged but
 never halts the sweep. Within a tenant it mirrors ``vendor_rescreen``: the two
@@ -42,9 +49,9 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import Date, cast, func, literal, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -90,6 +97,63 @@ class TenantSweepOutcome:
     alerts_sent: int = 0
     contracts_expired: int = 0
     contract_failures: int = 0
+
+
+def resolve_notice_days(raw: int | None) -> int:
+    """Effective renewal lead window (days) for one contract.
+
+    ``Contract.renewal_notice_days`` is ``NOT NULL DEFAULT 30`` today, so the
+    ``None`` branch is defensive rather than reachable through the ORM — but it
+    is also the only thing that gives
+    ``FEOH_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS`` a meaning. The setting has
+    always been documented as "the platform default lead window, overridden
+    per contract" and was read by nothing; a column made nullable later, or a
+    row written outside the ORM, would otherwise have crashed the Python
+    re-check on ``days_until > None``.
+
+    Both halves of the window test resolve the fallback through THIS function
+    (:func:`within_lead_window` in Python, ``COALESCE`` in
+    :func:`lead_window_predicate` for SQL), so the SQL candidate query and the
+    under-lock re-check cannot disagree about what a NULL means.
+    """
+    if raw is None:
+        return int(settings.contract_renewal_default_notice_days)
+    return int(raw)
+
+
+def within_lead_window(*, end_date: date, renewal_notice_days: int | None, ref_today: date) -> bool:
+    """Is this contract inside its own renewal lead window as of ``ref_today``?
+
+    Already-expired-but-unalerted contracts qualify (``days_until`` goes
+    negative), which is deliberate: the alert is still the only signal anyone
+    gets that a live contract lapsed.
+    """
+    days_until = (end_date - ref_today).days
+    return days_until <= resolve_notice_days(renewal_notice_days)
+
+
+def lead_window_predicate(
+    ref_today: date,
+    end_date_col=Contract.end_date,
+    notice_days_col=Contract.renewal_notice_days,
+):
+    """The SQL half of :func:`within_lead_window` — ``end_date - today <=
+    COALESCE(renewal_notice_days, <platform default>)``.
+
+    ``Date - Date`` resolves to ``Integer`` through SQLAlchemy's own type
+    adaptation, and the explicit ``cast(literal(ref_today), Date)`` is what
+    keeps Postgres from having to guess between ``date - integer`` (a date),
+    ``date - date`` (an integer) and ``date - interval`` (a timestamp) for a
+    bare bind parameter.
+
+    The columns are parameters so the expression itself can be exercised
+    against synthetic rows — including the ``NULL`` ``renewal_notice_days`` the
+    NOT NULL column cannot hold — instead of a test re-implementing it and
+    guarding nothing.
+    """
+    return (end_date_col - cast(literal(ref_today), Date)) <= func.coalesce(
+        notice_days_col, settings.contract_renewal_default_notice_days
+    )
 
 
 async def notify_renewals_once(*, today: date | None = None) -> RenewalResult:
@@ -162,119 +226,151 @@ async def _sweep_tenant(db_name: str, ref_today: date) -> TenantSweepOutcome:
     in ``rollback()``, releasing the row lock immediately rather than at the end
     of the tick. Same shape as ``vendor_rescreen`` / ``recurring_invoices`` /
     ``approval_escalation``; see ``backend/docs/background-sweeps.md`` § Locking.
+
+    **Both passes keyset-paginate** (``contract_renewal_batch_size`` per page,
+    ``WHERE id > :cursor``) until the tenant is exhausted, each with its own
+    cursor. A per-tick ``LIMIT`` is not available to either: a contract outside
+    its lead window stays un-alerted and a not-yet-overdue one stays ``active``,
+    so neither leaves the candidate set, and a cap would re-serve the same
+    lowest-id contracts every tick and never reach the tail. Paging is safe
+    across a page boundary for the same reason the two-phase shape is safe at
+    all — the leg re-checks the predicate under the row lock, so a page taken
+    after several commits is no more stale than the single unbounded read it
+    replaces.
     """
-    # Coarse pre-filter by the platform-max lead window, then refine per
-    # contract by its own renewal_notice_days. Keeps the fetched set small
-    # without baking a per-row interval into SQL.
-    horizon = ref_today + timedelta(days=3650)
+    page_size = int(settings.contract_renewal_batch_size)
     outcome = TenantSweepOutcome()
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
-            alert_ids = (
-                (
-                    await db.execute(
-                        select(Contract.id)
-                        .where(
-                            Contract.status == ContractStatus.active,
-                            Contract.end_date.is_not(None),
-                            Contract.end_date <= horizon,
-                            Contract.renewal_alert_sent_at.is_(None),
-                        )
-                        .order_by(Contract.id.asc())
+            # Pass 1 - renewal alerts. The lead window is a REAL SQL predicate
+            # (`end_date - today <= COALESCE(renewal_notice_days, default)`, via
+            # the shared `lead_window_predicate`), not a coarse
+            # `end_date <= today + 3650 days` pre-filter with the out-of-window
+            # rows discarded in Python: that pre-filter matched effectively every
+            # active contract carrying an end date, so the "keeps the fetched set
+            # small" it claimed was not true for any tenant whose contracts are
+            # mostly long-dated.
+            alert_after: uuid.UUID | None = None
+            while True:
+                alert_query = (
+                    select(Contract.id)
+                    .where(
+                        Contract.status == ContractStatus.active,
+                        Contract.end_date.is_not(None),
+                        lead_window_predicate(ref_today),
+                        Contract.renewal_alert_sent_at.is_(None),
                     )
+                    .order_by(Contract.id.asc())
+                    .limit(page_size)
                 )
-                .scalars()
-                .all()
-            )
+                if alert_after is not None:
+                    alert_query = alert_query.where(Contract.id > alert_after)
+                alert_ids = (await db.execute(alert_query)).scalars().all()
+                if not alert_ids:
+                    break
+                alert_after = alert_ids[-1]
+                for contract_id in alert_ids:
+                    try:
+                        # `with_for_update` bypasses the identity map, so this is a
+                        # real `SELECT ... FOR UPDATE` on exactly one row.
+                        contract = await db.get(Contract, contract_id, with_for_update=True)
+                        if (
+                            contract is None
+                            or contract.status != ContractStatus.active
+                            or contract.end_date is None
+                            or contract.renewal_alert_sent_at is not None
+                        ):
+                            # Deleted, renewed, terminated or alerted elsewhere
+                            # between the id read and the lock.
+                            await db.rollback()
+                            continue
 
-            for contract_id in alert_ids:
-                try:
-                    # `with_for_update` bypasses the identity map, so this is a
-                    # real `SELECT ... FOR UPDATE` on exactly one row.
-                    contract = await db.get(Contract, contract_id, with_for_update=True)
-                    if (
-                        contract is None
-                        or contract.status != ContractStatus.active
-                        or contract.end_date is None
-                        or contract.renewal_alert_sent_at is not None
-                    ):
-                        # Deleted, renewed, terminated or alerted elsewhere
-                        # between the id read and the lock.
-                        await db.rollback()
-                        continue
+                        days_until = (contract.end_date - ref_today).days
+                        if not within_lead_window(
+                            end_date=contract.end_date,
+                            renewal_notice_days=contract.renewal_notice_days,
+                            ref_today=ref_today,
+                        ):
+                            # Not yet within this contract's lead window. The
+                            # SQL predicate above already excluded it; this is
+                            # the under-lock re-check, and it reads the same
+                            # helper so the two cannot drift.
+                            await db.rollback()
+                            continue
 
-                    days_until = (contract.end_date - ref_today).days
-                    if days_until > contract.renewal_notice_days:
-                        # Not yet within this contract's lead window.
-                        await db.rollback()
-                        continue
+                        vendor_name = (
+                            await db.execute(
+                                select(Vendor.name).where(Vendor.id == contract.vendor_id)
+                            )
+                        ).scalar_one_or_none()
 
-                    vendor_name = (
-                        await db.execute(select(Vendor.name).where(Vendor.id == contract.vendor_id))
-                    ).scalar_one_or_none()
+                        recipients = await resolve_role_user_ids(
+                            contract.organization_id, "ap_manager"
+                        )
+                        if contract.owner_user_id:
+                            recipients.append(contract.owner_user_id)
+                        if not recipients:
+                            # No one to notify yet — leave renewal_alert_sent_at unset so
+                            # a later sweep (once the org has an AP manager / owner) still
+                            # fires the alert for this term. Re-scanning a recipient-less
+                            # contract each tick is cheap; silently dropping the alert is
+                            # not.
+                            await db.rollback()
+                            continue
 
-                    recipients = await resolve_role_user_ids(contract.organization_id, "ap_manager")
-                    if contract.owner_user_id:
-                        recipients.append(contract.owner_user_id)
-                    if not recipients:
-                        # No one to notify yet — leave renewal_alert_sent_at unset so
-                        # a later sweep (once the org has an AP manager / owner) still
-                        # fires the alert for this term. Re-scanning a recipient-less
-                        # contract each tick is cheap; silently dropping the alert is
-                        # not.
-                        await db.rollback()
-                        continue
-
-                    rendered = render_contract_renewal(
-                        contract_number=contract.contract_number,
-                        vendor_name=vendor_name,
-                        end_date=contract.end_date,
-                        days_until=days_until,
-                    )
-                    notified = await notify_event(
-                        db,
-                        correlation_id=uuid.uuid4(),
-                        organization_id=contract.organization_id,
-                        event_type=EVENT_CONTRACT_RENEWAL_DUE,
-                        entity_id=contract.id,
-                        recipient_user_ids=recipients,
-                        rendered=rendered,
-                        entity_type="contract",
-                    )
-                    if not notified:
-                        # Same reasoning as the recipient-less branch above, one
-                        # layer deeper. `notify_event` never raises, so an off
-                        # master switch / a failed recipient load / everyone having
-                        # the event opted out all looked exactly like a delivered
-                        # alert. Stamping `renewal_alert_sent_at` on that swallows
-                        # the warning for the whole remaining term (only
-                        # `POST /api/contracts/{id}/renew` ever clears it) while
-                        # `alerts_sent` counts it as delivered.
+                        rendered = render_contract_renewal(
+                            contract_number=contract.contract_number,
+                            vendor_name=vendor_name,
+                            end_date=contract.end_date,
+                            days_until=days_until,
+                        )
+                        notified = await notify_event(
+                            db,
+                            correlation_id=uuid.uuid4(),
+                            organization_id=contract.organization_id,
+                            event_type=EVENT_CONTRACT_RENEWAL_DUE,
+                            entity_id=contract.id,
+                            recipient_user_ids=recipients,
+                            rendered=rendered,
+                            entity_type="contract",
+                        )
+                        if not notified:
+                            # Same reasoning as the recipient-less branch above, one
+                            # layer deeper. `notify_event` never raises, so an off
+                            # master switch / a failed recipient load / everyone having
+                            # the event opted out all looked exactly like a delivered
+                            # alert. Stamping `renewal_alert_sent_at` on that swallows
+                            # the warning for the whole remaining term (only
+                            # `POST /api/contracts/{id}/renew` ever clears it) while
+                            # `alerts_sent` counts it as delivered.
+                            logger.warning(
+                                "[contract-renewal] contract=%s: renewal alert reached no "
+                                "recipient; leaving renewal_alert_sent_at unset so the next "
+                                "tick retries",
+                                contract.id,
+                            )
+                            await db.rollback()
+                            continue
+                        contract.renewal_alert_sent_at = datetime.now(UTC)
+                        await db.commit()
+                        outcome.alerts_sent += 1
+                    except Exception as exc:  # noqa: BLE001 — one contract must not halt the tenant
+                        # Class only — a DB/asyncpg or notification error message can
+                        # echo a vendor name or a contract value (PII-out-of-logs).
                         logger.warning(
-                            "[contract-renewal] contract=%s: renewal alert reached no "
-                            "recipient; leaving renewal_alert_sent_at unset so the next "
-                            "tick retries",
-                            contract.id,
+                            "[contract-renewal] contract=%s renewal alert failed in %s: %s",
+                            contract_id,
+                            db_name,
+                            exc.__class__.__name__,
                         )
                         await db.rollback()
+                        outcome.contract_failures += 1
                         continue
-                    contract.renewal_alert_sent_at = datetime.now(UTC)
-                    await db.commit()
-                    outcome.alerts_sent += 1
-                except Exception as exc:  # noqa: BLE001 — one contract must not halt the tenant
-                    # Class only — a DB/asyncpg or notification error message can
-                    # echo a vendor name or a contract value (PII-out-of-logs).
-                    logger.warning(
-                        "[contract-renewal] contract=%s renewal alert failed in %s: %s",
-                        contract_id,
-                        db_name,
-                        exc.__class__.__name__,
-                    )
-                    await db.rollback()
-                    outcome.contract_failures += 1
-                    continue
+
+                if len(alert_ids) < page_size:
+                    break
 
             # End-of-term expiry: an `active` contract whose end_date has
             # actually passed (not just approaching) moves to `expired`. This
@@ -286,60 +382,65 @@ async def _sweep_tenant(db_name: str, ref_today: date) -> TenantSweepOutcome:
             # repeat sweep is a no-op (idempotent, no double audit row). This
             # pass is INDEPENDENT of the one above: it runs on its own
             # per-contract transactions, so neither can roll the other back.
-            overdue_ids = (
-                (
-                    await db.execute(
-                        select(Contract.id)
-                        .where(
-                            Contract.status == ContractStatus.active,
-                            Contract.end_date.is_not(None),
-                            Contract.end_date < ref_today,
-                        )
-                        .order_by(Contract.id.asc())
+            expiry_after: uuid.UUID | None = None
+            while True:
+                overdue_query = (
+                    select(Contract.id)
+                    .where(
+                        Contract.status == ContractStatus.active,
+                        Contract.end_date.is_not(None),
+                        Contract.end_date < ref_today,
                     )
+                    .order_by(Contract.id.asc())
+                    .limit(page_size)
                 )
-                .scalars()
-                .all()
-            )
-
-            for contract_id in overdue_ids:
-                try:
-                    contract = await db.get(Contract, contract_id, with_for_update=True)
-                    if (
-                        contract is None
-                        or contract.status != ContractStatus.active
-                        or contract.end_date is None
-                        or contract.end_date >= ref_today
-                    ):
-                        # Deleted, renewed or transitioned between the id read
-                        # and the lock — re-checking the predicate under the
-                        # lock is what stops a stale snapshot expiring a
-                        # contract someone just renewed.
+                if expiry_after is not None:
+                    overdue_query = overdue_query.where(Contract.id > expiry_after)
+                overdue_ids = (await db.execute(overdue_query)).scalars().all()
+                if not overdue_ids:
+                    break
+                expiry_after = overdue_ids[-1]
+                for contract_id in overdue_ids:
+                    try:
+                        contract = await db.get(Contract, contract_id, with_for_update=True)
+                        if (
+                            contract is None
+                            or contract.status != ContractStatus.active
+                            or contract.end_date is None
+                            or contract.end_date >= ref_today
+                        ):
+                            # Deleted, renewed or transitioned between the id read
+                            # and the lock — re-checking the predicate under the
+                            # lock is what stops a stale snapshot expiring a
+                            # contract someone just renewed.
+                            await db.rollback()
+                            continue
+                        contract.status = ContractStatus.expired
+                        await dispatch_audit(
+                            db,
+                            correlation_id=uuid.uuid4(),
+                            organization_id=contract.organization_id,
+                            actor_id=None,  # system actor
+                            action="contract.expired",
+                            entity_type="contract",
+                            entity_id=contract.id,
+                            details={"contract_number": contract.contract_number},
+                        )
+                        await db.commit()
+                        outcome.contracts_expired += 1
+                    except Exception as exc:  # noqa: BLE001 — one contract must not halt the tenant
+                        logger.warning(
+                            "[contract-renewal] contract=%s expiry failed in %s: %s",
+                            contract_id,
+                            db_name,
+                            exc.__class__.__name__,
+                        )
                         await db.rollback()
+                        outcome.contract_failures += 1
                         continue
-                    contract.status = ContractStatus.expired
-                    await dispatch_audit(
-                        db,
-                        correlation_id=uuid.uuid4(),
-                        organization_id=contract.organization_id,
-                        actor_id=None,  # system actor
-                        action="contract.expired",
-                        entity_type="contract",
-                        entity_id=contract.id,
-                        details={"contract_number": contract.contract_number},
-                    )
-                    await db.commit()
-                    outcome.contracts_expired += 1
-                except Exception as exc:  # noqa: BLE001 — one contract must not halt the tenant
-                    logger.warning(
-                        "[contract-renewal] contract=%s expiry failed in %s: %s",
-                        contract_id,
-                        db_name,
-                        exc.__class__.__name__,
-                    )
-                    await db.rollback()
-                    outcome.contract_failures += 1
-                    continue
+
+                if len(overdue_ids) < page_size:
+                    break
 
             return outcome
     finally:

@@ -280,17 +280,43 @@ sort key is unique.
 Escalation doesn't change `state`, so a per-tick cap would re-serve the same
 lowest-id rows forever and never reach the rest; it keyset-paginates
 (`WHERE id > :last`) until the tenant is exhausted, with
-`FEOH_APPROVAL_ESCALATION_BATCH_SIZE` as the page size. `retention_sweep` and
-`recurring_invoices` *can* cap, because an archived invoice / a generated period
-leaves the candidate set and the next tick resumes past it.
+`FEOH_APPROVAL_ESCALATION_BATCH_SIZE` as the page size. `discount_auto_trigger`
+and `contract_renewal` are in the same position and page the same way (below).
+`retention_sweep` and `recurring_invoices` *can* cap, because an archived invoice
+/ a generated period leaves the candidate set and the next tick resumes past it.
 
-`discount_auto_trigger` and `contract_renewal` are the two that still load their
-whole candidate set per tenant in one unbounded `SELECT`. Neither can cap — an
+The page boundary is safe for the same reason the two-phase shape is safe at all:
+step 2 re-claims the row under `FOR UPDATE` and re-checks the predicate there, so
+a page read after several commits is no more stale than the one unbounded read it
+replaces.
+
+`discount_auto_trigger` and `contract_renewal` were the last two loading their
+whole candidate set per tenant in one unbounded `SELECT`. Neither could cap — an
 offer skipped for a below-threshold ROI stays `offered`, and a contract outside
-its own lead window stays un-alerted — so bounding them means a keyset cursor and
-a page-size setting each, not a `LIMIT`. Since round 16 they commit per item, so
-this is a memory/latency ceiling rather than a starvation hole; it is tracked in
-[followups.md](../../docs/followups.md).
+its own lead window stays un-alerted — so bounding them meant a keyset cursor and
+a page-size setting each, not a `LIMIT`. Both now page:
+`FEOH_DISCOUNT_OPTIMIZATION_BATCH_SIZE` and `FEOH_CONTRACT_RENEWAL_BATCH_SIZE`
+(the latter used by *both* of that sweep's passes, each carrying its own cursor —
+sharing one would make the expiry pass start wherever the alert pass stopped).
+
+**A coarse pre-filter refined in Python is the same ceiling wearing a `WHERE`
+clause.** `contract_renewal`'s alert pass selected `end_date <= today + 3650
+days` — every active contract carrying an end date, for any tenant whose
+contracts are not all decades out — and discarded the out-of-window rows after
+loading them. The lead window is now a real per-row SQL predicate,
+`end_date - today <= COALESCE(renewal_notice_days, <platform default>)`
+(`contract_renewal.lead_window_predicate`), and the Python check that survives is
+the *under-lock re-check* step 2 requires. Both halves resolve the NULL fallback
+through the same `resolve_notice_days`, so the candidate query and the re-check
+cannot disagree about what a missing notice window means — and the `COALESCE`
+finally gives `FEOH_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS` a reader, which it had
+never had. A per-row interval expression is the sort of thing that coerces
+differently in SQL than in Python (`date - date` is an `integer`, but a bare bind
+parameter leaves Postgres choosing between three `date - ?` overloads, hence the
+explicit `CAST(:today AS DATE)`), so `tests/test_sweep_candidate_pagination.py`
+evaluates the real expression in real Postgres against every boundary — one day
+before the window, exactly on it, one day after, and the NULL notice the NOT NULL
+column cannot itself hold — and asserts it agrees with the Python re-check.
 
 **And isolate per item, or the pagination is decorative.** A raise from inside
 the loop is the second way to starve a tail, and it does not look like a
