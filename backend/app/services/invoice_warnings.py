@@ -4,6 +4,7 @@ Also creates exception records for issues that need human resolution.
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -115,6 +116,79 @@ def _status_str(status) -> str:
     return getattr(status, "value", status) if not isinstance(status, str) else status
 
 
+# ---------- Invoice-number normalization (rule-based duplicate check) ------
+#
+# One supplier's `INV-001` and `INV-1` are the same payable, and before this
+# the always-on rule-based gate compared `lower(trim(...))` — byte-equal after
+# case/whitespace — so the two sailed through as distinct invoices and could
+# both be paid. The semantic (pgvector) pass was the only backstop, and it is
+# off whenever RAG is off, which is the common configuration.
+#
+# The rule is stated ONCE, here, as a pure function so it can be tested in
+# isolation instead of being buried in a query expression.
+
+#: Characters treated as interchangeable separator noise. Each *run* of them
+#: collapses to a single "-" — runs are collapsed, never deleted, because
+#: deleting them makes "INV-1-2" and "INV-12" collide.
+_SEPARATOR_RUN = re.compile(r"[\s\-_./#\\]+")
+
+#: Leading zeros inside a run of digits, keeping at least one digit.
+_LEADING_ZEROS = re.compile(r"(?<![0-9])0+(?=[0-9])")
+
+#: Everything that is NOT an ASCII letter — the cheap SQL-computable
+#: *superset* invariant used to narrow candidates before normalizing in
+#: Python. Two numbers that normalize equal always share this skeleton.
+_NON_ASCII_LETTER = re.compile(r"[^a-z]")
+
+#: Hard bound on rows the widened (normalized) pass will load for one
+#: invoice. The pass only runs when the exact match already missed, and the
+#: candidate query is scoped to the same vendor AND the same letter skeleton,
+#: so this cap is a safety valve rather than the usual path — it keeps the
+#: check from degrading into an unbounded scan for a very high-volume vendor.
+MAX_DUPLICATE_CANDIDATES = 500
+
+
+def normalize_invoice_number(value: str | None) -> str | None:
+    """Canonical comparison form of an invoice number. Pure.
+
+    Three steps, deliberately in this order:
+
+    1. **case + trim** — `INV-001 ` == `inv-001` (already the old behaviour).
+    2. **separator runs** — every run of whitespace / ``-`` / ``_`` / ``.`` /
+       ``/`` / ``#`` / ``\`` collapses to a single ``-``, and leading/trailing
+       separators are dropped. So ``INV 001``, ``INV--001`` and ``INV_001``
+       all agree. Runs are *collapsed*, not deleted: deleting them would make
+       ``INV-1-2`` and ``INV-12`` the same string, which they are not.
+    3. **leading zeros inside each digit run** — ``INV-001`` → ``inv-1``,
+       ``2026-0007`` → ``2026-7``, ``000`` → ``0``. Only *leading* zeros go;
+       ``INV-100`` stays ``inv-100`` and never collides with ``INV-1``.
+
+    Non-digit characters are never stripped, so ``INV-1`` and ``PO-1`` stay
+    distinct — which is the point at which "normalize" would turn into
+    "guess". Returns ``None`` for a blank/absent number so callers can skip
+    the comparison entirely rather than matching empty against empty.
+    """
+    if not value:
+        return None
+    collapsed = _SEPARATOR_RUN.sub("-", value.strip().lower()).strip("-")
+    if not collapsed:
+        return None
+    return _LEADING_ZEROS.sub("", collapsed)
+
+
+def invoice_number_letter_skeleton(value: str | None) -> str:
+    """ASCII letters of an invoice number, lowered. Pure.
+
+    A cheap invariant of :func:`normalize_invoice_number`: normalization only
+    lowers case, rewrites separators and drops leading zeros, so two numbers
+    that normalize equal ALWAYS have the same skeleton. That makes it a safe
+    SQL-side prefilter — it can only ever cost us a match (never invent one),
+    and the Postgres expression it mirrors is
+    ``regexp_replace(lower(invoice_number), '[^a-z]', '', 'g')``.
+    """
+    return _NON_ASCII_LETTER.sub("", (value or "").lower())
+
+
 async def refresh_warnings(
     db: AsyncSession, invoice: Invoice, *, org_settings: dict | None = None
 ) -> list[dict]:
@@ -162,6 +236,11 @@ async def refresh_warnings(
     # but same real supplier); the vendor_id leg closes that. Trimmed + lowered
     # comparison also stops "ACME Corp"/"acme corp" and "INV-001"/"INV-001 " (a
     # trailing space) evading this always-on first gate.
+    #
+    # The invoice number is compared twice: exactly (unbounded, unchanged), then
+    # — only if that missed — through `normalize_invoice_number`, which is what
+    # makes "INV-001" and "INV-1" the same payable. See
+    # `_has_normalized_duplicate` for the scope and the bound.
     if invoice.vendor_name and invoice.vendor_name.strip() and invoice.invoice_number:
         vendor_match = func.lower(func.trim(Invoice.vendor_name)) == (
             invoice.vendor_name.strip().lower()
@@ -178,7 +257,13 @@ async def refresh_warnings(
                 Invoice.id != invoice.id,
             )
         )
-        if (dup_count.scalar() or 0) > 0:
+        is_duplicate = (dup_count.scalar() or 0) > 0
+        if not is_duplicate:
+            # Widened pass: `INV-001` vs `INV-1`. Only reached when the exact
+            # match already missed, so the existing behaviour is untouched and
+            # the extra work is off the common path.
+            is_duplicate = await _has_normalized_duplicate(db, invoice, vendor_match)
+        if is_duplicate:
             warnings.append(
                 {
                     "type": "duplicate",
@@ -988,6 +1073,45 @@ async def _refresh_contract_compliance(
         "; ".join(f["message"] for f in findings),
         org_settings=org_settings,
     )
+
+
+async def _has_normalized_duplicate(db: AsyncSession, invoice: Invoice, vendor_match) -> bool:
+    """Same vendor, same invoice number once normalized (`INV-001` == `INV-1`).
+
+    Runs only after the exact `lower(trim(...))` match has already missed, so
+    it can never change an existing verdict — it can only widen.
+
+    **Scope is what keeps this safe.** Normalization widens the match, so the
+    candidate query keeps *exactly* the scope the exact check uses: the tenant
+    DB the session is already bound to, `vendor_match` (the stable `vendor_id`
+    OR the case-folded vendor name) and `id != self`. A different vendor with
+    the same number is never a candidate.
+
+    **The bound.** Candidates are additionally narrowed in SQL by the ASCII
+    letter skeleton — a superset invariant of the normalized form, so it can
+    only cost a match, never invent one — and capped at
+    `MAX_DUPLICATE_CANDIDATES`, newest first, selecting one short string per
+    row. The comparison itself is the pure `normalize_invoice_number`, applied
+    in Python rather than as a query expression so the rule lives in one
+    testable place. No unbounded scan, and no expression index (hence no
+    migration) is required.
+    """
+    target = normalize_invoice_number(invoice.invoice_number)
+    if target is None:
+        return False
+    skeleton = invoice_number_letter_skeleton(invoice.invoice_number)
+    rows = await db.execute(
+        select(Invoice.invoice_number)
+        .where(
+            vendor_match,
+            Invoice.id != invoice.id,
+            Invoice.invoice_number.is_not(None),
+            func.regexp_replace(func.lower(Invoice.invoice_number), "[^a-z]", "", "g") == skeleton,
+        )
+        .order_by(Invoice.created_at.desc())
+        .limit(MAX_DUPLICATE_CANDIDATES)
+    )
+    return any(normalize_invoice_number(number) == target for (number,) in rows.all())
 
 
 async def _ensure_exception(
