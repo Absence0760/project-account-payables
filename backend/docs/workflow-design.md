@@ -250,6 +250,24 @@ Each `ApprovalLevelConfig`:
 
 Chain state is tracked in `WorkflowInstance.state_data["approval_levels"]`. Levels are sequential: all approvals at level N must complete before level N+1 becomes active. The invoice stays in `ready_for_review` until all applicable levels are satisfied.
 
+**`approval_chain` owns that JSONB slot.** Nothing else under `app/` names the
+key: reads go through `get_chain_progress(instance)` (off a row) or
+`chain_state_of(state_data)` (off a raw mapping — including the deep copy the
+in-place mutators work on, which is returned by identity so their nested writes
+land), the reject path clears it with `clear_chain_state`, and the writer plus
+the escalation sweep's SQL predicate use `CHAIN_STATE_KEY`.
+`tests/test_approval_chain_state_owner.py` is the drift guard (an AST scan over
+`app/`, so a comment explaining the key is still allowed).
+
+A key present holding JSON `null` means exactly what an absent key means — **no
+chain**, and the next approval initialises one. Nothing in the app writes a
+`null` (`init_chain_state` writes an object, `clear_chain_state` removes the key
+outright), so one can only arrive from a hand-edited row, a restore, or an
+importer serialising absence. That is why the owner coerces with `or {}` rather
+than `.get(key, {})`: the latter hands `None` to a caller that immediately calls
+`.get("levels", …)` on it, which is an `AttributeError` on the approval path
+rather than a routing decision.
+
 **Named-approver enforcement**: a non-empty `approver_ids` on the current level is a hard allow-list, enforced by `approval_chain.check_level_approver` before the approval is recorded — the endpoint's role-based RBAC gate (`require_permission(PERM_INVOICE_APPROVE)`, held by any `ap_manager`/`cfo`/`admin`) only confirms the actor holds an approving role, not that they are one of the named approvers, so this is a separate, additional check. An empty `approver_ids` list is unrestricted (any actor who cleared RBAC may approve, matching legacy behaviour). A named approver's active delegate (`User.delegate_to_id` / `delegate_until`) is also authorized. A non-authorized actor gets a 403 and the approval is not recorded.
 
 The single-level strategy `"specific"` applies the same named-approver check (`approver_ids`, or the deprecated single `approver_id`) without the multi-level chain machinery — useful when a step needs exactly one or a small fixed set of eligible people but no sequential levels.

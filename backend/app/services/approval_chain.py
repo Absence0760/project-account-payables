@@ -407,13 +407,69 @@ def invoice_routing_attrs(invoice) -> dict:
     }
 
 
-def get_chain_progress(instance: WorkflowInstance) -> dict:
-    """Read the approval chain state from instance.state_data.
+#: The one JSONB key the multi-level approval chain lives under on
+#: ``WorkflowInstance.state_data``. Nothing else under ``app/`` spells the
+#: string: every read, write, clear and SQL predicate goes through this module,
+#: and ``tests/test_approval_chain_state_owner.py`` is the drift guard that
+#: keeps it that way.
+CHAIN_STATE_KEY = "approval_levels"
 
-    Returns the chain state dict, or empty dict if not a chain workflow.
+
+def chain_state_of(state_data: dict | None) -> dict:
+    """The approval-chain state inside a raw ``state_data`` mapping.
+
+    ``{}`` means "this instance has no approval chain", and a missing key, a
+    stored JSON ``null`` and an empty object all mean exactly that. **A stored
+    ``null`` is not a third state.** Nothing in the app writes one —
+    ``init_chain_state`` writes an object and ``clear_chain_state`` removes the
+    key outright — so a ``null`` can only arrive from a hand-edited row, a
+    restore, or an importer that serialises absence as JSON ``null``. Every one
+    of those means "no chain here"; the next approval re-initialises one.
+
+    That is why the coercion is ``or {}`` and **not** ``.get(key, {})``. The
+    two differ only when the key is present holding ``null``, and there the
+    second hands back ``None`` — which every caller immediately calls
+    ``.get("levels", ...)`` on. So the difference between the two spellings is
+    not a routing decision, it is an ``AttributeError`` raised on the approval
+    path. Both spellings were live in this codebase; the ``.get(key, {})`` one
+    survived only because its callers happened to test the result for
+    truthiness before subscripting it.
+
+    A *truthy* value of the wrong shape (a list, a string) is deliberately
+    passed through untouched rather than coerced to ``{}``. That is corrupt
+    state, not absent state: the sweeper that meets it is built to count the
+    instance as a failure and carry on
+    (``approval_escalation._escalate_tenant``), whereas reading it as "no
+    chain" would silently drop a real chain's requirement out of an invoice's
+    approval path.
+
+    When a chain IS present the returned dict is the same object nested inside
+    ``state_data``, so ``advance_approval_chain`` / ``apply_escalation`` can
+    mutate it in place and then reassign the outer mapping. Mutating the empty
+    dict returned for a chainless instance persists nothing — every caller
+    bails out on a falsy result instead.
     """
-    state = instance.state_data or {}
-    return state.get("approval_levels", {})
+    return (state_data or {}).get(CHAIN_STATE_KEY) or {}
+
+
+def get_chain_progress(instance: WorkflowInstance) -> dict:
+    """The approval-chain state on ``instance``, or ``{}`` when it has none.
+
+    The instance-shaped front door to :func:`chain_state_of` — see there for
+    what ``{}`` covers and why the coercion is spelled the way it is.
+    """
+    return chain_state_of(instance.state_data)
+
+
+def clear_chain_state(state_data: dict) -> None:
+    """Drop the chain state from a ``state_data`` mapping, in place.
+
+    Removes the key rather than nulling it, so no row is left carrying the
+    ambiguous ``null`` :func:`chain_state_of` has to absorb. Used by
+    ``review.reject_invoice``: a reworked invoice must re-run the whole chain
+    from level 0, never resume at the level it was rejected on.
+    """
+    state_data.pop(CHAIN_STATE_KEY, None)
 
 
 def init_chain_state(
@@ -447,7 +503,7 @@ def init_chain_state(
         )
 
     state = dict(instance.state_data or {})
-    state["approval_levels"] = {
+    state[CHAIN_STATE_KEY] = {
         "levels": levels_state,
         "current_level": 0,
     }
@@ -519,7 +575,7 @@ def advance_approval_chain(
     # note in apply_escalation. Recording an approval mutates nested JSONB, and
     # this must persist even when nothing else on the instance changed.
     state = copy.deepcopy(instance.state_data or {})
-    chain_state = state.get("approval_levels", {})
+    chain_state = chain_state_of(state)
     if not chain_state:
         return True  # no chain configured, treat as complete
 
@@ -621,7 +677,7 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
     # silently never persist. A deep copy keeps the baseline pristine so the
     # commit actually writes the change.
     state = copy.deepcopy(instance.state_data or {})
-    chain_state = state.get("approval_levels")
+    chain_state = chain_state_of(state)
     if not chain_state:
         return False
     levels = chain_state.get("levels", [])
