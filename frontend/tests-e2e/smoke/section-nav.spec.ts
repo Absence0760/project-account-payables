@@ -47,6 +47,7 @@ test.describe('grouped sidebar navigation', () => {
 			'Recurring',
 			'Statements',
 			'Positive Pay',
+			'Bank Reconciliation',
 			'Subscription'
 		]);
 		// The landing tab is the active one.

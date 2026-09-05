@@ -344,13 +344,15 @@ test.describe('/bank-reconciliation (clerk — reads, cannot mutate)', () => {
 		await signInAndWait(page, tenantClerk);
 
 		// Read is all four roles, so the clerk DOES get the nav row — hiding it
-		// would be a dead end, not a gate.
-		await page.goto('/');
-		await page.waitForLoadState('networkidle');
-		await expect(page.getByRole('link', { name: 'Bank Reconciliation' })).toBeVisible();
-
+		// would be a dead end, not a gate. The row is a CHILD of the Billing
+		// group, so it surfaces as a section tab on that group's pages, not as a
+		// top-level sidebar link (see tests-e2e/smoke/section-nav.spec.ts).
 		await page.goto('/bank-reconciliation');
 		await page.waitForLoadState('networkidle');
+		await expect(
+			page.locator('.section-tabs a.section-tab[href="/bank-reconciliation"]')
+		).toBeVisible();
+
 		await expect(page.getByRole('heading', { name: 'Bank Reconciliation', level: 1 })).toBeVisible();
 		await expect(page.locator('.kpi')).toHaveCount(3);
 
