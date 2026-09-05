@@ -34,7 +34,52 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-05 (round 18) — a ten-agent parallel sweep.
+**Last reconciled:** 2026-09-05 (round 19) — a seven-agent sweep: six on this
+file, one an adversarial review of round 18's own 146-file diff.
+**Five entries closed, two opened**, 27 → 24.
+
+The review was the point of the round. Ten agents had landed round 18 in one
+shared working tree with no review pass, so it was aimed at the failure modes
+that process actually produces — seam defects, convention drift, and edits
+clobbered by a concurrent write. It found **one real seam defect**: the
+bank-reconciliation e2e spec still mocked `uncleared_total` as a scalar after a
+later commit in the same round renamed it to a per-currency array, and the page
+spreads that value, so the stub made the real page throw. It also **cleared**
+what mattered most — the BEC dual-control gate intact across all four
+bank-detail write paths, both extraction guards honoured in both dispatch modes,
+the 1099 reconciliation guarantee holding by construction — and diffed all 3,828
+keys across the six locale files, written concurrently by four agents, finding
+no lost translations.
+
+Two findings this round were things a follow-up had named but nobody had
+measured:
+
+- **An unused dependency was setting the runtime the whole project builds on.**
+  The entry asked to bump `isomorphic-dompurify` to 4.x and raise the Node floor
+  to match. It has **zero call sites** — the XSS defence here is that nothing
+  uses `{@html}` at all — so it was removed instead, and the floor now belongs to
+  `jsdom` as vitest's own peer. The floor moved at **nine** `setup-node` sites,
+  not the four the entry named, plus `deploy/deploy.sh`, which builds the
+  *production* frontend and was still on EOL Node 20
+  ([decisions.md](decisions.md) §85).
+- **The budget rollup's 3-queries-per-budget was worth 600 queries / 297 ms at
+  200 budgets.** Now 6 / 8.6 ms — and the interesting part is what it cost to get
+  there honestly: correlating the predicates lost the planner its index and
+  regressed the *single-budget* path (which `GET /budgets/check` sits on before
+  every requisition submit) from 0.6 ms to 10.4 ms, so the fix carries redundant
+  set-level narrowing predicates to restore it. The anti-drift guard is
+  mutation-tested ([decisions.md](decisions.md) §82).
+
+Two process notes worth keeping:
+
+| What happened | Why it matters |
+|---|---|
+| Both metric-definition halves are now closed, and both **move a reported number**. §73 stopped imported `done` rows inflating the touchless rate; §81 stops imported `rejected` rows deflating it. The second needed a *provenance* marker, because status cannot identify an import — `done`/`paid`/`rejected` are each reachable both ways | A metric fix that changes a figure leadership reads has to say so. `backend/docs/analytics.md` records the direction and the cause, so a dashboard delta is not misread as an automation regression |
+| An agent's `flutter analyze` generated CocoaPods scaffolding into the tree, and it nearly rode along in a commit | Tool-generated artifacts are not work. Check `git status` against what you actually changed before a path-scoped commit, not after |
+
+New this round: [decisions.md](decisions.md) §81–§85.
+
+**Previously reconciled:** 2026-09-05 (round 18) — a ten-agent parallel sweep.
 **Eleven entries closed, four opened**, 34 → 27. Two whole categories are gone:
 the frontend money-typing ratchet stands at **zero across every module in
 `src/lib/types/`**, and `/bank-reconciliation` — the last shipped backend with
@@ -670,66 +715,64 @@ non-tinted: [decisions.md](decisions.md) §47.
       sentence where `nowrap` would break 320px reflow); both took the tokens.
       The dashboard's duplicate `.overdue-badge` — the same flag rendering at two
       sizes on two pages — is **closed**.
-      **Progress (round 18):** a tranche took **nine files to zero** — `Landing`,
-      `InvoiceModal`, `/credit-memos`, `/exceptions`, `/goods-receipts`,
-      `/organization`, `/purchase-orders`, `/vendors/change-requests`,
-      `/workflows` — and reduced `/workflows/[id]`. The deliberate keeps are now
-      grouped under their own divider in the baseline, so what remains is
-      legible rather than buried: **~26 rules in 8 files** are genuinely
-      outstanding (`/expenses` 10, `RunDetailModal` 7, `/requisitions` 6,
+      **Progress (rounds 18–19):** round 18 took **nine files to zero** —
+      `Landing`, `InvoiceModal`, `/credit-memos`, `/exceptions`,
+      `/goods-receipts`, `/organization`, `/purchase-orders`,
+      `/vendors/change-requests`, `/workflows`. Round 19 took the two tranches
+      this entry named next: `types/payment.ts` + `/payments` + `RunDetailModal`
+      **together** (the modal badges the same `PaymentStatus` union, so a local
+      tone map would have manufactured the drift the shared-map convention
+      prevents), then `/expenses` + `/requisitions` with the tone-map hoist into
+      `types/{expense,requisition}.ts`. The deliberate keeps are grouped under
+      their own divider, so what remains is legible: **12 rules in 5 files** —
       `/discounts` 4, `/tax` 3, `/vendors` 3, `/invoices` 1,
-      `/vendor-statements` 1). `DiscountTierBar` joined the documented keeps: its
-      *accepted* tier is a FILLED chip and `Badge` has no solid tone, so
-      converting would leave that emphasis as a colour rule on a `variant` —
-      exactly what `Badge` forbids. Converting `/goods-receipts` also exposed a
-      real defect, since fixed: it badged **every** status green, so a
-      cancelled / voided / reversed receipt read as a successful delivery — the
-      same row `po_matching.CANCELLED_GR_STATUSES` deliberately excludes from
-      the 3-way quantity leg.
+      `/vendor-statements` 1.
+      Two defects surfaced on the way, both fixed: `/goods-receipts` badged
+      **every** status green, so a cancelled / voided / reversed receipt read as
+      a successful delivery (the same row `po_matching.CANCELLED_GR_STATUSES`
+      excludes from the 3-way quantity leg); and `RunDetailModal` tinted a
+      **draft** run amber while `/payments` rendered the same run flat neutral,
+      one click apart. A third was structural: the audit's own self-check pointed
+      at `/expenses`, which the tranche made clean — it would have started
+      passing vacuously, and now names a file with a live baseline.
       **Durable fix:** convert the rest in attributable tranches, checking
-      collapsed distinctions as you go, editing the baseline down in the same
-      commit, and hoisting the two tone maps out of the modals into
-      `types/{requisition,expense}.ts` when their files convert.
-      **Next two tranches, in this order:** (1) `types/payment.ts` +
-      `routes/payments/` + `RunDetailModal` **together** — the modal badges the
-      same `PaymentStatus` union `/payments` does, so converting it alone with a
-      local tone map would manufacture the drift the shared-map convention
-      exists to prevent; that one move retires 7 rules and removes the duplicate
-      maps `/payments` already carries. (2) `/expenses` + `/requisitions` with
-      the `types/{expense,requisition}.ts` tone-map hoist.
+      collapsed distinctions as you go, and editing the baseline down in the same
+      commit.
       **Trigger:** the next slice touching any file the baseline names.
+
+### Surfaced by the round-19 parallel sweep (2026-09-05)
+
+- [ ] **(c) `invoices.cost_center` and `invoices.gl_account` carry no index.**
+      `department` and `project` do. A budget on either unindexed dimension
+      seq-scans the invoice table when no entity narrows the set. The round-19
+      rollup rewrite left this **no worse than before** — its set-level narrowing
+      predicates restore the same index scan the old query used wherever an index
+      exists — so this is a pre-existing ceiling, not a regression.
+      **Durable fix:** an index on each, in a migration that fans out to every
+      tenant DB. Measure first: on the benchmark tenant the invoice leg is ~1 ms
+      at 40k invoices, so this is not yet costing anything.
+      **Trigger:** a tenant whose budgets are cost-center- or GL-dimensioned
+      showing the rollup or `GET /budgets/check` in latency traces.
+
+- [ ] **(c) The touchless metric has no backfill for pre-marker imports.**
+      Rows the CSV importer created before `Invoice.meta["imported"]` shipped
+      carry no marker and are therefore counted as native, so a tenant that
+      migrated history before 2026-09-05 still has those rows in the population
+      ([decisions.md](decisions.md) §81).
+      **Why there is no backfill:** stamping a historical row on an inference is
+      exactly the guessing the marker replaces. Status cannot identify them
+      (`done` / `paid` / `rejected` are each reachable both ways) and neither can
+      creation time on its own.
+      **Durable fix, if wanted:** an operator-run, opt-in, date-bounded stamping
+      tool where the **operator** asserts the cutover date — the assertion has to
+      come from someone who knows when the migration ran, not from the data.
+      **Trigger:** a tenant asking why its automation rate looks wrong for a
+      period predating the marker.
 
 ### Surfaced by the round-18 parallel sweep (2026-09-05)
 
 Four items the round-18 agents traced to a file and line but correctly did not
 fold into their own slice. None is a defect that can bite today.
-
-- [ ] **(c) The touchless DENOMINATOR has the mirror of the numerator problem
-      this round fixed.** CSV-imported `rejected` rows sit in the bounced leg
-      with no evidence they were ever reviewed *here*, so they deflate the rate
-      just as imported `done` rows used to inflate it.
-      **Why not folded in:** it is not fixable by the same mechanism. Nothing
-      writes an approval stamp on a rejection — the rejected row IS the
-      human-touch evidence — so gating that leg would zero the bounced
-      population entirely and break the metric.
-      **Durable fix:** a provenance marker on imported rows (e.g.
-      `meta.imported_at`, set by `services/csv_import`), and exclude
-      *provably imported* rows from both legs rather than inferring from status.
-      That is a schema-and-import-path change, not a metric edit.
-      **Trigger:** the next review of the touchless / automation-rate metric, or
-      the first tenant that reports an automation rate that looks too LOW after
-      a migration. See [decisions.md](decisions.md) §73.
-
-- [ ] **(c) The Statements tab has no account filter.**
-      `GET /api/bank-reconciliation` offers only an **exact**
-      `account_identifier` match, so a free-text `SearchBox` there would
-      silently return nothing for a partial term, and a chip set built from
-      page 1 would silently omit accounts further down. Neither failure mode is
-      acceptable — both are the "filter that quietly hides rows" class
-      `frontend/CLAUDE.md` § Search forbids — so the page shipped without one.
-      **Durable fix:** a server-side `search` on that endpoint, the shape
-      `/positive-pay` already has, then the `SearchBox` on the tab.
-      **Trigger:** the first tenant reconciling more than a handful of accounts.
 
 - [ ] **(c) No live payment adapter consumes the wire ABA yet.**
       `resolve_routing_number` picks the right routing number per rail, but every
@@ -746,41 +789,11 @@ fold into their own slice. None is a defect that can bite today.
       **Trigger:** wiring a payment adapter that hands a bank raw coordinates.
       See [decisions.md](decisions.md) §74.
 
-- [ ] **(c) `GET /api/budgets/rollup` runs three aggregate queries per budget.**
-      Whole-set by design — a *paged* rollup presented as an org-wide total is
-      the exact dishonesty the endpoint exists to avoid — so the cost scales
-      with the budget count, not with a page size.
-      **Durable fix:** one grouped query across budgets rather than folding
-      `compute_budget_spend` per row. Deliberately not done first: the per-budget
-      function is the shared source of truth `GET /budgets/{id}/spend` also
-      reads, and forking it into a second SQL shape is how the two start
-      disagreeing.
-      **Trigger:** a tenant carrying hundreds of budgets, or the rollup showing
-      up in latency traces.
-
 ### Surfaced by the round-16 follow-up sweep (2026-09-04)
 
 Four items the round-16 agents traced to a file and line but correctly did not
 fold into their own slice. None is a defect that can bite today; each is either
 forward work or a population question with its own consequences.
-
-- [ ] **(c) `POST /api/analytics/forecast_variance`'s disclosure still has no
-      surface.** The `discount_capture` half of this entry is **closed** — the
-      dashboard now renders the three-way captured / missed / pending fold with
-      its `unconverted_count` as a `role="alert"` line above the amounts it
-      qualifies, and `insufficient_data` as its own sentence rather than `0%`.
-      The forecast-variance half is not: it is a **POST taking a body of
-      actuals**, so surfacing it needs a whole data-entry UI, which is out of
-      proportion to a disclosure slice.
-      **Why it matters:** the disclosure exists so a partial figure cannot read
-      as a complete one. A future slice that wires this up and renders the bare
-      number would reintroduce exactly the defect the backend fix removed.
-      **Durable fix:** whoever builds the forecast-variance entry surface
-      renders `unconverted_count` / `reporting_currency` alongside the figures,
-      the way the dashboard's discount card and `/cfo`'s cash-position banners
-      now both do — copy that idiom, don't invent a third.
-      **Trigger:** the slice that wires the analytics drill-throughs into the
-      UI.
 
 ### Surfaced by the persona-panel round-2 parallel fix batch (issue #328)
 
@@ -959,44 +972,21 @@ decide.
       high effort, diffuse payoff — defer unless a design partner asks).
 ### Surfaced while clearing the open-PR backlog (2026-09-02)
 
-- [ ] **`isomorphic-dompurify` sits on a deprecated 3.x line whose declared
-      Node floor excludes the Node 20 CI runs.** Every 3.2x release carries the
-      upstream notice "Raised the minimum Node.js version (breaking) without a
-      major bump. Use 4.x for the same code with correct semver, or pin 3.19.0
-      for Node < 22.22.2", and declares
-      `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`. All four `setup-node` steps
-      in `.github/workflows/ci.yml` pin `node-version: 20`. Nothing breaks today
-      — pnpm does not enforce `engines` without `engine-strict`, and this is
-      pre-existing (3.22.0 already declared the same range, so the #344 bump to
-      ^3.23.0 changed nothing) — but the dependency is unmaintained-by-policy
-      and the runtime it claims to need is not the runtime we build on.
-      **Durable fix:** move the declared range to `^4.1.0` (the maintainer's own
-      "same code, correct semver") *and* decide the supported Node floor in the
-      same change, raising the CI pin off Node 20 to a version the dependency
-      actually declares. Deliberately not done as part of the dependency-bump
-      pass: the Node floor is a project decision with a blast radius past this
-      one package, not a mechanical bump.
-      **Trigger:** the next time CI's Node version is revisited, or the first
-      time a transitive advisory lands on the 3.x line.
-
-- [ ] **Dependabot's `pip` group does not group, so backend bumps arrive one PR
-      per dependency.** `.github/dependabot.yml` declares
-      `backend-minor-patch` with `update-types: [minor, patch]`, the same shape
-      as the `npm` group's `frontend-minor-patch`. The npm group works — #344
-      arrived on `dependabot/npm_and_yarn/frontend/frontend-minor-patch-…` with
-      two dependencies in it. The pip group does not: #334, #335, #337, #339,
-      #346 and #347 each arrived on their own
-      `dependabot/pip/backend/<dep>-gte-…` branch. Because these locks have to
-      be regenerated by hand (§ (b), no lockfile-sync workflow), the multiplier
-      is the whole cost — six red PRs and six recompiles instead of one.
-      **Candidate fix (unverified):** add `patterns: ["*"]` alongside
-      `update-types` on the pip group, matching the two groups in this file that
-      demonstrably do group (`actions`, `fake-erp`), both of which specify
-      `patterns`. Not applied blind: a Dependabot config change cannot be
-      verified without waiting for its next scheduled run, and an unverifiable
-      guess committed as a fix is worse than a recorded observation.
-      **Trigger:** next Monday's Dependabot run — apply the candidate and see
-      whether the following week's pip bumps arrive as one PR.
+- [ ] **(b) The Dependabot pip-grouping fix is applied but UNVERIFIED.**
+      `patterns: ["*"]` was added alongside `update-types` on the
+      `backend-minor-patch` group on 2026-09-05, matching the two groups in that
+      file that demonstrably do group (`actions`, `fake-erp`). A Dependabot
+      config change cannot be verified without waiting for its next scheduled
+      run, so this is a candidate, not a fix.
+      **Note the hypothesis is already partly contradicted:** the `npm` group has
+      the identical no-`patterns` shape and groups anyway, so `patterns` may not
+      be the operative difference.
+      **Confirmed if** next Monday's pip bumps arrive on one
+      `dependabot/pip/backend/backend-minor-patch-…` branch; **refuted if** they
+      again arrive as separate `dependabot/pip/backend/<dep>-gte-…` branches.
+      **If confirmed:** apply the same one-liner to `terraform-minor-patch`,
+      which carries the same untested shape and was deliberately left alone.
+      **Trigger:** next Monday's Dependabot run.
 
 - [ ] **Confirm the `packageManager` pin stopped Dependabot dropping the pnpm
       overrides.** Two npm PRs in one day (#344, #351) arrived with the whole

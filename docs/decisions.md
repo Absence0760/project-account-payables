@@ -3172,3 +3172,159 @@ to the wire: a preview that silently repairs unreadable input is how a wrong
 figure reaches a field the user then trusts, and the sharpest instance was the
 approval-gate thresholds — `require_cfo_above` sent as `null` when the text
 didn't parse, silently removing the CFO gate.
+
+---
+
+## 81. Imported invoices leave the touchless rate by provenance, not status
+
+**Decided:** 2026-09-05 · `backend/app/services/csv_import.py`, `backend/app/services/analytics.py`, `backend/app/api/dashboard.py`
+
+§73 narrowed the touchless NUMERATOR to require positive evidence of review.
+The DENOMINATOR had the mirror of that hole: a CSV-imported `rejected` row sat
+in the bounced leg as though a reviewer *here* had sent it back, deflating the
+rate exactly as imported `done` rows used to inflate it.
+
+Evidence cannot close it — nothing ever writes an approval stamp on a
+rejection, so gating that leg would zero the bounced population outright rather
+than exclude the imports. Neither can status: `done`, `paid` and `rejected` are
+each reachable both by import and natively, so any status rule guesses. So the
+importer records the fact directly: `Invoice.meta["imported"] = {"at",
+"source"}`, one reserved key on an existing JSONB column, no migration.
+`compute_touchless_rate` subtracts marked rows from every leg via a **required**
+`imported_pipeline` kwarg — the §73 precedent, so an un-updated caller raises
+`TypeError` instead of quietly publishing a padded denominator.
+
+The NULL-jsonb trap is load-bearing rather than incidental. Postgres' `?`
+operator returns NULL, not false, on a SQL-NULL `meta`, so without an
+`IS NOT NULL` guard every meta-less legacy row silently left the numerator while
+staying in the denominator — 33.3% against a true 50.0% in the regression test.
+`native_invoice_clause` is written as the exact complement of
+`imported_invoice_clause` for that reason, and both live with the marker's
+writer so the reader cannot drift from it.
+
+An UNMARKED row is treated as native, because absence of the marker means "we do
+not know" and it is only ever written going forward. There is deliberately **no
+backfill**: stamping a historical row on an inference is precisely the guessing
+this replaces. Rows imported before the marker shipped therefore stay in the
+population, which `backend/docs/analytics.md` states rather than papers over.
+The marker also covers the CSV importer only — any future bulk path must stamp
+it with its own `source` or its rows read as native, and no guard can enforce
+that on code that does not exist yet.
+
+---
+
+## 82. The budget rollup is the per-budget spend query, widened
+
+**Decided:** 2026-09-05 · `backend/app/services/budget_service.py`
+
+`GET /api/budgets/rollup` is whole-set by design, so its cost had to stop
+scaling with the budget count: 600 queries / 297 ms at 200 budgets, now 6 /
+8.6 ms, with `GET /budgets/{id}/spend` unchanged at 3.
+
+The obvious fix — a second, grouped SQL shape for the rollup — was rejected.
+Both endpoints publish an `excluded_row_count` disclosure telling the reader the
+money figures are a floor (§79), and **a disclosure the org-wide view and the
+per-budget view can disagree about is worse than none.** Instead the grouped
+query became the *only* implementation and `compute_budget_spend` is it,
+narrowed to one budget. The currency rule is written once against
+`Budget.currency` as a **column** rather than a Python literal; that
+substitution is the whole trick, because the same predicate then answers for one
+budget or a thousand.
+
+Correlating the entity / period / dimension conditions cost the planner its
+index and regressed the *single-budget* invoice leg from 0.6 ms to 10.4 ms over
+40k invoices — on the path `GET /budgets/check` sits in before every requisition
+submit. So each is restated once more as a set-level narrowing predicate,
+logically redundant and provably implied by conditions already in the query, and
+derived from the same budget set — which restores the identical index scan at
+both scopes. That is one query shape, not a fork. The invoice leg batches by
+dimension rather than folding four columns into one `CASE`, which would have
+bought one query and cost every index.
+
+The standing guard is `test_rollup_agrees_exactly_with_every_per_budget_spend`,
+which folds every per-budget response by currency and compares figure for
+figure including `excluded_row_count`. It was mutation-tested: forking
+`compute_budget_spend` to under-report by one makes it fail, so the guard is not
+vacuous.
+
+---
+
+## 83. Two tabs, two search keys
+
+**Decided:** 2026-09-05 · `backend/app/api/bank_reconciliation.py`, `frontend/src/routes/bank-reconciliation/+page.svelte`
+
+`/bank-reconciliation` has two tabs backed by two different endpoints:
+Outstanding queries `/outstanding` over vendor names, invoice numbers, payment
+methods and bank-line references; Statements queries the paginated statement
+list over account identifiers, source formats and ISO period dates. A single
+`?search=` would be carried from one to the other on every tab switch, silently
+applying an account term to a vendor filter and rendering an empty tab the user
+never asked for. The Statements term therefore lives on `?statement_search=`,
+with its own debounce, its own applied-term guard and its own entry in the
+page's single `syncUrl()` writer. Clearing a shared term on tab switch was
+considered and rejected: it discards a filter the user set deliberately and
+makes the URL non-restorable for one of the two tabs.
+
+Both legs are server-side, and both are folded into the same filter object the
+endpoint's own `COUNT` reads, so a narrowed table can never be headed by a
+whole-set count (§48). Period dates match as ISO via `to_char`, **not**
+`CAST(... AS text)`, which resolves against the session `DateStyle`: the row
+renders a *localised* date, and matching that in SQL would make the result set
+depend on the caller's browser language. `currency` is deliberately excluded
+from the searched columns — it is never shown on that tab, and a three-letter
+code is the highest-noise substring in the set.
+
+---
+
+## 84. Forecast variance renders "not computable", not `0%`
+
+**Decided:** 2026-09-05 · `frontend/src/routes/cfo/forecastVarianceSummary.ts`
+
+`POST /api/analytics/forecast_variance` emits `variance_pct = 0` whenever the
+forecast is not positive, since a percentage of zero has no value. On a CFO's
+screen `0%` reads as "we landed exactly on plan" — the most reassuring statement
+available, over the one row carrying no information at all. That is the same
+failure §34 records for the fraud-rate trend and §79 for the budget rollup's
+utilization, and both fixed it at the API by emitting `null`.
+
+This surface fixed it client-side instead: `variance_pct` is a shipped field
+typed `number`, and this panel is its only consumer, so the honest render costs
+nothing while the wire change would need its own migration of every reader. If a
+later slice unifies the three, the API is the right place — the client guard is
+then redundant, not wrong.
+
+The entry form follows the round's other rule about money a user types: raw
+decimal text, validated once at submit, **refused** with a toast. A month typed
+without a readable amount refuses the whole submit rather than sending `0`,
+which would make the variance equal the entire actual outflow and report a fake
+0% — the same reassuring-wrong-answer this entry exists to prevent.
+
+---
+
+## 85. An unused dependency was setting the runtime the project builds on
+
+**Decided:** 2026-09-05 · `frontend/package.json`, `.github/workflows/`, `deploy/deploy.sh`
+
+`isomorphic-dompurify` declared `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`
+while every CI job ran Node 20. pnpm does not enforce `engines` without
+`engine-strict`, so it installed without complaint — which is precisely why it
+drifted unnoticed. The follow-up proposed bumping it to `^4.1.0`, the
+maintainer's own "same code under honest semver".
+
+It was **removed** instead. Nothing had ever imported it: the XSS defence in
+this tree is that no component uses `{@html}` at all, and every chat / assistant
+/ invoice bubble binds plain text and says so in a comment. A dependency with
+zero call sites was dictating the runtime the whole project builds on and
+dragging `jsdom` into the graph. The floor still exists, but it now belongs to
+`jsdom` as **vitest's** test-environment peer — something the project actually
+uses. If a case for user-supplied markup ever arrives, the sanitizer comes back
+*with* its call site in the same change, never ahead of one.
+
+Node moved to 24 (Active LTS to 2028-04-30; 20 reached end-of-life 2026-04-30)
+at **nine** `setup-node` sites across six workflows — not the four the follow-up
+named — plus `deploy/deploy.sh`, which builds the *production* frontend in a
+`node:*-alpine` container. Both halves move together: a deploy image behind the
+CI pin means production builds on a runtime CI never tested, and that
+disagreement is invisible until it breaks. Separately, the `# vN.N.N` comment
+beside `setup-node`'s SHA pin read `v6.0.0` at eight of nine sites against a SHA
+that is really `v7.0.0`; Scorecard reads the SHA, so nothing caught it.
