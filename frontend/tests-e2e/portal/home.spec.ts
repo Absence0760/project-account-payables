@@ -50,7 +50,7 @@ async function portalSignIn(page: Page) {
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
 	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
 	await page.locator('button[type="submit"]').click();
-	await expect(page).toHaveURL(/\/portal\//, { timeout: 15_000 });
+	await expect(page).toHaveURL(/\/portal\/?$/, { timeout: 15_000 });
 }
 
 function portalVendor(): { vendorId: string; orgId: string } {

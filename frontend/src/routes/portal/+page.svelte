@@ -125,7 +125,7 @@
 					<p>
 						{m('portal.home.actionRequired.body', { count: summary.invoices_action_required })}
 					</p>
-					<a class="btn-primary" href="/portal/invoices">
+					<a class="btn-primary" href="/portal/invoices?phase=Rejected">
 						{m('portal.home.actionRequired.cta')}
 					</a>
 				</article>

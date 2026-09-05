@@ -48,7 +48,7 @@ async function portalToken(page: Page): Promise<string> {
 }
 
 /** Drive the portal login form and submit. Caller asserts the destination. */
-async function portalSignIn(
+async function portalSignInRaw(
   page: Page,
   email = PORTAL_EMAIL,
   password = PORTAL_PASSWORD,
@@ -58,6 +58,23 @@ async function portalSignIn(
   await page.locator('input[type="email"]').fill(email);
   await page.locator('input[type="password"]').fill(password);
   await page.locator('button[type="submit"]').click();
+}
+
+/** Sign in and land on the invoice list.
+ *
+ * Sign-in itself lands on the portal HOME — it exists to answer "what needs my
+ * attention". Most tests below exercise a specific page, so this navigates on
+ * explicitly rather than depending on where login happens to land; the landing
+ * behaviour has its own test, which uses `portalSignInRaw`. */
+async function portalSignIn(
+  page: Page,
+  email = PORTAL_EMAIL,
+  password = PORTAL_PASSWORD,
+) {
+  await portalSignInRaw(page, email, password);
+  await expect(page).toHaveURL(/\/portal\/?$/, { timeout: 15_000 });
+  await page.goto("/portal/invoices");
+  await page.waitForLoadState("networkidle");
 }
 
 test.describe("/portal/login", () => {
@@ -82,7 +99,9 @@ test.describe("/portal/login", () => {
   test("rejects bad credentials and stays on /portal/login", async ({
     page,
   }) => {
-    await portalSignIn(page, "nobody@nowhere.test", "wrong-password");
+    // Raw: the helper asserts a SUCCESSFUL landing, which is exactly what
+    // must not happen here.
+    await portalSignInRaw(page, "nobody@nowhere.test", "wrong-password");
 
     // The store surfaces the 401 detail into the `.error` banner and
     // the page never navigates. URL behaviour is the security contract.
@@ -103,18 +122,27 @@ test.describe("/portal/login", () => {
 });
 
 test.describe("/portal — authenticated vendor", () => {
-  test("signs in and lands on the invoices page", async ({ page }) => {
-    await portalSignIn(page);
-    await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+  test("signs in and lands on the portal home", async ({ page }) => {
+    // Raw sign-in — this test IS the landing behaviour, so it must not go
+    // through the helper that navigates onward.
+    await portalSignInRaw(page);
+    await expect(page).toHaveURL(/\/portal\/?$/, { timeout: 15_000 });
 
     // The portal shell renders the vendor name + nav once /me resolves.
+    await expect(page.getByRole("link", { name: "Overview" })).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page.getByRole("link", { name: "Invoices" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Payments" })).toBeVisible();
+
+    // …and the invoice list is one click away.
+    await page.getByRole("link", { name: "Invoices" }).click();
+    await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
     await expect(
       page.getByRole("heading", { name: "My Invoices" }),
     ).toBeVisible({
       timeout: 5_000,
     });
-    await expect(page.getByRole("link", { name: "Invoices" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Payments" })).toBeVisible();
   });
 
   test("invoices list renders the vendor’s own invoice rows", async ({

@@ -62,7 +62,12 @@ async function portalSignIn(page: Page) {
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
 	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
 	await page.locator('button[type="submit"]').click();
-	await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+	// Sign-in lands on the portal HOME (it exists to answer "what needs my
+	// attention"); this spec exercises the invoice list, so navigate on
+	// explicitly rather than depending on where login happens to land.
+	await expect(page).toHaveURL(/\/portal\/?$/, { timeout: 15_000 });
+	await page.goto('/portal/invoices');
+	await page.waitForLoadState('networkidle');
 }
 
 function portalVendor(): { vendorId: string; orgId: string } {
