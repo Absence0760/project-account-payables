@@ -514,6 +514,18 @@ time/exception/rejection, higher-is-better for touchless); an exact tie is
 `"tie"`. **No statistical-significance test is claimed** — the rationale says so,
 because that would over-promise on the small samples a single tenant produces.
 
+`audit_log.details` is JSONB with no object-shape constraint, so
+`_experiment_metric_rows` reads every `details` through `_details_obj`, which
+returns `{}` for anything that isn't an object. A list / string / number there
+can only come from a direct-DB write — precisely the tampering a control readout
+should survive — and `.get(...)` on it used to raise `AttributeError` out of the
+endpoint as a 500, losing the whole experiment's evidence over one row. It is
+read as carrying nothing, matching `approval_signature.check_approval_row`,
+which absorbs the same shape by counting the row rather than failing the period.
+Deliberately nothing more: a malformed blob is not evidence that a human changed
+a field, so the row is not re-read as "corrections present". Guarded by
+`tests/test_experiment_results_malformed_details.py`.
+
 ### Endpoints
 
 | Route | Method | RBAC | Notes |
