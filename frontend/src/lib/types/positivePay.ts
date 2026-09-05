@@ -1,13 +1,14 @@
 // Types for the Positive Pay / Payment Fraud File surface. Mirrors the JSON
 // returned by the `/api/positive-pay` endpoints (the Pydantic contract in
-// `backend/app/schemas/positive_pay.py`). Money fields arrive as numbers;
-// date/time fields are ISO strings (or null).
+// `backend/app/schemas/positive_pay.py`). Date/time fields are ISO strings (or
+// null); money fields are `MoneyAmount` / `MoneyString`, never `number`.
 //
 // PII discipline mirrors the backend: no full account / routing number ever
 // crosses this boundary. `account_last4` is the only account detail on a
 // response; a `PresentedItem` carries only a check number + amount.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 // --- File type ------------------------------------------------------------
 
@@ -55,6 +56,13 @@ export const BANK_FORMAT_LABELS: Record<BankFormat, string> = {
 };
 
 // --- Response shapes ------------------------------------------------------
+//
+// **Money is `MoneyAmount`, never `number`.** The backend serialises
+// `total_amount` as a JSON number, so `MoneyString` would be a different lie —
+// but a `number` field invites `a - b` / `Math.max()` on currency. The counts
+// beside it (`item_count`, `total`, `items_exported`, `returns_flagged`, and
+// every field on `ReturnSummary`) stay `number`: they count cheques and rows,
+// not money. See `frontend/CLAUDE.md` § Money formatting.
 
 // The return-processing summary the backend stores under `meta.return_summary`.
 export interface ReturnSummary {
@@ -72,7 +80,7 @@ export interface PositivePayFile {
 	status: PositivePayStatus;
 	payment_run_id: string | null;
 	item_count: number;
-	total_amount: number;
+	total_amount: MoneyAmount;
 	/**
 	 * Currency `total_amount` is denominated in — the org's reporting (home)
 	 * currency stamped at generation. `null` for legacy rows created before the
@@ -94,6 +102,7 @@ export interface PositivePayFile {
 
 export interface PositivePayListResponse {
 	items: PositivePayFile[];
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	page: number;
 	page_size: number;
@@ -108,6 +117,7 @@ export interface PositivePayListResponse {
  * `returns_flagged` are those reduces, whole-set.
  */
 export interface PositivePaySummary {
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	by_status: Record<string, number>;
 	items_exported: number;
@@ -116,9 +126,14 @@ export interface PositivePaySummary {
 
 // --- Process-return payload + response ------------------------------------
 
+// The bank's "what I saw presented" line. `amount` is the exact decimal STRING
+// read off the paste — never `parseFloat`. This figure is compared against the
+// cheque we issued to decide whether it was ALTERED, so an amount we could not
+// read must be refused at the paste, never degraded to "no amount" (which the
+// classifier reads as a clean match).
 export interface PresentedItemInput {
 	check_number?: string | null;
-	amount?: number | null;
+	amount?: MoneyString | null;
 }
 
 export interface ProcessReturnResponse {

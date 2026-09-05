@@ -20,6 +20,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import {
 		createRecurring,
 		updateRecurring,
@@ -58,7 +59,11 @@
 	let name = $state(template?.name ?? '');
 	let vendor_id = $state(template?.vendor_id ?? '');
 	let description = $state(template?.description ?? '');
-	let amount = $state<number | null>(template?.amount ?? null);
+	// The RAW text the user typed. The template amount reaches the backend as
+	// the exact decimal string it was typed as (see `types/recurring.ts`), and
+	// it is what every generated invoice is pre-coded with — a rounded figure
+	// here is a rounded figure on every future invoice.
+	let amount = $state(String(template?.amount ?? ''));
 	let currency = $state(template?.currency ?? 'USD');
 	let gl_account = $state(template?.gl_account ?? '');
 	let cost_center = $state(template?.cost_center ?? '');
@@ -96,7 +101,7 @@
 			name: name.trim(),
 			vendor_id: vendor_id || null,
 			description: description.trim() || null,
-			amount,
+			amount: normalizeMoneyInput(amount),
 			currency: currency.trim() || 'USD',
 			gl_account: gl_account.trim() || null,
 			cost_center: cost_center.trim() || null,
@@ -121,6 +126,16 @@
 
 	async function handleSave() {
 		if (!name.trim() || !start_date) return;
+		// The amount is optional (a template can be created before the price is
+		// known), so BLANK legitimately means "no amount". Text we could not
+		// read does not: sending `null` for a typed amount would silently make
+		// every generated invoice amount-less. `normalizeMoneyInput` decides
+		// shape with a regex, never `Number`.
+		const typedAmount = amount.trim();
+		if (typedAmount && normalizeMoneyInput(typedAmount) === null) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		saving = true;
 		try {
 			const saved = isCreate
@@ -232,8 +247,8 @@
 					type="number"
 					step="0.01"
 					min="0"
-					value={amount ?? ''}
-					oninput={(e) => (amount = numOrNull(e.currentTarget.value))}
+					value={amount}
+					oninput={(e) => (amount = e.currentTarget.value)}
 					disabled={!canEdit}
 				/>
 			</label>

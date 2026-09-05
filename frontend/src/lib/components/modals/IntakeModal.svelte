@@ -13,6 +13,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import { createIntake, updateIntake } from '$lib/api/intake';
 
 	let {
@@ -36,7 +37,11 @@
 	/* eslint-disable svelte/state-referenced-locally -- modal receives a snapshot */
 	let title = $state(intake?.title ?? '');
 	let request_type = $state<IntakeType>((intake?.request_type as IntakeType) ?? 'software');
-	let estimated_amount = $state<number | null>(intake?.estimated_amount ?? null);
+	// The RAW text the user typed, not a parsed number: the estimate reaches the
+	// backend as the exact decimal string it was typed as (see
+	// `types/intake.ts` → request side). Seeded from the response amount, which
+	// itself arrives as a JSON number.
+	let estimated_amount = $state(String(intake?.estimated_amount ?? ''));
 	let currency = $state(intake?.currency ?? orgCurrency.currency);
 	let vendor_name = $state(intake?.vendor_name ?? '');
 	let needed_by = $state(intake?.needed_by ?? '');
@@ -59,12 +64,6 @@
 	// The dynamic questionnaire fields for the currently-selected type.
 	const fields = $derived(INTAKE_FORM_FIELDS[request_type] ?? INTAKE_FORM_FIELDS.other);
 
-	function numOrNull(v: unknown): number | null {
-		if (v === '' || v === null || v === undefined) return null;
-		const n = parseFloat(String(v));
-		return Number.isFinite(n) ? n : null;
-	}
-
 	function collectFormData(): Record<string, unknown> | null {
 		const out: Record<string, unknown> = {};
 		// Preserve any existing non-field keys (e.g. review_reason stamped on reject).
@@ -80,12 +79,22 @@
 
 	async function handleSave() {
 		if (!title.trim()) return;
+		// The estimate is optional, so a BLANK field legitimately means "no
+		// estimate". Text we could not read does NOT: posting `null` for an
+		// amount the user typed would drop it silently, so it is refused here.
+		// `normalizeMoneyInput` decides shape with a regex, never `Number`.
+		const typedAmount = estimated_amount.trim();
+		const estimate = normalizeMoneyInput(typedAmount);
+		if (typedAmount && estimate === null) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		saving = true;
 		try {
 			const payload = {
 				title: title.trim(),
 				request_type,
-				estimated_amount,
+				estimated_amount: estimate,
 				currency: currency.trim() || 'USD',
 				vendor_name: vendor_name.trim() || null,
 				needed_by: needed_by || null,
@@ -156,8 +165,8 @@
 					type="number"
 					step="0.01"
 					min="0"
-					value={estimated_amount ?? ''}
-					oninput={(e) => (estimated_amount = numOrNull(e.currentTarget.value))}
+					value={estimated_amount}
+					oninput={(e) => (estimated_amount = e.currentTarget.value)}
 					disabled={!canEdit}
 				/>
 			</label>
