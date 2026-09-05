@@ -207,9 +207,10 @@ The payment run UI should:
 ### Provider resolution — a named unknown provider is refused, never `mock`
 
 `card_adapters/dispatcher.get_card_adapter` resolves a **missing**
-`settings.cards.provider` through `REGION_DEFAULTS` (the local-first default; an
-org that has never named an issuer is a normal state) and raises
-`UnknownCardProviderError` for a **named** provider it has no adapter for.
+`settings.cards.provider` through `get_default_provider` (see § An unset provider
+resolves `mock`, below — an org that has never named an issuer is a normal
+state) and raises `UnknownCardProviderError` for a **named** provider it has no
+adapter for.
 
 It used to fall back to `mock`, and `mock` is not an inert stub:
 
@@ -244,6 +245,51 @@ does not depend on each call site remembering its
 `import app.services.card_adapters.lithic  # noqa` preamble.
 
 Guard: `tests/test_card_provider_resolution.py`.
+
+### An unset provider resolves `mock`, not a real issuer
+
+Guard rail 7 (local-first): the whole app has to run on a dev laptop with no
+cloud account. Every other adapter registry honours that by resolving an
+*unconfigured* provider to its fixture adapter. Cards did not — an unset
+`settings.cards.provider` went straight through `REGION_DEFAULTS` to `lithic`
+(or `nium` outside the US/EU), and `scripts/seed.py` seeded every demo and e2e
+tenant with `cards.enabled: true` and no provider. A fresh clone's
+`POST /api/cards/generate` therefore called Lithic's real host with an empty API
+key.
+
+`REGION_DEFAULTS` is now a **preference**, not the resolution:
+
+| Function | Answers |
+|---|---|
+| `region_preference(region)` | which issuer this region *prefers* — the pure map lookup, unchanged (EU/EEA/US → Lithic, rest of world → Nium) |
+| `get_default_provider(region)` | what an org that named nothing actually gets: the preference **if a credential for it exists**, else `LOCAL_FIRST_PROVIDER` (`mock`) |
+
+A credential counts from either of the two places one can live: the org's own
+BYOK keys on the card config (`api_key` for Lithic, `client_id` /
+`client_secret` for Nium) or this deployment's platform keys
+(`FEOH_LITHIC_API_KEY`, `FEOH_NIUM_CLIENT_ID` / `FEOH_NIUM_CLIENT_SECRET`). An
+operator who has configured a real issuer keeps region-based selection exactly as
+it was; a fresh clone, which has neither, gets `mock`.
+
+This is **not** the §29 / §56 substitution in disguise. Those forbid resolving a
+provider someone *named* to the fixture adapter, and that still raises —
+including a named real issuer whose key is missing, which resolves to its own
+adapter and surfaces the missing credential at the provider call rather than
+quietly minting a fixture PAN. Picking a default where nobody expressed a
+preference is a different question, and `mock` is its answer.
+
+Both halves shipped, because they protect different tenants:
+
+- The **dispatcher** default protects every tenant created without the seed
+  script — self-service signup, `scripts/create_tenant.py` — which is the actual
+  fresh-clone path.
+- **`scripts/seed.py`** now states `"provider": "mock"` on acme, techflow and
+  every `e2e<N>` tenant, so the seeded row says what it uses. Without it, a
+  developer who sets `FEOH_LITHIC_API_KEY` for one experiment silently re-points
+  every demo tenant at Lithic.
+
+Guard: `tests/test_card_provider_local_first.py` (both halves, including a source
+scan over `seed.py`'s `cards` blocks).
 
 ### Stripe Issuing (Alternative)
 
@@ -739,7 +785,7 @@ E2E coverage: `frontend/tests-e2e/cards/` — `webhook-security.spec.ts`
 backend/app/services/card_adapters/
     __init__.py          # Package exports
     base.py              # CardAdapter base class, VirtualCardPayload, CardResult types
-    dispatcher.py        # get_card_adapter() — auto-selects by region, REGION_DEFAULTS map
+    dispatcher.py        # get_card_adapter() — REGION_DEFAULTS preference, gated on credentials
     mock_adapter.py      # Development/testing adapter
     lithic.py            # Lithic adapter (US/UK/EU) — interchange sharing from day one
     nium.py              # Nium adapter (40+ countries) — global coverage

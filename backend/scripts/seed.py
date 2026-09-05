@@ -269,6 +269,16 @@ async def seed_control_plane():
                         "enabled": True,
                         "program_type": "platform",
                         "region": "US",
+                        # Local-first (guard rail 7), stated rather than
+                        # inferred: a demo tenant must never reach a real
+                        # issuer. `get_default_provider` also falls back to
+                        # `mock` with no platform key configured, but that
+                        # protects only the code path — writing it here means
+                        # the seeded row itself says what it uses, and an
+                        # operator who later sets `FEOH_LITHIC_API_KEY` on a
+                        # dev box doesn't silently re-point the demo tenants
+                        # at Lithic.
+                        "provider": "mock",
                         # Default 30 days — exercises the no-override path
                         # in `_resolve_card_config`.
                     },
@@ -288,6 +298,8 @@ async def seed_control_plane():
                         "enabled": True,
                         "program_type": "platform",
                         "region": "US",
+                        # Local-first — see the acme block above.
+                        "provider": "mock",
                         # 14-day expiry exercises the org-override path
                         # — proves `default_expiry_days` propagates from
                         # settings → resolver → adapter payload.
@@ -1728,7 +1740,14 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
                     plan="pro",
                     db_name=db_name,
                     settings={
-                        "cards": {"enabled": True, "program_type": "platform", "region": "US"},
+                        # `provider: "mock"` is local-first (guard rail 7) — an
+                        # e2e tenant must never reach a real issuer.
+                        "cards": {
+                            "enabled": True,
+                            "program_type": "platform",
+                            "region": "US",
+                            "provider": "mock",
+                        },
                         "payments": {"provider": "mock"},
                     },
                 )
