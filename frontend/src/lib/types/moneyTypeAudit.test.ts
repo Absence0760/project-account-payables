@@ -187,6 +187,7 @@ const CONVERTED = [
 	'lib/types/budget.ts',
 	'lib/types/catalog.ts',
 	'lib/types/contract.ts',
+	'lib/types/discounts.ts',
 	'lib/types/exceptionAgents.ts',
 	'lib/types/expense.ts',
 	'lib/types/intake.ts',
@@ -197,6 +198,7 @@ const CONVERTED = [
 	'lib/types/privacy.ts',
 	'lib/types/recurring.ts',
 	'lib/types/reports.ts',
+	'lib/types/requisition.ts',
 	'lib/types/vendor.ts',
 	'lib/types/vendorStatementRecon.ts',
 	'lib/types/workflow.ts'
@@ -211,8 +213,10 @@ const CONVERTED = [
  * commit.
  */
 const BASELINE: Record<string, number> = {
-	'lib/types/discounts.ts': 1,
-	'lib/types/requisition.ts': 2
+	// EMPTY — every module under `src/lib/types/` is converted. The map stays
+	// so a module that legitimately needs a staged conversion has somewhere to
+	// land, but adding an entry now is a REGRESSION, not a plan: an unconverted
+	// module fails `no module grows a new number-typed money field` first.
 };
 
 const candidates = findMoneyShapedNumberFields(sources);
@@ -227,11 +231,18 @@ describe('money-typing ratchet over src/lib/types', () => {
 	});
 
 	it('detects the shape it is meant to detect', () => {
-		// The audit's own regression test: a module everyone agrees still carries
-		// `number`-typed money must be found. Without it, breaking the parser
-		// turns this whole suite green. `requisition` holds the last two — the
-		// line-item unit price both the response and the request shape carry.
-		expect(counts['lib/types/requisition.ts']).toBeGreaterThan(0);
+		// The audit's own regression test. Without it, breaking the parser turns
+		// this whole suite green — and now that no real module carries a
+		// `number`-typed money field, there is nothing left in the repo to point
+		// at, so the probe is synthetic. It must stay synthetic: pointing it at
+		// a real module again would mean the ratchet had slipped.
+		const planted = findMoneyShapedNumberFields([
+			[
+				'lib/types/__probe__.ts',
+				'export interface Probe {\n\tamount: number;\n\tlabel: string;\n}'
+			]
+		]);
+		expect(planted.map((c) => c.key)).toEqual(['Probe.amount']);
 	});
 
 	it.each(CONVERTED)('%s carries no number-typed money field', (path) => {

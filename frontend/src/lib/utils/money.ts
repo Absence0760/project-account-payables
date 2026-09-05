@@ -252,3 +252,71 @@ export function sumMoney(amounts: Iterable<MoneyAmount>): number {
 	const divisor = 10 ** maxScale;
 	return Number(totalScaled) / divisor;
 }
+
+/**
+ * Multiply a money amount by a non-money factor, exactly.
+ *
+ * `sumMoney` handles addition losslessly, but several previews scale money by
+ * a quantity or a percentage — a requisition line's `quantity * unit_price`, a
+ * discount tier's `base_amount * percent / 100`. Doing that in `number` is the
+ * float arithmetic the `MoneyAmount` type exists to prevent, and
+ * `parseMoneyForLayout` is explicitly not for figures that get rendered.
+ *
+ * Both operands are parsed as plain decimals, multiplied as `BigInt`s at their
+ * combined scale, then rounded HALF_UP to `scale` (default 2, matching the
+ * backend's `ROUND_HALF_UP` money quantisation). `divideBy` folds a constant
+ * divisor into the same exact step so a percentage does not need a lossy
+ * `percent / 100` first.
+ *
+ * Returns `null` when either operand is missing or is not a plain decimal —
+ * the caller shows a dash rather than a wrong number. This is deliberate: a
+ * preview that silently repairs unreadable input is how a bad figure reaches a
+ * form field the user then trusts.
+ */
+export function scaleMoney(
+	amount: MoneyAmount,
+	factor: MoneyAmount,
+	options: { scale?: number; divideBy?: number } = {}
+): MoneyString | null {
+	const { scale = 2, divideBy = 1 } = options;
+	if (!Number.isInteger(scale) || scale < 0) return null;
+	if (!Number.isInteger(divideBy) || divideBy <= 0) return null;
+
+	const a = parseDecimal(amount);
+	const b = parseDecimal(factor);
+	if (a === null || b === null) return null;
+
+	const negative = a.negative !== b.negative;
+	// Exact product at the combined scale, then re-scaled to `scale` in one
+	// rounding step — never two, which is where a half-cent goes missing.
+	const product = a.digits * b.digits;
+	const numerator = product * 10n ** BigInt(scale);
+	const denominator = 10n ** BigInt(a.scale + b.scale) * BigInt(divideBy);
+
+	let quotient = numerator / denominator;
+	const remainder = numerator % denominator;
+	if (remainder * 2n >= denominator) quotient += 1n; // HALF_UP on the magnitude
+
+	const digits = quotient.toString().padStart(scale + 1, '0');
+	const whole = digits.slice(0, digits.length - scale);
+	const frac = scale > 0 ? `.${digits.slice(digits.length - scale)}` : '';
+	// -0.00 is not a money figure anyone wants to read.
+	const sign = negative && quotient !== 0n ? '-' : '';
+	return `${sign}${whole}${frac}`;
+}
+
+/** Shared plain-decimal parse. `null` for anything that is not one. */
+function parseDecimal(
+	raw: MoneyAmount
+): { negative: boolean; digits: bigint; scale: number } | null {
+	if (raw === null || raw === undefined || raw === '') return null;
+	const str = typeof raw === 'number' ? String(raw) : raw.trim();
+	const match = /^(-)?(\d+)(?:\.(\d+))?$/.exec(str);
+	if (!match) return null;
+	const [, sign, intPart, fracPart = ''] = match;
+	return {
+		negative: sign === '-',
+		digits: BigInt(intPart + fracPart),
+		scale: fracPart.length
+	};
+}

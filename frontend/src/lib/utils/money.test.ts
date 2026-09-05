@@ -6,6 +6,7 @@ import {
 	isNegativeAmount,
 	isPositiveAmount,
 	parseMoneyForLayout,
+	scaleMoney,
 	sumMoney
 } from './money';
 import { getActiveFormatLocale, setActiveFormatLocale } from '$lib/i18n/formatLocale';
@@ -277,5 +278,57 @@ describe('currencyOptions', () => {
 
 	it('is order-stable, so a picker does not reshuffle between renders', () => {
 		expect(currencyOptions('GBP')).toEqual(currencyOptions('GBP'));
+	});
+});
+
+describe('scaleMoney', () => {
+	it('multiplies a money string by a quantity exactly', () => {
+		// 0.1 * 3 is 0.30000000000000004 in float.
+		expect(scaleMoney('0.10', 3)).toBe('0.30');
+		expect(scaleMoney('19.99', 3)).toBe('59.97');
+		expect(scaleMoney('1234.56', '2.5')).toBe('3086.40');
+	});
+
+	it('folds a divisor into the same rounding step for percentages', () => {
+		// A 2.5% early-pay discount on 1,000.00.
+		expect(scaleMoney('1000.00', '2.5', { divideBy: 100 })).toBe('25.00');
+		expect(scaleMoney('333.33', '15', { divideBy: 100 })).toBe('50.00');
+	});
+
+	it('rounds half up on the magnitude, like the backend', () => {
+		expect(scaleMoney('0.005', 1)).toBe('0.01');
+		expect(scaleMoney('0.015', 1)).toBe('0.02');
+		expect(scaleMoney('-0.005', 1)).toBe('-0.01');
+	});
+
+	it('rounds once, not twice', () => {
+		// Two sequential 2dp roundings of 1.004 * 1.004 would give 1.00 via
+		// 1.00 * 1.00; the exact product is 1.008016 -> 1.01.
+		expect(scaleMoney('1.004', '1.004')).toBe('1.01');
+	});
+
+	it('honours an explicit scale', () => {
+		expect(scaleMoney('1.00', '1', { scale: 0 })).toBe('1');
+		expect(scaleMoney('0.123456', '1', { scale: 4 })).toBe('0.1235');
+	});
+
+	it('never renders a negative zero', () => {
+		expect(scaleMoney('-0.001', 1)).toBe('0.00');
+	});
+
+	it('refuses rather than repairs unreadable input', () => {
+		// The defect class this exists to prevent: a preview that silently
+		// invents a figure the user then trusts.
+		expect(scaleMoney('1234.56abc', 2)).toBeNull();
+		expect(scaleMoney('', 2)).toBeNull();
+		expect(scaleMoney(null, 2)).toBeNull();
+		expect(scaleMoney('10.00', undefined)).toBeNull();
+		expect(scaleMoney('10.00', 'two')).toBeNull();
+		expect(scaleMoney('10.00', 2, { divideBy: 0 })).toBeNull();
+		expect(scaleMoney('10.00', 2, { scale: -1 })).toBeNull();
+	});
+
+	it('accepts a number amount without going through float arithmetic', () => {
+		expect(scaleMoney(19.99, 3)).toBe('59.97');
 	});
 });

@@ -10,8 +10,8 @@
 	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
-	import { formatMoney } from '$lib/utils/money';
-	import type { MoneyAmount } from '$lib/utils/money';
+	import { formatMoney, scaleMoney } from '$lib/utils/money';
+	import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -125,10 +125,12 @@
 		return o.tiers.reduce((best, t) => (t.percent > best.percent ? t : best));
 	}
 
-	function bestDiscountAmount(o: DiscountOffer): number | null {
+	function bestDiscountAmount(o: DiscountOffer): MoneyString | null {
 		const t = bestTier(o);
 		if (!t) return null;
-		return (o.base_amount * t.percent) / 100;
+		// Exact: one HALF_UP rounding of base * percent / 100, never a float
+		// multiply followed by a float divide.
+		return scaleMoney(o.base_amount, t.percent, { divideBy: 100 });
 	}
 
 	const STATUS_CHIPS = $derived<{ key: DiscountStatusFilter; label: string }[]>([
@@ -580,7 +582,9 @@
 								{m('discounts.modal.tierOption', { percent: tier.percent, days: tier.days })}
 								<span class="tier-option-amt">
 									{m('discounts.modal.save')} <Money
-										amount={(acceptTarget.base_amount * tier.percent) / 100}
+										amount={scaleMoney(acceptTarget.base_amount, tier.percent, {
+											divideBy: 100
+										})}
 										currency={acceptTarget.currency}
 									/>
 								</span>

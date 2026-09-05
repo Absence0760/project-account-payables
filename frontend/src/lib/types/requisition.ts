@@ -85,12 +85,9 @@ export interface RequisitionLineItem {
 	item_code: string | null;
 	description: string | null;
 	quantity: number | null;
-	// NOT YET `MoneyAmount`: `RequisitionModal`'s per-line preview multiplies
-	// `quantity * unit_price`, and there is no exact multiply helper in
-	// `utils/money.ts` (only `sumMoney`). Retyping the price without one would
-	// force either a cast or a `parseMoneyForLayout` used outside its stated
-	// geometry-only contract. See the follow-up note in the round report.
-	unit_price: number | null;
+	/** Per-unit price — string-Decimal from the backend. The per-line preview
+	 *  scales it by `quantity` through `scaleMoney`, exactly. */
+	unit_price: MoneyAmount;
 	/** Server-computed line total (`float` on the wire — `schemas/requisition.py`). */
 	total: MoneyAmount;
 	gl_account_id: string | null;
@@ -172,7 +169,7 @@ export interface RequisitionLineItemInput {
 	item_code?: string | null;
 	description?: string | null;
 	quantity?: number | null;
-	unit_price?: number | null;
+	unit_price?: MoneyAmount;
 	gl_account_id?: string | null;
 	uom?: string | null;
 }

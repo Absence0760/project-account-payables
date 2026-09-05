@@ -27,14 +27,12 @@ export interface DiscountOffer {
 	/**
 	 * Invoice (or projected) amount the discount applies to.
 	 *
-	 * NOT YET `MoneyAmount`: `/discounts` previews each tier's saving as
-	 * `base_amount * percent / 100` — the API exposes no per-tier savings
-	 * figure — and `utils/money.ts` has no exact scale-by-a-rate helper (only
-	 * `sumMoney`). Retyping without one would force a cast or a
-	 * `parseMoneyForLayout` used outside its stated geometry-only contract.
-	 * See the follow-up note in the round report.
+	 * `/discounts` previews each tier's saving as `base_amount * percent / 100`
+	 * — the API exposes no per-tier savings figure — through `scaleMoney`'s
+	 * exact `divideBy`, so the preview cannot disagree with what the server
+	 * books on accept.
 	 */
-	base_amount: number;
+	base_amount: MoneyAmount;
 	currency: string;
 	valid_from: string | null;
 	valid_until: string | null;
