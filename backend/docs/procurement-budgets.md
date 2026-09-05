@@ -99,6 +99,58 @@ invoices carried no matching column. Invoices now carry indexed
 dimensions — `cost_center`, `gl_account`, `department`, `project` — via the
 `_DIMENSION_MATCH_COLUMN` map in `services/budget_service.py`.
 
+### Index coverage on the four dimensions
+
+All four match columns — `Invoice.cost_center`, `gl_account`, `department`,
+`project` — are indexed. They were not always: `department` / `project` got
+theirs with migration `0044_invoice_department_project`, while `cost_center` /
+`gl_account` predate it and carried none until
+`0090_invoice_budget_dimension_indexes`. The consequence was that the *same*
+query shape — `_actual_invoice_legs` builds one plain equality per dimension —
+got an index scan on two dimensions and a full seq scan of `invoices` on the
+other two, for no reason visible in the model.
+
+**Measured before landing 0090.** Local Postgres 16, synthetic single-entity
+tenant, warm cache, median of 7 runs of the exact SQL `_actual_invoice_legs`
+emits for one budget. `department` is the control — already indexed, so it
+should not move, and it does not:
+
+| Invoices | Dimension     | Before   | After   | Plan (before → after)        |
+|----------|---------------|----------|---------|------------------------------|
+| 40 000   | `cost_center` | 7.7 ms   | 1.8 ms  | Seq Scan → Bitmap Index Scan |
+| 40 000   | `gl_account`  | 6.5 ms   | 1.5 ms  | Seq Scan → Bitmap Index Scan |
+| 40 000   | `department`  | 2.7 ms   | 2.7 ms  | unchanged (control)          |
+| 200 000  | `cost_center` | 15.9 ms  | 7.4 ms  | Seq Scan → Bitmap Index Scan |
+| 200 000  | `gl_account`  | 14.9 ms  | 6.7 ms  | Seq Scan → Bitmap Index Scan |
+| 200 000  | `department`  | 9.6 ms   | 9.6 ms  | unchanged (control)          |
+
+Buffer counts tell the same story more durably than the clock: at 40 k the
+`cost_center` leg read 1 003 shared buffers before (the whole table) and 578
+after (only the blocks holding matching rows). The seq-scan cost grows with the
+TABLE; the index-scan cost grows with the MATCHING SUBSET, so the gap widens as
+a tenant accumulates invoices it is not asking about.
+
+**What this does *not* speed up, stated plainly.** The whole-tenant
+`GET /budgets/rollup` over 25 of 50 distinct cost centers measured **10.3 ms
+before and 9.1 ms after** — inside the noise. At that selectivity roughly half
+the table matches, a seq scan is genuinely the cheaper plan, and the planner
+keeps choosing an equivalent one. The index is a *selective-path* fix and is
+not claimed as a rollup optimisation. The paths it helps are the ones a single
+budget drives: `GET /budgets/{id}/spend` and `GET /budgets/check`, the latter
+sitting in front of every requisition submit.
+
+**Cost.** ~1.4 MB per index per 200 k invoices — the same footprint
+`ix_invoices_department` / `ix_invoices_project` already pay, against a 39 MB
+table already carrying 12 indexes. Writes take two more B-tree inserts per
+invoice; both columns are low-cardinality free text set once at coding time and
+rarely updated after.
+
+**Keep the four symmetric.** A fifth budget dimension needs its `Invoice`
+column indexed on the model *and* in a tenant-fanned migration, or it silently
+joins the slow half. `tests/test_invoice_budget_dimension_indexes.py` is the
+guard: it walks `BudgetDimension`, resolves each through
+`_DIMENSION_MATCH_COLUMN`, and fails if the resulting column carries no index.
+
 ## Endpoints
 
 All under `/api/budgets`. **RBAC:** read = `admin` / `ap_manager` / `cfo`;

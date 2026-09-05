@@ -140,6 +140,29 @@ Migrations may target either the control plane or tenant DBs — never both. Eac
 
 The `vendor_change_requests` table (tenant DB): `id`, `vendor_id` (FK → `vendors`, ON DELETE CASCADE), `organization_id`, `requested_by_vendor_user_id`, `change_type` (`bank_details` | `tax_id`), `status` (`pending` | `approved` | `rejected`), `proposed_value` (JSONB — banking PII, never logged), `reviewed_by_user_id`, `reviewed_at`, `review_note`, `created_at`, `updated_at`. Bank/tax changes from the supplier portal stage a row here instead of mutating the vendor; AP approval applies them. See `docs/supplier-portal.md`.
 
+### Index coverage on `invoices`
+
+Two of `invoices`' index-bearing columns exist for the procurement budget
+rollup rather than for any list endpoint: a budget attributes realised spend by
+an equality against one of `cost_center` / `gl_account` / `department` /
+`project` (`services/budget_service._DIMENSION_MATCH_COLUMN`), so an unindexed
+one seq-scans the whole invoice table on the `GET /budgets/check` path.
+
+`department` / `project` were indexed by migration `0044`; `cost_center` /
+`gl_account` predate it and were not, until
+`0090_invoice_budget_dimension_indexes`. All four now carry
+`ix_invoices_<column>` — SQLAlchemy's default single-column name, which is what
+`create_all` produces, so a tenant provisioned by
+`tenant_provisioning._create_tenant_tables` and one brought up by Alembic end
+up with identical schemas. The measurement that justified 0090 (and the case
+it deliberately does *not* improve) is in
+[`procurement-budgets.md`](procurement-budgets.md) § Index coverage on the four
+dimensions.
+
+Both revisions gate on the `invoices` table existing, so they no-op on the
+control plane and fan out to every tenant DB via
+`scripts/migrate_all_tenants.py`.
+
 ## Seeding
 
 Seed the control plane and both demo tenants:
