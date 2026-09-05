@@ -31,6 +31,15 @@ import { expectNoA11yViolations } from './axe-helper';
  * catches the idiom being reintroduced anywhere in the tree without needing a
  * route to render it. Neither subsumes the other: the scan cannot resolve the
  * cascade, and axe cannot see a state no listed route reaches.
+ *
+ * The `/payments` case at the bottom is the one worth understanding rather than
+ * pattern-matching. Its fade was `0.72` — mild enough that the invoice number
+ * still rendered at 7.56:1 — but group opacity is uniform, so it hit hardest
+ * the one element the row exists to show: the `.blocked-chip` naming WHY the
+ * payment run refuses this invoice (a duplicate, a fraud flag, a line-total
+ * mismatch) composited to 3.45:1. A financial-integrity signal rendered less
+ * legible than the ordinary rows around it is a different kind of defect from a
+ * cosmetic contrast miss.
  */
 
 const ISO = '2026-01-15T09:00:00Z';
@@ -158,6 +167,77 @@ test.describe('accessibility — de-emphasised rows (WCAG 1.4.3)', () => {
 		// `:not(.status-col)` — it must be inside the de-emphasised row here, so
 		// axe measures the badge under whatever the row treatment now is.
 		await expect(revoked).toContainText('Revoked');
+
+		await expectNoA11yViolations(page);
+	});
+
+	test('an applied credit-memo row has no axe violations', async ({ page }) => {
+		// Rewrite the real payload rather than replacing it: the memo list's
+		// shape is wide and the point here is the ROW TREATMENT, not a fixture.
+		await page.route('**/api/credit-memos**', async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			const response = await route.fetch();
+			const body = (await response.json()) as { items?: { status?: string }[] };
+			if (body.items?.length) body.items[0].status = 'applied';
+			await route.fulfill({ response, json: body });
+		});
+
+		await page.goto('/credit-memos');
+		// A seeded tenant already holds applied and voided memos, so the count
+		// is the tenant's, not this test's — the rewrite above only guarantees
+		// at least one exists on ANY tenant, including a fresh one.
+		const muted = page.locator('table tbody tr.row-muted');
+		await expect(muted.first()).toBeVisible();
+		// The status badge is the cell that explains the de-emphasis, and the
+		// one the fade dimmed hardest (2.59:1 applied / 2.91:1 void).
+		await expect(muted.first().locator('.badge')).toHaveText(/applied|void/);
+
+		await expectNoA11yViolations(page);
+	});
+
+	test('a blocked payment-queue row has no axe violations', async ({ page }) => {
+		// Same rewrite-the-real-payload approach the queue-blocked spec uses:
+		// which rows a tenant has blocked is the tenant's business, so flip a
+		// known one rather than asserting against whatever it happens to hold.
+		await page.route('**/api/payments/queue**', async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			const response = await route.fetch();
+			const body = (await response.json()) as {
+				items?: { blocked?: boolean; blocked_reason?: string }[];
+				blocked_total?: number;
+				selectable_total?: number;
+			};
+			const first = body.items?.[0];
+			if (first && !first.blocked) {
+				first.blocked = true;
+				first.blocked_reason = 'duplicate';
+				if (typeof body.blocked_total === 'number') body.blocked_total += 1;
+				if (typeof body.selectable_total === 'number')
+					body.selectable_total = Math.max(0, body.selectable_total - 1);
+			}
+			await route.fulfill({ response, json: body });
+		});
+
+		await page.goto('/payments');
+		await page.locator('.tab', { hasText: 'Queue' }).click();
+		// The DataTable's loading placeholder is itself a `tbody tr`, so wait on
+		// the absence of the empty row rather than on "a row is visible" — the
+		// readiness signal the queue-blocked spec documents.
+		await expect(page.getByTestId('table-empty')).toHaveCount(0);
+
+		// Same caveat as the memo list: a tenant can already hold blocked rows,
+		// so the rewrite is a floor, not the count.
+		const blocked = page.locator('table tbody tr.row-muted');
+		await expect(blocked.first()).toBeVisible();
+		// The reason chip must be INSIDE the de-emphasised row — it is the whole
+		// reason this row is scanned, and the element the 0.72 fade cost most.
+		await expect(blocked.first().getByTestId('queue-blocked-chip')).toBeVisible();
 
 		await expectNoA11yViolations(page);
 	});

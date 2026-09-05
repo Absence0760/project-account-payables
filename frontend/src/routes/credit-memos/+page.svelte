@@ -328,7 +328,11 @@
 	>
 		{#snippet body()}
 			{#each memos as memo (memo.id)}
-				<tr class:applied={memo.status === 'applied'} class:void={memo.status === 'void'}>
+				<tr
+					class:applied={memo.status === 'applied'}
+					class:void={memo.status === 'void'}
+					class:row-muted={memo.status === 'applied' || memo.status === 'void'}
+				>
 					<td class="mono">{memo.memo_number}</td>
 					<td>{memo.vendor_name ?? '—'}</td>
 					<td class="right mono"><Money amount={memo.amount} currency={memo.currency} /></td>
@@ -457,10 +461,13 @@
 
 <style>
 	/* Page-specific bits not covered by the global design-system CSS in app.css. */
-	tr.applied td,
-	tr.void td {
-		opacity: 0.6;
-	}
+	/* An applied or voided memo is de-emphasised by the shared `.row-muted`
+	   recipe in app.css (a muted colour token). It used to be `opacity: 0.6` on
+	   these cells, which composited the row's date + invoice-number cells
+	   (--text-muted) to 2.77:1 and its status badge to 2.59–2.91:1 on --surface.
+	   `.applied` / `.void` stay as the semantic classes — `tr.applied` is an e2e
+	   selector (tests-e2e/credit-memos/credit-memos.spec.ts) — and now carry no
+	   colour of their own. */
 	/* Explains an empty apply-target list — the memo's vendor has no invoice
 	   whose vendor link is resolved and matching, so there is nothing to credit. */
 	/* Sub-label under the currency select. Muted on `--surface` clears 4.5:1;

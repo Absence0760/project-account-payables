@@ -1408,6 +1408,7 @@
 						class:row-selected={selectedQueue.has(item.id)}
 						class:discount-eligible={item.discount_eligible}
 						class:row-blocked={isBlocked(item)}
+						class:row-muted={isBlocked(item)}
 					>
 						<td class="checkbox-col">
 							{#if isBlocked(item)}
@@ -2185,13 +2186,24 @@
 
 	/* A queue row the backend would refuse: readable, visibly inert, never
 	   hidden — an operator has to be able to see WHAT is blocked to go clear it.
-	   No `tbody` prefix: these rows render inside a `{#snippet}` handed to
-	   `DataTable`, so a descendant selector is pruned as unused at compile time
-	   (which is why the sibling `tbody tr.discount-eligible` rules never
-	   applied). */
-	.row-blocked {
-		opacity: 0.72;
-	}
+	   `.row-blocked` is now the semantic marker only; the de-emphasis is the
+	   shared `.row-muted` recipe in app.css (a muted colour token).
+
+	   It used to be `opacity: 0.72` here, and this row is the case where that
+	   was worst. Group opacity fades the whole subtree, so it hit hardest the
+	   one element the row exists to show: on --surface the invoice number
+	   (--text) still rendered at 7.56:1, while the `.blocked-chip` naming the
+	   REASON — a duplicate, a fraud flag, a line-total mismatch — composited to
+	   3.45:1, the muted payment-terms cell to 3.42:1, and the status pill beside
+	   it to 3.41–3.59:1. A financial-integrity signal was rendered less legible
+	   than the ordinary rows around it, which inverts the point of flagging it.
+	   The token leaves every descendant that sets its own colour — the chip, the
+	   StatusBadge — at its own calibrated strength.
+
+	   Keep the `tbody`-prefix warning: these rows render inside a `{#snippet}`
+	   handed to `DataTable`, so a descendant selector is pruned as unused at
+	   compile time (which is why the sibling `tbody tr.discount-eligible` rules
+	   never applied). The shared rule in app.css is written accordingly. */
 
 	/* Also not a `<Badge>`: it carries a whole localised sentence ("Possible
 	   duplicate — unresolved"), so `white-space: normal` is load-bearing and

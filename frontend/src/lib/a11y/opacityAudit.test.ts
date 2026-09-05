@@ -30,10 +30,12 @@ import { extractStyleBlocks, type StyleSource } from './cssAudit';
  * ratio: for a text-bearing element the answer is always a muted token, never a
  * kinder alpha.
  *
- * It is a ratchet, not a hard zero, for the same reason `badgeAudit` is: the
- * two remaining sites are on money routes being edited concurrently, and a
- * whole-table visual change landing in the same commit as unrelated work makes
- * either one unattributable.
+ * Every text de-emphasis in the tree has now been converted, so
+ * `PENDING_CONVERSION` is empty and the guard is effectively a hard zero: what
+ * survives the scan is the `NON_TEXT_ALLOWLIST`, each entry naming a genuinely
+ * text-free element and why. The map stays because the shape is the contract —
+ * a conversion that has to be tranched for attributability records itself here
+ * rather than in prose, exactly as `badgeAudit` does.
  */
 
 const RAW = import.meta.glob('/src/**/*.{svelte,css}', {
@@ -83,29 +85,29 @@ const NON_TEXT_ALLOWLIST: Record<string, string> = {
 
 /**
  * Text de-emphasis still spelled as a fade, by `path {selector}`, with the
- * reason it has not moved yet.
+ * reason it has not moved yet. **Currently empty — and it should stay that
+ * way.**
  *
  * **Only ever remove entries.** A new one fails the ratchet below by name. To
  * clear one, give the row `class:row-muted` and delete its local `opacity`
  * rule — `app.css` `.grid-container tr.row-muted td:not(.actions)` is the
- * shared recipe and the only sanctioned answer.
+ * shared recipe and the only sanctioned answer. Adding an entry is not a way
+ * to land a new fade; it is a way to record one that has to move in a separate
+ * commit to stay attributable.
  */
-const PENDING_CONVERSION: Record<string, string> = {
-	'routes/credit-memos/+page.svelte {tr.applied td, tr.void td}':
-		'An applied / voided memo row. Same fix as the admin rows; deferred only ' +
-		'because this route was being edited concurrently by another change.',
-	'routes/payments/+page.svelte {.row-blocked}':
-		'A queue row blocked by an unresolved exception. Its blocked-reason chip ' +
-		'is the cell a reader most needs, and the 0.72 fade is what dims it. ' +
-		'Deferred with the same concurrency reason as above.'
-};
+const PENDING_CONVERSION: Record<string, string> = {};
 
 /** Files a conversion took to zero. A fade reappearing here is a regression. */
 const CONVERTED = [
 	'app.css',
 	'lib/components/admin/UsersPanel.svelte',
 	'routes/admin/webhooks/+page.svelte',
-	'routes/admin/api-keys/+page.svelte'
+	'routes/admin/api-keys/+page.svelte',
+	'routes/credit-memos/+page.svelte',
+	// The one where the fade was worst: it dimmed the `.blocked-chip` naming
+	// WHY the payment run refuses this invoice to 3.45:1 while the invoice
+	// number beside it stayed at 7.56:1.
+	'routes/payments/+page.svelte'
 ];
 
 const findings = findOpacityFadeRules(sources);
@@ -169,10 +171,11 @@ describe('opacity text de-emphasis ratchet', () => {
 	});
 
 	it('finds the idiom it is meant to find', () => {
-		// The audit's own regression test against the live tree: at least one
-		// known-pending site must still be reported. Breaking the parser would
-		// otherwise turn this suite green.
-		expect(keys).toContain('routes/payments/+page.svelte {.row-blocked}');
+		// The audit's own regression test against the live tree. With
+		// PENDING_CONVERSION empty, every remaining finding is an allowlisted
+		// non-text element — so the canary is one of those. Breaking the parser
+		// would otherwise turn this whole suite green by finding nothing.
+		expect(keys).toContain('routes/+page.svelte {.vendor-bar}');
 	});
 
 	it.each(CONVERTED)('%s no longer fades text with opacity', (path) => {
