@@ -83,92 +83,16 @@ async def _fetch_line_items(db: AsyncSession, invoice_id: uuid.UUID) -> list[Inv
     return list(result.scalars().all())
 
 
-async def send_to_erp(
-    db: AsyncSession,
-    invoice: Invoice,
-    *,
-    actor_id: uuid.UUID | None = None,
-    erp_config: dict | None = None,
-) -> None:
-    """Initiate ERP submission. Handles retries with exponential backoff."""
-    # Transition approved → sending_to_erp
-    await transition_invoice(
-        db,
-        invoice,
-        InvoiceStatus.sending_to_erp,
-        actor_id=actor_id,
-        action_name="invoice.erp_submitted",
-    )
-    await db.commit()
-
-    # Attempt the ERP call with retries
-    instance = await get_workflow_instance(db, invoice.id)
-    state_data = (instance.state_data if instance else None) or {}
-    retry_count = state_data.get("erp_retries", 0)
-
-    for attempt in range(retry_count, MAX_RETRIES):
-        try:
-            erp_ref = await _call_erp(db, invoice, erp_config)
-
-            # Success → sent_to_erp → done
-            await transition_invoice(
-                db,
-                invoice,
-                InvoiceStatus.sent_to_erp,
-                actor_id=actor_id,
-                action_name="invoice.erp_confirmed",
-                details={"erp_reference": erp_ref},
-            )
-            await transition_invoice(
-                db,
-                invoice,
-                InvoiceStatus.done,
-                actor_id=actor_id,
-                action_name="invoice.completed",
-            )
-
-            if instance:
-                instance.state_data = {
-                    **(instance.state_data or {}),
-                    "erp_reference": erp_ref,
-                    "erp_retries": attempt + 1,
-                }
-                await complete_workflow(db, instance, action="erp_confirmed")
-
-            await db.commit()
-            return
-
-        except Exception as exc:
-            if attempt + 1 < MAX_RETRIES:
-                # Update retry count and wait before next attempt
-                if instance:
-                    instance.state_data = {
-                        **(instance.state_data or {}),
-                        "erp_retries": attempt + 1,
-                        "last_error": str(exc),
-                    }
-                    await db.commit()
-                delay = BASE_DELAY_SECONDS * (2**attempt)
-                await asyncio.sleep(delay)
-            else:
-                # All retries exhausted → failed
-                await transition_invoice(
-                    db,
-                    invoice,
-                    InvoiceStatus.failed,
-                    actor_id=actor_id,
-                    action_name="invoice.erp_failed",
-                    details={"error": str(exc), "retries": attempt + 1},
-                )
-                if instance:
-                    instance.state = "failed"
-                    instance.state_data = {
-                        **(instance.state_data or {}),
-                        "erp_retries": attempt + 1,
-                        "last_error": str(exc),
-                    }
-                await db.commit()
-                return
+# `send_to_erp` used to sit here: it transitioned `approved → sending_to_erp`
+# and then ran the retry loop that now lives in `send_to_erp_internal`. Nothing
+# in production reached it — `api/workflow.py` transitions the invoice itself
+# and then dispatches, so `erp_dispatch` / `erp_lambda` both call the
+# `_internal` variant. Two copies of one push path, and they had already
+# diverged on the thing that matters: the reachable one had no retry at all, so
+# a transient ERP 503 failed the invoice on the first attempt while this copy's
+# 3-attempt backoff was what the tests asserted and `retry_erp`'s counter reset
+# implied. The retry moved to the live function and this copy was deleted, so
+# there is no longer a second push path to drift against.
 
 
 async def retry_erp(
@@ -219,48 +143,97 @@ async def send_to_erp_internal(
     actor_id: uuid.UUID | None = None,
     erp_config: dict | None = None,
 ) -> None:
-    """Run ERP call (invoice is already in sending_to_erp state)."""
+    """Run the ERP call, with bounded retries (invoice is already in
+    `sending_to_erp`).
+
+    This is the ONLY path that pushes an invoice to an ERP —
+    `api/workflow.py` → `dispatch_erp` → `erp_dispatch` / `erp_lambda` all land
+    here. It used to be a single `try/except` that sent a transient 503 or
+    timeout straight to `InvoiceStatus.failed`, while a second, unreachable
+    copy of this function carried the 3-attempt exponential backoff that the
+    tests, `retry_erp`'s counter reset, and the docs all describe. The retry
+    semantics were tested but not shipped, and the divergence was invisible
+    precisely because nothing in production reached the copy that had them.
+
+    Retrying is safe to do here rather than only by hand: `_call_erp` sends the
+    invoice's `correlation_id` as the adapter's idempotency key, so a retry
+    after a timeout that the ERP actually applied returns the existing
+    document rather than posting a second one.
+
+    The transaction is closed before each sleep, so the wait does not hold a
+    pooled connection open — `erp_dispatch` builds a `pool_size=1` engine per
+    send, and sleeping with the connection checked out would pin a worker slot
+    for the whole backoff instead of just the call.
+    """
     instance = await get_workflow_instance(db, invoice.id)
     state_data = (instance.state_data if instance else None) or {}
+    # Resume from whatever the last attempt recorded, so a manual
+    # `POST /{id}/retry-erp` (which resets the counter to 0) gets a full budget
+    # while an in-flight sequence is not restarted from scratch.
+    retry_count = state_data.get("erp_retries", 0)
 
-    try:
-        erp_ref = await _call_erp(db, invoice, erp_config)
+    for attempt in range(retry_count, MAX_RETRIES):
+        try:
+            erp_ref = await _call_erp(db, invoice, erp_config)
 
-        await transition_invoice(
-            db,
-            invoice,
-            InvoiceStatus.sent_to_erp,
-            actor_id=actor_id,
-            action_name="invoice.erp_confirmed",
-            details={"erp_reference": erp_ref},
-        )
-        await transition_invoice(
-            db,
-            invoice,
-            InvoiceStatus.done,
-            actor_id=actor_id,
-            action_name="invoice.completed",
-        )
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.sent_to_erp,
+                actor_id=actor_id,
+                action_name="invoice.erp_confirmed",
+                details={"erp_reference": erp_ref},
+            )
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.done,
+                actor_id=actor_id,
+                action_name="invoice.completed",
+            )
 
-        if instance:
-            instance.state_data = {**state_data, "erp_reference": erp_ref}
-            await complete_workflow(db, instance, action="erp_confirmed")
+            if instance:
+                instance.state_data = {
+                    **(instance.state_data or {}),
+                    "erp_reference": erp_ref,
+                    "erp_retries": attempt + 1,
+                }
+                await complete_workflow(db, instance, action="erp_confirmed")
 
-        await db.commit()
+            await db.commit()
+            return
 
-    except Exception as exc:
-        await transition_invoice(
-            db,
-            invoice,
-            InvoiceStatus.failed,
-            actor_id=actor_id,
-            action_name="invoice.erp_failed",
-            details={"error": str(exc)},
-        )
-        if instance:
-            instance.state = "failed"
-            instance.state_data = {**state_data, "last_error": str(exc)}
-        await db.commit()
+        except Exception as exc:
+            if attempt + 1 < MAX_RETRIES:
+                if instance:
+                    instance.state_data = {
+                        **(instance.state_data or {}),
+                        "erp_retries": attempt + 1,
+                        "last_error": str(exc),
+                    }
+                # Commit unconditionally, even with no instance to write: it is
+                # what returns this session's connection to the pool for the
+                # duration of the backoff.
+                await db.commit()
+                await asyncio.sleep(BASE_DELAY_SECONDS * (2**attempt))
+            else:
+                await transition_invoice(
+                    db,
+                    invoice,
+                    InvoiceStatus.failed,
+                    actor_id=actor_id,
+                    action_name="invoice.erp_failed",
+                    details={"error": str(exc), "retries": attempt + 1},
+                )
+                if instance:
+                    instance.state = "failed"
+                    instance.state_data = {
+                        **(instance.state_data or {}),
+                        "erp_retries": attempt + 1,
+                        "last_error": str(exc),
+                    }
+                await db.commit()
+                return
 
 
 async def _call_erp(db: AsyncSession, invoice: Invoice, erp_config: dict | None = None) -> str:

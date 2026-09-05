@@ -1,11 +1,20 @@
-"""ERP push pipeline — `send_to_erp`, `send_to_erp_internal`, and
-`retry_erp`.
+"""ERP push pipeline — `send_to_erp_internal` and `retry_erp`.
 
-`send_to_erp` is the load-bearing path that moves an approved invoice
-to `done` via the ERP. A regression in retry counting double-charges
+`send_to_erp_internal` is the load-bearing path that moves an approved
+invoice to `done` via the ERP: `api/workflow.py` transitions
+approved → sending_to_erp and then dispatches, and both `erp_dispatch`
+and `erp_lambda` land here. A regression in retry counting double-charges
 ERP IDs; a regression in the "all retries exhausted" branch wedges
 invoices in `sending_to_erp` forever; a regression in the happy-path
 transition chain skips audit rows the SOC 2 auditor wants.
+
+These used to exercise a second function, `erp.py::send_to_erp`, that
+nothing in production called. It held the retry loop; the reachable
+function had none, so a transient ERP 503 failed the invoice on the first
+attempt while these tests reported the backoff working. The retry moved to
+the reachable function and the unreachable copy was deleted — so the
+invoice arrives here ALREADY in `sending_to_erp`, and the
+approved → sending_to_erp leg is the route's, not this function's.
 
 These tests pin:
   - happy path walks approved → sending_to_erp → sent_to_erp → done
@@ -39,7 +48,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.models.invoice import InvoiceStatus
-from app.services.erp import retry_erp, send_to_erp
+from app.services.erp import retry_erp, send_to_erp_internal
 
 _UNSET = object()
 
@@ -108,16 +117,16 @@ class _AuditRecorder:
 
 
 # ---------------------------------------------------------------------------
-# send_to_erp — happy path.
+# send_to_erp_internal — happy path.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_send_to_erp_happy_path_walks_approved_to_done():
     """ERP call succeeds on the first try → invoice walks
-    approved → sending_to_erp → sent_to_erp → done. Three audit
-    rows; the erp_reference rides on the second."""
-    inv = _invoice()
+    sending_to_erp → sent_to_erp → done. Two audit rows; the
+    erp_reference rides on the first."""
+    inv = _invoice(status=InvoiceStatus.sending_to_erp)
     inst = _instance()
     recorder = _AuditRecorder()
     db = AsyncMock()
@@ -128,12 +137,12 @@ async def test_send_to_erp_happy_path_walks_approved_to_done():
         patch("app.services.erp.get_workflow_instance", AsyncMock(return_value=inst)),
         patch("app.services.erp.complete_workflow", AsyncMock()),
     ):
-        await send_to_erp(db, inv)
+        await send_to_erp_internal(db, inv)
 
     assert inv.status == InvoiceStatus.done
-    # Three transitions in order:
+    # Two transitions in order — the approved → sending_to_erp leg belongs to
+    # `api/workflow.py`, which runs it before dispatching to this function.
     assert recorder.transitions() == [
-        ("approved", "sending_to_erp"),
         ("sending_to_erp", "sent_to_erp"),
         ("sent_to_erp", "done"),
     ]
@@ -147,7 +156,7 @@ async def test_send_to_erp_happy_path_walks_approved_to_done():
 
 
 # ---------------------------------------------------------------------------
-# send_to_erp — retry exhaustion.
+# send_to_erp_internal — retry exhaustion.
 # ---------------------------------------------------------------------------
 
 
@@ -157,7 +166,7 @@ async def test_send_to_erp_retry_exhausted_transitions_to_failed():
     not `done`. The instance carries the final retry count + the
     last_error string. asyncio.sleep is stubbed so the backoff
     delays don't run."""
-    inv = _invoice()
+    inv = _invoice(status=InvoiceStatus.sending_to_erp)
     inst = _instance()
     recorder = _AuditRecorder()
     db = AsyncMock()
@@ -171,11 +180,9 @@ async def test_send_to_erp_retry_exhausted_transitions_to_failed():
         patch("app.services.erp.get_workflow_instance", AsyncMock(return_value=inst)),
         patch("app.services.erp.asyncio.sleep", AsyncMock()),
     ):
-        await send_to_erp(db, inv)
+        await send_to_erp_internal(db, inv)
 
     assert inv.status == InvoiceStatus.failed
-    # Transitions: approved → sending_to_erp, then sending_to_erp → failed.
-    assert recorder.transitions()[0] == ("approved", "sending_to_erp")
     assert recorder.transitions()[-1] == ("sending_to_erp", "failed")
 
     # Final audit row carries the error string and retry count.
@@ -195,7 +202,7 @@ async def test_send_to_erp_retry_attempts_use_exponential_backoff():
     so a transient outage doesn't get hammered. We capture the sleep
     durations and assert the doubling pattern. The final attempt
     doesn't sleep (no retry after it)."""
-    inv = _invoice()
+    inv = _invoice(status=InvoiceStatus.sending_to_erp)
     inst = _instance()
     sleep_mock = AsyncMock()
     db = AsyncMock()
@@ -209,7 +216,7 @@ async def test_send_to_erp_retry_attempts_use_exponential_backoff():
         patch("app.services.erp.get_workflow_instance", AsyncMock(return_value=inst)),
         patch("app.services.erp.asyncio.sleep", sleep_mock),
     ):
-        await send_to_erp(db, inv)
+        await send_to_erp_internal(db, inv)
 
     # 3 attempts → 2 sleeps (no sleep after the last attempt).
     delays = [c.args[0] for c in sleep_mock.call_args_list]
@@ -217,17 +224,17 @@ async def test_send_to_erp_retry_attempts_use_exponential_backoff():
 
 
 # ---------------------------------------------------------------------------
-# send_to_erp — resumes from persisted retry count.
+# send_to_erp_internal — resumes from persisted retry count.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_send_to_erp_resumes_from_persisted_retry_count():
     """Instance already shows `erp_retries=2` from a prior partial
-    failure. The next entry into send_to_erp starts at attempt 2,
+    failure. The next entry into send_to_erp_internal starts at attempt 2,
     leaving only one slot. If THIS attempt also fails, the invoice
     goes to `failed` immediately — no extra retries."""
-    inv = _invoice()
+    inv = _invoice(status=InvoiceStatus.sending_to_erp)
     inst = _instance(state_data={"erp_retries": 2})
     recorder = _AuditRecorder()
     db = AsyncMock()
@@ -242,7 +249,7 @@ async def test_send_to_erp_resumes_from_persisted_retry_count():
         patch("app.services.erp.get_workflow_instance", AsyncMock(return_value=inst)),
         patch("app.services.erp.asyncio.sleep", sleep_mock),
     ):
-        await send_to_erp(db, inv)
+        await send_to_erp_internal(db, inv)
 
     assert inv.status == InvoiceStatus.failed
     # No sleep — there was only one slot left, and after it failed
