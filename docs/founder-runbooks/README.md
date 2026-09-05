@@ -33,9 +33,19 @@ DO ANYTIME (parallel)
 ├── Support + status page     ← expected before first customer
 │     └── support-and-status.md
 │
-└── Insurance                 ← required before most procurement reviews
-      └── insurance.md
+├── Insurance                 ← required before most procurement reviews
+│     └── insurance.md
+│
+└── Custom domains            ← per-customer, only when one asks for a vanity host
+      └── custom-domain-provisioning.md
 ```
+
+`custom-domain-provisioning.md` is the odd one out: it isn't a
+one-time launch step but a **per-customer procedure**, run each time a
+white-label customer or partner wants the app served on their own
+hostname (`acme.acmecorp.com`). Read it before you promise one — the
+hostname has to be chosen a particular way, and that choice is locked
+in when the tenant is provisioned.
 
 ## Done vs. pending
 

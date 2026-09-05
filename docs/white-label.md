@@ -405,8 +405,23 @@ existing list forward rather than letting `BrandConfig.model_dump()` wipe it.
 
 **Operator responsibility — DNS + TLS.** Registering a host here only tells the
 platform which tenant that host maps to. The vanity host's **DNS** (a CNAME to
-the platform edge) and **TLS certificate** (CloudFront/ALB + ACM) are infra,
-provisioned out of band — see *Custom domains* intro above.
+the platform edge) and **TLS certificate** (CloudFront/ALB + ACM, or Let's
+Encrypt via Caddy on the single-VM shape) are infra, provisioned out of band —
+see *Custom domains* intro above. The step-by-step operator procedure for both
+deployment shapes — DNS records, certificate issuance + renewal, the CORS env
+change, end-to-end verification, rollback and troubleshooting — is
+[`docs/founder-runbooks/custom-domain-provisioning.md`](founder-runbooks/custom-domain-provisioning.md).
+
+**The hostname is not free-form — it must be `<tenant-slug>.<customer-domain>`.**
+The custom-domain `Host` fallback fires only when `X-Tenant-Slug` is *absent*,
+and the SPA always sends that header when it can derive one: `getTenantSlug()`
+(`frontend/src/lib/tenant.ts`) takes the **first label** of any 3+-label
+hostname. So `ap.acmecorp.com` pointed at the tenant `acme` makes the SPA send
+`X-Tenant-Slug: ap` and every call 404s (`Unknown tenant: ap`), and a two-label
+apex (`acmecorp.com`) yields no header at all while the SPA still calls the
+build-time `PUBLIC_API_URL` origin — so the backend never sees the vanity `Host`
+and answers the 400. Pick the tenant's slug to match the label the customer
+wants, at provisioning time. The runbook above carries the full table.
 
 **Admin UI** — the **Custom Domains** section on `/organization`
 (`frontend/src/routes/organization/+page.svelte`, below the Branding panel):

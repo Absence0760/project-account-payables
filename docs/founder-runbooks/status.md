@@ -62,6 +62,9 @@ under the state de-minimis thresholds).
 - [ ] Customer's historical data imported (see
       `backend/docs/csv-import.md`)
 - [ ] Email intake token minted for their tenant
+- [ ] Vanity domain provisioned, if they asked for one (see
+      `custom-domain-provisioning.md` — pick the slug to match the
+      hostname *before* provisioning the tenant)
 - [ ] Their AP team onboarded + trained (1h call usually enough)
 - [ ] First invoice processed end-to-end
 - [ ] First payment executed
