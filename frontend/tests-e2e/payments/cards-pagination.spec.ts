@@ -55,10 +55,23 @@ test.describe('/payments cards pagination', () => {
 
 		await page.goto('/payments');
 		await page.waitForLoadState('networkidle');
+		// The wait is armed BEFORE the click, not after it. `waitForResponse`
+		// only observes responses that arrive after it is called, so awaiting it
+		// afterwards loses a race the local dev stack wins routinely — the fetch
+		// completes before the listener attaches and the test times out having
+		// missed the very response it was waiting for. The Load-more step below
+		// already used this shape; the tab click did not.
+		const firstPage = page.waitForResponse(
+			(r) => r.url().includes('/api/cards?') && r.url().includes('page=1')
+		);
 		await page.getByRole('button', { name: 'Cards', exact: true }).click();
-		await page.waitForResponse((r) => r.url().includes('/api/cards?') && r.url().includes('page=1'));
+		await firstPage;
 
-		const firstPageRows = await page.locator('table tbody tr').count();
+		// Scoped to the cards table: the Cards tab also renders a rebates table
+		// above it, so an unscoped `table tbody tr` counts both and the page-size
+		// assertion silently measures the wrong thing.
+		const cardsTable = page.getByTestId('cards-table');
+		const firstPageRows = await cardsTable.locator('tbody tr').count();
 		expect(firstPageRows).toBeLessThanOrEqual(20);
 
 		const loadMore = page.getByRole('button', { name: /Load more/ });
@@ -71,7 +84,7 @@ test.describe('/payments cards pagination', () => {
 		);
 		await loadMore.click();
 		await next;
-		expect(await page.locator('table tbody tr').count()).toBeGreaterThan(firstPageRows);
+		expect(await cardsTable.locator('tbody tr').count()).toBeGreaterThan(firstPageRows);
 	});
 
 	test('API default page size is 20', async ({ page }) => {
