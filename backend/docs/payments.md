@@ -921,6 +921,16 @@ audit row carries the evidence.**
 | Accept the shortfall as final | `POST /api/payments/{id}/settlement/accept` (`payment.execute`, requires a `reason`) | invoice → `paid`, reason + figures on the append-only trail |
 | Reject the settlement | `POST /api/payments/{id}/void` (`payment.void`) | invoice → `approved`, re-payable at the right amount |
 
+**Both exits are reachable in the app**, not only over the API. `/payments` →
+History renders what the rail settled beside what AP authorized (a `Settled …`
+sub-line under the amount — the hold was previously invisible), and offers an
+**Accept settlement** row action gated on `payment.execute`. Its confirm dialog
+shows both figures, requires the `reason`, states that accepting declares the
+shortfall final and releases the invoice to `paid`, and — because only the
+server can decide coverage — reads the invoice's own status first so an invoice
+that is no longer held gets an explanation rather than a confirm that can only
+409. Void is the existing row action beside it.
+
 `accept` refuses (409) when the settlement already covers the invoice, so it
 can't become a general "force to paid" lever, and when the payment never
 reached `completed`. It deliberately does **not** resolve the `fraud_flag`:
@@ -1345,6 +1355,13 @@ skips every payment that isn't `completed` and every invoice that isn't
 `payment_scheduled`, so a repeat call writes no second transition. It moves no
 money — it only reports money that already moved. 409 when the run has no
 settled payment to sync.
+
+**It is reachable in the app**, not only over the API: `/payments` → Runs
+carries a **Retry ERP sync** row action gated on `payment.execute` (hidden on a
+`draft` / `cancelled` run, which can hold no settled payment), whose confirm
+names the run and says it moves no money, and whose result renders the real
+returned counts — leading with `transitioned`, with an explicit "nothing to
+recover" state when it is zero.
 
 **Read `transitioned`, not `synced`, to answer "did this recover anything".**
 `synced` counts legs whose ERP-facing work completed, and stays true for a

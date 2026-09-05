@@ -156,6 +156,21 @@ export interface Payment {
 	reference: string | null;
 	created_at: string;
 	updated_at: string | null;
+	/**
+	 * What the PROCESSOR says it settled, beside `amount` — what AP AUTHORIZED
+	 * (`schemas/payment.py::PaymentResponse`, migration 0083). Both have been on
+	 * the read surface since the settlement-verification work; nothing rendered
+	 * them, which is how an invoice held at `payment_scheduled` for an
+	 * under-settlement was invisible in the app.
+	 *
+	 * `null` means no rail ever reported a figure — NOT zero. The backend fails
+	 * OPEN on that case (`payment_settlement.settlement_coverage`), so absence
+	 * is never evidence of a shortfall. Whether a reported figure actually
+	 * covers the invoice is the SERVER's call: never subtract or compare these
+	 * two client-side (frontend/CLAUDE.md § Money formatting).
+	 */
+	settled_amount?: MoneyAmount;
+	settled_currency?: string | null;
 	vendor_name: string | null;
 	invoice_number: string | null;
 	card_last_four: string | null;
