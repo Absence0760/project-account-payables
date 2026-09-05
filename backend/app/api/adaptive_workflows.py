@@ -182,6 +182,33 @@ async def _ready_for_review_starts(
     return {eid: ts for eid, ts in rows if eid is not None}
 
 
+def _invoice_reporting_amount(
+    *,
+    amount,
+    currency,
+    reporting_currency: str,
+    persisted_reporting_currency,
+    persisted_reporting_source_currency,
+    persisted_fx_rate,
+) -> tuple[Decimal, bool]:
+    """``(amount in the reporting currency, unconverted)`` for one invoice row.
+
+    The single spelling of "express this invoice's money in the one currency
+    every adaptive statistic is denominated in", shared by the decision rows
+    (which feed the threshold recommendation) and the anomaly baseline. Converts
+    at the rate already LOCKED on the row — never one fetched now, which would
+    make a read-only statistic non-deterministic.
+    """
+    return reporting_amount_at_locked_rate(
+        amount=Decimal(str(amount or 0)),
+        currency=currency,
+        reporting_currency=reporting_currency,
+        persisted_reporting_currency=persisted_reporting_currency,
+        persisted_reporting_source_currency=persisted_reporting_source_currency,
+        persisted_fx_rate=persisted_fx_rate,
+    )
+
+
 async def _decision_rows(
     db: AsyncSession, *, since: datetime, entity_id: uuid.UUID | None, reporting_currency: str
 ) -> list[dict]:
@@ -250,8 +277,8 @@ async def _decision_rows(
                 # approval before the clock start, which would otherwise feed a
                 # negative day-count into the median/baseline.
                 ttd = max(Decimal("0"), _decimal_days(created_at - clock_start))
-        reporting_amount, unconverted = reporting_amount_at_locked_rate(
-            amount=Decimal(str(amount or 0)),
+        reporting_amount, unconverted = _invoice_reporting_amount(
+            amount=amount,
             currency=currency,
             reporting_currency=reporting_currency,
             persisted_reporting_currency=rep_currency,
@@ -456,17 +483,29 @@ async def _vendor_approved_rows(
     vendor_id: uuid.UUID | None,
     vendor_name: str,
     entity_id: uuid.UUID | None,
+    reporting_currency: str,
 ) -> list[dict]:
     """That vendor's historically-approved invoices, shaped for the baseline.
 
     The approver + timing per invoice come from the ``invoice.approved`` audit
-    row (LEFT joined; an invoice may pre-date the audit instrumentation)."""
+    row (LEFT joined; an invoice may pre-date the audit instrumentation).
+
+    Amounts are expressed in the org's **reporting currency** at each row's own
+    locked rate, exactly like ``_decision_rows``. A mean and a standard
+    deviation summed across currencies describe nothing — the same defect
+    already fixed for the ``stat_anomaly`` fraud rule. Rows that can't be
+    expressed there are flagged ``amount_unconverted`` and
+    ``compute_vendor_baseline`` leaves them out of the money statistics."""
     q = select(
         Invoice.id,
         Invoice.amount,
         AuditLog.actor_id,
         AuditLog.created_at,
         Invoice.created_at.label("inv_created_at"),
+        Invoice.currency,
+        Invoice.reporting_currency,
+        Invoice.reporting_source_currency,
+        Invoice.reporting_fx_rate,
     ).select_from(Invoice)
     q = q.join(
         AuditLog,
@@ -486,21 +525,47 @@ async def _vendor_approved_rows(
         db, since=datetime.now(UTC) - timedelta(days=3650), entity_id=entity_id
     )
     out: list[dict] = []
-    for inv_id, amount, actor_id, approved_at, inv_created in rows:
+    for row in rows:
+        inv_id, amount, actor_id, approved_at, inv_created = row[0], row[1], row[2], row[3], row[4]
+        currency, rep_currency, rep_source, rep_rate = row[5], row[6], row[7], row[8]
         ttd: Decimal | None = None
         if approved_at is not None:
             clock_start = starts.get(inv_id) or inv_created
             if clock_start is not None:
                 # Clamp ≥ 0 — see _decision_rows.
                 ttd = max(Decimal("0"), _decimal_days(approved_at - clock_start))
+        reporting_amount, unconverted = _invoice_reporting_amount(
+            amount=amount,
+            currency=currency,
+            reporting_currency=reporting_currency,
+            persisted_reporting_currency=rep_currency,
+            persisted_reporting_source_currency=rep_source,
+            persisted_fx_rate=rep_rate,
+        )
         out.append(
             {
-                "amount": Decimal(str(amount or 0)),
+                "amount": reporting_amount,
+                "amount_unconverted": unconverted,
                 "approver_id": str(actor_id) if actor_id else None,
                 "time_to_approve_days": ttd,
             }
         )
     return out
+
+
+def _subject_amount(inv: Invoice, reporting_currency: str) -> Decimal | None:
+    """The invoice under test, expressed in the baseline's currency — or ``None``
+    when it can't be, which makes ``detect_invoice_anomaly`` abstain on the
+    amount rules instead of comparing across currencies."""
+    amount, unconverted = _invoice_reporting_amount(
+        amount=inv.amount,
+        currency=inv.currency,
+        reporting_currency=reporting_currency,
+        persisted_reporting_currency=inv.reporting_currency,
+        persisted_reporting_source_currency=inv.reporting_source_currency,
+        persisted_fx_rate=inv.reporting_fx_rate,
+    )
+    return None if unconverted else amount
 
 
 def _anomaly_dict(a: InvoiceAnomaly) -> dict:
@@ -567,6 +632,7 @@ async def anomalies(
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
     cfg = _adaptive_settings(org)
+    reporting_currency = resolve_reporting_currency(org.settings)
     kwargs = dict(
         sigma=cfg["sigma"],
         median_multiple=cfg["median_multiple"],
@@ -580,18 +646,27 @@ async def anomalies(
         if inv is None:
             raise HTTPException(status_code=404, detail="Invoice not found")
         approved_rows = await _vendor_approved_rows(
-            db, vendor_id=inv.vendor_id, vendor_name=inv.vendor_name, entity_id=entity_id
+            db,
+            vendor_id=inv.vendor_id,
+            vendor_name=inv.vendor_name,
+            entity_id=entity_id,
+            reporting_currency=reporting_currency,
         )
         baseline = compute_vendor_baseline(
             approved_rows,
             vendor_id=str(inv.vendor_id) if inv.vendor_id else None,
             vendor_name=inv.vendor_name or "",
             min_history=cfg["min_history"],
+            currency=reporting_currency,
         )
         tir = await _time_in_review_days(db, inv, entity_id=entity_id)
         anomaly = detect_invoice_anomaly(
             inv,
             baseline,
+            # The SUBJECT expressed in the same currency as the baseline. `None`
+            # means it could not be — the amount rules then abstain rather than
+            # compare across currencies.
+            amount=_subject_amount(inv, reporting_currency),
             proposed_approver_id=str(inv.assigned_to_id) if inv.assigned_to_id else None,
             time_in_review_days=tir,
             **kwargs,
@@ -619,17 +694,20 @@ async def anomalies(
                 vendor_id=inv.vendor_id,
                 vendor_name=inv.vendor_name,
                 entity_id=entity_id,
+                reporting_currency=reporting_currency,
             )
             baselines[vkey] = compute_vendor_baseline(
                 approved_rows,
                 vendor_id=str(inv.vendor_id) if inv.vendor_id else None,
                 vendor_name=inv.vendor_name or "",
                 min_history=cfg["min_history"],
+                currency=reporting_currency,
             )
         tir = await _time_in_review_days(db, inv, entity_id=entity_id)
         anomaly = detect_invoice_anomaly(
             inv,
             baselines[vkey],
+            amount=_subject_amount(inv, reporting_currency),
             proposed_approver_id=str(inv.assigned_to_id) if inv.assigned_to_id else None,
             time_in_review_days=tir,
             **kwargs,

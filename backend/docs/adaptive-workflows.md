@@ -100,7 +100,8 @@ filtered to that entity; `None` (or absent / `all`) is the consolidated view.
   at ≥ 0** so an out-of-order / backfilled audit row can't feed a negative
   day-count into the median or baseline.
 - **Vendor baseline** (for anomaly detection) is built from that vendor's
-  **historically-approved** invoices only — `status IN (approved, sending_to_erp,
+  **historically-approved** invoices only, with every amount converted into the
+  reporting currency (see below) — `status IN (approved, sending_to_erp,
   sent_to_erp, posted_in_erp, payment_scheduled, paid, done)`. Pending / rejected
   invoices are not part of the "accepted norm". The approver + timing per
   baseline invoice come from its `invoice.approved` audit row.
@@ -110,8 +111,9 @@ a separate query (tenant and control are different databases — no cross-DB joi
 
 ### Every amount is expressed in the org's REPORTING currency
 
-`_decision_rows` does **not** hand the pure-stat layer raw `Invoice.amount`. It
-converts each invoice into the org's reporting currency
+Neither `_decision_rows` (the threshold evidence) nor `_vendor_approved_rows`
+(the anomaly baseline) hands the pure-stat layer raw `Invoice.amount`. Both
+convert each invoice into the org's reporting currency
 (`currency_conversion.resolve_reporting_currency`) at the rate already **locked
 on that invoice row** by `invoice_warnings._refresh_reporting_amount` — via
 `currency_conversion.reporting_amount_at_locked_rate`, the same helper the
@@ -138,15 +140,39 @@ face value:
   would understate the vendor's real ceiling while the copy claims a complete
   record.
 
-The enforcement side moves with it. `services/extraction.decide_auto_approve`
-compares `auto_approve_below` against the invoice expressed in the same
-currency, resolved by `extraction.auto_approve_floor_amount` (the same locked-rate
-helper). When the invoice can't be expressed there the floor trigger **does not
-fire at all** — fail closed, the invoice goes to a human — because a threshold
-gate that silently passes an unconvertible invoice is an auto-approval nobody
-authorised. Both call sites (`run_extraction` and `POST
-/api/invoices/{id}/complete`) run `refresh_warnings` immediately beforehand,
-which is what locks the rate, so the conversion is a read of the row.
+The **anomaly baseline** is the second consumer, and it is the same defect the
+`stat_anomaly` fraud rule already had fixed: `compute_vendor_baseline` takes a
+mean and a population stdev over the amounts it is given, and a mean over mixed
+currencies describes nothing — a handful of JPY invoices either make an ordinary
+USD one read as a wild outlier, or inflate the stdev enough to hide a genuine
+one. `VendorBaseline` now carries the `currency` its money fields are in and an
+`unconverted_count`; an unpriceable row contributes no amount at all (not a
+guessed conversion, not its face value) but still contributes its approver and
+its timing, because neither depends on a currency — dropping it would make a
+legitimate approver look unusual. `min_history` is measured in rows the baseline
+could actually price.
+
+Converting only the baseline would have moved the mismatch rather than fixed
+it, because `detect_invoice_anomaly` read the subject's amount straight off the
+Invoice object. Its **input contract changed** instead: `amount` is a required
+keyword-only argument — the subject expressed in the baseline's currency — and
+`None` means it could not be. There is no default to forget. On `None` the two
+amount rules abstain and an `amount_comparison_unavailable` info flag says why;
+this surface is advisory and writes no warning and no Exception row, so no
+verdict beats a fabricated one, and the approver / timing rules still run.
+
+The enforcement side moves with it — and not just for `auto_approve_below`.
+Every approval money threshold (`require_cfo_above`, `max_invoice_amount` and
+the approval chain's per-level bands too) is denominated in the same currency
+and compared through `approval_chain.GateAmount` /
+`approval_chain.reporting_gate_amount`; see `workflow-design.md` § Approval
+Thresholds for that side and its fail-closed table. `decide_auto_approve`'s
+amount floor **does not fire at all** on an invoice that can't be expressed —
+fail closed, the invoice goes to a human — because a threshold gate that
+silently passes an unconvertible invoice is an auto-approval nobody authorised.
+Both call sites (`run_extraction` and `POST /api/invoices/{id}/complete`) run
+`refresh_warnings` immediately beforehand, which is what locks the rate, so the
+conversion is a read of the row.
 
 **Single-currency tenants are unaffected** — same currency converts at rate 1
 with no lock required. For a tenant whose reporting currency is *not* USD, the

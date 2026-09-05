@@ -293,7 +293,7 @@ def compute_vendor_patterns(decisions: list) -> list[VendorApprovalPattern]:
 class VendorBaseline:
     vendor_id: str | None
     vendor_name: str
-    sample_size: int  # # approved invoices in baseline
+    sample_size: int  # # approved invoices the AMOUNT statistics were computed from
     mean_amount: Decimal
     median_amount: Decimal
     stdev_amount: Decimal
@@ -301,6 +301,14 @@ class VendorBaseline:
     max_amount: Decimal
     typical_approver_ids: list[str]  # approvers who approved this vendor before
     median_time_to_approve_days: Decimal
+    # Approvals excluded from the four money fields because their amount could
+    # not be expressed in `currency` (no locked FX rate on the invoice row).
+    # They still contribute their approver and their timing — those are
+    # currency-independent, and dropping them would make a legitimate approver
+    # look unusual.
+    unconverted_count: int = 0
+    # What the money fields are denominated in: the org's reporting currency.
+    currency: str = ""
 
 
 @dataclass(frozen=True)
@@ -329,17 +337,32 @@ def compute_vendor_baseline(
     vendor_id: str | None = None,
     vendor_name: str = "",
     min_history: int = 5,
+    currency: str = "",
 ) -> VendorBaseline | None:
     """Build a per-vendor baseline from that vendor's approved invoices.
 
     ``approved_rows`` are duck-typed rows with ``amount`` (Decimal),
-    ``approver_id`` (str | None), ``time_to_approve_days`` (Decimal | None).
-    Returns ``None`` when there's less than ``min_history`` approved invoices —
-    too thin a base to call anything anomalous.
+    ``approver_id`` (str | None), ``time_to_approve_days`` (Decimal | None), and
+    ``amount_unconverted`` (bool). Returns ``None`` when fewer than
+    ``min_history`` rows carry a usable amount — too thin a base to call
+    anything anomalous.
+
+    ``amount`` must already be expressed in ONE currency, ``currency`` — the
+    org's reporting currency (``api/adaptive_workflows._vendor_approved_rows``
+    converts each row at the rate locked on its own invoice). A mean and a
+    standard deviation over mixed currencies describe nothing: a handful of JPY
+    invoices either make an ordinary USD one read as a wild outlier, or inflate
+    the stdev enough to hide a genuine one. This is the same defect already
+    fixed for the ``stat_anomaly`` fraud rule.
+
+    A row whose amount could not be expressed there is left out of the money
+    statistics and counted on ``unconverted_count``; its approver and timing
+    still count, because neither depends on the currency.
     """
-    if len(approved_rows) < min_history:
+    usable = [r for r in approved_rows if not _get(r, "amount_unconverted")]
+    if len(usable) < min_history:
         return None
-    amounts = [Decimal(str(_get(r, "amount") or 0)) for r in approved_rows]
+    amounts = [Decimal(str(_get(r, "amount") or 0)) for r in usable]
     times = [t for r in approved_rows if (t := _get(r, "time_to_approve_days")) is not None]
     approvers: list[str] = []
     seen: set[str] = set()
@@ -352,7 +375,7 @@ def compute_vendor_baseline(
     return VendorBaseline(
         vendor_id=str(vendor_id) if vendor_id else None,
         vendor_name=vendor_name,
-        sample_size=len(approved_rows),
+        sample_size=len(usable),
         mean_amount=mean,
         median_amount=_q2(_quantile(amounts, 0.5)),
         stdev_amount=_q2(_stdev(amounts)),
@@ -360,6 +383,8 @@ def compute_vendor_baseline(
         max_amount=_q2(max(amounts)),
         typical_approver_ids=approvers,
         median_time_to_approve_days=_quantile(times, 0.5) if times else Decimal("0"),
+        unconverted_count=len(approved_rows) - len(usable),
+        currency=(currency or "").strip().upper(),
     )
 
 
@@ -367,6 +392,7 @@ def detect_invoice_anomaly(
     invoice,
     baseline: VendorBaseline | None,
     *,
+    amount: Decimal | None,
     sigma: Decimal = Decimal("2.0"),
     median_multiple: Decimal = Decimal("3.0"),
     timing_multiple: Decimal = Decimal("3.0"),
@@ -378,14 +404,32 @@ def detect_invoice_anomaly(
 
     Read-only and explainable: the ``baseline`` it compared against is returned
     on the result. ``invoice`` is duck-typed with ``id``, ``vendor_id``,
-    ``vendor_name``, ``amount``. ``min_history`` is accepted for signature
-    symmetry — a ``None`` baseline already means "insufficient history".
+    ``vendor_name``. ``min_history`` is accepted for signature symmetry — a
+    ``None`` baseline already means "insufficient history".
+
+    ``amount`` is **required and is not read off the invoice**. It is the
+    invoice expressed in the SAME currency as ``baseline`` — the org's reporting
+    currency — and ``None`` means it could not be expressed there. Reading
+    ``invoice.amount`` was the bug: the baseline is built from converted
+    history, so comparing a billed figure against it is comparing two different
+    currencies, and a caller could fix one side without the other. Making it an
+    explicit required argument is what stops that: there is no default to forget.
+
+    When ``amount`` is ``None`` the two AMOUNT rules are skipped and an
+    ``amount_comparison_unavailable`` info flag says so — this surface is
+    advisory and writes nothing, so the honest answer is "no verdict", never a
+    fabricated one. The approver and timing rules still run; neither depends on
+    the currency.
     """
     inv_id = str(_get(invoice, "id"))
     vendor_id = _get(invoice, "vendor_id")
     vendor_id = str(vendor_id) if vendor_id else None
     vendor_name = _get(invoice, "vendor_name") or ""
-    amount = Decimal(str(_get(invoice, "amount") or 0))
+    amount_expressible = amount is not None
+    # Fall back to the billed figure for DISPLAY only — never for a comparison.
+    amount = (
+        Decimal(str(amount)) if amount_expressible else Decimal(str(_get(invoice, "amount") or 0))
+    )
 
     if baseline is None:
         return InvoiceAnomaly(
@@ -405,9 +449,26 @@ def detect_invoice_anomaly(
     high_bound = mean + sigma * stdev
     median_bound = median * median_multiple
 
+    if not amount_expressible:
+        # No amount verdict is possible — say so rather than compare a billed
+        # figure against a baseline denominated in another currency.
+        base_cur = baseline.currency or "the reporting currency"
+        flags.append(
+            AnomalyFlag(
+                code="amount_comparison_unavailable",
+                severity="info",
+                message=(
+                    f"Amount could not be expressed in {base_cur} (no locked FX rate on this "
+                    f"invoice), so it was not compared against this vendor's baseline"
+                ),
+                observed=str(amount),
+                expected=str(baseline.mean_amount),
+            )
+        )
+
     # 1. amount_high — BOTH guards (σ AND median-multiple) so a tight-variance
     #    vendor doesn't trip on a small absolute jump.
-    if amount > high_bound and amount > median_bound:
+    if amount_expressible and amount > high_bound and amount > median_bound:
         if stdev > 0:
             sigmas = (amount - mean) / stdev
             message = f"Amount {amount} is {sigmas:.1f}σ above this vendor's mean of {mean}"
@@ -427,7 +488,7 @@ def detect_invoice_anomaly(
         )
 
     # 2. amount_low — unusually tiny (possible test txn / split invoice).
-    if stdev > 0 and amount > 0 and amount < mean - sigma * stdev:
+    if amount_expressible and stdev > 0 and amount > 0 and amount < mean - sigma * stdev:
         low_bound = mean - sigma * stdev
         flags.append(
             AnomalyFlag(

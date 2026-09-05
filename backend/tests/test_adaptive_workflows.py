@@ -121,7 +121,7 @@ def test_baseline_insufficient_history():
     rows = [{"amount": Decimal("100"), "approver_id": "A", "time_to_approve_days": None}] * 4
     assert compute_vendor_baseline(rows, min_history=5) is None
     inv = SimpleNamespace(id="i1", vendor_id="V1", vendor_name="Acme", amount=Decimal("999"))
-    res = detect_invoice_anomaly(inv, None)
+    res = detect_invoice_anomaly(inv, None, amount=Decimal("999"))
     assert res.insufficient_history is True
     assert res.flags == []
     assert res.baseline is None
@@ -145,7 +145,9 @@ def _baseline(mean, stdev, *, median=None, approvers=None, med_time="0"):
 def test_anomaly_amount_high_flagged_with_baseline():
     baseline = _baseline("4812.50", "410.20", median="4800.00")
     inv = SimpleNamespace(id="i1", vendor_id="V1", vendor_name="Acme", amount=Decimal("19500"))
-    res = detect_invoice_anomaly(inv, baseline)
+    # `amount` is explicit and required — the subject expressed in the same
+    # currency as the baseline (see detect_invoice_anomaly's contract).
+    res = detect_invoice_anomaly(inv, baseline, amount=Decimal("19500"))
     codes = [f.code for f in res.flags]
     assert codes == ["amount_high"]
     # Explainability: baseline returned + expected bound is mean + 2σ.
@@ -158,16 +160,16 @@ def test_anomaly_tight_variance_guard():
     # σ=0, all amounts 5000; invoice 5200: > mean+2σ but NOT > median*3 → no flag.
     baseline = _baseline("5000", "0", median="5000")
     inv = SimpleNamespace(id="i1", vendor_id="V1", vendor_name="Acme", amount=Decimal("5200"))
-    res = detect_invoice_anomaly(inv, baseline)
+    res = detect_invoice_anomaly(inv, baseline, amount=Decimal("5200"))
     assert [f.code for f in res.flags] == []
 
 
 def test_anomaly_unusual_approver():
     baseline = _baseline("5000", "100", median="5000", approvers=["A", "B"])
     inv = SimpleNamespace(id="i1", vendor_id="V1", vendor_name="Acme", amount=Decimal("5000"))
-    res = detect_invoice_anomaly(inv, baseline, proposed_approver_id="Z")
+    res = detect_invoice_anomaly(inv, baseline, amount=Decimal("5000"), proposed_approver_id="Z")
     assert "unusual_approver" in [f.code for f in res.flags]
-    res2 = detect_invoice_anomaly(inv, baseline, proposed_approver_id="A")
+    res2 = detect_invoice_anomaly(inv, baseline, amount=Decimal("5000"), proposed_approver_id="A")
     assert "unusual_approver" not in [f.code for f in res2.flags]
 
 
