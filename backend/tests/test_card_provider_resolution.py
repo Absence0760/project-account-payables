@@ -29,8 +29,10 @@ table), and this file pins all five:
   |   | a cancel we did not obtain |
   | `GET /portal/cards/{token}` (vendor) | PII-free degraded body, `pan=None` |
 
-An *unset* provider still resolves through `REGION_DEFAULTS` — that is the
-local-first default and a normal state (guard rail 7).
+An *unset* provider never raises — it is a normal state. It resolves through
+`get_default_provider`, which applies the `REGION_DEFAULTS` preference only once
+a credential for that issuer exists and hands back `mock` otherwise (guard rail
+7). That gate is pinned in `tests/test_card_provider_local_first.py`.
 """
 
 from __future__ import annotations
@@ -81,8 +83,16 @@ def test_unknown_provider_name_is_bounded_in_the_error():
     assert len(exc.value.provider) == 50
 
 
-def test_unset_provider_still_resolves_the_region_default():
-    """Local-first: an org that named no issuer is a normal state."""
+def test_unset_provider_resolves_a_default_instead_of_raising(monkeypatch):
+    """Local-first: an org that named no issuer is a normal state, never the
+    refusal. With a platform credential present it is the region's preferred
+    issuer; without one it is `mock` — see
+    `tests/test_card_provider_local_first.py` for that half."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "lithic_api_key", "live_key")
+    monkeypatch.setattr(settings, "nium_client_id", "cid")
+    monkeypatch.setattr(settings, "nium_client_secret", "sec")
     assert isinstance(get_card_adapter({"region": "US"}), LithicAdapter)
     assert isinstance(get_card_adapter({"region": "ZA"}), NiumAdapter)
     # An explicitly empty string is "unset", not "named".

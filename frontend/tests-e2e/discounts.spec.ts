@@ -1,4 +1,4 @@
-import { API_BASE, expect, tenantPsql, test } from './fixtures/helpers';
+import { API_BASE, deleteInvoicesWhere, expect, tenantPsql, test } from './fixtures/helpers';
 
 /**
  * /discounts — Dynamic Discounting & Early-Payment Optimization dashboard.
@@ -194,7 +194,7 @@ test.describe('/discounts (clerk — read-only)', () => {
 			);
 			tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceId}'`);
 			tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${invoiceId}'`);
-			tenantPsql(`DELETE FROM invoices WHERE id='${invoiceId}'`);
+			deleteInvoicesWhere(`id='${invoiceId}'`);
 		}
 	});
 });

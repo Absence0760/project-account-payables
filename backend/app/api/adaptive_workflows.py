@@ -83,6 +83,10 @@ from app.services.adaptive_workflows import (
 )
 from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
+from app.services.currency_conversion import (
+    reporting_amount_at_locked_rate,
+    resolve_reporting_currency,
+)
 from app.services.review import assign_reviewer
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -178,11 +182,53 @@ async def _ready_for_review_starts(
     return {eid: ts for eid, ts in rows if eid is not None}
 
 
+def _invoice_reporting_amount(
+    *,
+    amount,
+    currency,
+    reporting_currency: str,
+    persisted_reporting_currency,
+    persisted_reporting_source_currency,
+    persisted_fx_rate,
+) -> tuple[Decimal, bool]:
+    """``(amount in the reporting currency, unconverted)`` for one invoice row.
+
+    The single spelling of "express this invoice's money in the one currency
+    every adaptive statistic is denominated in", shared by the decision rows
+    (which feed the threshold recommendation) and the anomaly baseline. Converts
+    at the rate already LOCKED on the row — never one fetched now, which would
+    make a read-only statistic non-deterministic.
+    """
+    return reporting_amount_at_locked_rate(
+        amount=Decimal(str(amount or 0)),
+        currency=currency,
+        reporting_currency=reporting_currency,
+        persisted_reporting_currency=persisted_reporting_currency,
+        persisted_reporting_source_currency=persisted_reporting_source_currency,
+        persisted_fx_rate=persisted_fx_rate,
+    )
+
+
 async def _decision_rows(
-    db: AsyncSession, *, since: datetime, entity_id: uuid.UUID | None
+    db: AsyncSession, *, since: datetime, entity_id: uuid.UUID | None, reporting_currency: str
 ) -> list[dict]:
     """Build the duck-typed decision rows the pure-stat layer consumes from the
-    audit_log ⋈ invoices join."""
+    audit_log ⋈ invoices join.
+
+    ``amount`` is emitted in the org's **reporting currency**, converted at the
+    rate already locked on each invoice row — never at a rate fetched now, so a
+    market move cannot retroactively rewrite what a control decided. A row with
+    no lock we can prove describes its currency pair is emitted with
+    ``amount_unconverted=True``; ``compute_vendor_patterns`` keeps it out of the
+    money aggregates and ``recommend_auto_approve_threshold`` disqualifies the
+    vendor from supporting a raise.
+
+    This matters because these rows are the evidence base for
+    ``auto_approve_below`` — a bare number denominated in the reporting
+    currency, exactly like ``payments.cfo_approval_above``. Feeding raw
+    ``Invoice.amount`` let three clean JPY 100,000 vendors argue for a
+    five-figure USD auto-approve limit.
+    """
     q = (
         select(
             AuditLog.action,
@@ -194,6 +240,10 @@ async def _decision_rows(
             Invoice.vendor_name,
             Invoice.amount,
             Invoice.created_at.label("inv_created_at"),
+            Invoice.currency,
+            Invoice.reporting_currency,
+            Invoice.reporting_source_currency,
+            Invoice.reporting_fx_rate,
         )
         .join(Invoice, Invoice.id == AuditLog.entity_id)
         .where(
@@ -211,8 +261,14 @@ async def _decision_rows(
     for row in rows:
         action, actor_id, created_at, details = row[0], row[1], row[2], row[3]
         inv_id, vendor_id, vendor_name, amount, inv_created = row[4], row[5], row[6], row[7], row[8]
+        currency, rep_currency, rep_source, rep_rate = row[9], row[10], row[11], row[12]
         decision = "approved" if action == "invoice.approved" else "rejected"
-        unmodified = decision == "approved" and not (details or {}).get("changes")
+        # `details` is JSONB with no shape constraint — a non-object value
+        # (reachable by a direct-DB write) must not AttributeError the whole
+        # readout. Treat it as carrying no corrections, matching
+        # `approval_signature.check_approval_row`'s posture.
+        details_obj = details if isinstance(details, dict) else {}
+        unmodified = decision == "approved" and not details_obj.get("changes")
         ttd: Decimal | None = None
         if decision == "approved":
             clock_start = starts.get(inv_id) or inv_created
@@ -221,12 +277,21 @@ async def _decision_rows(
                 # approval before the clock start, which would otherwise feed a
                 # negative day-count into the median/baseline.
                 ttd = max(Decimal("0"), _decimal_days(created_at - clock_start))
+        reporting_amount, unconverted = _invoice_reporting_amount(
+            amount=amount,
+            currency=currency,
+            reporting_currency=reporting_currency,
+            persisted_reporting_currency=rep_currency,
+            persisted_reporting_source_currency=rep_source,
+            persisted_fx_rate=rep_rate,
+        )
         decisions.append(
             {
                 "approver_id": str(actor_id) if actor_id else None,
                 "vendor_id": str(vendor_id) if vendor_id else None,
                 "vendor_name": vendor_name or "",
-                "amount": Decimal(str(amount or 0)),
+                "amount": reporting_amount,
+                "amount_unconverted": unconverted,
                 "decision": decision,
                 "unmodified": unmodified,
                 "time_to_approve_days": ttd,
@@ -351,11 +416,18 @@ async def approval_patterns(
     days: int = Query(180, ge=1, le=730),
     db: AsyncSession = Depends(get_tenant_db),
     ctrl_db: AsyncSession = Depends(get_control_db),
+    org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
     since = datetime.now(UTC) - timedelta(days=days)
-    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    # Every per-vendor money figure below is in the org's reporting currency.
+    decisions = await _decision_rows(
+        db,
+        since=since,
+        entity_id=entity_id,
+        reporting_currency=resolve_reporting_currency(org.settings),
+    )
 
     approver_ids = {d["approver_id"] or "unknown" for d in decisions}
     names = await _approver_names(ctrl_db, approver_ids, organization_id=user.organization_id)
@@ -411,17 +483,29 @@ async def _vendor_approved_rows(
     vendor_id: uuid.UUID | None,
     vendor_name: str,
     entity_id: uuid.UUID | None,
+    reporting_currency: str,
 ) -> list[dict]:
     """That vendor's historically-approved invoices, shaped for the baseline.
 
     The approver + timing per invoice come from the ``invoice.approved`` audit
-    row (LEFT joined; an invoice may pre-date the audit instrumentation)."""
+    row (LEFT joined; an invoice may pre-date the audit instrumentation).
+
+    Amounts are expressed in the org's **reporting currency** at each row's own
+    locked rate, exactly like ``_decision_rows``. A mean and a standard
+    deviation summed across currencies describe nothing — the same defect
+    already fixed for the ``stat_anomaly`` fraud rule. Rows that can't be
+    expressed there are flagged ``amount_unconverted`` and
+    ``compute_vendor_baseline`` leaves them out of the money statistics."""
     q = select(
         Invoice.id,
         Invoice.amount,
         AuditLog.actor_id,
         AuditLog.created_at,
         Invoice.created_at.label("inv_created_at"),
+        Invoice.currency,
+        Invoice.reporting_currency,
+        Invoice.reporting_source_currency,
+        Invoice.reporting_fx_rate,
     ).select_from(Invoice)
     q = q.join(
         AuditLog,
@@ -441,21 +525,47 @@ async def _vendor_approved_rows(
         db, since=datetime.now(UTC) - timedelta(days=3650), entity_id=entity_id
     )
     out: list[dict] = []
-    for inv_id, amount, actor_id, approved_at, inv_created in rows:
+    for row in rows:
+        inv_id, amount, actor_id, approved_at, inv_created = row[0], row[1], row[2], row[3], row[4]
+        currency, rep_currency, rep_source, rep_rate = row[5], row[6], row[7], row[8]
         ttd: Decimal | None = None
         if approved_at is not None:
             clock_start = starts.get(inv_id) or inv_created
             if clock_start is not None:
                 # Clamp ≥ 0 — see _decision_rows.
                 ttd = max(Decimal("0"), _decimal_days(approved_at - clock_start))
+        reporting_amount, unconverted = _invoice_reporting_amount(
+            amount=amount,
+            currency=currency,
+            reporting_currency=reporting_currency,
+            persisted_reporting_currency=rep_currency,
+            persisted_reporting_source_currency=rep_source,
+            persisted_fx_rate=rep_rate,
+        )
         out.append(
             {
-                "amount": Decimal(str(amount or 0)),
+                "amount": reporting_amount,
+                "amount_unconverted": unconverted,
                 "approver_id": str(actor_id) if actor_id else None,
                 "time_to_approve_days": ttd,
             }
         )
     return out
+
+
+def _subject_amount(inv: Invoice, reporting_currency: str) -> Decimal | None:
+    """The invoice under test, expressed in the baseline's currency — or ``None``
+    when it can't be, which makes ``detect_invoice_anomaly`` abstain on the
+    amount rules instead of comparing across currencies."""
+    amount, unconverted = _invoice_reporting_amount(
+        amount=inv.amount,
+        currency=inv.currency,
+        reporting_currency=reporting_currency,
+        persisted_reporting_currency=inv.reporting_currency,
+        persisted_reporting_source_currency=inv.reporting_source_currency,
+        persisted_fx_rate=inv.reporting_fx_rate,
+    )
+    return None if unconverted else amount
 
 
 def _anomaly_dict(a: InvoiceAnomaly) -> dict:
@@ -522,6 +632,7 @@ async def anomalies(
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
     cfg = _adaptive_settings(org)
+    reporting_currency = resolve_reporting_currency(org.settings)
     kwargs = dict(
         sigma=cfg["sigma"],
         median_multiple=cfg["median_multiple"],
@@ -535,18 +646,27 @@ async def anomalies(
         if inv is None:
             raise HTTPException(status_code=404, detail="Invoice not found")
         approved_rows = await _vendor_approved_rows(
-            db, vendor_id=inv.vendor_id, vendor_name=inv.vendor_name, entity_id=entity_id
+            db,
+            vendor_id=inv.vendor_id,
+            vendor_name=inv.vendor_name,
+            entity_id=entity_id,
+            reporting_currency=reporting_currency,
         )
         baseline = compute_vendor_baseline(
             approved_rows,
             vendor_id=str(inv.vendor_id) if inv.vendor_id else None,
             vendor_name=inv.vendor_name or "",
             min_history=cfg["min_history"],
+            currency=reporting_currency,
         )
         tir = await _time_in_review_days(db, inv, entity_id=entity_id)
         anomaly = detect_invoice_anomaly(
             inv,
             baseline,
+            # The SUBJECT expressed in the same currency as the baseline. `None`
+            # means it could not be — the amount rules then abstain rather than
+            # compare across currencies.
+            amount=_subject_amount(inv, reporting_currency),
             proposed_approver_id=str(inv.assigned_to_id) if inv.assigned_to_id else None,
             time_in_review_days=tir,
             **kwargs,
@@ -574,17 +694,20 @@ async def anomalies(
                 vendor_id=inv.vendor_id,
                 vendor_name=inv.vendor_name,
                 entity_id=entity_id,
+                reporting_currency=reporting_currency,
             )
             baselines[vkey] = compute_vendor_baseline(
                 approved_rows,
                 vendor_id=str(inv.vendor_id) if inv.vendor_id else None,
                 vendor_name=inv.vendor_name or "",
                 min_history=cfg["min_history"],
+                currency=reporting_currency,
             )
         tir = await _time_in_review_days(db, inv, entity_id=entity_id)
         anomaly = detect_invoice_anomaly(
             inv,
             baselines[vkey],
+            amount=_subject_amount(inv, reporting_currency),
             proposed_approver_id=str(inv.assigned_to_id) if inv.assigned_to_id else None,
             time_in_review_days=tir,
             **kwargs,
@@ -625,13 +748,17 @@ async def suggestions(
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
     cfg = _adaptive_settings(org)
+    reporting_currency = resolve_reporting_currency(org.settings)
     since = datetime.now(UTC) - timedelta(days=days)
-    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    decisions = await _decision_rows(
+        db, since=since, entity_id=entity_id, reporting_currency=reporting_currency
+    )
     vendor_patterns = compute_vendor_patterns(decisions)
     derived: list[DerivedSuggestion] = derive_suggestions(
         vendor_patterns,
         min_history=cfg["suggestion_min_history"],
         min_consistency_pct=cfg["suggestion_min_consistency_pct"],
+        currency=reporting_currency,
     )
 
     fresh_keys = {d.dedupe_key for d in derived}
@@ -812,12 +939,15 @@ async def _rank_for_invoice(
     organization_id: uuid.UUID,
     entity_id: uuid.UUID | None,
     days: int,
+    reporting_currency: str,
 ) -> RoutingSuggestion:
     """Rank the org's eligible approvers for one invoice. Shared by the advisory
     GET and the apply POST so both rank on the *identical* deterministic logic —
     the apply path acts on exactly what the recommendation surface shows."""
     since = datetime.now(UTC) - timedelta(days=days)
-    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    decisions = await _decision_rows(
+        db, since=since, entity_id=entity_id, reporting_currency=reporting_currency
+    )
 
     approvers = compute_approver_patterns(decisions)
 
@@ -871,6 +1001,7 @@ async def routing_suggestion(
     days: int = Query(180, ge=1, le=730),
     db: AsyncSession = Depends(get_tenant_db),
     ctrl_db: AsyncSession = Depends(get_control_db),
+    org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(*_READ_ROLES)),
 ):
@@ -885,7 +1016,13 @@ async def routing_suggestion(
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     suggestion = await _rank_for_invoice(
-        db, ctrl_db, inv, organization_id=user.organization_id, entity_id=entity_id, days=days
+        db,
+        ctrl_db,
+        inv,
+        organization_id=user.organization_id,
+        entity_id=entity_id,
+        days=days,
+        reporting_currency=resolve_reporting_currency(org.settings),
     )
     return RoutingSuggestionResponse(**_routing_dict(suggestion))
 
@@ -901,6 +1038,7 @@ async def apply_routing_suggestion(
     days: int = Query(180, ge=1, le=730),
     db: AsyncSession = Depends(get_tenant_db),
     ctrl_db: AsyncSession = Depends(get_control_db),
+    org: Organization = Depends(get_tenant),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
     user: User = Depends(require_roles(*_WRITE_ROLES)),
 ):
@@ -935,7 +1073,13 @@ async def apply_routing_suggestion(
         )
 
     suggestion = await _rank_for_invoice(
-        db, ctrl_db, inv, organization_id=user.organization_id, entity_id=entity_id, days=days
+        db,
+        ctrl_db,
+        inv,
+        organization_id=user.organization_id,
+        entity_id=entity_id,
+        days=days,
+        reporting_currency=resolve_reporting_currency(org.settings),
     )
     if suggestion.insufficient_history or not suggestion.candidates:
         raise HTTPException(
@@ -1078,6 +1222,12 @@ def _recommend_threshold(
         current_threshold=current_threshold,
         min_history=cfg["suggestion_min_history"],
         min_consistency_pct=cfg["suggestion_min_consistency_pct"],
+        # `auto_approve_below` is a bare number denominated in the org's
+        # reporting currency (the same convention as
+        # `payments.cfo_approval_above`), and `_decision_rows` already expressed
+        # the evidence there — so the recommendation and the gate that enforces
+        # it (`extraction.decide_auto_approve`) speak the same currency.
+        currency=resolve_reporting_currency(org.settings),
     )
 
 
@@ -1114,7 +1264,12 @@ async def _resolve_threshold_recommendation(
     which live with the rest of the feedback machinery further down; both
     resolve at call time.
     """
-    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    decisions = await _decision_rows(
+        db,
+        since=since,
+        entity_id=entity_id,
+        reporting_currency=resolve_reporting_currency(org.settings),
+    )
     base = _recommend_threshold(org, decisions, current)
     outcome_rows = await _auto_approval_outcome_rows(db, since=since, entity_id=entity_id)
     outcomes = compute_outcome_stats(outcome_rows, min_sample=_FEEDBACK_MIN_SAMPLE)

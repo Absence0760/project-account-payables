@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /invoices pagination. The lean seed has only ~10 invoices, so we bulk-insert
@@ -20,7 +20,7 @@ function seedInvoices(n: number): void {
 }
 
 function purge(): void {
-	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${MARKER}%'`);
+	deleteInvoicesWhere(`invoice_number LIKE '${MARKER}%'`);
 }
 
 test.describe('/invoices pagination', () => {

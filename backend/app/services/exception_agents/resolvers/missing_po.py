@@ -37,7 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.procurement import PurchaseOrder
-from app.services.approval_chain import cfo_gate_applies
+from app.services.approval_chain import (
+    cfo_gate_applies,
+    max_amount_gate_applies,
+    reporting_gate_amount,
+)
 from app.services.exception_agents.base import (
     ACTION_AUTO_RESOLVED,
     ACTION_ESCALATED,
@@ -308,13 +312,22 @@ class MissingPOResolver(ExceptionResolver):
         # exactly that; here we must use the invoice amount, like multi_po_split.)
         config = await _approval_thresholds(db, locked)
         invoice_amount = Decimal(str(locked.amount)).quantize(_CENTS)
+        # Expressed in the org's REPORTING currency — the currency both bare
+        # thresholds are denominated in — at the rate locked on this row.
+        # `expressible=False` is fail-CLOSED in the shared gate body: an invoice
+        # we cannot price escalates rather than self-approving past a control.
+        gate_amount = reporting_gate_amount(
+            locked, amount=invoice_amount, org_settings=org_settings
+        )
         max_amount = config.get("max_invoice_amount")
         cfo_threshold = config.get("require_cfo_above")
         # Both money gates fail CLOSED on a malformed/non-finite threshold: a
         # settings typo (or an `Infinity` an insider tampered in to defeat the
-        # control) must escalate to a human, never silently skip the gate.
-        if cfo_gate_applies(max_amount, invoice_amount) or cfo_gate_applies(
-            cfo_threshold, invoice_amount
+        # control) must escalate to a human, never silently skip the gate. Each
+        # cap uses its OWN helper (same shared `_money_gate_applies` body) so the
+        # log names the setting that actually tripped.
+        if max_amount_gate_applies(max_amount, gate_amount) or cfo_gate_applies(
+            cfo_threshold, gate_amount
         ):
             raise _NotApprovable(locked.status)
 

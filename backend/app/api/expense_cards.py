@@ -39,6 +39,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.expenses import _refresh_policy_violations
 from app.api.expenses import _to_response as _expense_to_response
 from app.api.pagination import PaginationParams, pagination_params
 from app.models.expense import (
@@ -159,6 +160,11 @@ async def _link_both_sides(
     txn.matched_expense_id = expense.id
     txn.reconciliation_status = ReconciliationStatus.matched
     expense.card_transaction_id = txn.id
+    # Record what we are about to overwrite so `/unmatch` can put it back. The
+    # match stamps corporate_card / virtual_card; without this the stamp
+    # outlived the link and a mis-matched out-of-pocket expense read as
+    # card-funded forever. See `Expense.payment_method_before_match`.
+    expense.payment_method_before_match = expense.payment_method
     expense.payment_method = _payment_method_for(txn)
 
     await dispatch_audit(
@@ -391,6 +397,15 @@ async def unmatch_card_transaction(
     if linked_expense_id is not None:
         expense = await _get_expense_or_404(db, linked_expense_id, entity_id)
         expense.card_transaction_id = None
+        # Put back the payment method the match overwrote. A NULL recorded value
+        # means the match predates migration 0089 — there is no evidence of what
+        # the row carried, so `payment_method` is left exactly as it is rather
+        # than reset to `out_of_pocket`, which would be a fresh wrong guess (an
+        # expense can legitimately be card-marked before its feed row lands).
+        restored = expense.payment_method_before_match
+        if restored is not None:
+            expense.payment_method = restored
+            expense.payment_method_before_match = None
         await dispatch_audit(
             db,
             correlation_id=uuid.uuid4(),
@@ -399,7 +414,11 @@ async def unmatch_card_transaction(
             action="expense.card_unmatched",
             entity_type="expense",
             entity_id=expense.id,
-            details={"card_transaction_id": str(txn.id)},
+            details={
+                "card_transaction_id": str(txn.id),
+                # PII-free: the enum value, not who spent what.
+                "payment_method_restored": str(restored) if restored is not None else None,
+            },
         )
 
     txn.matched_expense_id = None
@@ -469,6 +488,7 @@ async def create_expense_from_card(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
+    org: Organization = Depends(get_tenant),
 ):
     """Mint a new expense from the transaction and reconcile them.
 
@@ -493,6 +513,13 @@ async def create_expense_from_card(
     )
     db.add(expense)
     await db.flush()
+
+    # Same best-effort refresh every other expense write path performs (create,
+    # PATCH, receipt upload). Without it a card-derived line carried no policy
+    # flags at all until something else happened to PATCH it — so a receipt- or
+    # pre-approval-required violation was invisible on the row that is, by
+    # construction, already spent money.
+    await _refresh_policy_violations(db, expense, org)
 
     await dispatch_audit(
         db,

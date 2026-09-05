@@ -18,7 +18,9 @@ from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
 
 
-async def _seed_vendor(mk, org_id, *, name="Acme Supplies", address=None, website=None):
+async def _seed_vendor(
+    mk, org_id, *, name="Acme Supplies", address=None, website=None, entity_id=None
+):
     async with mk() as s:
         vendor = Vendor(
             organization_id=org_id,
@@ -26,6 +28,7 @@ async def _seed_vendor(mk, org_id, *, name="Acme Supplies", address=None, websit
             status="active",
             address=address,
             website=website,
+            entity_id=entity_id,
         )
         s.add(vendor)
         await s.commit()
@@ -267,3 +270,116 @@ async def test_apply_without_a_name_change_does_not_rescreen(realdb):
     assert r.status_code == 200, r.text
 
     assert await _sanctions_checks(mk, vid) == []
+
+
+# ---------------------------------------------------------------------------
+# Entity isolation — a steward on subsidiary A cannot reach subsidiary B's vendor
+# ---------------------------------------------------------------------------
+
+
+async def _entities(realdb):
+    """(default_entity_id, new_subsidiary_id) — creates the subsidiary.
+
+    Entity CRUD is admin-only, so this takes its own admin client; the tests
+    themselves run as ap_manager (the enrichment role).
+    """
+    async with realdb.client(key="a", role="admin") as admin:
+        r = await admin.post(
+            "/api/entities",
+            json={"name": "Enrich Sub", "slug": f"enrich-sub-{uuid.uuid4().hex[:8]}"},
+        )
+        assert r.status_code == 201, r.text
+        sub_id = r.json()["id"]
+        rows = (await admin.get("/api/entities")).json()
+    return next(e["id"] for e in rows if e["is_default"]), sub_id
+
+
+async def test_apply_refuses_a_vendor_from_another_entity(realdb):
+    """Entity isolation is a data-layer rule. `apply` WRITES onto the vendor
+    (and a `name` change re-screens it), so reaching across the entity boundary
+    with a known id must be the same opaque 404 as an unknown vendor — not a
+    silent success on subsidiary B's supplier."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        default_id, sub_id = await _entities(realdb)
+        vid = await _seed_vendor(mk, org_id, name="Sub Only Supplies", entity_id=uuid.UUID(sub_id))
+
+        body = {"fields": [{"field": "website", "value": "https://crossed.example"}]}
+        r = await c.post(
+            f"/api/enrichment/vendors/{vid}/apply",
+            json=body,
+            headers={"X-Entity-ID": default_id},
+        )
+    assert r.status_code == 404, r.text
+
+    # Nothing was written, and no audit row was produced.
+    async with mk() as s:
+        assert (await s.get(Vendor, vid)).website is None
+    assert await _audit_rows(mk, vid) == []
+
+
+async def test_apply_allowed_within_the_vendors_own_entity(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        _default_id, sub_id = await _entities(realdb)
+        vid = await _seed_vendor(mk, org_id, name="Sub Supplies", entity_id=uuid.UUID(sub_id))
+
+        r = await c.post(
+            f"/api/enrichment/vendors/{vid}/apply",
+            json={"fields": [{"field": "website", "value": "https://sub.example"}]},
+            headers={"X-Entity-ID": sub_id},
+        )
+    assert r.status_code == 200, r.text
+    async with mk() as s:
+        assert (await s.get(Vendor, vid)).website == "https://sub.example"
+
+
+async def test_apply_reaches_an_unstamped_vendor_from_any_entity(realdb):
+    """A NULL `entity_id` on `vendors` means *unstamped* (pre-multi-entity, or
+    auto-created from an entity-less invoice), NOT "shared" as it does on
+    `gl_accounts`. It must stay reachable from every entity — mirroring
+    `vendor_matching._candidate_query` — or a legacy supplier becomes invisible
+    to the very stewardship tools that exist to clean it up."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        _default_id, sub_id = await _entities(realdb)
+        vid = await _seed_vendor(mk, org_id, name="Legacy Supplies", entity_id=None)
+
+        r = await c.post(
+            f"/api/enrichment/vendors/{vid}/apply",
+            json={"fields": [{"field": "website", "value": "https://legacy.example"}]},
+            headers={"X-Entity-ID": sub_id},
+        )
+    assert r.status_code == 200, r.text
+    async with mk() as s:
+        assert (await s.get(Vendor, vid)).website == "https://legacy.example"
+
+
+async def test_enrich_refuses_a_vendor_from_another_entity(realdb):
+    """The read side leaks too: `enrich` echoes the vendor's name and feeds its
+    `tax_id` to an external provider as a match key."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        default_id, sub_id = await _entities(realdb)
+        vid = await _seed_vendor(mk, org_id, name="Sub Only Ltd", entity_id=uuid.UUID(sub_id))
+
+        crossed = await c.post(
+            f"/api/enrichment/vendors/{vid}/enrich", headers={"X-Entity-ID": default_id}
+        )
+        own = await c.post(f"/api/enrichment/vendors/{vid}/enrich", headers={"X-Entity-ID": sub_id})
+        consolidated = await c.post(f"/api/enrichment/vendors/{vid}/enrich")
+
+    assert crossed.status_code == 404, crossed.text
+    # Its own entity, and the consolidated view (no header — what a
+    # single-entity tenant always sends), are unchanged.
+    assert own.status_code == 200, own.text
+    assert own.json()["vendor_name"] == "Sub Only Ltd"
+    assert consolidated.status_code == 200, consolidated.text

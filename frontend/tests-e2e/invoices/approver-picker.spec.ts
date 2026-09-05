@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
 	signInAndWait,
 	tenantPsql,
@@ -132,7 +133,7 @@ function cleanUp(id: string | null) {
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 test.describe('/invoices approver picker — non-admin', () => {

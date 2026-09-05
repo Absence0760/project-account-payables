@@ -89,7 +89,9 @@ async def test_complete_auto_approves_and_formats_the_threshold_message(realdb):
         assert complete_resp.status_code == 200, complete_resp.text
         body = complete_resp.json()
         assert body["status"] == "approved"
-        assert "$5,000.00" in body["message"]
+        # The floor is denominated in the org's REPORTING currency, so the
+        # message names it instead of assuming dollars.
+        assert "5,000.00 USD" in body["message"]
 
         mk = realdb.sessionmaker(TENANT)
         async with mk() as s:

@@ -17,12 +17,18 @@
  *      `refresh_warnings` → the matcher — and read `po_match` off the response.
  *
  * Everything is uniquely suffixed per call so parallel/serial specs in the
- * same tenant never collide, and `cleanup()` removes the rows (FK order:
- * exceptions + workflow_instances → invoice; inspections + gr_lines → gr;
- * po_lines → po).
+ * same tenant never collide, and `cleanup()` removes the rows: invoices go
+ * through `deleteInvoicesWhere`, which owns their whole child graph; the
+ * rest follow FK order (inspections + gr_lines → gr; po_lines → po).
  */
 
-import { API_BASE, authToken, tenantHeaders, tenantPsql } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authToken,
+	deleteInvoicesWhere,
+	tenantHeaders,
+	tenantPsql
+} from '../fixtures/helpers';
 import type { Page } from '@playwright/test';
 
 /** A single SQL statement against the worker's tenant DB, trimmed. */
@@ -186,9 +192,10 @@ export function cleanup(ids: {
 	poIds?: string[];
 }): void {
 	for (const id of ids.invoiceIds ?? []) {
-		sql(`delete from exceptions where invoice_id = '${id}';`);
-		sql(`delete from workflow_instances where invoice_id = '${id}';`);
-		sql(`delete from invoices where id = '${id}';`);
+		// `deleteInvoicesWhere` owns the whole child graph (16 non-cascading FKs
+		// reference `invoices`); hand-listing a subset here only worked while a
+		// matching spec's invoice happened not to acquire the rest.
+		deleteInvoicesWhere(`id = '${id}'`);
 	}
 	for (const id of ids.grIds ?? []) {
 		sql(`delete from quality_inspections where gr_id = '${id}';`);

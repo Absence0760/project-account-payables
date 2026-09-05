@@ -25,10 +25,12 @@ class UnknownCardProviderError(ValueError):
     moved and nothing failed.
 
     This is `decisions.md` §29 applied to the one dispatcher family it missed
-    (§36 did the same for sanctions). An *unset* provider still resolves via
-    `REGION_DEFAULTS` — that is the local-first default and a normal state.
-    Callers on the money path turn this into a refusal; best-effort callers
-    (upstream cancel, vendor PAN reveal) degrade and record the reason.
+    (§36 did the same for sanctions). An *unset* provider is a normal state and
+    never raises — it resolves through `get_default_provider`, which hands back
+    the region's preferred issuer only when a credential for it exists and
+    `LOCAL_FIRST_PROVIDER` otherwise. Callers on the money path turn this raise
+    into a refusal; best-effort callers (upstream cancel, vendor PAN reveal)
+    degrade and record the reason.
     """
 
     def __init__(self, provider: str):
@@ -41,7 +43,32 @@ class UnknownCardProviderError(ValueError):
         )
 
 
-# Default provider per region
+# The local-first default (guard rail 7). Every other adapter registry in this
+# codebase resolves an *unconfigured* provider to its fixture adapter so a dev
+# laptop with no cloud account can run the whole app; cards resolved an unset
+# provider straight to a REAL ISSUER instead, so a fresh clone's
+# `POST /api/cards/generate` reached out to Lithic. `REGION_DEFAULTS` below is
+# therefore a *preference*, applied only once this deployment (or the org's own
+# BYOK config) actually holds a credential for the preferred issuer.
+LOCAL_FIRST_PROVIDER = "mock"
+
+# What has to be present for a region preference to be real, on each of the two
+# credential sources. `mock` — and any future credential-free adapter — is
+# absent from the map and therefore always usable.
+_PLATFORM_CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {
+    # `app.config.Settings` attribute names (platform program: our keys).
+    "lithic": ("lithic_api_key",),
+    "nium": ("nium_client_id", "nium_client_secret"),
+}
+_BYOK_CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {
+    # `settings.cards.*` keys as `_resolve_card_config` shapes them for a BYOK
+    # program (the customer's own keys).
+    "lithic": ("api_key",),
+    "nium": ("client_id", "client_secret"),
+}
+
+# Default provider per region — a PREFERENCE, not the resolution. Read it
+# through `region_preference()` / `get_default_provider()`, never directly.
 REGION_DEFAULTS: dict[str, str] = {
     "US": "lithic",
     "UK": "lithic",
@@ -116,8 +143,12 @@ def get_card_adapter(card_config: dict) -> CardAdapter:
             ...provider-specific fields...
         }
 
-    **No provider → the region default** (unchanged): that is the local-first
-    default, and an org that has never named an issuer is a normal state.
+    **No provider → the region preference, but only if it is reachable.** An
+    org that has never named an issuer is a normal state, so this never raises;
+    it resolves to `REGION_DEFAULTS[region]` when a credential for that issuer
+    is present (on this config, for a BYOK program, or on the deployment, for a
+    platform one) and to `LOCAL_FIRST_PROVIDER` when there is none. That is what
+    keeps a fresh clone — guard rail 7 — from calling a real issuer.
 
     **A configured provider we have no adapter for →
     ``UnknownCardProviderError``.** This used to fall back to ``mock``, which is
@@ -136,7 +167,10 @@ def get_card_adapter(card_config: dict) -> CardAdapter:
     region = card_config.get("region", "US")
 
     if not provider:
-        provider = REGION_DEFAULTS.get(region, "nium")
+        preferred = region_preference(region)
+        provider = (
+            preferred if _has_usable_credentials(preferred, card_config) else LOCAL_FIRST_PROVIDER
+        )
 
     adapter_cls = _ADAPTER_REGISTRY.get(provider)
     if adapter_cls is None:
@@ -145,9 +179,58 @@ def get_card_adapter(card_config: dict) -> CardAdapter:
     return adapter_cls(card_config)
 
 
-def get_default_provider(region: str) -> str:
-    """Return the default card provider for a given region."""
+def region_preference(region: str) -> str:
+    """Which issuer this region PREFERS, credentials aside.
+
+    The pure `REGION_DEFAULTS` lookup, split out from `get_default_provider` so
+    the region map stays independently readable and drift-guardable. Callers
+    choosing an adapter want `get_default_provider`, which also asks whether
+    that preference is reachable at all.
+    """
     return REGION_DEFAULTS.get(region, "nium")
+
+
+def _has_usable_credentials(provider: str, card_config: dict | None = None) -> bool:
+    """Can `provider` actually be reached from here?
+
+    Two credential sources, either of which counts: the org's own BYOK keys on
+    the card config it handed us, and this deployment's platform keys. A
+    provider that needs neither (``mock``) is always usable.
+    """
+    platform_fields = _PLATFORM_CREDENTIAL_FIELDS.get(provider)
+    if platform_fields is None:
+        return True
+
+    if card_config:
+        byok_fields = _BYOK_CREDENTIAL_FIELDS.get(provider, ())
+        if any(str(card_config.get(field) or "").strip() for field in byok_fields):
+            return True
+
+    # Imported lazily: the dispatcher is a leaf module the adapters import, and
+    # reading the singleton at call time is what lets an operator's env (or a
+    # test) decide.
+    from app.config import settings
+
+    return any(str(getattr(settings, field, "") or "").strip() for field in platform_fields)
+
+
+def get_default_provider(region: str) -> str:
+    """The provider to use when the org has named none.
+
+    The region preference **if this deployment holds a platform credential for
+    it**, else the local-first `mock`. Without the credential check a fresh
+    clone — which has no `FEOH_LITHIC_API_KEY` / `FEOH_NIUM_CLIENT_ID` — issued
+    cards by calling Lithic's real host with an empty key, which guard rail 7
+    says must not happen. An operator who has configured a real issuer keeps
+    region-based selection exactly as before.
+
+    This is deliberately NOT the same thing as substituting `mock` for a
+    provider someone NAMED: that stays a hard `UnknownCardProviderError`
+    (`decisions.md` §29 / §56). This path only picks a default where nobody
+    expressed a preference at all.
+    """
+    preferred = region_preference(region)
+    return preferred if _has_usable_credentials(preferred) else LOCAL_FIRST_PROVIDER
 
 
 def list_available_providers() -> list[str]:

@@ -309,6 +309,7 @@
 		{#each adminStore.users as user (user.id)}
 			<tr
 				class="clickable"
+				class:row-muted={!user.is_active}
 				class:inactive={!user.is_active}
 				class:row-selected={selectedIds.has(user.id)}
 				onclick={(e) => {
@@ -512,9 +513,17 @@
 
 	/* --- Table cells --- */
 
-	.inactive td {
-		opacity: 0.5;
-	}
+	/* A deactivated user's row is de-emphasised by the shared `.row-muted`
+	 * recipe in app.css (a muted colour token), not by an `opacity` fade —
+	 * the fade put this row's email cell at 2.33:1 and its role badges at
+	 * 2.32–2.43:1 against --surface.
+	 *
+	 * `.inactive` rides alongside it as a SELECTOR HOOK ONLY — it sets no
+	 * colour here and no rule matches it. Two e2e specs assert on it
+	 * (`admin/users.spec.ts`, `scim/provisioning.spec.ts`), which is exactly
+	 * the "keep the semantic class if something reads it" carve-out app.css
+	 * describes. Same split decisions §47 made for Badge: the semantic class
+	 * is an identity for tests to select on, never the thing that paints. */
 
 	.name-cell {
 		font-weight: 500;

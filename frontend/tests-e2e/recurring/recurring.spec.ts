@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
 	signInAndWait,
 	tenantPsql,
@@ -63,7 +64,7 @@ function deleteTemplate(id: string): void {
 			`(SELECT id FROM workflow_instances WHERE invoice_id IN (${invSubquery}))`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id IN (${invSubquery})`);
-	tenantPsql(`DELETE FROM invoices WHERE recurring_template_id='${id}'`);
+	deleteInvoicesWhere(`recurring_template_id='${id}'`);
 	tenantPsql(`DELETE FROM recurring_invoice_templates WHERE id='${id}'`);
 }
 

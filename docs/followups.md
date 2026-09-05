@@ -34,7 +34,47 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-04 (round 16) — a ten-agent parallel sweep whose
+**Last reconciled:** 2026-09-04 (round 17) — a seven-agent sweep over what
+round 16 left. **Fifteen entries closed, none opened**, 41 → 34. The whole
+round-15 narrative section is gone: all eight of its findings were fixed, so
+that section no longer exists.
+
+The round's sharpest find was not in any entry. Closing one deferral
+(`auto_approve_below` mixing currencies) exposed the layer above it, and
+measuring it against the pre-fix code showed a **GBP 9,000 invoice — USD 11,403
+at the rate locked on its own row — approved by an `ap_manager` with no CFO
+signature**, under a USD 10,000 `require_cfo_above`, and routed to the manager
+tier of a chain whose senior level starts at 10,000. `require_cfo_above` decides
+whether a CFO signs at all. Five threshold comparisons now share one *value*
+(`approval_chain.GateAmount`, carrying the figure and whether it could be
+established) rather than a convention — because a convention is what the sixth
+comparison forgets ([decisions.md](decisions.md) §71).
+
+Four more defects surfaced that no entry had named: a `<select>` fed by a
+paginated list showed only its first 20 options, so on the demo tenant
+**creating a credit memo against most suppliers was impossible**;
+`positivePay.ts` parsed a malformed cheque amount to `null`, which the
+classifier reads as `matched_ok` — the altered-cheque control passing on
+unreadable input; the supplier-portal login carried the **same** existence
+oracle as the employee one, and worse (it opens a second control-plane session
+a known address pays for); and a legacy vendor-user row with no
+`organization_id` returned from *inside* the audit helper, a third timing
+signature that was neither branch.
+
+Three process notes worth keeping:
+
+| What happened | Why it matters |
+|---|---|
+| Three new tests **passed in isolation and failed in the full suite**. The realdb harness truncates tenant data between tests but not control-plane users, and `test_admin_user_management` renames the shared `ap_clerk` without restoring it — so the assertions failed on test ORDER | Identity is the **id**; `full_name` is a field an admin can PATCH. Asserting on a mutable display name in a suite with shared control-plane rows is brittle by construction. A 28-minute reproduction was narrowed to 33 seconds before anything was touched |
+| A brief said to queue the login audit "the way `post_commit` queues notification legs". Reading `post_commit` first showed that would have been **silently wrong** — it fires from `after_commit`, and a failed login rolls back, so `after_rollback` drains and discards the queue by design | The row would never have been written at all. Read the mechanism before reusing it; a plausible analogy is not a verified one |
+| A brief asked for contrast ratios "in both themes". There is only one palette — `app.css` sets `color-scheme: dark`, with no `prefers-color-scheme` block and no `[data-theme]` anywhere | The agent said so rather than inventing a second set of numbers |
+
+New this round: [decisions.md](decisions.md) §70–§72. `docs/known-issues.md`
+gained one entry — two `queue-blocked` e2e cases that survive the page-one fix,
+recorded with what was established, what was **not**, and the diagnostic to run
+first.
+
+**Previously reconciled:** 2026-09-04 (round 16) — a ten-agent parallel sweep whose
 brief was this file itself: take the open entries that are code-fixable, fix them
 at the root, and close them. **Twenty entries closed, four opened**, 57 → 41.
 The count survives the merge with #359 by coincidence rather than accident: that
@@ -583,100 +623,7 @@ non-tinted: [decisions.md](decisions.md) §47.
       `types/{requisition,expense}.ts` when their files convert.
       **Trigger:** the next slice touching any file the baseline names.
 
-### Surfaced by the round-13 sweep
-
-Three items the round-13 agents confirmed but correctly did not fold into their
-own tranches. (The fourth — `GET /api/expenses/export` having no `search` leg —
-is **closed**: the export now runs `status` / `report_id` / `search` through the
-same `_expense_list_filters` as the list and the KPI rollup, and the CSV button
-sends the term it is filtered by.)
-
-- [ ] **`opacity` used to de-emphasise text drops it below 4.5:1.**
-      `tr.inactive td:not(.actions) { opacity: 0.6 }` on `/admin/webhooks` renders
-      every cell of a paused subscription's row — status pill included — at
-      **2.95:1** (measured). Neither guard sees it: the `cssAudit` composited check
-      resolves a rule's *own* opacity, not an ancestor's, and the axe route scan
-      only catches it when an inactive row happens to be rendered. It is an
-      app-wide convention at ~20 sites; the disabled-control ones are exempt under
-      WCAG 1.4.3, the text rows are not.
-      **Durable fix:** de-emphasise with a muted *colour* token instead of opacity,
-      and extend `cssAudit` to carry an ancestor's opacity into the composited
-      check so the guard finds the rest.
-      **Why not folded into the badge tranche:** a whole-table visual change would
-      make the badge conversion unattributable, which is the entire reason that
-      work is tranched.
-      **Trigger:** the next a11y sweep, or any change to that row treatment.
-
-- [ ] **`InvoiceModal`'s supplier-chat @mention autocomplete has no member source
-      on `/invoices`.** It reads `adminStore.users`, which only `/admin` or
-      `/workflows/[id]` populate. Pre-existing, and now visible: the deleted
-      admin-only approver fallback used to populate that store as a side effect,
-      for admins, in the failure case only.
-      **Durable fix:** a non-admin-readable member list shaped like
-      `assignable-reviewers` but *not* gated on `invoice.approve` — mentions are
-      broader than approvers — and explicitly not `GET /api/admin/users`.
-      **Trigger:** the next slice touching supplier chat.
-
-- [ ] **Two keystroke-debounce guards duplicate a technique instead of joining its
-      table.** The `/requisitions` and `/expenses` specs each carry their own
-      "typing N characters fires one request" test rather than joining the
-      parameterized `CASES` array in
-      `tests-e2e/reactivity/search-debounce-race.spec.ts`. They were written
-      locally to avoid a merge conflict on that shared file during the parallel
-      round.
-      **Durable fix:** fold both cases into that array and drop the local copies.
-      **Trigger:** the next change to either spec.
-
-### Surfaced by the round-14 auth / tenant-isolation sweep
-
-- [ ] **`RealDB.client()` overrides `get_tenant_db` wholesale, so no realdb test
-      ever runs the `get_tenant` JWT-org cross-check.** That cross-check is the
-      control tenant isolation actually rests on ([decisions §1](decisions.md)),
-      and most tenant-data routes reach it only as `get_tenant_db`'s own
-      dependency — so an override that replaces the provider replaces the guard
-      too. Measured: with the harness client, tenant A's token plus tenant B's
-      `X-Tenant-Slug` returns **200**; on the production chain the same request
-      is a **403**. Nothing is broken today — this is a blind spot, not a
-      defect — but it is exactly the shape of the late-commit override recorded
-      in [decisions §20](decisions.md), where an override that quietly changed
-      semantics is *why the suite never caught* the real bug underneath it.
-      **Closed for now at the narrow end:** `tests/test_tenant_isolation.py`
-      gained three end-to-end cases that override only `get_control_db` and let
-      the real `get_tenant_db` run (a mutation of the guard turns them red).
-      **Durable fix:** give the harness override the same dependency the real
-      one has — `async def _tenant_db(request: Request, tenant: Organization =
-      Depends(get_tenant))` — so every realdb test exercises the cross-check
-      for free, the way the overrides already mirror `commit_before_response`.
-      **Why not now:** it changes the dependency chain under every realdb test
-      in the suite (a slug-swapping isolation test that currently gets a
-      harness session would start getting a 403/404), and validating that needs
-      the full ~1-2h suite rather than a scoped run.
-      **Trigger:** the next change to `tests/conftest.py`'s `RealDB.client()`,
-      or the next full-suite run someone is already paying for.
-
-- [ ] **`/api/auth/login` leaks account existence through the audit write, not
-      the password check.** The handler is careful about timing — it calls
-      `dummy_verify()` on the unknown-address path specifically so the bcrypt
-      cost matches. But a *known* address (wrong password, no password, or
-      deactivated) additionally awaits `dispatch_auth_audit`, which resolves the
-      tenant DB and commits an `auth.login.failure` row inline; a genuinely
-      unknown address has no org, so the write is skipped entirely. The two
-      paths therefore differ by a whole DB round trip. In practice it is weak —
-      single-digit milliseconds against a ~250 ms bcrypt baseline, and the
-      per-account failure budget caps sampling at 10 attempts / 15 min per
-      address — which is why it is recorded rather than patched: the obvious
-      "fixes" are either dropping the audit (worse) or padding the fast path
-      (masking, forbidden by guard rail 4).
-      **Durable fix:** move the login-failure audit off the response path (queue
-      it the way `services/post_commit` queues notification legs) so *neither*
-      branch pays for it, then keep the two branches structurally identical.
-      **Trigger:** the next change to the login handler or to
-      `dispatch_auth_audit`'s call discipline.
 ### Surfaced by the round-14 frontend hunt
-
-Six items the round-14 frontend agent traced to a file and line but did not fold
-into its own tranche. Each is confirmed against the backend it disagrees with —
-none is a hypothesis.
 
 - [x] **DONE (PR #349).** The same page-scoped-KPI bug `/expenses` fixed was
       live on six sibling pages — a KPI reducing or filtering over the LOADED
@@ -706,27 +653,6 @@ none is a hypothesis.
       rule already stated on `purchase_orders.py::purchase_order_status_counts`
       and `/vendors/counts`.
 
-
-### Surfaced by the round-14 procurement / analytics hunt
-
-Seven of the eight items this section opened landed in round 16. The one below
-is the remainder — a confirmed reading of the code, not a hypothesis.
-
-- [ ] **Adaptive approval stats mix currencies.**
-      `api/adaptive_workflows._decision_rows` pulls raw `Invoice.amount` and
-      feeds it to `compute_vendor_baseline` and
-      `recommend_auto_approve_threshold`. Three clean JPY 100,000 vendors can
-      push a recommendation to raise a USD `auto_approve_below` toward the
-      $25,000 cap. The equivalent bug in the `stat_anomaly` fraud rule was
-      already fixed (`test_stat_anomaly_currency_realdb.py`).
-      **Why not now:** the gate it feeds (`extraction.decide_auto_approve`)
-      compares raw `invoice.amount` against the same bare number, so converting
-      one side alone creates a new inconsistency.
-      **Durable fix:** decide what currency `auto_approve_below` is denominated
-      in (reporting currency, matching `cfo_approval_above` after round 14's
-      `payment_controls.cfo_approval_decision` fix), then convert both sides
-      through `currency_conversion.reporting_amount_at_locked_rate`.
-      **Trigger:** the next slice touching adaptive thresholds or auto-approve.
 
 ### Surfaced by the round-16 follow-up sweep (2026-09-04)
 
@@ -837,6 +763,26 @@ forward work or a population question with its own consequences.
       per-file baseline that only ever decreases) so the remainder can't grow.
       A blanket scan can't land first — it would fail on the ~40 non-money
       fields and there is no way to distinguish them by name alone.
+      **Progress (round 17):** the ratchet exists
+      (`frontend/src/lib/types/moneyTypeAudit.test.ts`) and **11 modules are
+      pinned at zero** — `budget`, `intake`, `recurring`, `positivePay` were
+      converted, and `accessReview`, `assistant`, `exceptionAgents`,
+      `notification`, `privacy`, `reports`, `vendor` carry no money at all and
+      are pinned so one cannot land untyped later. **81 fields remain** across
+      `expense` (16), `discounts` (14), `contract` (12), `vendorStatementRecon`
+      (10), `catalog` (7), `invoice` (7), `requisition` (7), `workflow` (6),
+      `payment` (2). Each non-money field the scan sees is recorded in
+      `JUDGED_NOT_MONEY` **with its reason** — `assistant.ts`'s `budget` /
+      `remaining` are TOKEN counts, `reports.ts`'s `limit` is a row cap, every
+      `*ListResponse.total` is pagination — so the judgments are not re-derived
+      next time. Converting `positivePay.ts` found a live defect on the way:
+      `parsePresented` used `Number.parseFloat`, which reads `1234.56abc` as
+      `1234.56` and degraded a genuinely unreadable amount to `null`, which
+      `classify_presented_items` reads as "no amount to disagree with" — i.e.
+      `matched_ok` on a cheque nobody checked.
+      **Still to do:** the nine modules above, and widening the scan past
+      `src/lib/types/*.ts` to the response types declared inline inside
+      `.svelte` files.
       **Trigger:** the next slice touching a type module that carries a money
       field, or the next money-exactness audit pass.
       **Note:** the two docs on this contradicted each other until this round —
@@ -845,112 +791,6 @@ forward work or a population question with its own consequences.
       to a JSON **number** and its docstring cited the frontend's `amount:
       number` as justification. Both now state the split and point at each
       other; read them before converting anything.
-
-### Surfaced by the round-15 bug hunt
-
-Each of these was found while fixing something else, was judged out of the
-fixing agent's file scope, or could not be proven reachable — so it was reported
-rather than patched. None is a diagnosed defect (those go to
-[known-issues.md](known-issues.md), which is currently empty).
-
-- **Vendor enrichment is not entity-scoped.** `POST /api/enrichment/vendors/{id}/enrich`
-  and `.../apply` take `get_entity_id` purely as a tenant chokepoint
-  (`# noqa: ARG001`) and never scope the `Vendor` lookup, so in a multi-entity
-  tenant a steward on subsidiary A can enrich and apply firmographics onto
-  subsidiary B's vendor — including `name`, which the apply path re-screens.
-  Same-tenant only, so no cross-tenant exposure. **Durable fix:** wrap both
-  lookups in `apply_entity_scope(select(Vendor)…, include_shared=True)`, matching
-  `vendor_matching._candidate_query`, and add an entity-isolation case to
-  `tests/test_enrichment_apply.py`. **Trigger:** the next change touching
-  `app/api/enrichment.py`, or the next multi-entity audit pass.
-
-- **GL account codes have no uniqueness, and the ERP sync upsert ignores entity.**
-  `POST /api/gl-accounts` performs no duplicate check and `gl_accounts` carries no
-  unique constraint on `(organization_id, code)`, so the same code can be created
-  twice; and `POST /api/gl-accounts/sync-erp` matches existing accounts on
-  `(code, organization_id)` **without** the entity filter, so in a multi-entity
-  tenant a sync run while entity B is selected updates entity A's row rather than
-  creating B's — contradicting the route's own docstring ("same rule as manual
-  create"). **Durable fix:** make the sync upsert key entity-aware (shared ∪
-  selected entity, mirroring `gl_recode._ActiveChart.is_valid_for`) plus a partial
-  unique index over `(organization_id, entity_id, code)` in a fanned-out
-  migration. **Trigger:** the next change to the chart-of-accounts write path, or
-  the first multi-entity tenant running an ERP chart sync per subsidiary.
-
-- **Corporate-card unmatch leaves a stale `Expense.payment_method`.**
-  `api/expense_cards.py::unmatch_card_transaction` clears both FK legs but never
-  restores the payment method `_link_both_sides` stamped, so an expense
-  mis-matched to a card reads `corporate_card` / `virtual_card` forever. Resetting
-  to `out_of_pocket` is *not* the fix — an expense can legitimately be card-marked
-  before its feed row is imported, so that would be a different wrong guess.
-  **Durable fix:** record the pre-match value (a nullable
-  `payment_method_before_match` column, migration) and restore it on unmatch.
-  Fold in `create_expense_from_card`, which mints an expense without calling
-  `_refresh_policy_violations`, so a card-derived line carries no policy flags
-  until its next PATCH. **Trigger:** the next change that makes
-  `Expense.payment_method` load-bearing beyond `services/report_builder`
-  reporting — e.g. a reimbursement run that skips card-funded lines.
-
-- **Exception-agent resolvers call the max-amount cap by the CFO gate's name.**
-  `services/exception_agents/resolvers/{amount_mismatch,gl_coding,missing_po,multi_po_split}.py`
-  evaluate `max_invoice_amount` with `cfo_gate_applies(max_amount, amount)`. The
-  contract is identical and fail-closed, so behaviour is correct — but on a
-  malformed threshold it logs *"requiring human (CFO) approval"* for a **max cap**
-  trip, pointing an operator at the wrong setting. **Durable fix:** swap the four
-  call sites to `approval_chain.max_amount_gate_applies` (added 2026-08-21, same
-  shared `_money_gate_applies` body). **Trigger:** the next change touching those
-  resolvers.
-
-- **e2e specs still hand-roll invoice teardown.** `invoices` is referenced by 16
-  foreign keys and none cascade, so a bare `DELETE FROM invoices WHERE ...` only
-  works while the invoice happens to have no children. Round 15 added
-  `tests-e2e/fixtures/helpers.ts::deleteInvoicesWhere`, which owns the full child
-  graph, and moved the one spec that broke (`upload-refetch-failure`, which
-  started failing teardown the moment extraction began succeeding and writing
-  line items). About 19 other specs still delete invoices directly. They pass
-  today because the invoices they create never acquire the children in question —
-  which is exactly the implicit dependency that just bit. **Durable fix:** move
-  the remaining call sites onto `deleteInvoicesWhere`. **Trigger:** the next e2e
-  teardown failure on a foreign-key violation, or the next spec added that runs a
-  real extraction.
-
-- **The card family's local-first story is weaker than its siblings'.**
-  `card_adapters/dispatcher.REGION_DEFAULTS` resolves an *unset* provider to
-  `lithic`, not `mock`, and `scripts/seed.py` seeds every demo tenant with
-  `cards.enabled: true` and no provider — so a fresh clone's
-  `POST /api/cards/generate` reaches for a real issuer, which guard rail 7 says
-  it should not. Pre-existing and untouched by the round-15 refusal work (that
-  only fires on a *named* unknown provider, and deliberately left the unset path
-  alone). **Durable fix:** default an unset provider to `mock` like the other two
-  registries, and make `REGION_DEFAULTS` a preference applied only once a real
-  provider is configured — or seed the demo tenants with an explicit
-  `cards.provider: "mock"`. **Trigger:** the next change to card provider
-  resolution, or the first contributor surprised by a fresh clone calling out.
-
-- **A same-currency expense report can be submitted with a NULL reporting total.**
-  Round 15 taught the *line*-level lock (`_lock_line_conversion`) to resolve the
-  currency pair before demanding an FX adapter, so a same-currency line locks at
-  rate 1 for a tenant whose `settings.fx.provider` names no registered adapter.
-  The *report*-level lock was not given the same treatment, so such a tenant
-  submits with `reporting_amount` NULL and `reporting_total: null` in the audit
-  row. **Not a control failure** — `expense_currency.report_amount_for_gate`
-  falls back to `total_amount` when the report currency equals the reporting
-  currency, so the CFO gate still evaluates the right figure — it is a
-  completeness gap in the stored snapshot. **Durable fix:** mirror the
-  pair-first check at the report level. **Trigger:** the next change to expense
-  report submission, or the first report of a null `reporting_total`.
-
-- **`GET /api/experiments/{id}/results` would 500 on a non-object `audit_log.details`.**
-  `api/workflow_experiments._experiment_metric_rows` does
-  `dec["details"].get("changes")` after `details = details or {}`, so a `details`
-  that is a list or scalar raises `AttributeError` and loses the whole readout.
-  **Deliberately not fixed:** the raising expression was proven, but no real write
-  path can put a non-dict there — every writer passes a dict — and manufacturing a
-  fix for an unreachable state is how speculative complexity gets in. It is the
-  same *direct-DB-tamper* shape `services/approval_signature.check_approval_row`
-  already absorbs by counting the row rather than failing the period. **Durable
-  fix:** treat a non-dict `details` as "no changes". **Trigger:** the next change
-  to the experiment results readout, or the first report of a 500 there.
 
 ### Surfaced by the persona-panel round-2 parallel fix batch (issue #328)
 
@@ -1089,13 +929,6 @@ deferred-with-reason finding awaiting a product/architecture call.
       `/payments` also persists the active tab. Guard:
       `tests-e2e/reactivity/filter-url-persistence.spec.ts`; the debounce it
       sits next to stays covered by `search-debounce-race.spec.ts`.
-
-- [ ] **Budgets "Total Allocated" KPI** — already tracked in
-      _§ Surfaced by the round-14 frontend hunt_ ("the same page-scoped-KPI bug …
-      still live on six sibling pages", `/budgets` `totalAllocated` `:82`). Same
-      fix, same trigger; not re-filed here.
-
-**UK / tax — needs its own design session, not a patch:**
 
 - [ ] **The invoice tax model has no rate category or reverse-charge flag, and
       UK domestic (same-country) VAT reverse charge is structurally

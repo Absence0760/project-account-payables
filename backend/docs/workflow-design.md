@@ -122,6 +122,50 @@ All thresholds are read from `steps_config_snapshot` (frozen per invoice at crea
 | `require_cfo_above` | Non-CFO users receive 403 when attempting to approve invoices above this amount. |
 | `max_invoice_amount` | Invoices above this amount are rejected outright (422). |
 
+**All three are bare numbers denominated in the org's REPORTING currency**, as
+are the approval chain's per-level `min_amount` / `max_amount` bands. That is
+the convention `payments.cfo_approval_above` follows
+(`services/payment_controls.cfo_approval_decision`) and
+`settings.expense_approval.cfo_threshold` follows; a second convention would
+mean two money controls on the same invoice measured in different units.
+
+Nothing in a JSONB config declares its currency, so the *amount* has to be
+brought to it. `approval_chain.reporting_gate_amount(invoice, amount=…,
+org_settings=…)` returns a `GateAmount` — the figure in the reporting currency
+plus whether it could be established at all — converted at the rate already
+**locked on the invoice row** by `invoice_warnings._refresh_reporting_amount`.
+No FX call is made at gate time: fetching one would make the same invoice pass
+or fail a control depending on the minute, and let a market move retroactively
+change a decision already on the audit trail. `structuring.vendor_recent_spend`
+is scoped to the invoice's own currency, so one rate prices the whole aggregate.
+
+Every site goes through it — `review._enforce_approval_thresholds` (human
+approval), `extraction.decide_auto_approve` (unattended), the four
+exception-agent resolvers, and `resolve_applicable_levels` (chain bands).
+Before this they each compared a raw `Invoice.amount`, so a GBP 9,000 invoice —
+USD 11,400 — read as under a USD 10,000 `require_cfo_above` and was approved by
+an `ap_manager` with no CFO signature, and routed to the manager tier of a chain
+whose senior level starts at 10,000. `require_cfo_above` is the control that
+decides whether a CFO has to sign at all, which makes it the sharpest instance.
+
+`GateAmount.expressible=False` (no locked rate, or a lock that provably
+describes a different currency pair) means there is **no comparison to make**,
+and every consumer fails CLOSED:
+
+| Site | Fail-closed behaviour |
+|---|---|
+| `cfo_gate_applies` / `max_amount_gate_applies` | The gate fires — a human (a CFO, for the CFO gate) decides. Same direction as a malformed threshold, via the same `_money_gate_applies` body. |
+| `decide_auto_approve` amount floor | The floor does **not** fire, so the invoice goes to human review. |
+| `resolve_applicable_levels` | The amount bands are skipped and every routing-rule-matching level applies — for a chain, fail-closed means MORE approvers, since an empty result is no chain requirement at all. Non-amount routing rules still filter. |
+
+`GateAmount` exists as a value rather than a convention because there are five
+of these comparisons and a convention is what the sixth one forgets. A plain
+`Decimal` is still accepted and means "already in the gate currency" — the
+correct reading for a single-currency tenant and for the expense-report path,
+which locks its reporting figure at submit. Guarded by
+`tests/test_approval_gate_currency.py`, whose AST scan fails if any gate site in
+`review.py`, `extraction.py` or the resolvers goes back to a raw amount.
+
 **`require_cfo_above` fails CLOSED on a malformed value.** The threshold is
 parsed through the single shared helper `approval_chain.cfo_gate_applies`, which
 is reused by the human-approval gate (`review._enforce_approval_thresholds`), the
@@ -198,8 +242,8 @@ Each `ApprovalLevelConfig`:
 
 | Field | Purpose |
 |---|---|
-| `min_amount` | Lower bound for this level to apply |
-| `max_amount` | Upper bound (nullable for open-ended) |
+| `min_amount` | Lower bound for this level to apply (reporting currency — see *Approval Thresholds*) |
+| `max_amount` | Upper bound, nullable for open-ended (reporting currency) |
 | `approver_ids` | List of eligible approver UUIDs |
 | `required_approvals` | Number of approvals needed at this level |
 | `name` | Display name (e.g. "Manager", "CFO") |

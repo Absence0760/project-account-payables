@@ -24,7 +24,11 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
-from app.services.approval_chain import cfo_gate_applies
+from app.services.approval_chain import (
+    cfo_gate_applies,
+    max_amount_gate_applies,
+    reporting_gate_amount,
+)
 from app.services.exception_agents.base import (
     ACTION_AUTO_RESOLVED,
     ACTION_ESCALATED,
@@ -137,9 +141,20 @@ class AmountMismatchResolver(ExceptionResolver):
         config = await _approval_thresholds(db, invoice)
         max_amount = config.get("max_invoice_amount")
         cfo_threshold = config.get("require_cfo_above")
+        # Both thresholds are bare numbers denominated in the org's REPORTING
+        # currency, so the reconciled PO total — which is in the INVOICE's
+        # currency, since `apply` snaps the amount to exactly it — is expressed
+        # there at the rate locked on this row before either comparison. An
+        # invoice we can't express there is `expressible=False`, which the shared
+        # gate body reads as fail-CLOSED: both gates fire and this escalates.
+        gate_total = reporting_gate_amount(invoice, amount=po_total, org_settings=org_settings)
         # Both money gates fail CLOSED on a malformed/non-finite threshold — a
-        # bad settings value must escalate to a human, never skip the gate.
-        if cfo_gate_applies(max_amount, po_total):
+        # bad settings value must escalate to a human, never skip the gate. Each
+        # cap gets its OWN helper (same shared `_money_gate_applies` body): a
+        # `max_invoice_amount` trip logged through `cfo_gate_applies` told the
+        # operator "requiring human (CFO) approval", pointing them at a setting
+        # that had nothing to do with the refusal.
+        if max_amount_gate_applies(max_amount, gate_total):
             return AgentEvaluation(
                 recommended_action=ACTION_ESCALATED,
                 confidence=_ZERO,
@@ -148,7 +163,7 @@ class AmountMismatchResolver(ExceptionResolver):
                     f"{max_amount}; human approval required."
                 ),
             )
-        if cfo_gate_applies(cfo_threshold, po_total):
+        if cfo_gate_applies(cfo_threshold, gate_total):
             return AgentEvaluation(
                 recommended_action=ACTION_ESCALATED,
                 confidence=_ZERO,

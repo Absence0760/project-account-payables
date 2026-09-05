@@ -960,12 +960,14 @@ class RealDB:
 
     def client(self, *, key: str, role: str | None = "admin"):
         import httpx
+        from fastapi import Depends
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
         from app.api.deps import get_api_key_db
         from app.database import _make_tenant_url, commit_before_response, get_control_db
         from app.main import app
-        from app.tenant import get_tenant_db
+        from app.models.organization import Organization
+        from app.tenant import get_tenant, get_tenant_db
 
         info = self.tenants[key]
         ctrl_engine = create_async_engine(self.control_db_url(), **_HARNESS_ENGINE_KW)
@@ -991,7 +993,7 @@ class RealDB:
                     await s.rollback()
                     raise
 
-        async def _tenant_db(request: Request):
+        async def _session(request: Request):
             async with tenant_mk() as s:
                 commit_before_response(s, request)
                 try:
@@ -1002,6 +1004,22 @@ class RealDB:
                     await s.rollback()
                     raise
 
+        # Mirror the real provider's DEPENDENCY, not just its commit semantics.
+        # `get_tenant` is where the JWT org-claim cross-check lives (decisions §1)
+        # and most tenant-data routes reach it only as get_tenant_db's own
+        # dependency — so an override that drops it silently disarms the control
+        # tenant isolation rests on, for every realdb test at once. Measured
+        # before this was restored: tenant A's token plus tenant B's
+        # X-Tenant-Slug returned 200 here and 403 on the production chain.
+        # Same lesson as §20: an override that quietly changes semantics is why
+        # a suite fails to catch the bug underneath it.
+        async def _tenant_db(
+            request: Request,
+            tenant: Organization = Depends(get_tenant),  # noqa: ARG001 - the guard IS the point
+        ):
+            async for s in _session(request):
+                yield s
+
         app.dependency_overrides[get_control_db] = _control_db
         app.dependency_overrides[get_tenant_db] = _tenant_db
         # The public-API path resolves its tenant session via get_api_key_db,
@@ -1009,7 +1027,11 @@ class RealDB:
         # single-loop). Point it at this client's per-loop harness engine too, or
         # multi-client-context tests hit a stale cross-loop engine. Auth still
         # runs — the v1 routes also depend on require_api_scope/get_api_key_principal.
-        app.dependency_overrides[get_api_key_db] = _tenant_db
+        #
+        # Deliberately `_session`, NOT `_tenant_db`: an API key carries no JWT and
+        # no X-Tenant-Slug — the key itself IS the tenant boundary — so routing it
+        # through get_tenant would demand credentials that path never sends.
+        app.dependency_overrides[get_api_key_db] = _session
 
         headers = {"X-Tenant-Slug": info.slug}
         if role is not None:

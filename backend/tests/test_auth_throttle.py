@@ -588,8 +588,11 @@ async def test_portal_login_records_a_failure_audit_row(fake_redis, monkeypatch)
     from app.api import portal_auth
     from app.schemas.portal import PortalLoginRequest
 
-    audit = AsyncMock()
-    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", audit)
+    # The failure row is QUEUED off the response path, not awaited — otherwise
+    # a known supplier address costs a tenant-DB round trip an unknown one does
+    # not (`tests/test_login_audit_off_response_path.py`). Same payload.
+    audit = MagicMock()
+    monkeypatch.setattr(portal_auth, "queue_auth_audit", audit)
     monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
 
     vu = _vendor_user()
@@ -601,8 +604,8 @@ async def test_portal_login_records_a_failure_audit_row(fake_redis, monkeypatch)
             db=_portal_db(vu),
         )
 
-    audit.assert_awaited_once()
-    kwargs = audit.await_args.kwargs
+    audit.assert_called_once()
+    kwargs = audit.call_args.kwargs
     assert kwargs["action"] == "portal.login.failure"
     assert kwargs["entity_id"] == vu.id
     assert kwargs["details"]["reason"] == "bad_password"
@@ -619,8 +622,8 @@ async def test_portal_login_audits_a_deactivated_account_too(fake_redis, monkeyp
     from app.api import portal_auth
     from app.schemas.portal import PortalLoginRequest
 
-    audit = AsyncMock()
-    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", audit)
+    audit = MagicMock()
+    monkeypatch.setattr(portal_auth, "queue_auth_audit", audit)
 
     vu = _vendor_user()
     vu.is_active = False
@@ -634,19 +637,25 @@ async def test_portal_login_audits_a_deactivated_account_too(fake_redis, monkeyp
         )
     assert exc.value.status_code == 401
 
-    audit.assert_awaited_once()
-    assert audit.await_args.kwargs["details"]["reason"] == "inactive"
+    audit.assert_called_once()
+    assert audit.call_args.kwargs["details"]["reason"] == "inactive"
 
 
 @pytest.mark.asyncio
 async def test_portal_login_stays_silent_for_an_unknown_address(fake_redis, monkeypatch):
     """No account means no org, so there is no tenant trail to write into —
-    and writing one would be the enumeration signal the 401 avoids."""
+    and writing one would be the enumeration signal the 401 avoids.
+
+    The queue is still *called*, with `organization_id=None`: both rejection
+    branches reach it identically, which is what keeps them indistinguishable
+    by response time. Only the row is dropped."""
     from app.api import portal_auth
     from app.schemas.portal import PortalLoginRequest
 
-    audit = AsyncMock()
-    monkeypatch.setattr(portal_auth, "dispatch_auth_audit", audit)
+    audit = MagicMock()
+    monkeypatch.setattr(portal_auth, "queue_auth_audit", audit)
+    written = AsyncMock()
+    monkeypatch.setattr("app.services.audit_dispatch._write_auth_audit", written)
 
     with pytest.raises(HTTPException):
         await portal_auth.portal_login(
@@ -656,7 +665,9 @@ async def test_portal_login_stays_silent_for_an_unknown_address(fake_redis, monk
             db=_portal_db(None),
         )
 
-    audit.assert_not_awaited()
+    audit.assert_called_once()
+    assert audit.call_args.kwargs["organization_id"] is None
+    written.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,18 @@
 // Types for the procurement Intake surface. Mirrors the JSON returned by the
-// `/api/intake` endpoints (backend `IntakeRequestResponse`). Money fields arrive
-// as numbers (backend `float(...)`); date/datetime fields are ISO strings.
+// `/api/intake` endpoints (backend `IntakeRequestResponse`). Date/datetime
+// fields are ISO strings.
+//
+// **Money is `MoneyAmount` on the way in, `MoneyString` on the way out.** The
+// backend serialises `estimated_amount` as a JSON number (`float(...)`), so
+// `MoneyAmount` is the honest read type — and it makes `a - b` / `Math.max()`
+// on the figure a type error rather than a convention. Outbound it is the exact
+// decimal string the user typed (`utils/moneyInput.ts`), because a fractional
+// JSON number is already a float by the time pydantic sees it. The `total` on
+// the list/summary envelopes stays `number`: it is a ROW COUNT, not money.
+// See `frontend/CLAUDE.md` § Money formatting.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type IntakeStatus =
 	| 'open'
@@ -78,7 +88,7 @@ export interface IntakeRequest {
 	request_type: string;
 	requester_user_id: string;
 	description: string | null;
-	estimated_amount: number | null;
+	estimated_amount: MoneyAmount;
 	currency: string;
 	vendor_name: string | null;
 	vendor_id: string | null;
@@ -94,6 +104,7 @@ export interface IntakeRequest {
 
 export interface IntakeListResponse {
 	items: IntakeRequest[];
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	page: number;
 	page_size: number;
@@ -107,17 +118,20 @@ export interface IntakeListResponse {
  * contradicted the whole-set `total` count beside them.
  */
 export interface IntakeSummary {
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	by_status: Record<string, number>;
 }
 
-// Request side. Money goes out as a number — the backend coerces to Decimal.
+// Request side. Money goes out as the EXACT DECIMAL STRING the user typed —
+// never a JSON number, which `json.loads` would have already rounded to a
+// float before any pydantic `Decimal` annotation could see it.
 export interface IntakeCreate {
 	request_number?: string | null;
 	title: string;
 	request_type: string;
 	description: string | null;
-	estimated_amount: number | null;
+	estimated_amount: MoneyString | null;
 	currency: string;
 	vendor_name: string | null;
 	form_data: IntakeFormData | null;
@@ -129,7 +143,7 @@ export interface IntakeUpdate {
 	title?: string;
 	request_type?: string;
 	description?: string | null;
-	estimated_amount?: number | null;
+	estimated_amount?: MoneyString | null;
 	currency?: string;
 	vendor_name?: string | null;
 	form_data?: IntakeFormData | null;

@@ -44,7 +44,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
-from app.services.approval_chain import cfo_gate_applies
+from app.services.approval_chain import (
+    cfo_gate_applies,
+    max_amount_gate_applies,
+    reporting_gate_amount,
+)
 from app.services.exception_agents.base import (
     ACTION_AUTO_RESOLVED,
     ACTION_ESCALATED,
@@ -346,11 +350,23 @@ class GLCodingResolver(ExceptionResolver):
         if instance and instance.steps_config_snapshot:
             approval_config = get_step_config(instance.steps_config_snapshot, "approval") or {}
         amount = Decimal(str(locked.amount)).quantize(_CENTS)
+        # Both thresholds are bare numbers denominated in the org's REPORTING
+        # currency, so the invoice amount is expressed there (at the rate locked
+        # on the row) before either comparison. `expressible=False` reads as
+        # fail-CLOSED in the shared gate body, so an invoice we cannot price
+        # escalates instead of being self-approved past a control.
+        gate_amount = reporting_gate_amount(locked, amount=amount, org_settings=org_settings)
         max_amount = approval_config.get("max_invoice_amount")
         cfo_threshold = approval_config.get("require_cfo_above")
         # Both money gates fail CLOSED on a malformed/non-finite threshold — a
-        # bad settings value must escalate to a human, never skip the gate.
-        if cfo_gate_applies(max_amount, amount) or cfo_gate_applies(cfo_threshold, amount):
+        # bad settings value must escalate to a human, never skip the gate. Each
+        # cap is evaluated by its OWN helper so a malformed `max_invoice_amount`
+        # is logged as the max-amount cap refusing the approval, not as a CFO
+        # sign-off requirement (same shared `_money_gate_applies` body, so the
+        # verdict is identical — only the diagnosis was wrong).
+        if max_amount_gate_applies(max_amount, gate_amount) or cfo_gate_applies(
+            cfo_threshold, gate_amount
+        ):
             raise _NotApprovable(locked.status)
 
         corrections: dict = {_GL_FIELD: gl.value}

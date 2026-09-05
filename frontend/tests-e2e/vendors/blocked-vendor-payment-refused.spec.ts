@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
 	tenantPsql,
 	test
@@ -157,7 +158,7 @@ function cleanup(invoiceId: string | null, runId: string | null, vendorId: strin
 			tenantPsql(`DELETE FROM payments WHERE invoice_id='${invoiceId}'`, SLUG);
 			tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceId}'`, SLUG);
 			tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${invoiceId}'`, SLUG);
-			tenantPsql(`DELETE FROM invoices WHERE id='${invoiceId}'`, SLUG);
+			deleteInvoicesWhere(`id='${invoiceId}'`, SLUG);
 		}
 		if (vendorId) {
 			tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id='${vendorId}'`, SLUG);

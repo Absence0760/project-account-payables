@@ -436,6 +436,17 @@ async def delete_experiment(
 # ---------------------------------------------------------------------------
 
 
+def _details_obj(details) -> dict:
+    """An ``audit_log.details`` value as a dict, or ``{}`` when it isn't one.
+
+    The column is JSONB with no shape constraint. Every writer in this codebase
+    stores an object, so a list / string / number can only arrive by a direct-DB
+    write — which is precisely the tampering an experiment readout should
+    survive rather than 500 on.
+    """
+    return details if isinstance(details, dict) else {}
+
+
 async def _experiment_metric_rows(
     db: AsyncSession, exp: WorkflowExperiment
 ) -> tuple[list[dict], list[dict]]:
@@ -487,7 +498,14 @@ async def _experiment_metric_rows(
     ).all()
     rfr_starts: dict[uuid.UUID, datetime] = {}
     for inv_id, created_at, details in start_rows:
-        if (details or {}).get("new_status") == "ready_for_review":
+        # `audit_log.details` is JSONB with no object-shape constraint, so a
+        # non-object value (array / scalar) is reachable — by exactly the
+        # direct-DB write this readout would otherwise be blind to. `.get` on it
+        # raised `AttributeError` and took the WHOLE experiment readout down with
+        # a 500, losing every other invoice's evidence over one bad row. Same
+        # posture as `approval_signature.check_approval_row`: treat it as
+        # carrying nothing, keep the readout.
+        if _details_obj(details).get("new_status") == "ready_for_review":
             cur = rfr_starts.get(inv_id)
             if cur is None or (created_at is not None and created_at < cur):
                 rfr_starts[inv_id] = created_at
@@ -501,7 +519,11 @@ async def _experiment_metric_rows(
             decisions[inv_id] = {
                 "action": action,
                 "created_at": created_at,
-                "details": details or {},
+                # A non-object `details` records no corrections — see above. It
+                # is NOT read as "corrections present": the touchless leg asks
+                # whether a human changed a field, and a malformed blob is not
+                # evidence that one did.
+                "details": _details_obj(details),
             }
 
     # Invoice base rows (created_at fallback for the clock-start) + exception

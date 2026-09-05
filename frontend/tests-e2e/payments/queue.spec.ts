@@ -1,7 +1,9 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
+	loadMoreUntilRow,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -48,7 +50,7 @@ function hardDeleteInvoice(id: string): void {
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
 	// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
 	// orphan rows for the removed invoice are harmless (no FK back to invoices).
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 /**
@@ -198,6 +200,10 @@ test.describe('/payments queue selection', () => {
 
 			const rowA = page.locator('table tbody tr', { hasText: `E2E-SUM-${stamp}-A` });
 			const rowB = page.locator('table tbody tr', { hasText: `E2E-SUM-${stamp}-B` });
+			// Page to the rows rather than assume they landed on page 1 — the
+			// queue orders by due date and pages at 20, and these carry none.
+			await loadMoreUntilRow(page, rowA);
+			await loadMoreUntilRow(page, rowB);
 			await expect(rowA).toBeVisible();
 			await expect(rowB).toBeVisible();
 
@@ -232,6 +238,8 @@ test.describe('/payments queue selection', () => {
 
 			const rowA = page.locator('table tbody tr', { hasText: `E2E-PAY-${stamp}-A` });
 			const rowB = page.locator('table tbody tr', { hasText: `E2E-PAY-${stamp}-B` });
+			await loadMoreUntilRow(page, rowA);
+			await loadMoreUntilRow(page, rowB);
 			await expect(rowA).toBeVisible();
 			await expect(rowB).toBeVisible();
 

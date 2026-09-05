@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /payments cards-tab pagination. The cards tab previously fetched every card;
@@ -44,7 +44,7 @@ function seedCards(n: number): void {
 
 function purge(): void {
 	tenantPsql(`DELETE FROM virtual_cards WHERE provider_card_id LIKE '${CARD_MARKER}%'`);
-	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${INV_MARKER}%'`);
+	deleteInvoicesWhere(`invoice_number LIKE '${INV_MARKER}%'`);
 }
 
 test.describe('/payments cards pagination', () => {

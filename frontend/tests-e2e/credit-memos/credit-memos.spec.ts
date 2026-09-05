@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
 	tenantPsql,
 	test
@@ -271,7 +272,7 @@ test.describe('/credit-memos', () => {
 			tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${invoiceB.id}'`);
 			// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
 			// orphan rows for the removed invoice are harmless (no FK back to invoices).
-			tenantPsql(`DELETE FROM invoices WHERE id='${invoiceB.id}'`);
+			deleteInvoicesWhere(`id='${invoiceB.id}'`);
 		}
 	});
 

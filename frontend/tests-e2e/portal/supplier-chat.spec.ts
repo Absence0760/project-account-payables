@@ -78,10 +78,19 @@ test.describe('/portal supplier chat — vendor surface', () => {
 			`SELECT vendor_id FROM vendor_users WHERE email='${PORTAL_EMAIL}'`,
 		).trim();
 		expect(vendorId).not.toEqual('');
-		const invoiceId = tenantPsql(
-			`SELECT id FROM invoices WHERE vendor_id='${vendorId}' ORDER BY created_at DESC LIMIT 1`,
-		).trim();
+		// Take the NUMBER alongside the id: the panel assertion below has to
+		// expand THIS invoice's row, and the portal list is not ordered by
+		// `created_at` — every seeded portal invoice shares one, so `LIMIT 1`
+		// picks arbitrarily among ties. Clicking `.first()` and hoping it was
+		// the same row is what made this test fail against a seeded tenant.
+		const [invoiceId, invoiceNumber] = tenantPsql(
+			`SELECT id || '|' || invoice_number FROM invoices ` +
+				`WHERE vendor_id='${vendorId}' ORDER BY created_at DESC, id DESC LIMIT 1`,
+		)
+			.trim()
+			.split('|');
 		expect(invoiceId).not.toEqual('');
+		expect(invoiceNumber).toBeTruthy();
 
 		// Author an AP-side (ap_team) message via the AP API so the portal has a
 		// foreign message to mask. The AP response DOES expose author_user_id.
@@ -113,9 +122,10 @@ test.describe('/portal supplier chat — vendor surface', () => {
 		// And in the rendered panel, the AP message shows its author name.
 		await page.reload();
 		await page.waitForLoadState('networkidle');
-		// Find the row whose expanded panel carries the AP message. The portal
-		// list is small; expand the first row that owns this thread.
-		const row = page.locator('table tbody tr.clickable').first();
+		// Expand the row for the invoice the message was actually posted to,
+		// named — not whichever row happens to be first.
+		const row = page.locator('table tbody tr.clickable', { hasText: invoiceNumber }).first();
+		await expect(row).toBeVisible({ timeout: 10_000 });
 		await row.click();
 		const chat = page.locator('[data-testid="supplier-chat"]');
 		await expect(chat).toBeVisible({ timeout: 10_000 });

@@ -11,6 +11,7 @@ import type {
 	BudgetSummary,
 	BudgetUpdate
 } from '$lib/types/budget';
+import type { MoneyString } from '$lib/utils/money';
 
 export interface BudgetListParams {
 	dimension?: string;
@@ -67,7 +68,10 @@ export function getBudgetSpend(id: string): Promise<BudgetSpend> {
 }
 
 // Overspend pre-check: would committing `amount` against this budget exceed it?
-export function checkBudget(budgetId: string, amount: number): Promise<BudgetCheck> {
-	const qs = new URLSearchParams({ budget_id: budgetId, amount: String(amount) });
+// `amount` is the exact decimal STRING the caller wants to commit — it rides a
+// query string, so a `number` here would only ever be re-stringified anyway,
+// and typing it that way invites a float hop on the way in.
+export function checkBudget(budgetId: string, amount: MoneyString): Promise<BudgetCheck> {
+	const qs = new URLSearchParams({ budget_id: budgetId, amount });
 	return api.get<BudgetCheck>(`/api/budgets/check?${qs}`);
 }

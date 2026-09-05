@@ -29,8 +29,8 @@ of scope for this statement; where we hand off to them we note it.
 
 ## How we test
 
-Accessibility is verified at four layers — two automated regression guards in CI
-plus two kinds of human review:
+Accessibility is verified at five layers — three automated regression guards in
+CI plus two kinds of human review:
 
 1. **Automated (axe-core, every CI run).** The Playwright e2e suite includes an
    accessibility regression guard at `frontend/tests-e2e/a11y/axe.spec.ts`. It
@@ -101,16 +101,41 @@ plus two kinds of human review:
    those colours (`/organization` Branding, the `/admin/partner` child-branding
    modal) show the real white-on-colour ratio as an inline advisory before it
    is saved — advisory, because the brand is the tenant's call.
-3. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
+3. **Automated (opacity de-emphasis scan, every CI run).** The two guards
+   above share one blind spot, and it is the app's most-repeated de-emphasis
+   idiom. `opacity` is *group* opacity: it composites an element's whole
+   subtree onto the surface behind it, so the rule that spends the contrast
+   (`tr.inactive td { opacity: 0.6 }`) declares no colour at all — the colours
+   it ruins belong to descendants, often in another file. The token scan
+   measures a rule against its own declarations and read it as harmless; axe
+   only sees it if a listed route happens to render an inactive row, and a
+   fresh test tenant has no paused subscription, no revoked key and no
+   deactivated user. Measured on `--surface`, the fade inverted its own
+   intent — `--text` 5.65:1 at 0.6, but `--text-muted` 2.77:1 and a tinted
+   status badge 2.78–2.93:1, so the one cell explaining *why* a row was faded
+   became the least readable thing in it. Those rows now take the shared
+   `.row-muted` recipe (a muted colour token, 5.38:1), and
+   `frontend/src/lib/a11y/opacityAudit.test.ts` (vitest, `pnpm test:unit`)
+   scans every stylesheet for the idiom returning. It reports the *pattern*
+   rather than a ratio — it cannot know a descendant's colour, and does not
+   need to, since the answer for text is always a muted token and never a
+   kinder alpha. `opacity` on an inactive control (exempt under 1.4.3), on a
+   transient `:hover`, or on text-free decoration is filtered out by rule;
+   the remaining judgement calls are two named allowlists, each entry
+   carrying its reason. `frontend/tests-e2e/a11y/deemphasised-rows.spec.ts`
+   is its runtime complement, stubbing the list responses on
+   `/admin/webhooks`, `/admin/api-keys` and `/admin` so a de-emphasised row
+   is guaranteed on screen when axe runs.
+4. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
    asserts the structural semantics a screen-reader/keyboard user relies on:
    skip link + named landmarks + a single `<h1>`, no positive tabindex, 320px
    reflow with no horizontal scroll, and dialog focus-trap + focus-restore on
    Esc. `workflow-builder.spec.ts` covers the keyboard step-reorder path.
-4. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
+5. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
    `Semantics` tree and `meetsGuideline` widget tests (`mobile/test/a11y/`) to
    assert that interactive widgets expose labels, roles, and state to TalkBack /
    VoiceOver, plus tap-target size and contrast.
-5. **Manual screen-reader passes.** Keyboard-only and screen-reader walkthroughs
+6. **Manual screen-reader passes.** Keyboard-only and screen-reader walkthroughs
    of the core flows — **VoiceOver** (macOS Safari + iOS), **NVDA** (Windows
    Firefox/Chrome), **TalkBack** (Android) — run from the repeatable
    [screen-reader checklist](./accessibility-screen-reader-checklist.md) before a
@@ -146,9 +171,11 @@ The current build implements:
 - **Labelled form fields** — every input has an associated `<label>`;
   required fields are marked.
 - **Sufficient colour contrast** in the dark theme (text and UI components meet
-  the 4.5:1 / 3:1 AA thresholds), verified two ways: the contrast rules in the
-  axe guard on what a route renders, and the stylesheet-wide colour-token scan
-  on every rule in the app, whether a guarded route renders it or not.
+  the 4.5:1 / 3:1 AA thresholds), verified three ways: the contrast rules in the
+  axe guard on what a route renders, the stylesheet-wide colour-token scan on
+  every rule in the app whether a guarded route renders it or not, and the
+  opacity scan on the one thing neither can see — a fade applied to an
+  ancestor, whose cost lands on descendants' colours.
 - **Reduced-motion support** — animations respect
   `prefers-reduced-motion: reduce`.
 - **Semantic structure** — landmarks (`header`, `nav`, `main`), a single `h1`

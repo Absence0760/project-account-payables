@@ -489,7 +489,11 @@ async def complete_invoice(
         # the invoice was silently approved. Handing in `{}` makes the code match
         # the rule this branch documents: on the manual-complete path the amount
         # floor is the only trigger that means anything.
-        from app.services.approval_chain import finite_money_threshold, violates_segregation
+        from app.services.approval_chain import (
+            finite_money_threshold,
+            reporting_gate_amount,
+            violates_segregation,
+        )
         from app.services.extraction import decide_auto_approve, resolve_gate_aggregate
 
         # The parsed floor: also what the success message formats, so the figure
@@ -508,12 +512,21 @@ async def complete_invoice(
         # uses (the structuring guard), so splitting a payable can't slip each
         # piece past the controls unattended.
         gate_aggregate = await resolve_gate_aggregate(db, invoice, org_settings=org.settings)
+        # `auto_approve_below` / `require_cfo_above` / `max_invoice_amount` are
+        # bare numbers denominated in the org's REPORTING currency (like
+        # `payments.cfo_approval_above`), so both operands are expressed there —
+        # at the rate `refresh_warnings` above just locked onto the row, never
+        # one fetched now. An invoice we can't express there fails closed: the
+        # floor doesn't fire and the CFO / max gates do. Either way, a human.
+        gate_amount = reporting_gate_amount(invoice, org_settings=org.settings)
         if decide_auto_approve(
             {},  # no extraction result here — see the note above
             approval_config,
             overall_confidence=0.0,
-            amount=invoice.amount,
-            aggregate_amount=gate_aggregate,
+            amount=gate_amount,
+            aggregate_amount=reporting_gate_amount(
+                invoice, amount=gate_aggregate, org_settings=org.settings
+            ),
         ) and not violates_segregation(invoice, user.id, approval_config):
             invoice.approval_date = utc_today()
             invoice.approved_by = "system (below threshold)"
@@ -545,8 +558,11 @@ async def complete_invoice(
                     # used, so the figure shown can't diverge from the figure
                     # enforced — and formatting can't raise on a raw JSONB value
                     # the way `Decimal(str(auto_below))` did when the branch was
-                    # reachable without a floor at all.
-                    f"Auto-approved (amount below ${auto_below:,.2f} threshold)."
+                    # reachable without a floor at all. The currency is named
+                    # rather than assumed to be dollars: the threshold is
+                    # denominated in the org's reporting currency.
+                    f"Auto-approved (amount below the {auto_below:,.2f} "
+                    f"{gate_amount.currency} threshold)."
                 ),
             }
 

@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { currentTenantSlug, expect, test, tenantPsql } from '../fixtures/helpers';
+import { currentTenantSlug, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * Supplier-portal list pagination.
@@ -87,7 +87,7 @@ function countRows(table: string, vendorId: string): number {
  *  count in this shard's tenant. Both prefixes are stable and test-owned. */
 test.afterEach(() => {
 	tenantPsql(`DELETE FROM purchase_orders WHERE po_number LIKE 'E2E-PAGE-PO-%'`);
-	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE 'E2E-PAGE-INV-%'`);
+	deleteInvoicesWhere(`invoice_number LIKE 'E2E-PAGE-INV-%'`);
 });
 
 test.describe('/portal — list pagination', () => {
@@ -160,7 +160,7 @@ test.describe('/portal — list pagination', () => {
 		const { vendorId, orgId } = portalVendor();
 		const prefix = `E2E-PAGE-INV-${Date.now()}`;
 
-		tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE 'E2E-PAGE-INV-%'`);
+		deleteInvoicesWhere(`invoice_number LIKE 'E2E-PAGE-INV-%'`);
 
 		try {
 			tenantPsql(
@@ -204,7 +204,7 @@ test.describe('/portal — list pagination', () => {
 				await expect(page.locator('.load-more-end')).toHaveText(`Showing all ${total} invoices`);
 			}
 		} finally {
-			tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${prefix}-%'`);
+			deleteInvoicesWhere(`invoice_number LIKE '${prefix}-%'`);
 		}
 	});
 });

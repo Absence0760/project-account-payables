@@ -6,7 +6,7 @@
 		PortalChatThread,
 		PortalChatMessage,
 	} from '$lib/types/supplierChat';
-	import type { AdminUser } from '$lib/types/admin';
+	import type { ChatMentionCandidate } from '$lib/api/supplierChat';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { formatDate } from '$lib/utils/time';
@@ -20,7 +20,11 @@
 		thread: ChatThread | PortalChatThread | null;
 		surface: 'ap' | 'vendor';
 		currentUserId?: string;
-		members?: AdminUser[];
+		/** Colleagues the AP composer may @mention. Narrow ON PURPOSE — see
+		 *  `ChatMentionCandidate`. The vendor surface passes none and the
+		 *  picker is `{#if isAp}`-gated besides, so a supplier can never be
+		 *  handed an employee roster. */
+		members?: ChatMentionCandidate[];
 		templates?: ChatTemplate[];
 		onsend: (body: string, mentionUserIds: string[], file?: File) => Promise<void>;
 		onresolve?: () => Promise<void>;
@@ -60,7 +64,7 @@
 	// filter: only active members, excluding the current user. ---
 	let mentionQuery = $state('');
 	let mentionOpen = $state(false);
-	let selectedMentions = $state<AdminUser[]>([]);
+	let selectedMentions = $state<ChatMentionCandidate[]>([]);
 
 	let mentionCandidates = $derived(
 		!isAp
@@ -68,12 +72,12 @@
 			: members
 					.filter((m) => m.is_active && m.id !== currentUserId)
 					.filter((m) => !selectedMentions.some((s) => s.id === m.id))
+					// Name only. The source carries no email — matching on one
+					// would mean fetching one, and an address is not something a
+					// chat composer needs to hold.
 					.filter((m) => {
 						const q = mentionQuery.trim().toLowerCase();
-						if (!q) return true;
-						return (
-							m.full_name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q)
-						);
+						return !q || m.full_name.toLowerCase().includes(q);
 					}),
 	);
 
@@ -84,7 +88,7 @@
 		return map;
 	});
 
-	function addMention(m: AdminUser) {
+	function addMention(m: ChatMentionCandidate) {
 		selectedMentions = [...selectedMentions, m];
 		mentionQuery = '';
 		mentionOpen = false;
@@ -352,7 +356,6 @@
 											onclick={() => addMention(m)}
 										>
 											{m.full_name}
-											<span class="chat-mention-email">{m.email}</span>
 										</button>
 									</li>
 								{/each}
@@ -694,11 +697,6 @@
 
 	.chat-mention-option:hover {
 		background: var(--bg);
-	}
-
-	.chat-mention-email {
-		font-size: 0.72rem;
-		color: var(--text-muted);
 	}
 
 	.chat-file-btn {

@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
 	tenantPsql,
 	test
@@ -97,7 +98,7 @@ function deleteInvoice(id: string): void {
 	try {
 		tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`, SLUG);
 		tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`, SLUG);
-		tenantPsql(`DELETE FROM invoices WHERE id='${id}'`, SLUG);
+		deleteInvoicesWhere(`id='${id}'`, SLUG);
 	} catch {
 		/* best-effort */
 	}

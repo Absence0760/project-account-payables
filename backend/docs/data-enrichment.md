@@ -457,7 +457,8 @@ To add a provider: copy `mock_adapter.py`, implement `enrich_vendor` +
 
 Roles: `admin`, `ap_manager`, `cfo` (managerial data-stewardship action that may
 consume a metered external API — clerk excluded, like the score + consolidation
-surfaces). Tenant-scoped via `get_tenant_db` + `get_tenant`.
+surfaces). Tenant-scoped via `get_tenant_db` + `get_tenant`, and **entity-scoped**
+— see [§ Entity scoping](#entity-scoping) below.
 
 **Advisory / suggestion-only — never overwrites.** The response carries the
 looked-up firmographics plus a per-field `suggestions` diff (where the provider's
@@ -494,11 +495,37 @@ names only the missing `api_key`, never a secret).
 
 `annual_revenue` is a **string** on the wire (never a float — money invariant).
 
+### Entity scoping
+
+Both external-enrichment routes resolve the vendor through `_vendor_in_scope`,
+which wraps the lookup in `apply_entity_scope(..., include_shared=True)` — the
+same rule `services/vendor_matching._candidate_query` uses. Until this landed
+they took `get_entity_id` purely as a tenant chokepoint (`# noqa: ARG001`) and
+never scoped the `Vendor` lookup, so in a multi-entity tenant a steward working
+under subsidiary A could enrich — and, via `apply`, **write** `name` / `address`
+/ `website` onto — subsidiary B's vendor just by knowing its id. Same-tenant
+only (the tenant DB is still resolved by `get_tenant`), but a cross-entity
+write, and `name` is a screened identity field that re-runs sanctions screening
+on the way through.
+
+- A vendor belonging to another entity is the **same opaque 404** as one that
+  does not exist — it never enumerates.
+- `include_shared=True` keeps an **unstamped** vendor (`entity_id IS NULL`)
+  reachable from every entity. NULL means *unstamped* on `vendors` — a
+  pre-multi-entity row, or one auto-created from an entity-less invoice — not
+  "shared" as it does on `gl_accounts`; excluding it would hide exactly the
+  legacy rows this stewardship surface exists to clean up.
+- No `X-Entity-ID` (the consolidated view, and what every single-entity tenant
+  sends) is a passthrough — unchanged behaviour.
+
+Guards: the entity cases in `tests/test_enrichment_apply.py`.
+
 ### `POST /api/enrichment/vendors/{vendor_id}/apply`
 
 Roles: `admin`, `ap_manager`, `cfo` (the same managerial set as `enrich` —
 matches who can mutate vendors today). Tenant-scoped via `get_tenant_db` +
-`get_tenant`.
+`get_tenant`, and **entity-scoped** — see [§ Entity scoping](#entity-scoping)
+below. This endpoint WRITES, so the boundary matters more here than on `enrich`.
 
 Applies a steward-selected set of enrichment suggestions onto the `Vendor` row
 through an **audited write**. This is the explicit "apply" counterpart to the

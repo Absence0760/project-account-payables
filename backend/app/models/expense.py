@@ -222,6 +222,20 @@ class Expense(Base, EntityMixin, TimestampMixin):
         ),
         index=True,
     )
+    # The ``payment_method`` this row carried immediately BEFORE a corporate-card
+    # reconciliation overwrote it, so ``POST /corporate-card-transactions/{id}/unmatch``
+    # can put back what was there rather than guessing. Matching stamps
+    # ``corporate_card`` / ``virtual_card``; without this column a mis-matched
+    # expense kept that stamp forever once unmatched, and resetting to
+    # ``out_of_pocket`` would be a *different* wrong guess — an expense can
+    # legitimately be card-marked by the employee before its feed row is imported.
+    # Set by ``_link_both_sides``, consumed and cleared by unmatch, so a NON-NULL
+    # value means "currently matched, and this is what to restore". NULL on a
+    # matched row means the match predates this column (migration 0089): unmatch
+    # then leaves ``payment_method`` alone — no evidence, no guess.
+    payment_method_before_match: Mapped[ExpensePaymentMethod | None] = mapped_column(
+        Enum(ExpensePaymentMethod, native_enum=False, length=20)
+    )
     # List of policy-violation dicts (advisory; no PII).
     policy_violations: Mapped[list | None] = mapped_column(JSONB)
     status: Mapped[ExpenseStatus] = mapped_column(

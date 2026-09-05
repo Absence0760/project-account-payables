@@ -71,6 +71,69 @@ async def _resolve_tenant_db_name(organization_id: uuid.UUID) -> str:
         return db_name
 
 
+async def _write_auth_audit(
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    action: str,
+    entity_id: uuid.UUID | None = None,
+    entity_type: str = "auth",
+    details: dict | None = None,
+) -> None:
+    """The actual control-plane-originated audit write. **Raises on failure.**
+
+    Split out from :func:`dispatch_auth_audit` so a caller that runs this OFF
+    the response path (:func:`queue_auth_audit`) can see — and escalate — a
+    failure that the fire-and-forget wrapper would otherwise swallow. Nothing
+    calls this directly except the two wrappers below.
+    """
+    correlation_id = uuid.uuid4()
+    # AuditLog.entity_id is nullable, but most writers pass one. Fall back to
+    # the correlation_id so dashboards that GROUP BY entity_id still work.
+    _entity_id = entity_id or correlation_id
+    if settings.audit_mode == "lambda":
+        tenant_db_name = await _resolve_tenant_db_name(organization_id)
+        # Off the event loop — see `_send_to_sqs`. This is the LOGIN path
+        # (`api/auth.py` writes an auth audit row on every attempt), the
+        # most concurrent surface in the app.
+        await asyncio.to_thread(
+            _send_to_sqs,
+            tenant_db_name=tenant_db_name,
+            correlation_id=correlation_id,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=_entity_id,
+            details=details,
+        )
+        return
+
+    # Local mode: open a tenant session and write directly.
+    from app.database import get_tenant_engine
+    from app.services.audit import log_action
+
+    tenant_db_name = await _resolve_tenant_db_name(organization_id)
+    engine = get_tenant_engine(tenant_db_name)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as tenant_db:
+        try:
+            await log_action(
+                tenant_db,
+                correlation_id=correlation_id,
+                organization_id=organization_id,
+                actor_id=actor_id,
+                action=action,
+                entity_type=entity_type,
+                entity_id=_entity_id,
+                details=details,
+            )
+            await tenant_db.commit()
+        except Exception:
+            await tenant_db.rollback()
+            raise
+
+
 async def dispatch_auth_audit(
     *,
     organization_id: uuid.UUID,
@@ -97,61 +160,189 @@ async def dispatch_auth_audit(
     fails because of an audit-infrastructure blip (Redis blocklist degrades the
     same way). SOC 2 wants writes hardened *and* observable — but available
     first.
+
+    **This awaits a tenant-DB round trip on the caller's path.** On a branch
+    whose response time must not depend on whether the account exists, use
+    :func:`queue_auth_audit` instead.
     """
-    correlation_id = uuid.uuid4()
-    # AuditLog.entity_id is nullable, but most writers pass one. Fall back to
-    # the correlation_id so dashboards that GROUP BY entity_id still work.
-    _entity_id = entity_id or correlation_id
     try:
-        if settings.audit_mode == "lambda":
-            tenant_db_name = await _resolve_tenant_db_name(organization_id)
-            # Off the event loop — see `_send_to_sqs`. This is the LOGIN path
-            # (`api/auth.py` writes an auth audit row on every attempt), the
-            # most concurrent surface in the app.
-            await asyncio.to_thread(
-                _send_to_sqs,
-                tenant_db_name=tenant_db_name,
-                correlation_id=correlation_id,
-                organization_id=organization_id,
-                actor_id=actor_id,
-                action=action,
-                entity_type=entity_type,
-                entity_id=_entity_id,
-                details=details,
-            )
-            return
-
-        # Local mode: open a tenant session and write directly.
-        from app.database import get_tenant_engine
-        from app.services.audit import log_action
-
-        tenant_db_name = await _resolve_tenant_db_name(organization_id)
-        engine = get_tenant_engine(tenant_db_name)
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        async with factory() as tenant_db:
-            try:
-                await log_action(
-                    tenant_db,
-                    correlation_id=correlation_id,
-                    organization_id=organization_id,
-                    actor_id=actor_id,
-                    action=action,
-                    entity_type=entity_type,
-                    entity_id=_entity_id,
-                    details=details,
-                )
-                await tenant_db.commit()
-            except Exception:
-                await tenant_db.rollback()
-                raise
+        await _write_auth_audit(
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action=action,
+            entity_id=entity_id,
+            entity_type=entity_type,
+            details=details,
+        )
     except Exception as exc:  # pragma: no cover — defensive
+        # Class name only. `details` routinely carries the submitted email
+        # address, and a driver error can echo the parameters it choked on —
+        # so the exception is never rendered into the log (same rule as
+        # `services/post_commit`).
         logger.warning(
             "auth audit dispatch failed: action=%s org=%s actor=%s err=%s",
             action,
             organization_id,
             actor_id,
-            exc,
+            exc.__class__.__name__,
         )
+
+
+# Strong references to in-flight audit writes. Without this the only reference
+# is the local in `queue_auth_audit` and the loop's own registry is weak, so a
+# row could be lost to garbage collection mid-write. Mirrors
+# `services/post_commit`'s `_tasks` and `services/webhooks/dispatch`.
+_pending_auth_audits: set[asyncio.Task] = set()
+
+
+def _finish_auth_audit(task: asyncio.Task) -> None:
+    _pending_auth_audits.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+async def _guarded_auth_audit(**kwargs) -> None:
+    try:
+        await _write_auth_audit(**kwargs)
+    except Exception as exc:  # noqa: BLE001 — nothing above us to propagate to
+        # ERROR, not WARNING: this is SOX evidence for an authentication event
+        # and nothing downstream retries it, so a silent loss is exactly what
+        # must not happen. PII-free — action + org id (a UUID) + the exception
+        # CLASS; never `details`, which carries the submitted address.
+        logger.error(
+            "auth audit write failed off the response path: action=%s org=%s err=%s",
+            kwargs.get("action"),
+            kwargs.get("organization_id"),
+            exc.__class__.__name__,
+        )
+
+
+def queue_auth_audit(
+    *,
+    organization_id: uuid.UUID | None,
+    actor_id: uuid.UUID | None,
+    action: str,
+    entity_id: uuid.UUID | None = None,
+    entity_type: str = "auth",
+    details: dict | None = None,
+) -> None:
+    """Schedule an auth audit row to be written AFTER the caller responds.
+
+    **Why this exists.** ``dispatch_auth_audit`` resolves the tenant DB from the
+    control plane and commits a row inline — a whole DB round trip on the
+    caller's path. On ``/auth/login`` that round trip only happens when the
+    submitted address *has* an organization, so a known address (wrong
+    password, no password, deactivated) was measurably slower than an unknown
+    one: an account-existence oracle around the very bcrypt cost
+    ``dummy_verify`` exists to equalize. Dropping the row is worse than the
+    leak, and padding the fast path is masking; moving the write off the
+    response path is the fix that costs neither branch anything.
+
+    **Why not** :mod:`app.services.post_commit`. That queue fires from
+    SQLAlchemy's ``after_commit``. A failed login raises ``HTTPException``, so
+    ``get_control_db`` rolls its session back — ``after_rollback`` drains and
+    DISCARDS the queue by design ("do not tell anyone about a change that never
+    happened"). A row queued there would never be written. The trigger here is
+    therefore the event loop itself: the write is spawned as a task and runs
+    while the response is already on its way out.
+
+    ``organization_id`` may be ``None`` — the tenant DB is resolved from it, so
+    there is nowhere to write and the row is dropped (visibly, at INFO). Taking
+    ``None`` rather than making the caller branch is the point: both login
+    failure branches call this unconditionally, so they stay structurally
+    identical.
+
+    Never raises, never awaits.
+    """
+    if organization_id is None:
+        # PII-free: the action only. Not the submitted address — that is the
+        # thing an unknown-account log line must not record.
+        logger.info("auth audit skipped, no organization to route to: action=%s", action)
+        return
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is None:
+        # No loop to outlive us. Every real caller is an async request handler,
+        # so this is a programming error rather than an operational one — but
+        # a dropped auth row is loud either way.
+        logger.error(
+            "auth audit could not be scheduled, no running event loop: action=%s org=%s",
+            action,
+            organization_id,
+        )
+        return
+
+    task = loop.create_task(
+        _guarded_auth_audit(
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action=action,
+            entity_id=entity_id,
+            entity_type=entity_type,
+            details=details,
+        ),
+        name=f"auth-audit-{action}",
+    )
+    _pending_auth_audits.add(task)
+    task.add_done_callback(_finish_auth_audit)
+
+
+# How long a graceful shutdown waits for queued auth audit rows to land. The
+# write is a control-plane lookup plus a tenant INSERT and COMMIT — generous at
+# five seconds, and BOUNDED on purpose: a hung write must cost the shutdown a
+# known amount, not block it indefinitely. An orchestrator that gives up waiting
+# and SIGKILLs loses every remaining row instead of just the stuck one.
+AUTH_AUDIT_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+async def drain_auth_audits(*, timeout: float | None = None) -> int:
+    """Await every queued auth audit write currently in flight.
+
+    For TESTS that assert on the row right after the response, and for the
+    lifespan shutdown, which is what makes the documented guarantee ("written
+    shortly after the response, or reported at ERROR") actually hold when the
+    process is stopped cleanly. Production request handlers never call it — not
+    waiting is the whole point.
+
+    ``timeout`` bounds the wait. Past it the remaining writes are cancelled and
+    the count is logged at WARNING and returned, so an abandoned row is as
+    visible as a failed one. ``None`` (the test default) waits indefinitely.
+    """
+
+    async def _drain() -> None:
+        while _pending_auth_audits:
+            await asyncio.gather(*list(_pending_auth_audits), return_exceptions=True)
+
+    if timeout is None:
+        await _drain()
+        return 0
+
+    # `asyncio.wait` rather than `wait_for`: on expiry it returns instead of
+    # cancelling, so the writes are still countable. `wait_for` cancels the
+    # gather, whose done callbacks then empty `_pending_auth_audits` before the
+    # count can be read — reporting `abandoned=0` for a drain that abandoned
+    # work is worse than not reporting at all.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while _pending_auth_audits:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        await asyncio.wait(list(_pending_auth_audits), timeout=remaining)
+
+    abandoned = len(_pending_auth_audits)
+    if abandoned:
+        for task in list(_pending_auth_audits):
+            task.cancel()
+        # PII-free: a count and a bound, nothing about who was signing in.
+        logger.warning(
+            "auth audit drain timed out after %ss; abandoned=%d row(s)", timeout, abandoned
+        )
+    return abandoned
 
 
 def _send_to_sqs(

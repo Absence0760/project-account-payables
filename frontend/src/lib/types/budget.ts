@@ -1,7 +1,22 @@
 // Types for the Procurement → Budgets surface. Mirrors the JSON returned by the
 // `/api/budgets` endpoints (backend `BudgetResponse` / `BudgetSpendResponse` /
-// `BudgetCheckResponse`). Money fields arrive as numbers (backend `float(...)`);
-// date/datetime fields are ISO strings.
+// `BudgetCheckResponse`). Date/datetime fields are ISO strings.
+//
+// **Money fields are `MoneyAmount`, never `number`.** The backend serialises
+// these rollups as JSON numbers (`schemas/budget.py` does `float(...)` on the
+// way out), so `MoneyString` would be a different lie — but a `number` field
+// invites `a - b`, `Math.max()` and `.toFixed()` on currency, which is the
+// arithmetic the Decimal invariant exists to prevent. `MoneyAmount` is honest
+// about the wire shape AND makes that arithmetic a type error; where a figure
+// legitimately has to become a number, `parseMoneyForLayout` (geometry) and
+// `isPositiveAmount` / `isNegativeAmount` (predicates) are the only routes.
+// See `frontend/CLAUDE.md` § Money formatting.
+//
+// The `total` on the list/summary envelopes is deliberately still `number`:
+// it is a ROW COUNT, not an allocation. The per-currency allocation totals live
+// on `BudgetSummary.by_currency`.
+
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type BudgetDimension = 'department' | 'project' | 'cost_center' | 'gl_account';
 
@@ -27,7 +42,8 @@ export interface Budget {
 	period: string | null;
 	period_start: string | null;
 	period_end: string | null;
-	amount: number;
+	/** The allocation, denominated in `currency`. */
+	amount: MoneyAmount;
 	currency: string;
 	notes: string | null;
 	created_at: string;
@@ -36,6 +52,7 @@ export interface Budget {
 
 export interface BudgetListResponse {
 	items: Budget[];
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	page: number;
 	page_size: number;
@@ -45,16 +62,21 @@ export interface BudgetListResponse {
 // invoices. `committed` = open requisitions + their converted POs; `actual` =
 // realised invoice spend matched to the dimension; `remaining` =
 // allocated - committed - actual (negative = overspend).
+//
+// The subtraction that produces `remaining` is the backend's, in Decimal.
+// Never re-derive it client-side from the other three: read `remaining`, and
+// use `isNegativeAmount` to decide whether it renders as an overspend.
 export interface BudgetSpend {
 	budget_id: string;
 	name: string;
 	dimension: string;
 	dimension_value: string;
 	currency: string;
-	allocated: number;
-	committed: number;
-	actual: number;
-	remaining: number;
+	allocated: MoneyAmount;
+	committed: MoneyAmount;
+	actual: MoneyAmount;
+	remaining: MoneyAmount;
+	/** A percentage, not money. */
 	utilization_pct: number;
 }
 
@@ -62,7 +84,7 @@ export interface BudgetSpend {
 export interface BudgetCurrencyTotal {
 	currency: string;
 	/** Exact decimal string — never parse into a float for arithmetic. */
-	total: string;
+	total: MoneyString;
 	count: number;
 }
 
@@ -76,25 +98,32 @@ export interface BudgetCurrencyTotal {
  * grouped, never summed (see `$lib/utils/currencyGroups`).
  */
 export interface BudgetSummary {
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	by_currency: BudgetCurrencyTotal[];
 }
 
 // `GET /api/budgets/check?budget_id=&amount=` — overspend pre-check for the
-// requisition flow.
+// requisition flow. `would_overspend` is the backend's verdict; a caller must
+// read that flag rather than comparing two of these amounts itself.
 export interface BudgetCheck {
 	budget_id: string;
-	amount: number;
-	allocated: number;
-	committed: number;
-	actual: number;
-	remaining: number;
-	remaining_after: number;
+	amount: MoneyAmount;
+	allocated: MoneyAmount;
+	committed: MoneyAmount;
+	actual: MoneyAmount;
+	remaining: MoneyAmount;
+	remaining_after: MoneyAmount;
 	would_overspend: boolean;
 	currency: string;
 }
 
-// Request shapes (money goes out as a number — the backend coerces to Decimal).
+// Request shapes. Money goes out as the EXACT DECIMAL STRING the user typed
+// (`utils/moneyInput.ts::normalizeMoneyInput`), never a JSON number: the
+// backend's `json.loads` decodes the body before any validator runs, so a
+// fractional JSON number is already a float by the time pydantic sees it and
+// no `Decimal` annotation can undo the rounding. Pydantic parses the string
+// form exactly.
 export interface BudgetCreate {
 	name: string;
 	dimension: BudgetDimension;
@@ -102,7 +131,7 @@ export interface BudgetCreate {
 	period: string | null;
 	period_start: string | null;
 	period_end: string | null;
-	amount: number;
+	amount: MoneyString;
 	currency: string;
 	notes: string | null;
 }

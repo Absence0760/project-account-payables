@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /discounts — the foreign-currency exclusion notice.
@@ -40,7 +40,7 @@ function cleanupInvoice(id: string): void {
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 test.describe('/discounts foreign-currency notice', () => {

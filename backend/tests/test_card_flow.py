@@ -402,13 +402,28 @@ def test_resolve_card_config_platform_honors_expiry_override():
     assert cfg["default_expiry_days"] == 7
 
 
-def test_resolve_card_config_platform_defaults_to_region_when_no_override():
-    """Platform program, no `provider` override → region default (unchanged
-    behavior). US resolves to lithic."""
-    cfg = _resolve_card_config(
-        {"cards": {"enabled": True, "program_type": "platform", "region": "US"}},
-        _app_settings(),
-    )
+def test_resolve_card_config_platform_defaults_to_region_when_no_override(monkeypatch):
+    """Platform program, no `provider` override → the region preference, but
+    only once this deployment actually holds a credential for it. Without one
+    it is the local-first `mock` (guard rail 7) — see
+    `tests/test_card_provider_local_first.py`.
+
+    `get_default_provider` reads `app.config.settings` rather than the
+    `app_settings` argument threaded through `_resolve_card_config`; in app code
+    those are the same singleton (every call site does
+    `from app.config import settings as app_settings`), so only a test that
+    fabricates one can tell them apart. Set both."""
+    from app.config import settings
+
+    org = {"cards": {"enabled": True, "program_type": "platform", "region": "US"}}
+
+    monkeypatch.setattr(settings, "lithic_api_key", "")
+    cfg = _resolve_card_config(org, _app_settings())
+    assert cfg is not None
+    assert cfg["provider"] == "mock"
+
+    monkeypatch.setattr(settings, "lithic_api_key", "live_key")
+    cfg = _resolve_card_config(org, _app_settings())
     assert cfg is not None
     assert cfg["provider"] == "lithic"
 

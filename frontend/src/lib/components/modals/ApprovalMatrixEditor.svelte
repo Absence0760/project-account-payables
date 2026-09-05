@@ -11,6 +11,7 @@
 	} from '$lib/types/workflow';
 	import type { AdminUser } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 
 	type Props = {
 		chain: ApprovalLevelConfig[];
@@ -19,6 +20,16 @@
 	};
 
 	let { chain, users, onchange }: Props = $props();
+
+	// The per-level amount bands are denominated in the org's REPORTING
+	// currency (the backend converts each invoice before applying them —
+	// `approval_chain.resolve_applicable_levels`), so the column labels name
+	// the code. Resolved here rather than taken as a prop, so the editor is
+	// correct wherever it is mounted; `ensureLoaded` is idempotent and shares
+	// one in-flight request with every other caller.
+	$effect(() => {
+		orgCurrency.ensureLoaded();
+	});
 
 	const SET_OPERATORS: RoutingOperator[] = ['in', 'not_in'];
 
@@ -162,7 +173,7 @@
 
 			<div class="row">
 				<label class="field">
-					<span>{m('approvalMatrix.minAmount')}</span>
+					<span>{m('approvalMatrix.minAmount', { currency: orgCurrency.currency })}</span>
 					<input
 						type="number"
 						step="0.01"
@@ -178,7 +189,7 @@
 					/>
 				</label>
 				<label class="field">
-					<span>{m('approvalMatrix.maxAmount')}</span>
+					<span>{m('approvalMatrix.maxAmount', { currency: orgCurrency.currency })}</span>
 					<input
 						type="number"
 						step="0.01"

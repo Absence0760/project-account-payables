@@ -105,7 +105,7 @@ from app.models.tax_filing import Tax1099Filing
 from app.models.vendor import Vendor
 from app.services import qms_sync
 from app.services.card_adapters import UnknownCardProviderError, get_card_adapter
-from app.services.card_adapters.lithic import LithicAdapter
+from app.services.card_adapters.mock_adapter import MockCardAdapter
 from app.services.peppol_adapters import UnknownPeppolProviderError, get_peppol_adapter
 from app.services.peppol_adapters.mock_adapter import MockPeppolAdapter
 from app.services.positive_pay_adapters import (
@@ -151,7 +151,11 @@ REGISTRY_CASES = [
     pytest.param(
         get_card_adapter,
         {"region": "US"},
-        LithicAdapter,
+        # `mock`, not Lithic: an org that has configured nothing must not reach
+        # a real issuer. The `REGION_DEFAULTS` preference applies only once a
+        # credential for the preferred issuer exists — see
+        # `tests/test_card_provider_local_first.py`.
+        MockCardAdapter,
         {"provider": "marqeta", "region": "US"},
         UnknownCardProviderError,
         id="card_adapters",

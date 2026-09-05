@@ -6,7 +6,8 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, isNegativeAmount } from '$lib/utils/money';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 	import { m } from '$lib/i18n/store.svelte';
 	import { createBudget, updateBudget, getBudgetSpend } from '$lib/api/budgets';
 
@@ -32,7 +33,11 @@
 	let period = $state(budget?.period ?? '');
 	let period_start = $state(budget?.period_start ?? '');
 	let period_end = $state(budget?.period_end ?? '');
-	let amount = $state<number | null>(budget?.amount ?? null);
+	// The RAW text the user typed, not a parsed number: the allocation reaches
+	// the backend as the exact decimal string it was typed as (see
+	// `types/budget.ts` → request shapes). Seeded from the response amount,
+	// which may itself arrive as a JSON number.
+	let amount = $state(String(budget?.amount ?? ''));
 	let currency = $state(budget?.currency ?? 'USD');
 	let notes = $state(budget?.notes ?? '');
 	/* eslint-enable svelte/state-referenced-locally */
@@ -58,12 +63,6 @@
 		}
 	}
 
-	function numOrNull(v: unknown): number | null {
-		if (v === '' || v === null || v === undefined) return null;
-		const n = parseFloat(String(v));
-		return Number.isFinite(n) ? n : null;
-	}
-
 	function handleError(err: unknown, fallback: string) {
 		toast(err instanceof Error ? err.message : fallback, 'error');
 	}
@@ -79,7 +78,17 @@
 	);
 
 	async function handleSave() {
-		if (!name.trim() || !dimension_value.trim() || amount == null) return;
+		// `normalizeMoneyInput` decides shape with a regex, never `Number` — the
+		// string that goes out is the string that came in. Text we could not
+		// read is REFUSED, never repaired and never quietly dropped: silently
+		// posting no allocation for an amount the user typed is the same class
+		// of failure as posting a rounded one.
+		const allocation = normalizeMoneyInput(amount);
+		if (!name.trim() || !dimension_value.trim()) return;
+		if (allocation === null) {
+			toast(m('common.amountInvalid'), 'error');
+			return;
+		}
 		saving = true;
 		try {
 			const payload = {
@@ -89,7 +98,7 @@
 				period: period.trim() || null,
 				period_start: period_start || null,
 				period_end: period_end || null,
-				amount,
+				amount: allocation,
 				currency: currency.trim() || 'USD',
 				notes: notes.trim() || null
 			};
@@ -129,7 +138,7 @@
 					<KpiCard
 						value={formatMoney(spend.remaining, { currency: spend.currency })}
 						label={m('budgets.modal.kpi.remaining')}
-						highlight={spend.remaining < 0 ? 'red' : 'green'}
+						highlight={isNegativeAmount(spend.remaining) ? 'red' : 'green'}
 					/>
 				</div>
 				<div class="util-bar" aria-label={m('budgets.modal.utilizationAria', { percent: spend.utilization_pct.toFixed(1) })}>
@@ -139,7 +148,7 @@
 					<span>{m('budgets.modal.detail.allocated')} <Money amount={spend.allocated} currency={spend.currency} /></span>
 					<span>{m('budgets.modal.detail.committed')} <Money amount={spend.committed} currency={spend.currency} /></span>
 					<span>{m('budgets.modal.detail.actual')} <Money amount={spend.actual} currency={spend.currency} /></span>
-					<span class:over={spend.remaining < 0}>
+					<span class:over={isNegativeAmount(spend.remaining)}>
 						{m('budgets.modal.detail.remaining')} <Money amount={spend.remaining} currency={spend.currency} accounting />
 					</span>
 				</div>
@@ -177,8 +186,9 @@
 					type="number"
 					step="0.01"
 					min="0"
-					value={amount ?? ''}
-					oninput={(e) => (amount = numOrNull(e.currentTarget.value))}
+					value={amount}
+					oninput={(e) => (amount = e.currentTarget.value)}
+					required
 					disabled={!canEdit}
 				/>
 			</label>

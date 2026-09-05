@@ -382,3 +382,59 @@ per-test one. Measured on a single realdb test reaching a cold slot: about 3
 seconds slower than before this fix, which does not survive contact with a
 multi-thousand-test suite where the fixture's setup is paid once regardless
 of how many realdb tests follow.
+
+
+---
+
+## Two `queue-blocked` e2e cases fail on a fully-seeded local tenant
+
+**Diagnosed 2026-09-04 · not fixed · local-only, CI is green**
+
+`frontend/tests-e2e/payments/queue-blocked.spec.ts` — *"an unknown
+`blocked_reason` code still blocks, with a generic reason"* and *"a
+`payment_reconciliation` block names its own reason, not the generic one"* —
+fail on a local tenant seeded with the full `pnpm seed`. They pass in CI, which
+runs `seed.py --lean` (10 invoices per tenant against this tenant's ~30
+payable).
+
+Round 17 took this file from four red cases to two: the other two were the
+page-one assumption fixed by `loadMoreUntilRow` (see the commit *"navigate to
+the row instead of assuming it is on page one"*). These two are a different
+cause and are **not** that.
+
+**What is established:**
+
+- The invoice the test creates **does** reach the queue API. Probed directly
+  against a running backend: created through the same path the spec uses
+  (`POST /api/invoices`, then `status='approved'` + a real `vendor_id` by SQL),
+  it appears in `GET /api/payments/queue` — `total` rises by one and the
+  invoice number is present in `items`.
+- It is **not** inter-test pollution: both cases fail when run in isolation
+  with `-g`, not only after their file-mates.
+- It is **not** the client-side `injectBlockedFlag` interception per se — the
+  passing case at `:210` uses the same helper.
+- `loadMoreUntilRow` returns without throwing, which means it exited on
+  `loadMore.count() === 0` (no Load-more control present when it checked)
+  rather than on a poll timeout. With ~30 queue rows against
+  `QUEUE_PAGE_SIZE = 20`, a Load-more control is expected to be there.
+- Two independent agents confirmed both cases fail identically against
+  unmodified `HEAD`, so nothing in round 17 introduced them.
+
+**What is not established:** why the row is absent from the rendered list when
+the API response demonstrably contains it. The gap is between the queue
+response and the rendered rows, not in the backend.
+
+**Durable fix:** capture a Playwright trace of one failing run and read the
+actual queue responses and rendered rows out of it — the cheap diagnostic that
+was not run here because the local dev server had to be brought up by hand and
+the earlier throwaway probe was invalid (it never authenticated, so it captured
+no queue request at all). Do that before theorising further.
+
+**Trigger:** the next change to the payments queue page or to
+`queue-blocked.spec.ts` — or the first time either case fails in CI, which
+would mean the seed volume assumption above is wrong and this is not local-only
+after all.
+
+**Not masked:** no timeout was raised, no retry added, and neither case is
+skipped. They fail loudly on a fully-seeded local tenant, which is the correct
+behaviour for a test whose premise is not yet understood.

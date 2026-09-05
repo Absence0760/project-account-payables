@@ -217,13 +217,16 @@ async def test_get_tenant_ignores_non_bearer_authorization():
 # test above would still pass while any authenticated user could read any
 # tenant by swapping one header.
 #
-# The realdb harness cannot cover this: `RealDB.client()` overrides
-# `get_tenant_db` wholesale to swap in a per-loop engine, so `get_tenant` never
-# runs for a route that depends only on the session provider. That is the same
-# shape as the late-commit override recorded in decisions §20 — an override
-# that quietly replaced semantics rather than just the engine — so the gap is
-# closed here with a client that overrides ONLY `get_control_db` and lets the
-# production `get_tenant_db` run for real.
+# These cases predate the harness fix and are kept deliberately. `RealDB.client()`
+# used to override `get_tenant_db` wholesale to swap in a per-loop engine, so
+# `get_tenant` never ran for a route that depends only on the session provider —
+# the same shape as the late-commit override recorded in decisions §20, an
+# override that quietly replaced semantics rather than just the engine. The
+# harness override now carries `Depends(get_tenant)` like the real provider, so
+# every realdb test exercises the cross-check;
+# `test_harness_client_enforces_the_org_claim` below pins that. These three stay
+# because they bypass the harness entirely and would still catch a regression
+# that disarmed it a second time.
 #
 # Safe against the cross-loop engine hazard those harness overrides exist to
 # avoid: `get_tenant_engine` caches per db_name in a module global, and the
@@ -304,3 +307,35 @@ async def test_end_to_end_missing_tenant_header_is_refused(realdb):
     async with _real_path_client(realdb, token=realdb.token("a", "admin")) as c:
         resp = await c.get("/api/invoices")
     assert resp.status_code == 400, resp.text
+
+
+# ---------------------------------------------------------------------------
+# The harness itself now runs the guard. Before this, `RealDB.client()` replaced
+# `get_tenant_db` with a bare session provider, so the cross-check was absent
+# from every realdb test in the suite at once — a blind spot, not a defect, but
+# precisely the shape decisions §20 warns about. These pin that it is armed, and
+# that arming it did not break the one path that legitimately has no JWT.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_harness_client_enforces_the_org_claim(realdb):
+    """Tenant A's token against tenant B's slug, through the ordinary harness
+    client every realdb test uses. Returned 200 before the override carried
+    `Depends(get_tenant)`; the production chain always answered 403."""
+    other = realdb.info("b")
+    client = realdb.client(key="a", role="admin")
+    client.headers["X-Tenant-Slug"] = other.slug
+    async with client as c:
+        resp = await c.get("/api/invoices")
+    assert resp.status_code == 403, resp.text
+    assert "tenant" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_harness_client_still_serves_a_matching_slug(realdb):
+    """Positive control: the guard refuses the mismatch above on its merits, not
+    because the harness client stopped working."""
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.get("/api/invoices")
+    assert resp.status_code == 200, resp.text

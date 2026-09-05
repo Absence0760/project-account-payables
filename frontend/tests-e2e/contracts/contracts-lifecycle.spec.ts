@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * Contract Lifecycle Management — the critical money/control paths that the
@@ -119,7 +119,7 @@ function deleteInvoice(id: string): void {
 	tenantPsql(`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
 	tenantPsql(`DELETE FROM invoice_line_items WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 test.describe('contract lifecycle transitions', () => {

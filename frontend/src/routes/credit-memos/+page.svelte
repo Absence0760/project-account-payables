@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { appendUnique } from '$lib/utils/pagination';
+	import { appendUnique, fetchAllPages, type PagedResponse } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { untrack } from 'svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -197,10 +197,20 @@
 
 	let hasMore = $derived(memos.length < total);
 
+	// Both of these feed a `<select>`, so the options ARE the set of valid
+	// choices — a truncated fetch is not a shorter list, it is a supplier or an
+	// invoice the operator cannot reach (a native `<select>` has no search).
+	// A bare `api.get('/api/vendors')` returns the server's DEFAULT_PAGE_SIZE of
+	// 20; the acme demo tenant alone has ~39 active vendors, so creating a memo
+	// against most of its suppliers was impossible, and the Apply modal could
+	// not see the invoice you wanted to credit. `fetchAllPages` walks the
+	// envelope's own `total` — raising `page_size` would not do, since the
+	// server caps it at MAX_PAGE_SIZE.
 	async function loadVendors() {
 		try {
-			const data = await api.get<{ items: Vendor[] }>('/api/vendors');
-			vendors = data.items;
+			vendors = await fetchAllPages<Vendor>((page, pageSize) =>
+				api.get<PagedResponse<Vendor>>(`/api/vendors?page=${page}&page_size=${pageSize}`)
+			);
 		} catch {
 			/* non-critical for the list view */
 		}
@@ -208,8 +218,9 @@
 
 	async function loadInvoices() {
 		try {
-			const data = await api.get<{ items: Invoice[] }>('/api/invoices');
-			invoices = data.items;
+			invoices = await fetchAllPages<Invoice>((page, pageSize) =>
+				api.get<PagedResponse<Invoice>>(`/api/invoices?page=${page}&page_size=${pageSize}`)
+			);
 		} catch {
 			/* non-critical */
 		}
@@ -328,7 +339,11 @@
 	>
 		{#snippet body()}
 			{#each memos as memo (memo.id)}
-				<tr class:applied={memo.status === 'applied'} class:void={memo.status === 'void'}>
+				<tr
+					class:applied={memo.status === 'applied'}
+					class:void={memo.status === 'void'}
+					class:row-muted={memo.status === 'applied' || memo.status === 'void'}
+				>
 					<td class="mono">{memo.memo_number}</td>
 					<td>{memo.vendor_name ?? '—'}</td>
 					<td class="right mono"><Money amount={memo.amount} currency={memo.currency} /></td>
@@ -457,10 +472,13 @@
 
 <style>
 	/* Page-specific bits not covered by the global design-system CSS in app.css. */
-	tr.applied td,
-	tr.void td {
-		opacity: 0.6;
-	}
+	/* An applied or voided memo is de-emphasised by the shared `.row-muted`
+	   recipe in app.css (a muted colour token). It used to be `opacity: 0.6` on
+	   these cells, which composited the row's date + invoice-number cells
+	   (--text-muted) to 2.77:1 and its status badge to 2.59–2.91:1 on --surface.
+	   `.applied` / `.void` stay as the semantic classes — `tr.applied` is an e2e
+	   selector (tests-e2e/credit-memos/credit-memos.spec.ts) — and now carry no
+	   colour of their own. */
 	/* Explains an empty apply-target list — the memo's vendor has no invoice
 	   whose vendor link is resolved and matching, so there is nothing to credit. */
 	/* Sub-label under the currency select. Muted on `--surface` clears 4.5:1;

@@ -1,8 +1,17 @@
 // Types for the Recurring / Subscription Invoices surface. Mirrors the JSON
-// returned by the `/api/recurring` endpoints. Money fields arrive as numbers
-// (or null); date fields are ISO date strings (or null).
+// returned by the `/api/recurring` endpoints. Date fields are ISO date strings
+// (or null).
+//
+// **Money is `MoneyAmount` on the way in, `MoneyString` on the way out**, never
+// `number` — a `number`-typed money field invites `a - b`, `Math.max()` and the
+// `amount / 3` / `amount / 12` cadence divide this page used to do client-side
+// (the server owns that normalisation now, in exact Decimal). `total` on the
+// list/summary/history envelopes is a ROW COUNT and stays `number`, as does
+// `day_of_period`, `generated_count` and `variance_tolerance_pct` (a percent).
+// See `frontend/CLAUDE.md` § Money formatting.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type RecurringCadence = 'monthly' | 'quarterly' | 'annual';
 
@@ -86,7 +95,7 @@ export interface RecurringTemplate {
 	vendor_id: string | null;
 	vendor_name: string | null;
 	description: string | null;
-	amount: number | null;
+	amount: MoneyAmount;
 	currency: string;
 	gl_account: string | null;
 	cost_center: string | null;
@@ -115,7 +124,7 @@ export interface RecurringTemplateCreate {
 	name: string;
 	vendor_id?: string | null;
 	description?: string | null;
-	amount?: number | null;
+	amount?: MoneyString | null;
 	currency?: string;
 	gl_account?: string | null;
 	cost_center?: string | null;
@@ -133,6 +142,7 @@ export interface RecurringTemplateCreate {
 
 export interface RecurringListResponse {
 	items: RecurringTemplate[];
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	page: number;
 	page_size: number;
@@ -142,7 +152,7 @@ export interface RecurringListResponse {
 export interface RecurringCurrencyTotal {
 	currency: string;
 	/** Exact decimal string. Cadence-normalised (÷1, ÷3, ÷12) server-side. */
-	total: string;
+	total: MoneyString;
 	count: number;
 }
 
@@ -156,6 +166,7 @@ export interface RecurringCurrencyTotal {
  * never summed across them (see `$lib/utils/currencyGroups`).
  */
 export interface RecurringTemplateSummary {
+	/** Row count of the whole filtered set — NOT money. */
 	total: number;
 	by_status: Record<string, number>;
 	monthly_equivalent: RecurringCurrencyTotal[];
@@ -167,7 +178,7 @@ export interface RecurringTemplateSummary {
 export interface RecurringOccurrence {
 	period_key: string;
 	run_on: string;
-	amount: number | null;
+	amount: MoneyAmount;
 	currency: string;
 }
 
@@ -181,7 +192,7 @@ export interface RecurringHistoryItem {
 	invoice_id: string;
 	invoice_number: string | null;
 	period_key: string;
-	amount: number | null;
+	amount: MoneyAmount;
 	currency: string;
 	status: string;
 	created_at: string;
@@ -190,5 +201,6 @@ export interface RecurringHistoryItem {
 export interface RecurringHistory {
 	template_id: string;
 	items: RecurringHistoryItem[];
+	/** Row count of the generated-invoice history — NOT money. */
 	total: number;
 }

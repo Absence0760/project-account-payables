@@ -124,7 +124,15 @@ async def test_login_failure_bad_password_writes_audit():
     async def _fake_audit(**kwargs):
         calls.append(kwargs)
 
-    with patch.object(auth_mod, "dispatch_auth_audit", _fake_audit):
+    def _fake_queue(**kwargs):
+        # A login FAILURE row is queued off the response path, not awaited —
+        # the enumeration fix in `tests/test_login_audit_off_response_path.py`.
+        calls.append(kwargs)
+
+    with (
+        patch.object(auth_mod, "dispatch_auth_audit", _fake_audit),
+        patch.object(auth_mod, "queue_auth_audit", _fake_queue),
+    ):
         with pytest.raises(HTTPException) as exc:
             await auth_mod.login(
                 LoginRequest(email=user.email, password="wrong-password"),
@@ -145,7 +153,11 @@ async def test_login_failure_bad_password_writes_audit():
 async def test_login_failure_unknown_email_does_not_crash():
     """Unknown-email failures have no user to bind, and must NOT raise — the
     endpoint still responds 401, just without an audit entry (we can't
-    pick a tenant DB without an organization_id)."""
+    pick a tenant DB without an organization_id).
+
+    The queue is still *called*, with `organization_id=None`: both rejection
+    branches reach it identically, which is what keeps them
+    indistinguishable. Only the row is dropped."""
     from fastapi import HTTPException
 
     from app.api import auth as auth_mod
@@ -158,7 +170,13 @@ async def test_login_failure_unknown_email_does_not_crash():
     async def _fake_audit(**kwargs):
         calls.append(kwargs)
 
-    with patch.object(auth_mod, "dispatch_auth_audit", _fake_audit):
+    def _fake_queue(**kwargs):
+        calls.append(kwargs)
+
+    with (
+        patch.object(auth_mod, "dispatch_auth_audit", _fake_audit),
+        patch.object(auth_mod, "queue_auth_audit", _fake_queue),
+    ):
         with pytest.raises(HTTPException) as exc:
             await auth_mod.login(
                 LoginRequest(email="ghost@nowhere.com", password="x"),
@@ -166,8 +184,8 @@ async def test_login_failure_unknown_email_does_not_crash():
                 db,
             )
     assert exc.value.status_code == 401
-    # No audit call because there's no organization_id to route to.
-    assert calls == []
+    # Queued with no organization — so no row can be routed anywhere.
+    assert [c["organization_id"] for c in calls] == [None]
 
 
 @pytest.mark.asyncio

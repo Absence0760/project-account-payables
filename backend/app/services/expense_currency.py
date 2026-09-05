@@ -74,6 +74,36 @@ def normalize_currency(code: str | None, *, default: str = "USD") -> str:
     return default.upper()
 
 
+def conversion_requires_rate_source(
+    *,
+    source_currency: str | None,
+    target_currency: str | None,
+    fx_adapter: FXAdapter | None,
+) -> bool:
+    """``True`` when this conversion genuinely needs an FX provider we don't have.
+
+    The *pair* is checked before the provider, deliberately, and this one helper
+    is shared by BOTH locking layers so they cannot drift:
+
+    * a same-currency conversion needs no rate at all — ``convert_amount``
+      short-circuits at 1 before touching a provider — so an absent adapter is
+      irrelevant to it;
+    * a cross-currency conversion with no adapter is the fail-closed case each
+      caller already has a posture for (refuse the attach at line level; leave
+      the reporting figure NULL at report level, which makes the CFO gate
+      demand sign-off).
+
+    Asking for the provider first is what made one bad ``settings.fx.provider``
+    value break work that has no FX question in it: at line level it 422'd an
+    entirely domestic line on a same-currency report (fixed round 15), and at
+    report level it left ``reporting_amount`` NULL on a report already filed in
+    the org's own reporting currency — a hole in the stored snapshot on a
+    tenant that never needed a rate.
+    """
+    tgt = normalize_currency(target_currency)
+    return fx_adapter is None and normalize_currency(source_currency, default=tgt) != tgt
+
+
 # ---------------------------------------------------------------------------
 # Layer 1 — expense line → report currency
 # ---------------------------------------------------------------------------
@@ -287,7 +317,7 @@ async def lock_report_reporting_amount(
     report,
     *,
     reporting_currency: str,
-    fx_adapter: FXAdapter,
+    fx_adapter: FXAdapter | None,
 ) -> bool:
     """Lock the report's ``total_amount`` into the org's reporting currency.
 
@@ -299,6 +329,15 @@ async def lock_report_reporting_amount(
     Best-effort by design: an FX outage returns ``False`` and leaves the columns
     ``NULL`` rather than blocking a submission. That direction is safe because
     ``report_amount_for_gate`` treats a missing figure as *over* the threshold.
+
+    ``fx_adapter`` may be ``None`` — the same allowance ``lock_expense_conversion``
+    makes, and for the same reason: a report already denominated in the org's
+    reporting currency locks at rate ``1`` with no provider call, so a tenant
+    with no usable rate source still gets a complete stored snapshot instead of
+    four NULL columns and a ``reporting_total: null`` in its own audit row. The
+    caller decides whether a rate source is needed at all via
+    ``conversion_requires_rate_source``; a genuinely cross-currency report with
+    ``None`` here still fails closed through the ``except`` below.
     """
     tgt = normalize_currency(reporting_currency)
     src = normalize_currency(report.currency, default=tgt)

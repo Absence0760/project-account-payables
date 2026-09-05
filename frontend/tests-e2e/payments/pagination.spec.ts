@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /payments history-tab pagination. The history tab previously fetched
@@ -37,7 +37,7 @@ function seedPayments(n: number): void {
 
 function purge(): void {
 	tenantPsql(`DELETE FROM payments WHERE reference LIKE '${MARKER}%'`);
-	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${INV_MARKER}%'`);
+	deleteInvoicesWhere(`invoice_number LIKE '${INV_MARKER}%'`);
 }
 
 test.describe('/payments pagination', () => {

@@ -75,6 +75,7 @@ from app.services.expense_currency import (
     ReportRollup,
     clear_expense_conversion,
     clear_report_reporting_amount,
+    conversion_requires_rate_source,
     lock_expense_conversion,
     lock_report_reporting_amount,
     normalize_currency,
@@ -332,24 +333,22 @@ async def _lock_line_conversion(expense: Expense, report: ExpenseReport, org: Or
     Fail-closed: rather than attaching a line we cannot express in the report's
     currency (which would understate the total the CFO gate reads), the write is
     rejected. The message carries only currency codes — no PII."""
-    target = normalize_currency(report.currency)
-    source = normalize_currency(expense.currency, default=target)
     fx_adapter = _fx_adapter_for(org)
-    if fx_adapter is None and source != target:
+    if conversion_requires_rate_source(
+        source_currency=expense.currency,
+        target_currency=report.currency,
+        fx_adapter=fx_adapter,
+    ):
         # Same fail-closed direction as an unconvertible currency pair: refuse
         # the attach rather than understate the total. No provider name — this
         # message is read by any expense user, not just the admin who owns the
         # setting.
         #
-        # Gated on `source != target` because a same-currency line needs no
-        # rate: `lock_expense_conversion` locks it at 1 with NO adapter call
-        # (`currency_conversion.convert_amount` short-circuits before touching
-        # the provider). Demanding an adapter up front meant one bad
-        # `settings.fx.provider` value 422'd every attach in the tenant —
-        # including an entirely domestic USD line on a USD report, which has no
-        # FX question to fail closed ON. Refusing a conversion nobody asked for
-        # isn't caution, it's an outage; the cross-currency line, which is the
-        # one that could understate the total, is still refused.
+        # The pair-first rule lives in `conversion_requires_rate_source`, shared
+        # with the report-level lock below so the two levels cannot drift: a
+        # same-currency conversion needs no rate at all, and demanding an
+        # adapter for one turned a bad `settings.fx.provider` value into an
+        # outage on work that has no FX question in it.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="No FX rate source is configured, so this line cannot be converted.",
@@ -1546,13 +1545,25 @@ async def submit_report(
     # through with less scrutiny.
     reporting_currency = resolve_reporting_currency(org.settings)
     submit_fx_adapter = _fx_adapter_for(org)
-    if submit_fx_adapter is None:
-        # No usable rate source is the same outcome as an FX outage, which
-        # `lock_report_reporting_amount` already models: clear the figure and
-        # let `report_amount_for_gate` treat the missing number as OVER the
-        # threshold, so the CFO gate fails closed.
+    if conversion_requires_rate_source(
+        source_currency=report.currency,
+        target_currency=reporting_currency,
+        fx_adapter=submit_fx_adapter,
+    ):
+        # No usable rate source for a pair that genuinely needs one is the same
+        # outcome as an FX outage, which `lock_report_reporting_amount` already
+        # models: clear the figure and let `report_amount_for_gate` treat the
+        # missing number as OVER the threshold, so the CFO gate fails closed.
         clear_report_reporting_amount(report)
     else:
+        # Same pair-first rule as `_lock_line_conversion`, shared rather than
+        # restated. A report already filed in the org's reporting currency locks
+        # at rate 1 with no provider call, so a tenant whose `settings.fx.provider`
+        # names no registered adapter now gets a complete stored snapshot instead
+        # of NULL columns and a `reporting_total: null` in this endpoint's own
+        # audit row. Nothing about the gate changes — `report_amount_for_gate`
+        # already fell back to `total_amount` for that pair — this closes the
+        # hole in what is RECORDED.
         await lock_report_reporting_amount(
             report, reporting_currency=reporting_currency, fx_adapter=submit_fx_adapter
         )

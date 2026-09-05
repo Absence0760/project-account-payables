@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /tax — the 1099 admin WORKFLOW (not just the read-only report table):
@@ -79,7 +79,7 @@ test.describe('/tax — vendor tax workflow (admin/ap_manager)', () => {
 
 	test.afterEach(async () => {
 		tenantPsql(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE vendor_name='${vendorName}')`);
-		tenantPsql(`DELETE FROM invoices WHERE vendor_name='${vendorName}'`);
+		deleteInvoicesWhere(`vendor_name='${vendorName}'`);
 		tenantPsql(`DELETE FROM tax_1099_filings WHERE tax_year=${new Date().getFullYear()} AND idempotency_key LIKE '%${new Date().getFullYear()}%'`);
 		// Vendor create runs synchronous sanctions screening by default
 		// (`FEOH_VENDOR_SCREENING_ENABLED`), which leaves a `sanctions_checks`

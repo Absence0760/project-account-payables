@@ -180,7 +180,7 @@
 				{#each keys as key (key.id)}
 					<tr
 						class="clickable"
-						class:revoked={isRevoked(key)}
+						class:row-muted={isRevoked(key)}
 						onclick={(e) => {
 							if (isRowOpenClick(e)) openUsage(key);
 						}}
@@ -374,17 +374,15 @@
 	 */
 
 	/*
-	 * The fade de-emphasises a revoked key's DATA. It deliberately spares the
-	 * status cell: opacity composites text toward the backdrop, and the pill —
-	 * already muted by --text-muted — dropped to 2.44:1 under it, so the one
-	 * cell explaining why the row is faded became the least readable thing in
-	 * it. An ancestor's opacity is invisible to the stylesheet guard
-	 * (`lib/a11y/tokenPairing.test.ts`), which is why axe caught this and not
-	 * the scan.
+	 * A revoked key's DATA is de-emphasised by the shared `.row-muted` recipe
+	 * in app.css (a muted colour token), not by an `opacity` fade. The fade
+	 * composited the row's whole subtree toward the backdrop, which is why it
+	 * needed a `:not(.status-col)` carve-out — the muted status pill dropped to
+	 * 2.44:1 under it, making the one cell that explains the fade the least
+	 * readable thing in the row. A colour token needs no carve-out: a
+	 * descendant setting its own colour (the `<Badge>` pair) keeps its own
+	 * calibrated contrast, so the exclusion is gone with the fade.
 	 */
-	tr.revoked td:not(.actions):not(.status-col) {
-		opacity: 0.6;
-	}
 
 	/* Usage view */
 	.usage-totals {

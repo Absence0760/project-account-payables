@@ -118,6 +118,7 @@ async def _enforce_approval_thresholds(
     # exact-match duplicate check never fires" bypass. See services/structuring.py.
     aggregate_amount = amount
     recent_spend = Decimal(0)
+    invoice_currency = (getattr(invoice, "currency", None) or "").strip().upper() or "USD"
     vendor_id = getattr(invoice, "vendor_id", None)
     structuring_window_days = 0
     if vendor_id is not None:
@@ -136,13 +137,46 @@ async def _enforce_approval_thresholds(
             )
             aggregate_amount = amount + recent_spend
 
+    # Both money gates below are BARE NUMBERS denominated in the org's REPORTING
+    # currency — the same convention `payments.cfo_approval_above` follows (see
+    # `services/payment_controls.cfo_approval_decision`) and
+    # `settings.expense_approval.cfo_threshold` follows. So the figure compared
+    # is the aggregate expressed in that currency, at the rate already LOCKED on
+    # this invoice row, not the amount as billed. Without it a GBP 9,000 invoice
+    # (USD 11,400) sailed under a USD 10,000 `require_cfo_above` and was approved
+    # with no CFO signature at all. `vendor_recent_spend` is scoped to the
+    # invoice's own currency, so one rate prices the whole aggregate.
+    #
+    # An invoice we cannot express in that currency reports `expressible=False`,
+    # which `approval_chain`'s shared gate body reads as fail-CLOSED: the gate
+    # fires and a human (a CFO, for the CFO gate) has to decide.
+    from app.services.approval_chain import reporting_gate_amount
+
+    gate_amount = reporting_gate_amount(invoice, amount=aggregate_amount, org_settings=org_settings)
+    gate_currency = gate_amount.currency
+
     def _structuring_note(threshold_dec: Decimal) -> str:
         if recent_spend <= 0 or amount > threshold_dec:
             return ""
         return (
             f" This invoice alone is under the threshold, but combined with "
-            f"${recent_spend:,.2f} in other recent invoices from this vendor "
-            f"(last {structuring_window_days} days) it totals ${aggregate_amount:,.2f}."
+            f"{recent_spend:,.2f} {invoice_currency} in other recent invoices from this "
+            f"vendor (last {structuring_window_days} days) it totals "
+            f"{aggregate_amount:,.2f} {invoice_currency}."
+        )
+
+    def _compared_note() -> str:
+        """What was actually measured, when it isn't the billed figure."""
+        if not gate_amount.expressible:
+            return (
+                f" This invoice could not be expressed in {gate_currency}, the currency the "
+                f"limit is set in, so it cannot be cleared against it."
+            )
+        if gate_amount.amount == aggregate_amount and invoice_currency == gate_currency:
+            return ""
+        return (
+            f" Measured as {gate_amount.amount:,.2f} {gate_currency} — the limit is set in "
+            f"{gate_currency}."
         )
 
     # Both money gates below read the config through the shared fail-CLOSED
@@ -160,7 +194,7 @@ async def _enforce_approval_thresholds(
     # (fail-closed) and the message names the misconfiguration instead of
     # formatting a value that would raise.
     max_amount = config.get("max_invoice_amount")
-    if max_amount_gate_applies(max_amount, aggregate_amount):
+    if max_amount_gate_applies(max_amount, gate_amount):
         max_amount_dec = _to_decimal(max_amount)
         if max_amount_dec is None or not max_amount_dec.is_finite():
             detail = (
@@ -169,8 +203,10 @@ async def _enforce_approval_thresholds(
             )
         else:
             detail = (
-                f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount_dec:,.2f}."
+                f"Invoice amount {amount:,.2f} {invoice_currency} exceeds maximum allowed "
+                f"{max_amount_dec:,.2f} {gate_currency}."
                 + _structuring_note(max_amount_dec)
+                + _compared_note()
             )
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
@@ -183,16 +219,21 @@ async def _enforce_approval_thresholds(
     # The gate reads `aggregate_amount`, not `amount`, so the structuring bypass
     # (split one payable into several under-threshold invoices from the same
     # vendor) can't walk under it either.
-    if cfo_gate_applies(cfo_threshold, aggregate_amount) and "cfo" not in actor_roles:
+    if cfo_gate_applies(cfo_threshold, gate_amount) and "cfo" not in actor_roles:
         threshold_dec = _to_decimal(cfo_threshold)
-        limit = f"${threshold_dec:,.2f}" if threshold_dec is not None else "the configured limit"
+        limit = (
+            f"{threshold_dec:,.2f} {gate_currency}"
+            if threshold_dec is not None
+            else "the configured limit"
+        )
         # A malformed threshold has no Decimal to measure the aggregate against,
         # so the note is omitted — the gate itself still fires (fail-closed).
         note = _structuring_note(threshold_dec) if threshold_dec is not None else ""
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"Invoice amount ${amount:,.2f} exceeds {limit}. CFO approval required." + note
+                f"Invoice amount {amount:,.2f} {invoice_currency} exceeds {limit}. "
+                f"CFO approval required." + note + _compared_note()
             ),
         )
 
@@ -339,13 +380,18 @@ async def approve_invoice(
 
         # Initialize chain state on first approval if not yet initialized
         if not (instance.state_data or {}).get("approval_levels"):
-            from app.services.approval_chain import invoice_routing_attrs
+            from app.services.approval_chain import invoice_routing_attrs, reporting_gate_amount
 
             applicable = resolve_applicable_levels(
                 approval_config.get("approval_chain", []),
-                # Pass the exact Decimal — resolve_applicable_levels compares in
-                # Decimal so a boundary amount routes to the right approver tier.
-                invoice.amount or 0,
+                # A `GateAmount` in the org's REPORTING currency — the per-level
+                # `min_amount` / `max_amount` bands are bare numbers denominated
+                # there, exactly like `require_cfo_above`, so a foreign invoice
+                # must not be routed on its billed figure. Exact Decimal
+                # throughout, so a boundary amount still lands on the right
+                # approver tier; an invoice with no locked rate reports
+                # `expressible=False` and every routing-matched level applies.
+                reporting_gate_amount(invoice, org_settings=org_settings),
                 invoice_attrs=invoice_routing_attrs(invoice),
             )
             if applicable:

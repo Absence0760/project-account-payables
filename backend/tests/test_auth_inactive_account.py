@@ -86,11 +86,18 @@ async def _call_login(user):
     async def _audit(**kwargs):
         audits.append(kwargs)
 
+    def _queue_audit(**kwargs):
+        # A login FAILURE row is queued off the response path rather than
+        # awaited, so that a known address costs no more than an unknown one
+        # (`tests/test_login_audit_off_response_path.py`). Same payload.
+        audits.append(kwargs)
+
     async def _register(user_id, jti, **kwargs):
         sessions.append((user_id, jti))
 
     with (
         patch.object(auth_mod, "dispatch_auth_audit", _audit),
+        patch.object(auth_mod, "queue_auth_audit", _queue_audit),
         patch.object(auth_mod, "register_session", _register),
         patch.object(auth_mod.settings, "mfa_enabled", False),
     ):

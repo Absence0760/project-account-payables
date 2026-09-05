@@ -27,6 +27,7 @@
 		downloadPositivePayFile
 	} from '$lib/api/positivePay';
 	import { formatDate } from '$lib/utils/time';
+	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 
 	interface RunOption {
 		id: string;
@@ -117,24 +118,42 @@
 
 	// Parse the pasted presented-items block. One item per line:
 	//   <check_number>,<amount>   (amount optional). Blank lines skipped.
-	function parsePresented(): PresentedItemInput[] {
+	//
+	// The amount travels as the exact decimal STRING it was pasted as. It used
+	// to go through `Number.parseFloat`, which is both a float hop on money and
+	// lenient enough to read `1234.56abc` as 1234.56 — and this figure is what
+	// the backend compares against the cheque we ISSUED to decide whether it
+	// was altered. An unreadable amount is therefore refused (below) rather
+	// than degraded to `null`, which `classify_presented_items` reads as
+	// "no amount to disagree with", i.e. a clean match on a cheque nobody
+	// checked. `normalizeMoneyInput` decides shape with a regex, never `Number`.
+	function parsePresented(): { items: PresentedItemInput[]; badLine: number | null } {
 		const items: PresentedItemInput[] = [];
+		let lineNo = 0;
 		for (const raw of presentedText.split('\n')) {
+			lineNo += 1;
 			const line = raw.trim();
 			if (!line) continue;
 			const [num, amt] = line.split(',').map((s) => s.trim());
-			const amount = amt !== undefined && amt !== '' ? Number.parseFloat(amt) : null;
-			items.push({
-				check_number: num || null,
-				amount: amount !== null && Number.isFinite(amount) ? amount : null
-			});
+			const typed = amt ?? '';
+			const amount = normalizeMoneyInput(typed);
+			if (typed && amount === null) return { items, badLine: lineNo };
+			items.push({ check_number: num || null, amount });
 		}
-		return items;
+		return { items, badLine: null };
 	}
 
 	async function handleProcessReturn() {
 		if (!detail) return;
-		const items = parsePresented();
+		const { items, badLine } = parsePresented();
+		if (badLine !== null) {
+			toast(
+				`Line ${badLine}: the amount must be a plain number (e.g. 1234.56). ` +
+					'Fix it and re-paste — an unreadable amount would be sent as no amount at all.',
+				'error'
+			);
+			return;
+		}
 		if (items.length === 0) {
 			toast('Paste at least one presented item (check#,amount per line)', 'error');
 			return;

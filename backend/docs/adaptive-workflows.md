@@ -100,13 +100,88 @@ filtered to that entity; `None` (or absent / `all`) is the consolidated view.
   at ≥ 0** so an out-of-order / backfilled audit row can't feed a negative
   day-count into the median or baseline.
 - **Vendor baseline** (for anomaly detection) is built from that vendor's
-  **historically-approved** invoices only — `status IN (approved, sending_to_erp,
+  **historically-approved** invoices only, with every amount converted into the
+  reporting currency (see below) — `status IN (approved, sending_to_erp,
   sent_to_erp, posted_in_erp, payment_scheduled, paid, done)`. Pending / rejected
   invoices are not part of the "accepted norm". The approver + timing per
   baseline invoice come from its `invoice.approved` audit row.
 
 Approver display names are joined from the **control-plane** `User.full_name` in
 a separate query (tenant and control are different databases — no cross-DB join).
+
+### Every amount is expressed in the org's REPORTING currency
+
+Neither `_decision_rows` (the threshold evidence) nor `_vendor_approved_rows`
+(the anomaly baseline) hands the pure-stat layer raw `Invoice.amount`. Both
+convert each invoice into the org's reporting currency
+(`currency_conversion.resolve_reporting_currency`) at the rate already **locked
+on that invoice row** by `invoice_warnings._refresh_reporting_amount` — via
+`currency_conversion.reporting_amount_at_locked_rate`, the same helper the
+payment CFO-approval gate uses. No FX call is made on the read, so a market
+move can never retroactively rewrite what a control decided.
+
+This is a money-correctness requirement, not a display nicety. The org-wide
+`auto_approve_below` these statistics recommend is a **bare number with no
+currency of its own**; it is denominated in the reporting currency, matching
+`payments.cfo_approval_above` (see `services/payment_controls.cfo_approval_decision`)
+and `settings.expense_approval.cfo_threshold`. Reading raw billed amounts let
+three spotless JPY 100,000 vendors — worth about 650 of a USD tenant's own
+currency — argue for a five-figure USD auto-approve limit.
+
+A row whose currency cannot be bridged (no lock, or a lock that provably
+describes a different currency pair) is emitted with `amount_unconverted=True`.
+It is then **excluded**, never converted at a guessed rate and never added at
+face value:
+
+- `compute_vendor_patterns` keeps its amount out of `avg/median/min/max` and
+  counts it on `VendorApprovalPattern.unconverted_count`;
+- `recommend_auto_approve_threshold` and `derive_suggestions` disqualify any
+  vendor with `unconverted_count > 0` — a max computed off a partial history
+  would understate the vendor's real ceiling while the copy claims a complete
+  record.
+
+The **anomaly baseline** is the second consumer, and it is the same defect the
+`stat_anomaly` fraud rule already had fixed: `compute_vendor_baseline` takes a
+mean and a population stdev over the amounts it is given, and a mean over mixed
+currencies describes nothing — a handful of JPY invoices either make an ordinary
+USD one read as a wild outlier, or inflate the stdev enough to hide a genuine
+one. `VendorBaseline` now carries the `currency` its money fields are in and an
+`unconverted_count`; an unpriceable row contributes no amount at all (not a
+guessed conversion, not its face value) but still contributes its approver and
+its timing, because neither depends on a currency — dropping it would make a
+legitimate approver look unusual. `min_history` is measured in rows the baseline
+could actually price.
+
+Converting only the baseline would have moved the mismatch rather than fixed
+it, because `detect_invoice_anomaly` read the subject's amount straight off the
+Invoice object. Its **input contract changed** instead: `amount` is a required
+keyword-only argument — the subject expressed in the baseline's currency — and
+`None` means it could not be. There is no default to forget. On `None` the two
+amount rules abstain and an `amount_comparison_unavailable` info flag says why;
+this surface is advisory and writes no warning and no Exception row, so no
+verdict beats a fabricated one, and the approver / timing rules still run.
+
+The enforcement side moves with it — and not just for `auto_approve_below`.
+Every approval money threshold (`require_cfo_above`, `max_invoice_amount` and
+the approval chain's per-level bands too) is denominated in the same currency
+and compared through `approval_chain.GateAmount` /
+`approval_chain.reporting_gate_amount`; see `workflow-design.md` § Approval
+Thresholds for that side and its fail-closed table. `decide_auto_approve`'s
+amount floor **does not fire at all** on an invoice that can't be expressed —
+fail closed, the invoice goes to a human — because a threshold gate that
+silently passes an unconvertible invoice is an auto-approval nobody authorised.
+Both call sites (`run_extraction` and `POST /api/invoices/{id}/complete`) run
+`refresh_warnings` immediately beforehand, which is what locks the rate, so the
+conversion is a read of the row.
+
+**Single-currency tenants are unaffected** — same currency converts at rate 1
+with no lock required. For a tenant whose reporting currency is *not* USD, the
+figures the threshold surfaces show are now that currency, and they say so: the
+recommendation's `rationale` and the per-vendor suggestion copy name the
+currency code instead of prefixing `$`, `ThresholdRecommendation.currency`
+carries it, `DerivedSuggestion.payload.threshold_currency` records it, and the
+`POST /api/invoices/{id}/complete` auto-approve message reads
+"below the 5,000.00 EUR threshold".
 
 ## Statistics
 
@@ -297,8 +372,13 @@ conservative and explainable:
   vendor can't move the org-wide limit. Fewer → `should_raise=False`,
   `reason_code="insufficient_evidence"`.
 - **Candidate = the highest clean-approved amount** seen across qualifying
-  vendors, rounded **up** to the nearest $500 — every dollar below it would have
-  sailed through with a spotless record.
+  vendors, rounded **up** to the nearest 500 (reporting currency) — every unit
+  below it would have sailed through with a spotless record.
+- **Refuses to price across currencies.** Every figure — the evidence, the
+  candidate, the caps and `auto_approve_below` itself — is in the org's
+  reporting currency, and a vendor with any approval that could not be expressed
+  there is excluded from the evidence base. See *Every amount is expressed in
+  the org's REPORTING currency* above.
 - **Never lowers.** `recommended_threshold = max(current, capped_candidate)`; if
   the evidence supports nothing above the current limit it's a no-op
   (`reason_code="no_increase"`).
@@ -459,6 +539,18 @@ direction check on the primary metric (lower-is-better for
 time/exception/rejection, higher-is-better for touchless); an exact tie is
 `"tie"`. **No statistical-significance test is claimed** — the rationale says so,
 because that would over-promise on the small samples a single tenant produces.
+
+`audit_log.details` is JSONB with no object-shape constraint, so
+`_experiment_metric_rows` reads every `details` through `_details_obj`, which
+returns `{}` for anything that isn't an object. A list / string / number there
+can only come from a direct-DB write — precisely the tampering a control readout
+should survive — and `.get(...)` on it used to raise `AttributeError` out of the
+endpoint as a 500, losing the whole experiment's evidence over one row. It is
+read as carrying nothing, matching `approval_signature.check_approval_row`,
+which absorbs the same shape by counting the row rather than failing the period.
+Deliberately nothing more: a malformed blob is not evidence that a human changed
+a field, so the row is not re-read as "corrections present". Guarded by
+`tests/test_experiment_results_malformed_details.py`.
 
 ### Endpoints
 

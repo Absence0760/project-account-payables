@@ -150,8 +150,8 @@ def decide_auto_approve(
     approval_cfg: dict,
     *,
     overall_confidence: float,
-    amount: Decimal | float | None,
-    aggregate_amount: Decimal | float | None = None,
+    amount,
+    aggregate_amount=None,
 ) -> bool:
     """Decide whether an extracted invoice may auto-approve, skipping human review.
 
@@ -189,9 +189,22 @@ def decide_auto_approve(
     a "this document is too small to be worth a human's time" rule, not a spend
     control. Aggregating it would make the floor stop firing for any frequent
     vendor — turning a convenience knob into a second, silent threshold.
+
+    ``amount`` and ``aggregate_amount`` are ``approval_chain.GateAmount``s from
+    ``approval_chain.reporting_gate_amount`` — the figure expressed in the org's
+    REPORTING currency, which is what all three thresholds here are denominated
+    in. A ¥100,000 invoice must not be read as 100,000 of that currency. When a
+    ``GateAmount`` reports ``expressible=False`` the amount could not be put
+    into it, and every comparison fails **closed**: the floor does not fire, and
+    the CFO / max gates do (via ``approval_chain._money_gate_applies``) — both
+    directions send the invoice to a human. A bare number is still accepted and
+    means "already in the gate currency", the correct reading for a
+    single-currency tenant and what every pre-existing caller meant.
     """
-    amount_dec = Decimal(str(amount or 0))
-    gate_amount = amount_dec if aggregate_amount is None else Decimal(str(aggregate_amount))
+    from app.services.approval_chain import _coerce_gate_amount
+
+    amount_gate = _coerce_gate_amount(amount)
+    gate_amount = amount_gate if aggregate_amount is None else _coerce_gate_amount(aggregate_amount)
 
     # A confidence outside 0..1 is not evidence of anything — it is an adapter
     # reporting on a scale we didn't ask for. Treating it as "very confident" is
@@ -228,7 +241,20 @@ def decide_auto_approve(
     # "no floor configured" and "floor misconfigured" converge on the same safe
     # behaviour: this trigger simply doesn't fire.)
     auto_below = finite_money_threshold(approval_cfg.get("auto_approve_below"))
-    if auto_below is not None and amount_dec < auto_below:
+    if auto_below is not None and not amount_gate.expressible:
+        # A floor IS configured, but this invoice can't be expressed in the
+        # currency the floor is denominated in. Comparing the bare numbers is
+        # how a ¥1,000,000 invoice slips under a 5,000 floor. Fail closed: the
+        # floor trigger doesn't fire and a human reviews it. (The CFO / max
+        # gates below fail closed on the same condition, in the opposite
+        # direction — they FIRE — because that is what sends the invoice to a
+        # human there.)
+        logger.warning(
+            "[extraction] auto_approve_below is set but the invoice amount could not be "
+            "expressed in %s; the amount floor does not apply (fail-closed, human review)",
+            amount_gate.currency or "the org's reporting currency",
+        )
+    elif auto_below is not None and amount_gate.amount < auto_below:
         auto_approved = True
 
     if not auto_approved:
@@ -734,13 +760,21 @@ async def run_extraction(
             # same-vendor rolling aggregate the human approval path uses, so a
             # split payable can't auto-approve past a control that a reviewer
             # would have been stopped by.
+            # Every threshold `decide_auto_approve` reads is denominated in the
+            # org's reporting currency, so both operands are expressed there
+            # first. `refresh_warnings` above just locked the rate onto this
+            # row, so this is a read, not an FX call.
+            from app.services.approval_chain import reporting_gate_amount
+
             auto_approved = decide_auto_approve(
                 ext_cfg,
                 approval_cfg,
                 overall_confidence=result.overall_confidence,
-                amount=invoice.amount,
-                aggregate_amount=await resolve_gate_aggregate(
-                    db, invoice, org_settings=org_settings
+                amount=reporting_gate_amount(invoice, org_settings=org_settings),
+                aggregate_amount=reporting_gate_amount(
+                    invoice,
+                    amount=await resolve_gate_aggregate(db, invoice, org_settings=org_settings),
+                    org_settings=org_settings,
                 ),
             )
             if auto_approved:

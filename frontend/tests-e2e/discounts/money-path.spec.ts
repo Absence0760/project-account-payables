@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
 	tenantPsql,
 	test
@@ -140,7 +141,7 @@ function cleanupInvoice(id: string): void {
 	// at manual-entry creation time) raises an `unverified_vendor` exception
 	// against it, which FKs to this invoice and must clear before the delete.
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 function offerAuditActions(id: string): string[] {

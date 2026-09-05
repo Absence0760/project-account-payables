@@ -3,6 +3,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import { formatDate } from '$lib/utils/time';
 	import {
@@ -271,6 +272,10 @@
 		loadCustomDomains();
 		loadResidency();
 		loadChat();
+		// `payments.cfo_approval_above` is a bare number denominated in the org's
+		// reporting currency (`payment_controls.cfo_approval_decision`), so the
+		// field names that currency instead of hardcoding a dollar sign.
+		orgCurrency.ensureLoaded();
 	});
 
 	async function loadOrg() {
@@ -1723,7 +1728,7 @@
 
 				<div class="form-grid">
 					<label>
-						<span>{m('org.payments.cfoThreshold')}</span>
+						<span>{m('org.payments.cfoThreshold', { currency: orgCurrency.currency })}</span>
 						<input
 							type="number"
 							min="0"
