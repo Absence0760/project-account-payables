@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, signInAndWait, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /vendors — external firmographics enrichment "Apply" flow in VendorModal.
@@ -36,7 +36,7 @@ async function createTestVendor(
 function deleteTestVendor(id: string): void {
 	try {
 		tenantPsql(`DELETE FROM exceptions WHERE vendor_id='${id}'`);
-		tenantPsql(`DELETE FROM invoices WHERE vendor_id='${id}'`);
+		deleteInvoicesWhere(`vendor_id='${id}'`);
 		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id='${id}'`);
 		tenantPsql(`DELETE FROM vendors WHERE id='${id}'`);
 	} catch {

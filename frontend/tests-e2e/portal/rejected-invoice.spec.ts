@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { currentTenantSlug, expect, test, tenantPsql } from '../fixtures/helpers';
+import { currentTenantSlug, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * Supplier portal — a rejected invoice is no longer a dead end (issue #328).
@@ -60,7 +60,7 @@ function cleanup() {
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id IN (${scope})`);
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id IN (${scope})`);
-	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE 'E2E-REJ-%'`);
+	deleteInvoicesWhere(`invoice_number LIKE 'E2E-REJ-%'`);
 }
 
 test.afterEach(cleanup);

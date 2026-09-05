@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * Payment-run money-out path — the load-bearing invariants the existing
@@ -209,7 +209,7 @@ function hardDeleteInvoice(id: string): void {
 	// it carries invoice.payment_scheduled / invoice.voided_return_to_approved
 	// rows. Leaving them orphaned is harmless (audit_log has no FK to
 	// invoices) and is the only DB-honest cleanup.
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 function deletePaymentRun(runId: string): void {

@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * `/invoices` — closing the modal mid-extraction must stop the poll.
@@ -67,7 +67,7 @@ test.describe('/invoices extraction poll does not outlive the modal', () => {
 		);
 		tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceId}'`);
 		tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${invoiceId}'`);
-		tenantPsql(`DELETE FROM invoices WHERE id='${invoiceId}'`);
+		deleteInvoicesWhere(`id='${invoiceId}'`);
 		invoiceId = null;
 	});
 

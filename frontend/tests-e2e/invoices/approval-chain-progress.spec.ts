@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	currentTenantSlug,
+	deleteInvoicesWhere,
 	expect,
 	signInAndWait,
 	signOut,
@@ -108,7 +109,7 @@ function cleanUp(id: string | null) {
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 /** Search the list down to one invoice number and open its detail modal. */

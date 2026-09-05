@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * A stored non-English locale must format MONEY AND DATES, not just labels.
@@ -54,7 +54,7 @@ test.describe('stored locale formats money on first load', () => {
 		);
 		tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceId}'`);
 		tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${invoiceId}'`);
-		tenantPsql(`DELETE FROM invoices WHERE id='${invoiceId}'`);
+		deleteInvoicesWhere(`id='${invoiceId}'`);
 		invoiceId = null;
 	});
 

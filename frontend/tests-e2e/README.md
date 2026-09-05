@@ -76,6 +76,7 @@ tests-e2e/
 │   ├── helpers.ts                   per-worker fixtures + signIn / tenantPsql / etc.
 │   └── globalSetup.ts               pre-run guard — see "Workflow shape guard" below
 ├── a11y/                            axe-core accessibility regression guard (WCAG 2.2 AA)
+├── meta/                            source guards over the specs themselves — see "Invoice teardown" below
 ├── auth/                            login, signup, RBAC, tenant isolation
 ├── admin/                           user lifecycle, bulk-delete, custom roles
 ├── invoices/                        list, detail, edit, bulk recode, status transitions
@@ -141,6 +142,33 @@ fast, at the start of the run, naming the exact tenant and field — see
 
 Skip it (e.g. exercising one non-tenant spec by hand against an unseeded DB)
 with `FEOH_E2E_SKIP_WORKFLOW_SHAPE_CHECK=true`.
+
+## Invoice teardown (`deleteInvoicesWhere`)
+
+`invoices` is referenced by **16 foreign keys and none of them cascade**, so a
+bare `DELETE FROM invoices WHERE …` only succeeds while that invoice happens to
+have no children. Around twenty specs hand-listed the two or three child tables
+their invoice normally acquired, and `invoices/upload-refetch-failure` started
+failing teardown the moment extraction began succeeding and writing line items —
+a child its list didn't know about, in a spec whose subject is not teardown.
+
+`fixtures/helpers.ts::deleteInvoicesWhere(predicate, slug?)` owns the whole
+child graph: second-level children first (workflow steps, chat messages, bank
+transactions and virtual cards hanging off payments), then every direct child,
+then the invoices. `predicate` is the WHERE body, so scope by id,
+`invoice_number LIKE`, `vendor_id`, `recurring_template_id` — anything.
+
+```ts
+import { deleteInvoicesWhere } from '../fixtures/helpers';
+
+test.afterEach(() => deleteInvoicesWhere(`invoice_number LIKE '${MARKER}%'`));
+```
+
+`meta/teardown-guard.spec.ts` is the source guard: it scans every `.ts` file
+under `tests-e2e/` (comments stripped, so prose about the pattern is fine) and
+fails if any file other than the helper itself issues `DELETE FROM invoices`.
+Without it the twentieth spec re-introduces the pattern, and the failure lands
+weeks later as a foreign-key error in someone else's file.
 
 ## Local dev loop
 
@@ -313,6 +341,9 @@ Reach for these instead of duplicating boilerplate per spec:
   dozen specs that need to clobber DB state the API doesn't expose
   (hard-delete an approved invoice, force-fail a settled payment,
   etc.). Defaults to the worker's DB.
+- `deleteInvoicesWhere(predicate, slug?)` — the ONLY supported way to
+  delete invoices. See "Invoice teardown" above; a source guard fails
+  the suite if a spec issues its own `DELETE FROM invoices`.
 - `API_BASE`, `ACME_BASE`, `TECHFLOW_BASE`, `NO_TENANT_BASE` — the
   same origins everyone was redeclaring inline.
 

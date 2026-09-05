@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteInvoicesWhere,
 	expect,
 	signInAndWait,
 	tenantPsql,
@@ -123,7 +124,7 @@ function hardDeleteInvoice(id: string): void {
 	// invoice runs through execute/void it carries invoice.payment_scheduled
 	// / invoice.voided_return_to_approved rows that cannot be deleted. Leave
 	// them orphaned (no FK to invoices); deleting the invoice is enough.
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 function deletePaymentRun(runId: string): void {

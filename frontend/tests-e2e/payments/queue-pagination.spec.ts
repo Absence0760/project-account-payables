@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /payments Queue tab — server-side pagination + "Select all N matching".
@@ -42,7 +42,7 @@ function hardDeleteInvoice(id: string): void {
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 test.describe('/payments queue pagination', () => {

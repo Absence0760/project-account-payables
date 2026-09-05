@@ -2,6 +2,7 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	currentTenantSlug,
+	deleteInvoicesWhere,
 	expect,
 	tenantHeaders,
 	tenantPsql,
@@ -108,7 +109,7 @@ function hardDeleteInvoice(id: string): void {
 	tenantPsql(`DELETE FROM exceptions WHERE invoice_id='${id}'`);
 	// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
 	// orphan rows for the removed invoice are harmless (no FK back to invoices).
-	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+	deleteInvoicesWhere(`id='${id}'`);
 }
 
 /**

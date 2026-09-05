@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { currentTenantSlug, expect, test, tenantPsql } from '../fixtures/helpers';
+import { currentTenantSlug, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * Supplier-portal invoice + payment lists — status + invoice-number filters.
@@ -56,7 +56,7 @@ function cleanup() {
 	tenantPsql(
 		`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE invoice_number LIKE '${PREFIX}-%')`
 	);
-	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${PREFIX}-%'`);
+	deleteInvoicesWhere(`invoice_number LIKE '${PREFIX}-%'`);
 }
 
 test.afterEach(cleanup);
@@ -64,7 +64,7 @@ test.afterEach(cleanup);
 test.describe('/portal/invoices — filters', () => {
 	test('phase chips and number search narrow the list without widening it', async ({ page }) => {
 		const { vendorId, orgId } = portalVendor();
-		tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${PREFIX}-%'`);
+		deleteInvoicesWhere(`invoice_number LIKE '${PREFIX}-%'`);
 
 		try {
 			tenantPsql(
@@ -122,7 +122,7 @@ test.describe('/portal/invoices — filters', () => {
 
 	test('date-range filter narrows by submitted date', async ({ page }) => {
 		const { vendorId, orgId } = portalVendor();
-		tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${PREFIX}-%'`);
+		deleteInvoicesWhere(`invoice_number LIKE '${PREFIX}-%'`);
 		try {
 			// Two invoices submitted on known past dates.
 			tenantPsql(
