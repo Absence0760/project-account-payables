@@ -1,6 +1,6 @@
 """Real ERP adapters are idempotent on `payload.correlation_id` (issue #143).
 
-`erp.py::send_to_erp`'s 3-attempt retry loop means a client-side timeout AFTER
+`erp.py::send_to_erp_internal`'s 3-attempt retry loop means a client-side timeout AFTER
 the ERP already accepted a create can otherwise retry into a SECOND vendor
 bill for the same invoice. Each real adapter's `post_invoice` must be
 retry-safe via whichever mechanism its target ERP actually supports:

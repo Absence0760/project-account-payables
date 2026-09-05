@@ -35,6 +35,11 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID } from '$lib/types/admin';
+	import {
+		acceptPaymentSettlement,
+		retryRunErpSync,
+		type RunErpSyncResult
+	} from '$lib/api/payments';
 	import { m } from '$lib/i18n/store.svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/stores';
@@ -48,7 +53,10 @@
 		{ label: m('payments.col.total'), class: 'right' },
 		{ label: m('payments.summary.payments') },
 		{ label: m('payments.col.executed') },
-		{ label: m('payments.col.created') }
+		{ label: m('payments.col.created') },
+		// Actions column: the run-level ERP sync-back retry lives here. Always
+		// rendered so the table keeps its shape for a role that can't use it.
+		{ class: 'actions-col' }
 	]);
 
 	let CARDS_COLUMNS = $derived([
@@ -664,6 +672,155 @@
 			toast(err instanceof Error ? err.message : fallback, 'error');
 		} finally {
 			complianceBusy = false;
+		}
+	}
+
+	// --- Settlement acceptance (the under-settlement hold's other exit) -------
+	// A `completed` payment whose rail settled LESS than AP authorized (or in a
+	// currency we never authorized) does not discharge the invoice:
+	// `payment_settlement.settlement_coverage` holds it at `payment_scheduled`
+	// rather than reporting it settled in full. `backend/docs/payments.md`
+	// documents exactly two exits — accept the shortfall as final, or void and
+	// re-pay — and only void was wired here, which is the wrong action: the
+	// money already left, and a void invites a second payment for it.
+	//
+	// Whether a reported figure actually covers the invoice is the SERVER's
+	// call (it needs both authorized legs and the invoice currency, neither of
+	// which is on this wire) — and comparing two amounts client-side is barred
+	// outright by frontend/CLAUDE.md § Money formatting. So the row offers the
+	// action wherever a figure was reported at all, and the dialog asks the
+	// backend the one question it can answer cheaply and without money math:
+	// is the invoice still HELD? An invoice past `payment_scheduled` has
+	// nothing to accept, and the confirm stays out of reach rather than
+	// becoming a button that can only 409.
+	let settlementTarget = $state<Payment | null>(null);
+	let settlementReason = $state('');
+	let settlementBusy = $state(false);
+	// Invoice status behind the target payment: `null` while in flight,
+	// `'?'` when we could not read it (fail OPEN — the backend re-checks).
+	let settlementInvoiceStatus = $state<string | null>(null);
+	let settlementError = $state<string | null>(null);
+
+	/** The invoice status the backend's own release guard requires. */
+	const SETTLEMENT_HELD_STATUS = 'payment_scheduled';
+
+	function canAcceptSettlement(p: Payment): boolean {
+		// Presence, never a comparison: `settled_amount` is null when no rail
+		// ever reported a figure, which the backend treats as "nothing
+		// contradicts this invoice" — there is no shortfall to accept.
+		return (
+			p.status === 'completed' &&
+			p.settled_amount !== null &&
+			p.settled_amount !== undefined &&
+			!!auth.user &&
+			auth.can(PERM_PAYMENT_EXECUTE)
+		);
+	}
+
+	async function openSettlement(p: Payment) {
+		settlementTarget = p;
+		settlementReason = '';
+		settlementError = null;
+		settlementInvoiceStatus = null;
+		const invoiceId = p.invoice_id;
+		try {
+			const inv = await api.get<{ status: string }>(`/api/invoices/${invoiceId}`);
+			// Guard against a slow response landing after the dialog moved on.
+			if (settlementTarget?.invoice_id === invoiceId) settlementInvoiceStatus = inv.status;
+		} catch {
+			// Could not read the invoice — say so rather than guessing either
+			// way. `'?'` renders the unknown state, which still offers the
+			// confirm because the backend re-checks and 409s if it isn't held.
+			if (settlementTarget?.invoice_id === invoiceId) settlementInvoiceStatus = '?';
+		}
+	}
+
+	function closeSettlement() {
+		settlementTarget = null;
+		settlementReason = '';
+		settlementError = null;
+		settlementInvoiceStatus = null;
+	}
+
+	async function commitSettlement() {
+		if (!settlementTarget) return;
+		const id = settlementTarget.id;
+		const reason = settlementReason.trim();
+		if (!reason) {
+			toast(m('payments.settlement.reasonRequired'), 'error');
+			return;
+		}
+		settlementBusy = true;
+		settlementError = null;
+		try {
+			await acceptPaymentSettlement(id, reason);
+			toast(m('payments.settlement.done'), 'success');
+			closeSettlement();
+			await refreshAfterCompliance();
+		} catch (err) {
+			// Persistent, not a toast that fades: the backend's 409 detail
+			// ("already covers", "no held invoice") is the actionable half of
+			// the refusal and the operator needs it while the dialog is open.
+			settlementError = err instanceof Error ? err.message : m('payments.settlement.failed');
+		} finally {
+			settlementBusy = false;
+		}
+	}
+
+	// --- Run-level ERP sync-back retry ---------------------------------------
+	// `services/payment_erp_sync` is the ONLY path that flips
+	// `payment_scheduled → paid`, and it is dispatched one-shot per terminal
+	// event. A leg that raised leaves the money moved and the invoice stranded
+	// forever behind an `erp_reconciliation` exception whose description names
+	// this endpoint. Voiding is explicitly NOT the exit for that state.
+	//
+	// Idempotent by construction and moves no money, so this is a confirm — not
+	// an armed two-click destructive action — followed by the REAL counts.
+	let erpSyncTarget = $state<RunItem | null>(null);
+	let erpSyncBusy = $state(false);
+	let erpSyncResult = $state<RunErpSyncResult | null>(null);
+	let erpSyncError = $state<string | null>(null);
+
+	// Statuses that can't hold a settled payment: `draft` has never been
+	// dispatched and `cancelled` has no payments left, so the endpoint would
+	// 409 on both. Everything else may carry one — the backend counts.
+	const ERP_SYNC_INELIGIBLE_RUN_STATUSES = new Set(['draft', 'cancelled']);
+
+	function canSyncRunErp(run: RunItem): boolean {
+		return (
+			!ERP_SYNC_INELIGIBLE_RUN_STATUSES.has(run.status) &&
+			!!auth.user &&
+			auth.can(PERM_PAYMENT_EXECUTE)
+		);
+	}
+
+	function openErpSync(run: RunItem) {
+		erpSyncTarget = run;
+		erpSyncResult = null;
+		erpSyncError = null;
+	}
+
+	function closeErpSync() {
+		erpSyncTarget = null;
+		erpSyncResult = null;
+		erpSyncError = null;
+	}
+
+	async function commitErpSync() {
+		if (!erpSyncTarget) return;
+		erpSyncBusy = true;
+		erpSyncError = null;
+		try {
+			erpSyncResult = await retryRunErpSync(erpSyncTarget.id);
+			// `transitioned` is the only count that answers "did this recover
+			// anything" — `synced` counts legs that RAN and stays true on a
+			// repeat. Reporting `synced` as success would claim a recovery on
+			// every retry of an already-clean run.
+			await onRunChanged();
+		} catch (err) {
+			erpSyncError = err instanceof Error ? err.message : m('payments.erpSync.failed');
+		} finally {
+			erpSyncBusy = false;
 		}
 	}
 
@@ -1470,7 +1627,20 @@
 								{/if}
 							</Badge>
 						</td>
-						<td class="right mono">{formatCurrency(p.amount)}</td>
+						<td class="right mono">
+							{formatCurrency(p.amount)}
+							{#if p.settled_amount !== null && p.settled_amount !== undefined}
+								<!-- What the RAIL says it settled, beside what AP authorized.
+								     Both figures are rendered; no delta is computed here — the
+								     backend owns whether this covers the invoice. Without this
+								     line an invoice held for an under-settlement was invisible. -->
+								<span class="settled-line" data-testid="payment-settled-amount">
+									{m('payments.history.settled', {
+										amount: formatCurrency(p.settled_amount, p.settled_currency)
+									})}
+								</span>
+							{/if}
+						</td>
 						<td>
 							<span
 								class="status-pill-wrap"
@@ -1495,6 +1665,17 @@
 							{#if canDismissHold(p)}
 								<RowAction variant="danger" onclick={() => openCompliance(p, 'dismiss')}>
 									{m('payments.history.complianceDismiss')}
+								</RowAction>
+							{/if}
+							{#if canAcceptSettlement(p)}
+								<RowAction
+									variant="accent"
+									onclick={() => openSettlement(p)}
+									ariaLabel={m('payments.history.settlementAcceptAria', {
+										invoice: p.invoice_number ?? p.id.slice(0, 8)
+									})}
+								>
+									{m('payments.history.settlementAccept')}
 								</RowAction>
 							{/if}
 							{#if canVoid(p)}
@@ -1536,7 +1717,7 @@
 			columns={RUNS_COLUMNS}
 			isEmpty={runs.length === 0}
 			empty={runsLoading ? m('common.loading') : m('payments.runs.empty')}
-			colspan={6}
+			colspan={7}
 		>
 			{#snippet body()}
 				{#each runs as run (run.id)}
@@ -1559,6 +1740,16 @@
 						<td>{run.payment_count}</td>
 						<td class="muted">{formatDate(run.executed_at)}</td>
 						<td class="muted">{formatDate(run.created_at)}</td>
+						<td class="actions">
+							{#if canSyncRunErp(run)}
+								<RowAction
+									onclick={() => openErpSync(run)}
+									ariaLabel={m('payments.runs.erpSyncAria', { run: run.id.slice(0, 8) })}
+								>
+									{m('payments.runs.erpSync')}
+								</RowAction>
+							{/if}
+						</td>
 					</tr>
 				{/each}
 			{/snippet}
@@ -1800,6 +1991,172 @@
 	{/if}
 </Modal>
 
+<!-- Accept a short / unverifiable settlement as final. Confirm-then-act like
+     the void + compliance dialogs above, and for the same reason: the money has
+     already moved, so this closes the payable out at the figure the rail
+     actually settled. Irreversible — it is not a void. -->
+<Modal
+	open={settlementTarget !== null}
+	ariaLabel="Accept settlement as final"
+	title={m('payments.settlement.title')}
+	onclose={closeSettlement}
+>
+	{#if settlementTarget}
+		<p class="modal-hint">
+			<strong>{settlementTarget.invoice_number ?? settlementTarget.id.slice(0, 8)}</strong>
+			{#if settlementTarget.vendor_name}· {settlementTarget.vendor_name}{/if}
+		</p>
+		<!-- Both figures side by side, neither derived from the other. -->
+		<dl class="settlement-figures" data-testid="settlement-figures">
+			<div>
+				<dt>{m('payments.settlement.authorized')}</dt>
+				<dd class="mono">{formatCurrency(settlementTarget.amount)}</dd>
+			</div>
+			<div>
+				<dt>{m('payments.settlement.settled')}</dt>
+				<dd class="mono" data-testid="settlement-settled-figure">
+					{formatCurrency(settlementTarget.settled_amount, settlementTarget.settled_currency)}
+				</dd>
+			</div>
+		</dl>
+
+		{#if settlementInvoiceStatus === null}
+			<p class="modal-hint" data-testid="settlement-checking">
+				{m('payments.settlement.checking')}
+			</p>
+		{:else if settlementInvoiceStatus !== SETTLEMENT_HELD_STATUS && settlementInvoiceStatus !== '?'}
+			<!-- Nothing to accept: the invoice is no longer held. Say so instead
+			     of offering a confirm the backend would 409. -->
+			<p class="modal-warn" role="alert" data-testid="settlement-not-held">
+				{m('payments.settlement.notHeld')}
+				<StatusBadge
+					status={settlementInvoiceStatus as import('$lib/types/invoice').InvoiceStatus}
+				/>
+			</p>
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={closeSettlement}>
+					{m('payments.close')}
+				</button>
+			</div>
+		{:else}
+			<p class="modal-warn" data-testid="settlement-warning">
+				{m('payments.settlement.warning')}
+			</p>
+			{#if settlementError}
+				<p class="state error" role="alert" data-testid="settlement-error">{settlementError}</p>
+			{/if}
+			<form onsubmit={(e) => { e.preventDefault(); commitSettlement(); }}>
+				<label>
+					<span>{m('payments.settlement.reason')}</span>
+					<input
+						type="text"
+						bind:value={settlementReason}
+						placeholder={m('payments.settlement.reasonPlaceholder')}
+						maxlength="1000"
+						data-testid="settlement-reason"
+						autofocus
+					/>
+				</label>
+				<div class="modal-footer">
+					<button type="button" class="btn-cancel" onclick={closeSettlement}>
+						{m('common.cancel')}
+					</button>
+					<button
+						type="submit"
+						class="btn-danger"
+						data-testid="settlement-confirm"
+						disabled={settlementBusy || !settlementReason.trim()}
+					>
+						{settlementBusy
+							? m('payments.settlement.busy')
+							: m('payments.settlement.confirm')}
+					</button>
+				</div>
+			</form>
+		{/if}
+	{/if}
+</Modal>
+
+<!-- Re-run the ERP sync-back for one run. Moves no money and is idempotent by
+     construction, so this confirms rather than arming — and then reports the
+     REAL per-leg counts, leading with `transitioned` (the only one that answers
+     "did this recover anything"). A run with nothing to recover says so. -->
+<Modal
+	open={erpSyncTarget !== null}
+	ariaLabel="Retry ERP sync for payment run"
+	title={m('payments.erpSync.title')}
+	onclose={closeErpSync}
+>
+	{#if erpSyncTarget}
+		<p class="modal-hint">
+			<strong class="mono">{erpSyncTarget.id.slice(0, 8)}</strong>
+			· {erpSyncTarget.payment_count}
+			{m('payments.summary.payments')}
+			{#if erpSyncTarget.total_amount}· {formatCurrency(erpSyncTarget.total_amount)}{/if}
+		</p>
+
+		{#if erpSyncResult}
+			<p
+				class="modal-hint"
+				role="status"
+				data-testid="erp-sync-outcome"
+				class:sync-nothing={erpSyncResult.transitioned === 0}
+			>
+				{erpSyncResult.transitioned === 0
+					? m('payments.erpSync.nothing')
+					: m('payments.erpSync.recovered', { count: erpSyncResult.transitioned })}
+			</p>
+			<dl class="sync-counts" data-testid="erp-sync-counts">
+				<div>
+					<dt>{m('payments.erpSync.counts.transitioned')}</dt>
+					<dd data-testid="erp-sync-transitioned">{erpSyncResult.transitioned}</dd>
+				</div>
+				<div>
+					<dt>{m('payments.erpSync.counts.synced')}</dt>
+					<dd data-testid="erp-sync-synced">{erpSyncResult.synced}</dd>
+				</div>
+				<div>
+					<dt>{m('payments.erpSync.counts.skipped')}</dt>
+					<dd data-testid="erp-sync-skipped">{erpSyncResult.skipped}</dd>
+				</div>
+				<div>
+					<dt>{m('payments.erpSync.counts.held')}</dt>
+					<dd data-testid="erp-sync-held">{erpSyncResult.held}</dd>
+				</div>
+				<div>
+					<dt>{m('payments.erpSync.counts.failed')}</dt>
+					<dd data-testid="erp-sync-failed">{erpSyncResult.failed}</dd>
+				</div>
+			</dl>
+			<p class="modal-hint">{m('payments.erpSync.countsHint')}</p>
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={closeErpSync}>
+					{m('payments.close')}
+				</button>
+			</div>
+		{:else}
+			<p class="modal-warn" data-testid="erp-sync-warning">{m('payments.erpSync.warning')}</p>
+			{#if erpSyncError}
+				<p class="state error" role="alert" data-testid="erp-sync-error">{erpSyncError}</p>
+			{/if}
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={closeErpSync}>
+					{m('common.cancel')}
+				</button>
+				<button
+					type="button"
+					class="btn-pay"
+					data-testid="erp-sync-confirm"
+					disabled={erpSyncBusy}
+					onclick={commitErpSync}
+				>
+					{erpSyncBusy ? m('payments.erpSync.busy') : m('payments.erpSync.confirm')}
+				</button>
+			</div>
+		{/if}
+	{/if}
+</Modal>
+
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
 
@@ -1958,6 +2315,47 @@
 
 	.compliance-ring {
 		box-shadow: 0 0 0 1px var(--warning-on-tint);
+	}
+
+	/* --- Settlement (what the rail says it moved) --- */
+
+	/* Sub-line under the authorized amount. Muted and smaller so the AUTHORIZED
+	   figure stays the row's headline — this is provenance, not a correction. */
+	.settled-line {
+		display: block;
+		font-size: 0.75rem;
+		color: var(--text-muted);
+	}
+
+	.settlement-figures,
+	.sync-counts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px 20px;
+		margin: 0 0 12px;
+	}
+
+	.settlement-figures dt,
+	.sync-counts dt {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+
+	.settlement-figures dd,
+	.sync-counts dd {
+		margin: 2px 0 0;
+		font-size: 0.95rem;
+	}
+
+	.sync-counts dd {
+		font-variant-numeric: tabular-nums;
+	}
+
+	/* "Nothing to recover" must not read like a success. */
+	.sync-nothing {
+		color: var(--text-muted);
 	}
 
 	/* --- Queue selection & payment --- */

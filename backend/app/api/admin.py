@@ -25,7 +25,6 @@ from app.api.permissions import (
     permissions_for_role,
     sanitize_permissions,
 )
-from app.config import settings
 from app.database import get_control_db, get_tenant_engine
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
@@ -50,6 +49,7 @@ from app.utils.passwords import (
     validate_password_complexity,
 )
 from app.utils.search import ilike_contains
+from app.utils.tenant_urls import tenant_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -544,8 +544,7 @@ async def create_user(
         await db.execute(select(Organization).where(Organization.id == org_id))
     ).scalar_one_or_none()
     if org_row is not None:
-        template_base = (settings.tenant_url_template or "").replace("{slug}", org_row.slug)
-        tenant_url = template_base if template_base else None
+        tenant_url = tenant_base_url(org_row.slug, org_row.settings) or None
         try:
             await get_email_adapter().send(
                 EmailMessage(

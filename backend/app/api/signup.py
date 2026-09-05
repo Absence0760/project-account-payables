@@ -56,6 +56,7 @@ from app.utils.emails import looks_like_email
 from app.utils.hcaptcha import CaptchaError, verify_captcha
 from app.utils.passwords import generate_temp_password
 from app.utils.slug import SlugError, ensure_slug_available, validate_slug_format
+from app.utils.tenant_urls import tenant_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,14 @@ VERIFICATION_TTL = timedelta(hours=24)
 
 
 def _tenant_url(slug: str) -> str:
-    template = settings.tenant_url_template or "http://{slug}.localhost:7777"
-    return template.replace("{slug}", slug)
+    """Where the just-provisioned tenant's app lives.
+
+    No per-org brand override is passed: this runs seconds after
+    `provision_tenant`, so `settings.brand` is empty by construction and the
+    global template is the only answer there can be. Routed through the shared
+    resolver anyway so the substitution has exactly one implementation.
+    """
+    return tenant_base_url(slug)
 
 
 def _public_url(path: str) -> str:
@@ -300,7 +307,10 @@ async def signup_complete(
             "",
             translate("signup.welcome.body", locale),
             "",
-            f"  {url_label}:      {tenant_url}",
+            # Omit the line entirely rather than render an empty label when no
+            # tenant base URL is configured — same posture as the admin invite
+            # and the supplier-portal invite.
+            *([f"  {url_label}:      {tenant_url}"] if tenant_url else []),
             f"  {email_label}:    {verification.email}",
             f"  {pw_label}: {temp_password}",
             "",

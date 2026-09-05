@@ -528,7 +528,9 @@ async def _seed_bis3_invoice(realdb) -> uuid.UUID:
     """A BIS Billing 3.0-conformant approved invoice + the tenant company
     profile the buyer party needs. The send path validates conformance BEFORE
     it resolves the adapter, so a thinner fixture would be refused for the
-    wrong reason and never reach the case under test."""
+    wrong reason and never reach the case under test. The due date is part of
+    that: BR-CO-25 requires a due date or payment terms once there is an amount
+    due."""
     org_id = realdb.info(TENANT).org_id
     async with realdb.control_sessionmaker()() as s:
         org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
@@ -550,6 +552,7 @@ async def _seed_bis3_invoice(realdb) -> uuid.UUID:
                 amount=Decimal("119.00"),
                 currency="EUR",
                 invoice_date=date(2026, 1, 1),
+                due_date=date(2026, 1, 31),
                 subtotal=Decimal("100.00"),
                 tax_amount=Decimal("19.00"),
                 tax_rate=Decimal("19.00"),

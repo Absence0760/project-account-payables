@@ -202,21 +202,93 @@ def test_sso_config_public_omits_secrets():
 # handshake (OIDC token exchange validates redirect_uri matches authorize).
 
 
-def test_build_authorize_url_uses_per_tenant_redirect_uri():
-    from app.services.sso import build_authorize_url, redirect_uri
+async def test_sso_authorize_uses_per_tenant_redirect_uri(monkeypatch):
+    """The authorize leg is `api/auth_sso.py::sso_authorize`, not a helper in
+    `services/sso` — the helper that used to live there read the discovery
+    doc's `authorization_endpoint` verbatim, was reached by nothing but this
+    test, and was deleted. Assert against the path that actually runs."""
+    from app.api import auth_sso
 
-    discovery = {"authorization_endpoint": "https://idp.example/authorize"}
-    url = build_authorize_url(discovery, "client-123", "state-x", "nonce-y", "acme")
+    class _Org:
+        slug = "acme"
+        settings = {
+            "sso": {
+                "enabled": True,
+                "discovery_url": "https://idp.example/.well-known/openid-configuration",
+                "client_id": "client-123",
+                "client_secret": "sec",
+            }
+        }
+
+    async def _fake_org(slug, db):
+        return _Org()
+
+    async def _fake_discovery(url):
+        return {
+            "issuer": "https://idp.example",
+            "authorization_endpoint": "https://idp.example/authorize",
+        }
+
+    async def _fake_state(slug):
+        return "state-x", "nonce-y"
+
+    monkeypatch.setattr(auth_sso, "_fetch_org_by_slug", _fake_org)
+    monkeypatch.setattr(auth_sso, "fetch_discovery", _fake_discovery)
+    monkeypatch.setattr(auth_sso, "create_state", _fake_state)
+
+    resp = await auth_sso.sso_authorize(slug="acme", db=None)
+    url = resp.headers["location"]
 
     assert url.startswith("https://idp.example/authorize?")
-    expected = redirect_uri("acme")
-    # urlencoded form — the encoded value must appear in the query string
     from urllib.parse import quote
 
-    assert quote(expected, safe="") in url
+    from app.services.sso import redirect_uri
+
+    assert quote(redirect_uri("acme"), safe="") in url
     assert "state=state-x" in url
     assert "nonce=nonce-y" in url
     assert "client_id=client-123" in url
+
+
+async def test_sso_authorize_refuses_an_authorize_host_off_the_configured_idp(monkeypatch):
+    """The pinning the deleted helper did NOT do: a mis-served discovery
+    document cannot pivot the browser redirect to another host."""
+    from fastapi import HTTPException
+
+    from app.api import auth_sso
+
+    class _Org:
+        slug = "acme"
+        settings = {
+            "sso": {
+                "enabled": True,
+                "discovery_url": "https://idp.example/.well-known/openid-configuration",
+                "client_id": "client-123",
+                "client_secret": "sec",
+            }
+        }
+
+    async def _fake_org(slug, db):
+        return _Org()
+
+    async def _evil_discovery(url):
+        return {
+            "issuer": "https://idp.example",
+            "authorization_endpoint": "https://attacker.example/authorize",
+        }
+
+    async def _fake_state(slug):
+        return "state-x", "nonce-y"
+
+    monkeypatch.setattr(auth_sso, "_fetch_org_by_slug", _fake_org)
+    monkeypatch.setattr(auth_sso, "fetch_discovery", _evil_discovery)
+    monkeypatch.setattr(auth_sso, "create_state", _fake_state)
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_sso.sso_authorize(slug="acme", db=None)
+    assert exc.value.status_code == 400
+    # Opaque to the caller — it must not echo the attacker host back.
+    assert "attacker.example" not in str(exc.value.detail)
 
 
 async def test_exchange_code_posts_matching_redirect_uri(monkeypatch):
@@ -279,3 +351,29 @@ def test_scim_token_response_shape_omits_hash():
 
     fields = set(SCIMTokenResponse.model_fields.keys())
     assert fields == {"token", "bearer_hash_prefix"}
+
+
+def test_scim_token_hash_has_exactly_one_owner():
+    """Drift guard. `hash_scim_token` is the single spelling of the SCIM
+    bearer-token digest; mint and verify are two halves of one credential
+    check, so a module that re-inlines `sha256(...).hexdigest()` for a token
+    can drift from the other half and lock every tenant out of SCIM with no
+    failing test. Scoped to the two modules that own this credential."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "app"
+    owner = root / "services" / "sso.py"
+
+    offenders = []
+    for path in (root / "api" / "scim.py", owner):
+        text = path.read_text()
+        hits = text.count('hashlib.sha256(raw.encode("utf-8")).hexdigest()')
+        hits += text.count('hashlib.sha256(token.encode("utf-8")).hexdigest()')
+        # The owner is allowed exactly one — its own body.
+        allowed = 1 if path == owner else 0
+        if hits > allowed:
+            offenders.append(f"{path.name}: {hits} inline digest(s), allowed {allowed}")
+
+    assert not offenders, "SCIM token digest re-inlined outside hash_scim_token: " + "; ".join(
+        offenders
+    )

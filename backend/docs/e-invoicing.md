@@ -30,9 +30,11 @@ for the hybrid format.
 | `validate.py` | `validate_document(doc, *, check_tax=True)` / `assert_valid` + `FieldError` + `EInvoiceValidationError`. EN 16931-subset structural checks; appends `tax_rules.validate_tax_document(doc)` when `check_tax`. |
 | `parse.py` | `parse_e_invoice(file_bytes, mime_type, filename)` orchestrator: detect → embedded-extract → parse → assert_valid. |
 | `generate.py` | `generate_ubl(doc, *, declare_profile=None) -> bytes`. Outbound UBL 2.1 serializer — the exact inverse of `ubl.py`. lxml etree, money via `Decimal.quantize`, `currencyID` on amounts. Declares the PEPPOL BIS Billing 3.0 `cbc:CustomizationID` / `cbc:ProfileID` **only when the document passes `bis3.bis3_conformance_errors`** — see § PEPPOL BIS Billing 3.0 conformance. |
-| `bis3.py` | The two BIS Billing 3.0 profile identifiers + `bis3_conformance_errors(doc)` / `is_bis3_conformant(doc)` / `assert_bis3_conformant(doc)` — the mandatory-element check that decides whether we are entitled to declare them. Pure, PII-free `FieldError`s. |
+| `bis3.py` | The two BIS Billing 3.0 profile identifiers + `bis3_conformance_errors(doc)` / `is_bis3_conformant(doc)` / `assert_bis3_conformant(doc)` — the conformance check that decides whether we are entitled to declare them. Three layers: the mandatory elements (here) then `en16931_rules`' code-list membership and calculation rules. Pure, PII-free `FieldError`s. |
+| `en16931_rules.py` | `calculation_errors(doc)` — the EN 16931 arithmetic (BR-CO-10/13/14/15/16/17/25/26, `PEPPOL-EN16931-R120`, and the per-VAT-category `BR-<x>-01` / `-05` / `-08` family) — and `code_list_errors(doc)` — BR-CL-01/03/14/17/18 plus BR-CO-09. Pure `Decimal`, `ROUND_HALF_UP` to 2dp, never `float`. Each `FieldError` carries its **rule id as the `code`**. Its docstring tabulates the rules the model *cannot* answer, and why. |
+| `codelists.py` | The code lists themselves: ISO 4217 currencies, ISO 3166-1 alpha-2 countries, the UNCL5305 VAT-category subset EN 16931 permits, and the UNTDID 1001 document-type subset — plus shape-only guards for the lists we deliberately do NOT hold (UN/ECE Rec 20 units, UNCL4461 payment means). |
 | `generate_cii.py` | `generate_cii(doc) -> bytes`. Outbound UN/CEFACT CII (D16B) serializer — the exact inverse of `cii.py`. Emits `rsm:CrossIndustryInvoice` with the `ram:`/`udt:` namespaces; same lxml-etree posture as `generate.py` (Decimal money, escaped text); dates as the CII basic-date form (`format="102"` → `YYYYMMDD`). |
-| `mapper.py` | `BuyerIdentity` dataclass + `invoice_to_einvoice_document(invoice, line_items, buyer_identity) -> EInvoiceDocument`. Pure ORM `Invoice` → normalized model. |
+| `mapper.py` | `BuyerIdentity` dataclass + `invoice_to_einvoice_document(invoice, line_items, buyer_identity) -> EInvoiceDocument`. Pure ORM `Invoice` → normalized model. BT-109 (total without VAT) and BT-116 (the VAT breakdown's base) come from `_tax_exclusive_base` — `subtotal − discount_amount + shipping_amount` — **not** from `subtotal`, which is only BT-106. |
 | `payment_means.py` | The UNCL4461 code ⇄ `Invoice.payment_method` token table, **both directions in one place** so inbound (`einvoice_adapter`) and outbound (`mapper`) can't drift. `payment_means_to_method` / `method_to_payment_means`; an unmappable token yields `None` and the optional element is omitted rather than carrying an out-of-code-list value. |
 | `tax_rules.py` | Country tax validation: `validate_tax_id` / `validate_tax_rate` / `validate_tax_document(doc) -> list[FieldError]`. VAT/GST/IVA/CNPJ/NIT id formats + rate plausibility + zero-rate/reverse-charge. Shared by inbound (`validate.py`) and outbound (export route + national formats). |
 | `country_formats/` | National outbound dialects — `base.py` (`CountryEInvoiceFormat` interface), `dispatcher.py` (registry), and `fatturapa.py` (IT) / `cfdi.py` (MX) / `nfe.py` (BR) / `dian.py` (CO). Generation + national validation only; live clearance deferred. See § National e-invoice formats. |
@@ -205,11 +207,118 @@ so a real document *can* pass:
   the invoice's single `tax_rate` (an `InvoiceLineItem` has neither column, and
   an `Invoice` carries exactly one rate, so by construction every line is at it).
 
-`bis3_conformance_errors` is a **mandatory-element** check, not the official
-Schematron: it covers the rules whose inputs the normalized model carries. A
-document that passes can still fail the official validator; a document that
-FAILS provably does not conform, which is what makes the conditional declaration
-sound. Vendoring the official Schematron into CI is the next rung.
+#### What `bis3_conformance_errors` evaluates
+
+Three layers, all pure, all over the same normalized model. Every `FieldError`
+added by layers 2 and 3 carries its **rule id as the `code`**, so the PII-free
+`"field: code"` join that `EInvoiceValidationError` renders — and the 422 body
+the export and PEPPOL-send routes return — names the rule a receiver's own
+validator would name (`tax_inclusive_amount: BR-CO-15`). Layer 1 keeps
+`code == "missing"`, which is its established contract; its *messages* name the
+rule instead.
+
+**1 — mandatory elements** (`bis3.py`). BR-02/03/05 (number, issue date,
+currency), BR-06/07 (party names), PEPPOL-EN16931-R010/R020 (both electronic
+addresses + their EAS scheme), BR-09/11 (party countries), BR-12/13/14/15 (the
+four `LegalMonetaryTotal` amounts), BR-CO-14/18 + BR-45/46/47 (the tax total and
+a complete VAT breakdown group), BR-16/21/22/24/25/26 (at least one line, and
+each line's id, quantity, net amount, price and item name) and BR-CO-04 (each
+line's VAT category and rate).
+
+**2 — code-list membership** (`codelists.py` via `en16931_rules.code_list_errors`).
+Membership is asserted **only where we hold the complete list** — a partial list
+would refuse a document that does conform, and this gate is not advisory
+(`peppol_send` calls `assert_bis3_conformant` and 422s). What is enforced:
+
+| Field | Rule | List |
+|-------|------|------|
+| Document currency (BT-5) | `BR-CL-03` | ISO 4217 alphabetic |
+| Invoice type code (BT-3) | `BR-CL-01` | UNTDID 1001, EN 16931 invoice + credit-note subset |
+| Party country (BT-40 / BT-55) | `BR-CL-14` | ISO 3166-1 alpha-2 (plus PEPPOL's `1A` for Kosovo; `EL` is deliberately absent — it is a VAT prefix, not a country) |
+| VAT category, breakdown (BT-118) | `BR-CL-17` | UNCL5305, the nine codes EN 16931 permits |
+| VAT category, line (BT-151) | `BR-CL-18` | same nine |
+| Seller / buyer VAT id (BT-31 / BT-48) | `BR-CO-09` | must start with the ISO 3166-1 prefix of the issuing country (`EL` is the standard's one named exception) |
+
+Deliberately **not** membership-checked, because we hold no complete copy and
+did not vendor one: unit of measure (`BR-CL-23`, UN/ECE Rec 20 + 21 is thousands
+of codes), payment means (`BR-CL-16`, UNCL4461 — `payment_means.py` holds the
+seven codes we map, not the list), and the EAS scheme id (`BR-CL-25`, a CEF list
+maintained outside the standard). The first two get a *shape* check instead: a
+value that could not be a member of the list under any reading (`"ach"` as a
+payment means, `"not a unit code"` as a unit) is refused; an unrecognised but
+well-formed one passes.
+
+**3 — calculation rules** (`en16931_rules.calculation_errors`). All `Decimal`,
+both sides quantized to 2dp with `ROUND_HALF_UP` (the repo idiom — see
+`services/billing/proration.py`) before comparison; nothing is ever coerced to
+`float`. Tolerance is one cent, except `BR-CO-17`, which carries the standard's
+own ±0.02 allowance because the VAT amount is a derived figure emitters round
+differently.
+
+| Rule | What it asserts |
+|------|-----------------|
+| `PEPPOL-EN16931-R120` | line net amount = quantity × item net price |
+| `BR-CO-10` | sum of line net amounts = the document's line-extension total |
+| `BR-CO-13` | total without VAT = line total − allowances + charges |
+| `BR-CO-14` | total VAT = sum of the VAT breakdown amounts |
+| `BR-CO-15` | total with VAT = total without VAT + total VAT |
+| `BR-CO-16` | amount due = total with VAT (reduced form — see below) |
+| `BR-CO-17` | each VAT category's tax amount = its base × its rate |
+| `BR-CO-25` | an amount due requires a due date **or** payment terms |
+| `BR-CO-26` | the seller requires a legal-registration or VAT identifier |
+| `BR-<x>-01` | every VAT category used on a line has a breakdown group |
+| `BR-<x>-05` | zero-rated / exempt / reverse-charge / intra-community / export / out-of-scope lines carry a zero rate; standard-rated lines carry a rate above zero |
+| `BR-<x>-08` | each breakdown group's taxable amount = the sum of its lines |
+
+`<x>` is the category's own rule family (`BR-S-08`, `BR-Z-05`, `BR-AE-05`,
+`BR-IC-01`, …), so a failure names the rule the receiver will name.
+
+#### What is still not evaluated, and why
+
+Recorded rather than left to be rediscovered. `en16931_rules`' module docstring
+carries the full table; the shape of it:
+
+- **Rules whose inputs the model has no slot for.** BR-CO-03 (VAT point date),
+  BR-CO-05..08 and BR-CO-11/12 (per-allowance and per-charge amounts and reason
+  codes — the model carries only the two undifferentiated document-level
+  totals), BR-CO-19/20 (invoicing periods), BR-CO-21..24.
+- **Two rules evaluated in a *reduced* form the model makes exact.**
+  `BR-CO-16` is really *amount due = total with VAT − prepaid (BT-113) +
+  rounding (BT-114)*; neither addend has a model field, so the model cannot
+  represent a part-paid invoice at all and the check reduces to
+  `payable_amount == tax_inclusive_amount`. `PEPPOL-EN16931-R120` is really
+  *quantity × (net price ÷ price base quantity)*; BT-149 has no model field and
+  `ubl.py` does not parse it, so it is taken as 1 — which is not a blind spot
+  being papered over: a source document priced per 100 units has *lost* that in
+  our normalized copy, and re-emitting it would state the price per single unit,
+  so flagging the arithmetic is the right verdict for a document we cannot
+  faithfully represent.
+- **`BR-<x>-08` is skipped whenever a document-level allowance or charge is
+  present.** EN 16931 attributes each BG-20 / BG-21 group to a VAT category and
+  the model carries only the totals, so the expected per-category base is
+  genuinely unknowable rather than zero. Guessing would refuse conforming
+  documents.
+- **The official Schematron is still not vendored**, and this remains open in
+  `docs/followups.md`. Everything above is a re-implementation over the
+  normalized model, not the CEN/PEPPOL artefact, and it necessarily stops where
+  the model stops. **A pass is therefore still not a conformance guarantee** —
+  it means "nothing we can compute objects". A *failure*, on the other hand,
+  provably does not conform, and that asymmetry is the whole basis of the
+  conditional declaration.
+
+#### One real bug this surfaced
+
+The regression guard — "a document our own mapper produces must pass the whole
+check" — failed on the first invoice carrying a discount or a shipping charge.
+`mapper.py` mapped `Invoice.subtotal` into **both** BT-106 (sum of line net
+amounts) and BT-109 (total without VAT). `subtotal` is only BT-106:
+`invoice_warnings` derives it as `amount − tax_amount − shipping_amount +
+discount_amount`, i.e. before the discount and shipping columns apply. So every
+such invoice produced a document that contradicted itself three ways at once —
+`BR-CO-13`, `BR-CO-15` and `BR-CO-17` (the same figure is also BT-116, the VAT
+breakdown's base) — and the receiving Access Point would have rejected it. Fixed
+at the source: `mapper._tax_exclusive_base` computes `subtotal − discount +
+shipping` once, and BT-109 and BT-116 both read it.
 
 ### `generate_cii(doc) -> bytes`
 

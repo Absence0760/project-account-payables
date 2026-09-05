@@ -40,7 +40,11 @@ re-opened back to `draft`.
 - **reopen** (`rejected → draft`) — clears `submitted_at`, keeps
   `rejection_reason` as the brief for the rework. Without it a rejected
   requisition was stranded: `submit`, `cancel` and `PATCH` all 422 from
-  `rejected`, so the only exit was `DELETE` + re-keying every line.
+  `rejected`, so the only exit was `DELETE` + re-keying every line. **The route
+  is reachable from the product** — an armed two-click **Reopen** row action on
+  `/requisitions`, offered only on a `rejected` row (see Frontend below). Until
+  that shipped the route existed but nothing called it, so the strand it fixes
+  was still live for users.
 
 Header `total` is **always recomputed server-side** from the line items
 (`sum(quantity × unit_price)`, exact `Decimal`) on create and on every draft
@@ -180,8 +184,15 @@ delete / submit / cancel): `admin` / `ap_manager` / `ap_clerk`. Approve / reject
 
 - `frontend/src/routes/requisitions/+page.svelte` — workspace list (PageHeader,
   KPI row, status FilterChips, SearchBox, DataTable with clickable rows; per-row
-  Submit / Approve / Reject / Convert to PO / Cancel / Delete actions, SoD-gated
-  approve).
+  Submit / Approve / Reject / Reopen / Convert to PO / Cancel / Delete actions,
+  SoD-gated approve). **Reopen** is the rework loop (`rejected → draft`): an
+  armed two-click `RowAction` whose armed label names the DESTINATION
+  (`Reopen to Draft`) rather than a bare "Confirm", because a reopened
+  requisition is back in draft and still owes a Submit — unlike `/intake`, whose
+  reopen lands in `open`. It is gated on the page's `canCreate`
+  (admin | ap_manager | ap_clerk), matching `require_roles` on the route: a CFO
+  may reject a requisition and may **not** reopen one, so the button is absent
+  for them rather than a control that can only 403.
 - `frontend/src/lib/components/modals/RequisitionModal.svelte` — create / detail
   / edit dialog over the shared `Modal`, with an editable line-item grid and a
   live computed total.
@@ -203,3 +214,9 @@ plus proof an unconverted draft still deletes.
 optional links, on create and on `PATCH`; the opaque-404 equivalence with an
 unknown id; unstamped rows still selectable; the single-entity passthrough; and
 the ordering against the budget-currency 422.
+
+`frontend/tests-e2e/requisitions/reopen.spec.ts`: the rework loop end-to-end —
+a rejected row offers **Reopen**, the armed copy names the `Draft` destination,
+committing lands the row in `draft` (server-verified) with Submit offered again;
+a non-rejected row offers no Reopen; and a CFO sees neither the button nor a way
+through the route (`403`, status unchanged).

@@ -30,6 +30,7 @@ from app.models.supplier_chat import (
 from app.models.vendor import Vendor
 from app.services.notification_dispatch import notify_event, resolve_role_user_ids
 from app.services.notification_templates import InvoiceContext
+from app.utils.tenant_urls import tenant_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -208,10 +209,10 @@ async def notify_supplier_of_ap_message(
     if vendor is None or not vendor.email:
         return
 
-    base = (settings.tenant_url_template or "").replace("{slug}", org.slug)
+    base = tenant_base_url(org.slug, org.settings)
     if not base:
         return
-    link = f"{base.rstrip('/')}/portal/invoices/{invoice.id}/chat"
+    link = f"{base}/portal/invoices/{invoice.id}/chat"
 
     inv_ref = invoice.invoice_number or str(invoice.id)
     org_name = (org.settings or {}).get("company", {}).get("name") or org.name

@@ -3,10 +3,12 @@
  * separate token key so the AP app and the portal can't stomp on each other's
  * localStorage (opening both in the same browser would otherwise clobber one).
  */
-import { PUBLIC_API_URL } from '$env/static/public';
-import { getTenantSlug } from '$lib/tenant';
+import { getApiBase, getTenantSlug } from '$lib/tenant';
 
-const BASE = PUBLIC_API_URL.replace(/\/+$/, '');
+// Resolved per request, not frozen at module load — see the note in
+// `$lib/api.ts`. The supplier portal is served from the SAME hosts as the AP
+// app (including a tenant's vanity custom domain), so it must resolve its API
+// origin through the same owner rather than keeping a second spelling.
 const TOKEN_KEY = 'portal_auth_token';
 
 function getToken(): string | null {
@@ -37,7 +39,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const tenant = getTenantSlug();
 	if (tenant) headers['X-Tenant-Slug'] = tenant;
 
-	const res = await fetch(`${BASE}${path}`, { ...init, headers });
+	const res = await fetch(`${getApiBase()}${path}`, { ...init, headers });
 
 	if (res.status === 401) {
 		// Only treat a 401 as a session expiry — clear the token and bounce to
@@ -73,7 +75,7 @@ async function download(path: string): Promise<Blob> {
 	const tenant = getTenantSlug();
 	if (tenant) headers['X-Tenant-Slug'] = tenant;
 
-	const res = await fetch(`${BASE}${path}`, { headers });
+	const res = await fetch(`${getApiBase()}${path}`, { headers });
 	if (res.status === 401 && token) {
 		clearPortalToken();
 		if (typeof window !== 'undefined') window.location.href = '/portal/login';

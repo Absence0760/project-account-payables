@@ -52,6 +52,7 @@
 	let error = $state('');
 	let message = $state('');
 	let downloadingFileId = $state<string | null>(null);
+	let downloadingEinvoiceId = $state<string | null>(null);
 	let resubmittingId = $state<string | null>(null);
 	// Ref to the header's hidden file input, so the onboarding EmptyState's
 	// action can open the same file picker.
@@ -291,6 +292,36 @@
 		}
 	}
 
+	/** Download the structured (UBL 2.1) e-invoice for one of this vendor's own
+	 * invoices, via the vendor-scoped `GET /api/portal/invoices/{id}/einvoice`.
+	 *
+	 * Distinct from "Download file" above: that returns the document the
+	 * supplier themselves uploaded, this GENERATES a standards-compliant XML
+	 * from the invoice as the customer now holds it — what a supplier's own
+	 * accounting system can ingest, and the record of what the customer
+	 * actually booked. Unlike the AP-side export it never 422s the supplier on
+	 * a tax soft-warning; the UBL is always returned. Same blob-download shape
+	 * as the remittance + source-file downloads. */
+	async function downloadEinvoice(inv: PortalInvoice) {
+		downloadingEinvoiceId = inv.id;
+		error = '';
+		try {
+			const blob = await portalApi.download(`/api/portal/invoices/${inv.id}/einvoice`);
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `einvoice-${inv.invoice_number || inv.id.slice(0, 8)}.xml`;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			error = err instanceof Error ? err.message : m('portal.invoices.einvoiceDownloadFailed');
+		} finally {
+			downloadingEinvoiceId = null;
+		}
+	}
+
 	onMount(refresh);
 </script>
 
@@ -436,6 +467,20 @@
 										: m('portal.invoices.downloadFile')}
 								</button>
 							{/if}
+							<button
+								type="button"
+								class="file-btn"
+								data-testid="portal-einvoice-download"
+								disabled={downloadingEinvoiceId === inv.id}
+								onclick={(e) => {
+									e.stopPropagation();
+									downloadEinvoice(inv);
+								}}
+							>
+								{downloadingEinvoiceId === inv.id
+									? m('portal.invoices.preparing')
+									: m('portal.invoices.downloadEinvoice')}
+							</button>
 						</td>
 					</tr>
 					{#if expandedId === inv.id}
@@ -648,6 +693,11 @@
 	}
 	.actions {
 		white-space: nowrap;
+	}
+	/* Two per-row downloads (source file + generated e-invoice) sit side by
+	   side; without a gap they read as one control. */
+	.actions .file-btn + .file-btn {
+		margin-left: 6px;
 	}
 	.file-btn {
 		padding: 4px 12px;

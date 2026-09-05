@@ -34,35 +34,34 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-05 (round 20) — a five-agent sweep over this
-file's actionable remainder, run after the round-19 batch merged as #362.
-**Five entries closed, three opened**, 24 → 22.
+**Last reconciled:** 2026-09-05 (round 21) — a ten-agent round: five fix
+agents on the white-label vanity-domain epic plus e-invoice conformance, two
+read-only sweeps (backend reachability, frontend/mobile parity), and three more
+fix agents on what the parity sweep found. **Five entries closed, one narrowed,
+seventeen opened**, 22 → 33.
 
-Closed: the badge-conversion tranches (done — every remaining baseline entry is
-now a deliberate keep, so the ratchet changes meaning rather than shrinking),
-the two unindexed budget dimensions (measured first, as the entry demanded — the
-numbers and the honest *non*-improvement of the whole-tenant rollup are in the
-entry), the touchless-metric backfill (an operator-asserted tool, where the
-smoke run itself forced a design change), the custom-domain TLS/DNS runbook, and
-the Dependabot lockfile sync (restored with the credential that made it inert
-designed out, not re-gated).
+The count grew on purpose. The two sweeps found substantially more real,
+verified work than a ten-agent budget could land; everything with a **live
+defect** behind it was fixed in the same round (the ERP retry divergence, the
+half-validated UK bank pair, the unpinned SSO authorize helper, the SCIM digest
+owner, and the e-invoice generator's BT-106/BT-109 collision), and the verified
+remainder is recorded below rather than dropped. A follow-up file that shrinks
+while its sweeps keep finding things is measuring the wrong quantity.
 
-The three opened all come from writing that runbook, and they are the round's
-real finding: **the custom-domain feature is narrower than the product says.**
-It only works as `<tenant-slug>.<customer-domain>`, the `/organization` panel's
-own placeholder is the shape that does not work, and two further globals
-(`FEOH_TENANT_URL_TEMPLATE`, `FEOH_WEBAUTHN_RP_ID`) quietly undo the white-label
-on a vanity host. Nothing regressed — all three have been latent since the
-feature shipped, and none was visible until someone tried to write down how to
-operate it.
+Round 21 closed the whole white-label vanity-domain trio the round-20 runbook
+surfaced (SPA host resolution, per-tenant outbound links, per-tenant passkeys),
+narrowed the BIS Billing 3.0 conformance entry to its official-Schematron half,
+and left roadmap Priority 13 with exactly one open piece: the SSO callback URLs,
+which stay global on purpose because they are registered at the customer's IdP.
 
-What did **not** move, and why, so it is not re-surveyed next round: of the 24
-open items, 19 remain because they need something this repo cannot produce —
-seven an external credential or account, three a scheduled Dependabot run or a
-live Teams tenant to observe, and nine a product or founder decision. Two more
-(the EN 16931 / PEPPOL Schematron and the FatturaPA XSD) were deliberately left:
-vendoring third-party schema files into a **public** repo is a licensing call,
-and both triggers are unmet.
+What did **not** move, and why, so it is not re-surveyed next round: the (a) and
+(b) sections are unchanged and remain blocked on things this repo cannot
+produce — an external credential or account, a scheduled Dependabot run, a live
+Teams tenant to observe, or a product/founder decision. The FatturaPA XSD and
+the official EN 16931 / PEPPOL Schematron are still deliberately unvendored:
+pulling third-party schema files into a **public** repo is a licensing call, and
+both triggers are unmet. The eight persona-panel product-fit gaps still await a
+keep-or-drop call, which is not Claude's to make.
 
 **Round 19's own narrative has been pruned.** It recorded eight defects that
 round found and fixed — an unused dependency setting the project's Node floor,
@@ -114,15 +113,28 @@ Both generators were corrected this round to meet their standards
 ([decisions.md](decisions.md) §44, §45), and both are pinned by structural tests.
 Neither is validated against the authority that will actually judge it.
 
-- [ ] **BIS Billing 3.0 conformance is a hand-written mandatory-element pass,
-      not the official Schematron.** `services/e_invoice/bis3.py::bis3_conformance_errors`
-      covers the rules the normalized model can answer, and it gates whether we
-      declare the profile at all — so a document that **fails** it provably does
-      not conform, which is what makes the conditional declaration sound. It does
-      not evaluate the calculation rules (BR-CO-*) or code-list membership, so a
-      document that **passes** can still fail the real validator.
+- [ ] **BIS Billing 3.0 conformance is our own re-implementation, not the
+      official Schematron.** NARROWED (round 21). The calculation rules
+      (BR-CO-*) and code-list membership this entry named are now implemented
+      (`services/e_invoice/{en16931_rules,codelists}.py`) and CI-tested, each
+      rule with a satisfying and a violating document. Adding them immediately
+      earned its keep: the generator mapped `Invoice.subtotal` into **both**
+      BT-106 and BT-109, so every invoice carrying a discount or a shipping
+      charge went out contradicting itself on BR-CO-13/15/17 with our
+      conformance claim on it — fixed at the source in `mapper.py`
+      ([decisions.md](decisions.md) §90).
+      **What is still open:** (a) rules whose inputs the normalized model has no
+      slot for — allowance/charge detail, invoicing periods, VAT point dates
+      (tabulated in `en16931_rules`' docstring); (b) membership for UN/ECE Rec 20
+      units, UNCL4461 payment means and the CEF EAS scheme list, which get a
+      *shape* check only because a partial list would 422 a genuinely conforming
+      send; (c) the fact that a pass still means "nothing we can compute
+      objects", not conformance. The asymmetry that makes the conditional
+      declaration sound is unchanged: a **failure** provably does not conform.
       **Durable fix:** vendor the official EN 16931 + PEPPOL Schematron into
       `backend/tests/fixtures/` and assert generated documents validate in CI.
+      Not done this round on purpose — this is a public repo and vendoring
+      externally-licensed validation assets is a call to make deliberately.
       **Trigger:** the PEPPOL `as4_gateway` slice.
 
 - [ ] **No FatturaPA XSD in the repo, so the generator is validated by
@@ -228,64 +240,83 @@ this round took to zero — it would have begun passing vacuously, so it now
 names `ScreeningBadge`, a *permanent* keep that cannot be invalidated by the
 next conversion.
 
-### Surfaced by the round-20 parallel sweep (2026-09-05)
+### Surfaced by the round-20 parallel sweep — CLOSED except SSO (round 21)
 
-Writing the custom-domain runbook (closed above) is what surfaced these — the
-procedure could not be written truthfully without discovering that the feature
-it documents is narrower than the product says. None is a regression; all three
-have been latent since custom domains shipped.
+All three entries here said a white-label vanity domain did not really work.
+Two are now closed and the third is narrowed to one remaining piece.
 
-- [ ] **(c) A custom domain only works as `<tenant-slug>.<customer-domain>`, and
-      the product's own example is the broken case.** The `Host` fallback in
-      `backend/app/tenant.py::get_tenant_slug` fires only when `X-Tenant-Slug` is
-      **absent** — but the SPA always sends it when it can derive one, and
-      `frontend/src/lib/tenant.ts::getTenantSlug` takes the **first label** of
-      any 3+-label hostname. So `ap.acmecorp.com` pointed at tenant `acme` makes
-      the SPA send `X-Tenant-Slug: ap` and every call 404s `Unknown tenant: ap`.
-      A bare apex (`acmecorp.com`) is worse: `getTenantSlug` returns `null`, so
-      no header at all — but the SPA still calls the **build-time**
-      `PUBLIC_API_URL` origin, so the backend never sees the vanity `Host` and
-      the resolver's whole reason for existing is unreachable from the SPA in
-      both shipped deployment shapes. Registering a custom domain today
-      therefore only affects header-less non-SPA API clients.
-      **The `/organization` panel's placeholder is `ap.acmecorp.com`** (plus the
-      matching string in all six locales) — i.e. the product actively suggests
-      the shape that does not work.
-      **Durable fix, cheap half:** change the placeholder + locale strings to
-      `<slug>.<customer-domain>`, and validate the first label against the
-      tenant's own slug at `PUT` time so the panel refuses the broken shape
-      instead of accepting it silently.
-      **Durable fix, real half (needed for apex support):** resolve the API base
-      at runtime rather than at build time, and serve `/api` same-origin per
-      vanity host, so the backend sees the vanity `Host`.
-      **Trigger:** the first customer onboarding a vanity domain — do the cheap
-      half before then regardless, since today the panel misleads.
-      Ref: [white-label.md](white-label.md) § Custom domains (now states the
-      constraint), `docs/founder-runbooks/custom-domain-provisioning.md`.
+**The SPA resolves a vanity host — CLOSED.** The diagnosis was right and the
+proposed *cheap half* (validate the first label against the tenant slug, so the
+panel refuses the broken shape) was **rejected in favour of the real fix**: it
+would have made the panel honest while permanently narrowing the product to
+`<slug>.<customer-domain>`, which is not what a customer buys a vanity domain
+for. Instead the SPA classifies the hostname against an operator-declared
+`PUBLIC_PLATFORM_DOMAINS` (`frontend/src/lib/hostRouting.ts`) and sends **no**
+`X-Tenant-Slug` on anything that is not a platform host, which is what finally
+reaches the backend `Host` fallback that has existed all along. The API origin
+resolves at runtime and collapses to same-origin `/api` on a vanity host,
+because a request to the build-time API origin carries the *platform's* `Host`
+and defeats the lookup either way. Both layouts now gate on `hasTenantContext()`
+instead of the slug — without that they rendered the marketing landing page to a
+customer on their own domain, so the rest would have been invisible.
+Unset config replays the old rule byte-for-byte, so no existing build changes on
+upgrade ([decisions.md](decisions.md) §86).
 
-- [ ] **(c) `FEOH_TENANT_URL_TEMPLATE` is global, so a vanity-domain tenant's
-      emails link back to the platform subdomain.** It is one setting
-      (`config.py:409`) with `{slug}` substituted at each of its call sites
-      (`api/auth`, `api/vendors`, `api/admin`, `api/signup`, `api/payments`,
-      `notification_dispatch`), with no per-org override. A tenant reachable at
-      its own hostname still gets approval links, portal invites and signup
-      confirmations pointing at `<slug>.<platform-domain>` — which works, but
-      undoes the white-label the custom domain was bought for.
-      **Durable fix:** a per-org override on `settings.brand` read by a single
-      resolver the six call sites share, defaulting to the global template.
+**Per-tenant outbound links — CLOSED.** `settings.brand.tenant_url_template`
+overrides the global, resolved by one `app/utils/tenant_urls.py` that all
+**ten** call sites read — not the six this entry claimed; `services/supplier_chat`
+and `services/card_issuance` both did their own substitution and did not look
+like template call sites from the outside. An unresolvable base is now a real
+answer: callers omit the link rather than fabricate a `localhost` URL into a
+customer's inbox ([decisions.md](decisions.md) §91).
+
+**Per-tenant passkeys — CLOSED.** RP ID and origins resolve from the tenant's
+own registered custom domains, from the org that owns *the account*, never from
+a `Host`-driven lookup — so a forged host, an unknown host and another tenant's
+vanity domain all fail closed to the platform RP. The migration story this entry
+said "needs designing, not just a config field" was designed and shipped:
+`webauthn_credentials.rp_id` (migration 0091), `usable_here` on the list
+endpoint, and a named cross-host message so a credential registered elsewhere
+reports itself instead of failing opaquely ([decisions.md](decisions.md) §87).
+
+- [ ] **(c) SSO callback URLs still pin a vanity-domain tenant to the platform
+      host.** `services/sso.py` builds the OIDC `redirect_uri` and the SAML
+      bridge URL from the global `FEOH_TENANT_URL_TEMPLATE`, and was
+      deliberately left there when the other eight call sites moved: both are
+      values **registered at the customer's IdP**, so a silent per-org re-point
+      breaks every SSO login until the operator re-registers them. Both
+      exemptions are asserted in the resolver's drift guard, so they read as
+      decisions rather than misses ([decisions.md](decisions.md) §91).
+      Consequence today: a vanity-host tenant with SSO enabled either keeps
+      logging in via the platform hostname, or turns SSO off. The SPA also
+      hides the SSO/SAML buttons on a vanity host, because
+      `GET /api/auth/sso/authorize` takes the tenant as a required `?slug=`
+      query param that a vanity host has no way to supply — which is why
+      `routes/login/+page.svelte` is the one remaining entry on the
+      `BUILD_TIME_API_URL_BASELINE` ratchet in `tenantSlugUsage.test.ts`.
+      **Durable fix:** accept a `Host`-resolved tenant when `slug` is absent on
+      the SSO/SAML entry points, plus a per-org callback override, plus the IdP
+      re-registration step in
+      [custom-domain-provisioning.md](founder-runbooks/custom-domain-provisioning.md).
+      **Trigger:** the first customer cutting over to a vanity host with SSO
+      enabled.
+
+- [ ] **(b) True end-to-end e2e for the vanity host needs two env lines.** The
+      unit layer covers the classification rules exhaustively and the e2e spec
+      locks the *platform*-host half (the catastrophic regression path — a
+      platform subdomain must keep sending its slug and keep calling the
+      build-time origin). The vanity half is unit-only because
+      `PUBLIC_PLATFORM_DOMAINS` reaches neither run mode: locally the suite
+      boots `pnpm dev` (which loads `.env.development`), and CI serves a
+      production-mode `vite build` that does not. Unset means *no host is a
+      vanity host*, so the same navigation would assert opposite things in the
+      two environments — which is why the spec does not fake it.
+      **Durable fix:** add `PUBLIC_PLATFORM_DOMAINS` beside `PUBLIC_API_URL` in
+      `playwright.config.ts` `webServer.env` **and** in the CI build step, then
+      add a second hostname that serves both the SPA and `/api` (neither `vite
+      dev` nor `vite preview` proxies `/api`, so a same-origin call 404s at the
+      static server today).
       **Trigger:** the same first vanity-domain onboarding.
-
-- [ ] **(c) Passkeys cannot work on a vanity host — `FEOH_WEBAUTHN_RP_ID` is a
-      single global.** A WebAuthn credential is bound to one registrable domain
-      (`config.py:512`), so a tenant on `ap.acmecorp.com` cannot register or use
-      a passkey against a platform-domain RP ID. TOTP and email OTP are
-      unaffected, so this is a *reduced* second-factor menu on a vanity host,
-      not a lockout.
-      **Durable fix:** per-tenant RP ID + origin list resolved alongside the
-      custom domain, which also means a passkey registered on the platform
-      subdomain does not carry over to the vanity host — a migration story that
-      needs designing, not just a config field.
-      **Trigger:** a vanity-domain tenant wanting passkeys.
 
 ### Surfaced by the round-19 parallel sweep (2026-09-05)
 
@@ -585,6 +616,152 @@ decide.
       precisely what makes losing one easy to miss.
       **Trigger:** the next Dependabot npm PR. Recipe in
       [frontend/CLAUDE.md](../frontend/CLAUDE.md) § The lockfile.
+
+### Surfaced by the round-21 parallel sweeps (2026-09-05)
+
+Two read-only sweeps ran alongside the round-21 fix agents: a backend
+reachability pass (the same shape as the round-7 "no production caller" sweep)
+and a frontend/mobile parity pass (backend capabilities with no UI). Between
+them they found more than the ten-agent budget could land. **Everything with a
+live defect behind it was fixed in round 21** — the ERP retry divergence
+([decisions.md](decisions.md) §88), the half-validated UK bank pair (§89), the
+unpinned SSO authorize helper, and the SCIM digest's missing owner. What is
+below is the verified remainder: real, reproducible, and none of it a defect
+that can bite today.
+
+**Backend capabilities with no production caller:**
+
+- [ ] **(c) `approval_chain.get_chain_progress` has no caller, and eight sites
+      read its JSONB path by hand.** `services/approval_chain.py` (×2),
+      `services/review.py` (×4, two of them re-deriving the same expression on
+      adjacent lines) and `services/approval_escalation.py` (×2) each reach into
+      `state_data["approval_levels"]` themselves, in **two spellings** —
+      `.get("approval_levels", {})` and `.get("approval_levels") or {}` — which
+      differ when the key is present but `null`. No behavioural bug found today;
+      the risk is the next schema move having to find eight sites.
+      **Durable fix:** route all eight through the existing helper and add the
+      drift guard this repo already uses elsewhere (a source scan asserting no
+      module outside `approval_chain.py` string-matches `"approval_levels"`),
+      exactly as `payment_methods` and `utc_today` are guarded.
+      **Trigger:** the next change to the approval-chain state shape.
+
+- [ ] **(c) `workflow_step_types.is_canonical_step_type` is unused and
+      untested.** `workflow_builder` asks the inverse question via
+      `BUILDER_STEP_TYPES` and handles aliases correctly, so this is a
+      convenience wrapper nothing needs. **Durable fix:** delete it, or give it
+      a caller and coverage — an untested helper in the module that gates a
+      financial control ([decisions.md](decisions.md) §32) should not be a third
+      spelling of the question. **Trigger:** the next workflow-step-type change.
+
+- [ ] **(c) `scheduled_reports.compute_next_run`'s docstring is now false.** It
+      says "used when seeding a brand-new schedule", but `api/scheduled_reports`
+      deliberately seeds `next_run_at = body.next_run_at or now()` so an
+      operator can watch the first run happen. A doc fix, not a wiring fix —
+      recorded so the next sweep does not re-derive it as a gap.
+      **Trigger:** any edit to the scheduled-report runner.
+
+**Backend capabilities the product cannot reach (no UI):**
+
+- [ ] **(c) The per-tenant email-intake address has no UI, and the docs claim it
+      does.** `GET /api/organization/email-intake` + `POST .../rotate-token`
+      have no frontend caller, while
+      [email-intake.md](../backend/docs/email-intake.md) asserts "the tenant's
+      admin sees the address in Organization Settings and tells their vendors."
+      Two consequences: the whole inbound-email ingestion channel is
+      undiscoverable, and — the sharper one — **a leaked intake token cannot be
+      rotated from the product**, though the same doc calls that token a bearer
+      secret that lets anyone drop PDFs into the tenant's AP queue.
+      **Durable fix:** one `/organization` panel beside Custom Domains; the
+      rotate control is the armed two-click + `ui/SecretReveal.svelte` pattern
+      `/admin/webhooks` already uses for `rotate-secret`. Fix the doc in the
+      same change.
+      **Trigger:** next `/organization` slice — this is the highest-value item
+      in this list.
+
+- [ ] **(c) `POST /api/entities` and `PATCH /api/entities/{id}` have no UI, so
+      multi-entity is effectively unstartable.** The sidebar switcher reads
+      `GET /api/entities` and hides itself below two entities, so a tenant can
+      only ever have the one entity created at provisioning. Multi-entity is
+      documented as complete (Phases 1–4) and scored a competitive "Have".
+      **Durable fix:** an `/admin/entities` page (list + create modal + edit +
+      set-default) matching the existing `/admin/*` shape.
+      **Trigger:** the first tenant with a subsidiary. Note
+      `POST /api/invoices/{id}/route-intercompany` is also caller-less and stays
+      moot until this lands.
+
+- [ ] **(c) The whole `/api/adaptive` router (9 endpoints) and `/api/inspections`
+      (4) have no route.** Adaptive covers approval-pattern learning, anomalies,
+      advisory suggestions + dismiss, smart-routing recommend/apply, threshold
+      recommend/apply and the feedback loop — two of them *write* surfaces with
+      full RBAC and audit stories, and one of its own guards is described as
+      protecting "against applying a stale **UI** value". Inspections is sharper
+      than it looks: the invoice warnings panel **renders** `inspection_result`,
+      `inspection_accepted_quantity` and `quality_hold`, so the UI shows the
+      consequences of an inspection while offering no way to enter one (the
+      4-way-match e2e spec creates them via `page.request.post`, bypassing the
+      app). Both are scored competitive "Have"s.
+      **Durable fix:** an `/adaptive` page shaped like `/experiments`; an
+      Inspections tab or modal on `/goods-receipts` plus a sync action.
+      **Trigger:** a decision to market either capability.
+
+- [ ] **(c) Smaller caller-less surfaces, verified.** `GET /api/audit/verify-signatures`
+      + the per-invoice variant (an auditor cannot run the approval-signature
+      HMAC check from the console built for auditors); the card-rebate
+      lifecycle (`GET /api/cards/rebates`, `confirm`, `mark-paid`, `cancel`,
+      `generate` — the Cards tab renders a "pending confirmation" hint for a
+      status it gives no way to advance, and the recorded reason "API-only,
+      mirroring `/bank-reconciliation`" is stale now that page shipped);
+      `POST /api/payments/corridor-quotes`; `POST /api/exceptions/{id}/agent-resolve`
+      (the agent dashboard reports on activity it cannot trigger);
+      `POST /api/discounts/bulk-negotiate`; the two `/api/enrichment` read
+      endpoints; and `GET /api/health/sweeps`.
+      **Durable fix:** each is a small addition to a page that already exists.
+      **Trigger:** take them opportunistically when next in the relevant page.
+
+- [ ] **(c) Mobile: the CFO cannot approve a payment run.** The Pay tab is
+      visible to a CFO and a gated run renders "This run needs CFO approval
+      before it can be executed", but `endpoints.dart` calls only `execute` and
+      `cancel` — `/approve` is absent. The one person who can unblock the run is
+      the person reading the message. **Durable fix:** one menu item in the
+      existing `_runMenuAction` popup, gated on `AuthStore` CFO.
+      **Trigger:** next mobile slice. (Also: Contracts ships on mobile —
+      `contracts_screen.dart` + detail + localized — but appears in neither the
+      screens→API table nor the feature-status list in `mobile/CLAUDE.md`.
+      Shipped and undocumented, the inverse of the usual problem.)
+
+**Frontend consistency:**
+
+- [ ] **(c) `INTAKE_STATUS_LABELS` / `REQUISITION_STATUS_LABELS` are hardcoded
+      English.** In `src/lib/types/*.ts` and not routed through i18n, so a
+      German user now sees a translated Reopen confirm ("Zurück auf „Entwurf“")
+      next to an untranslated `DRAFT` badge. Pre-existing; surfaced by the
+      round-21 reopen work rather than caused by it.
+      **Durable fix:** move both maps behind `MessageKey`s like the other status
+      label sets. **Trigger:** the next i18n or procurement slice.
+
+- [ ] **(c) `/organization` has no client-side admin gate on any panel.** A
+      non-admin who navigates directly gets a fully editable form whose every
+      Save 403s. Pre-existing and consistent across ~10 panels, which is why the
+      round-21 branding work did not add one for a single field.
+      **Durable fix:** a page-level `auth.isAdmin` read-only mode for the whole
+      route. **Trigger:** next `/organization` slice.
+
+**Backend ergonomics the e-invoice UI work surfaced:**
+
+- [ ] **(c) No read path for an invoice's PEPPOL transmission state.**
+      `PeppolTransmission` is referenced only for delete-cascade; nothing exposes
+      whether an invoice has already been transmitted. The send response carries
+      `already_sent`, so the UI can report the outcome truthfully but cannot show
+      the state on open, and deliberately makes no "not yet sent" claim.
+      **Durable fix:** `GET /api/invoices/{id}/peppol-transmissions`, or a field
+      on the invoice detail. **Trigger:** the `as4_gateway` slice.
+
+- [ ] **(c) The e-invoice 422 drops the human half of its own error.**
+      `FieldError` carries a PII-free `message` ("FatturaPA requires a Partita
+      IVA…"), but `EInvoiceValidationError.__str__` emits only `field: code`, so
+      every client must maintain its own code→prose map — the frontend now has
+      one. **Durable fix:** return the structured errors and delete the client
+      map. **Trigger:** the next e-invoicing slice.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 

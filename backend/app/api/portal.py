@@ -132,12 +132,20 @@ async def portal_branding(org: Organization = Depends(get_tenant)):
     requests are exempt from `get_tenant`'s JWT cross-check by design.
 
     Safe to be public: the response model is `BrandConfig`, which carries ONLY
-    the six non-sensitive, already-DOM-safe white-label fields (product name,
-    logo URL, accent hex colors, support/legal URLs). No org settings, secrets,
-    or other-tenant data can structurally leak through it, and there is no
+    non-sensitive, already-DOM-safe white-label fields (product name, logo URL,
+    accent hex colors, support/legal URLs). No org settings, secrets, or
+    other-tenant data can structurally leak through it, and there is no
     enumeration surface — the resolver returns the one tenant the request
     already targets. An unset / malformed brand block degrades to all-empty
     (= platform defaults), so the portal always themes (fail-soft).
+
+    **`tenant_url_template` is blanked here**, and this is the one field the
+    portal deliberately drops rather than inherits. It is not a theming value —
+    it is the tenant's own vanity base URL, which an admin may have configured
+    while the DNS cutover is still staged. Nothing on the portal login page
+    consumes it, so returning it on an UNAUTHENTICATED endpoint would widen this
+    surface for no gain. Adding a field to `BrandConfig` silently widens what
+    this route publishes; anything new lands here for the same judgement call.
 
     Reuses `organization._resolve_brand`, the same validated parse the admin
     read/write path uses; the stored values were validated on write, and a
@@ -149,7 +157,7 @@ async def portal_branding(org: Organization = Depends(get_tenant)):
     # helper that re-validates `settings.brand` into a `BrandConfig`.
     from app.api.organization import _resolve_brand
 
-    return _resolve_brand(org)
+    return _resolve_brand(org).model_copy(update={"tenant_url_template": ""})
 
 
 # ---------- Invoices ----------

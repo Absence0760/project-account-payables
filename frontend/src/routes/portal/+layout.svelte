@@ -4,13 +4,19 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
-	import { getTenantSlug } from '$lib/tenant';
+	import { hasTenantContext } from '$lib/tenant';
 	import { m } from '$lib/i18n/store.svelte';
 
-	let tenant = $state<string | null | undefined>(undefined);
+	// Tri-state: `undefined` until the browser resolves it, then true/false.
+	// "Does this host carry a tenant", NOT "what is its slug" — a white-label
+	// vanity host has a tenant but no slug in the URL (the backend resolves it
+	// from `Host`), and gating on the slug showed a supplier the no-tenant page
+	// on their customer's own domain. The portal never needs the slug value:
+	// `$lib/portalApi` attaches the header when there is one.
+	let hasTenant = $state<boolean | undefined>(undefined);
 
 	$effect(() => {
-		if (browser) tenant = getTenantSlug();
+		if (browser) hasTenant = hasTenantContext();
 	});
 
 	// Apply the tenant's white-label brand (accent colors + logo + product name +
@@ -18,11 +24,11 @@
 	// authed pages. The read is the public `GET /api/portal/branding`, so it works
 	// before a vendor signs in. Fail-soft: any failure leaves the default theme.
 	$effect(() => {
-		if (tenant) portalBrand.ensureLoadedAndApply();
+		if (hasTenant) portalBrand.ensureLoadedAndApply();
 	});
 
 	$effect(() => {
-		if (!tenant) return;
+		if (!hasTenant) return;
 		const path = $page.url.pathname;
 
 		// `/portal/cards/<token>` is the email-emitted single-use reveal
@@ -56,9 +62,9 @@
 	<title>{m('portal.shell.title', { product: portalBrand.productName })}</title>
 </svelte:head>
 
-{#if tenant === undefined}
+{#if hasTenant === undefined}
 	<!-- hydrating -->
-{:else if tenant === null}
+{:else if hasTenant === false}
 	<div class="no-tenant">
 		<p>{m('portal.shell.noTenant')}</p>
 	</div>

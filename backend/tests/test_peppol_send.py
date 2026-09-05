@@ -38,7 +38,8 @@ async def _seed_invoice(mk, org_id, *, vendor_tax_id="DE123456789") -> uuid.UUID
     `send_invoice_over_peppol` transmits under a doc-type id that ASSERTS BIS
     3.0, so it refuses a document that provably does not meet the profile. The
     seller's country is derived from its VAT-id prefix, hence the DE id; the tax
-    figures give the VAT breakdown BR-CO-14 requires.
+    figures give the VAT breakdown BR-CO-14 requires, and the due date satisfies
+    BR-CO-25 (an invoice with an amount due states when, or on what terms).
     """
     inv_id = uuid.uuid4()
     async with mk() as s:
@@ -53,6 +54,7 @@ async def _seed_invoice(mk, org_id, *, vendor_tax_id="DE123456789") -> uuid.UUID
                 amount=Decimal("119.00"),
                 currency="EUR",
                 invoice_date=date(2026, 1, 1),
+                due_date=date(2026, 1, 31),
                 subtotal=Decimal("100.00"),
                 tax_amount=Decimal("19.00"),
                 tax_rate=Decimal("19.00"),

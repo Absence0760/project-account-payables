@@ -77,6 +77,15 @@ export function cancelIntake(id: string, reason?: string): Promise<IntakeRequest
 	return api.post<IntakeRequest>(`/api/intake/${id}/cancel`, { reason: reason ?? null });
 }
 
+// Rework loop: `rejected -> open`. Broad-access on the backend
+// (`require_roles(ADMIN, AP_MANAGER, AP_CLERK, CFO)` — deliberately WIDER than
+// approve/reject, which are reviewers-only), because the person who has to redo
+// the ask is the requester, not the reviewer. Takes no body: the reviewer's
+// reason stays on `form_data.review_reason` as the brief for the rework.
+export function reopenIntake(id: string): Promise<IntakeRequest> {
+	return api.post<IntakeRequest>(`/api/intake/${id}/reopen`, {});
+}
+
 // --- Convert to requisition (idempotent on the backend) ---
 
 export function convertIntakeToRequisition(

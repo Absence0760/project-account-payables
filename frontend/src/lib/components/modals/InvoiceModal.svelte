@@ -52,6 +52,74 @@
 		type ChatMentionCandidate,
 	} from '$lib/api/supplierChat';
 
+	import {
+		E_INVOICE_FORMATS,
+		downloadEInvoice,
+		einvoiceFilename,
+		einvoiceIssueFieldKey,
+		parseEInvoiceIssues,
+		sendInvoiceOverPeppol,
+		type EInvoiceFormat,
+		type EInvoiceValidationIssue,
+		type PeppolSendResult,
+	} from '$lib/api/einvoice';
+
+	/**
+	 * The e-invoice generator refuses a document it cannot emit compliantly
+	 * (422), and its body is the backend's PII-free `"field: code"` join. These
+	 * two maps turn that join into a sentence a clerk can act on — the code
+	 * says WHAT is wrong, the field says WHERE — instead of leaving
+	 * `seller.tax_id: malformed` on screen. An unmapped code falls back to
+	 * `issue.other` (which prints the code) and an unmapped field to its raw
+	 * path, so a new backend rule degrades to the old wording rather than
+	 * vanishing from the list.
+	 */
+	const EINVOICE_ISSUE_CODE_KEYS: Record<string, MessageKey> = {
+		missing: 'invoices.modal.einvoice.issue.missing',
+		malformed: 'invoices.modal.einvoice.issue.malformed',
+		inconsistent: 'invoices.modal.einvoice.issue.inconsistent',
+		implausible: 'invoices.modal.einvoice.issue.implausible',
+	};
+
+	const EINVOICE_FIELD_KEYS: Record<string, MessageKey> = {
+		invoice_number: 'invoices.modal.einvoice.field.invoiceNumber',
+		issue_date: 'invoices.modal.einvoice.field.issueDate',
+		currency: 'invoices.modal.einvoice.field.currency',
+		lines: 'invoices.modal.einvoice.field.lines',
+		payable_amount: 'invoices.modal.einvoice.field.payableAmount',
+		tax_inclusive_amount: 'invoices.modal.einvoice.field.taxInclusiveAmount',
+		tax_exclusive_amount: 'invoices.modal.einvoice.field.taxExclusiveAmount',
+		'seller.name': 'invoices.modal.einvoice.field.sellerName',
+		'seller.tax_id': 'invoices.modal.einvoice.field.sellerTaxId',
+		'buyer.name': 'invoices.modal.einvoice.field.buyerName',
+		'buyer.tax_id': 'invoices.modal.einvoice.field.buyerTaxId',
+		'taxes[].rate': 'invoices.modal.einvoice.field.taxRate',
+	};
+
+	/** PEPPOL failure codes the send route returns as a bare token (everything
+	 *  else — a malformed participant id, an unconfigured sender — arrives as
+	 *  the backend's own prose and is rendered verbatim). */
+	const PEPPOL_ERROR_KEYS: Record<string, MessageKey> = {
+		invoice_not_approved: 'invoices.modal.peppol.error.notApproved',
+		receiver_not_registered: 'invoices.modal.peppol.error.receiverNotRegistered',
+		receiver_doctype_unsupported: 'invoices.modal.peppol.error.receiverDoctypeUnsupported',
+		peppol_provider_not_configured: 'invoices.modal.peppol.error.providerNotConfigured',
+	};
+
+	/** Mirrors `_PEPPOL_SENDABLE_STATUSES` in `backend/app/api/invoices.py`:
+	 *  `approved` plus every post-approval state. Transmission is a
+	 *  compliance-significant outbound, gated exactly like the ERP send — so
+	 *  offering the control before approval could only ever 422. */
+	const PEPPOL_SENDABLE_STATUSES = new Set([
+		'approved',
+		'sending_to_erp',
+		'sent_to_erp',
+		'posted_in_erp',
+		'payment_scheduled',
+		'paid',
+		'done',
+	]);
+
 	// Render-side helper: extract the per-field before/after diff (SOX change
 	// history) the backend writes onto details.changes for edit/approve events.
 	function fieldChanges(entry: AuditEntry): [string, AuditFieldChange][] {
@@ -179,7 +247,6 @@
 	/* eslint-enable svelte/state-referenced-locally */
 
 	let fullscreen = $state(false);
-	let showExportMenu = $state(false);
 	let formPaneWidth = $state(480);
 	let resizing = $state(false);
 
@@ -763,27 +830,113 @@
 		if (confirmDeleteFile && !(e.target as HTMLElement).closest('.row-action')) {
 			confirmDeleteFile = false;
 		}
+		if (showEinvoiceMenu && !(e.target as HTMLElement).closest('.export-wrapper')) {
+			showEinvoiceMenu = false;
+		}
 	}
 
-	async function downloadExport(format: string) {
-		showExportMenu = false;
+	// ---------------------------------------------------------------- e-invoice
+	//
+	// `GET /api/invoices/{id}/einvoice?format=…` generates a standards-compliant
+	// document (UBL 2.1 / CII, or one of the four national dialects) and is open
+	// to all four roles. It 422s a tax-invalid invoice on purpose — an AP user
+	// must not emit a non-compliant document — so the refusal is the
+	// interesting outcome, not an edge case: it goes to a persistent alert
+	// region beside the control, not a toast that fades before it's read.
+
+	let showEinvoiceMenu = $state(false);
+	let einvoiceBusy = $state<EInvoiceFormat | null>(null);
+	let einvoiceError = $state<{
+		format: EInvoiceFormat;
+		/** 422 — the document is not valid for this dialect (vs. any other failure). */
+		invalid: boolean;
+		detail: string;
+		issues: EInvoiceValidationIssue[];
+	} | null>(null);
+
+	function einvoiceFormatLabel(format: EInvoiceFormat): string {
+		const opt = E_INVOICE_FORMATS.find((f) => f.format === format);
+		return opt ? m(opt.labelKey) : format;
+	}
+
+	function einvoiceFieldLabel(field: string): string {
+		const key = EINVOICE_FIELD_KEYS[einvoiceIssueFieldKey(field)];
+		return key ? m(key) : field;
+	}
+
+	function einvoiceIssueLabel(issue: EInvoiceValidationIssue): string {
+		const key = EINVOICE_ISSUE_CODE_KEYS[issue.code];
+		return key ? m(key) : m('invoices.modal.einvoice.issue.other', { code: issue.code });
+	}
+
+	async function handleEinvoiceDownload(format: EInvoiceFormat) {
+		showEinvoiceMenu = false;
+		einvoiceError = null;
+		einvoiceBusy = format;
 		try {
-			const url = `/api/invoices/${invoice.id}/export?format=${format}`;
-			if (format === 'json') {
-				const data = await api.get(url);
-				const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.json`);
-			} else {
-				// For XML/CSV, fetch a raw blob response through the shared client
-				// (auto-adds Authorization + X-Tenant-Slug, same as every other
-				// request — see $lib/api/audit.ts::downloadAuditExportCsv for the
-				// same JSON-vs-blob export pattern).
-				const blob = await api.downloadBlob(url);
-				const ext = format === 'xml' ? 'xml' : 'csv';
-				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.${ext}`);
-			}
+			const blob = await downloadEInvoice(invoice.id, format);
+			triggerDownload(blob, einvoiceFilename(format, invoice.invoice_number || invoice.id));
 		} catch (err) {
-			toast(err instanceof Error ? err.message : m('invoices.modal.toast.exportFailed'), 'error');
+			// `api.downloadBlob` already ran the body through `formatApiDetail`,
+			// so the message IS the backend's `detail`. Re-split it into the
+			// per-field rows it was built from; an unparseable detail (any other
+			// 4xx/5xx) renders verbatim rather than being reshaped into a lie.
+			const detail = err instanceof Error ? err.message : '';
+			const invalid = err instanceof ApiError && err.status === 422;
+			einvoiceError = {
+				format,
+				invalid,
+				detail,
+				issues: invalid ? parseEInvoiceIssues(detail) : [],
+			};
+		} finally {
+			einvoiceBusy = null;
+		}
+	}
+
+	// ------------------------------------------------------------------ PEPPOL
+	//
+	// Transmission is idempotent server-side (a partial unique index), but it
+	// is still a real outbound onto a public network — so it is confirm-then-act
+	// (the same inline confirm shape the reject form uses), and the outcome is
+	// reported from the RESPONSE: `already_sent` says the short-circuit hit and
+	// nothing new left the building, which must never read as a fresh send.
+
+	let showPeppolForm = $state(false);
+	let peppolReceiverScheme = $state('');
+	let peppolReceiverValue = $state('');
+	let peppolSending = $state(false);
+	let peppolResult = $state<PeppolSendResult | null>(null);
+	// Same two shapes as the export refusal: a named failure code, or the
+	// PII-free `field: code` join — PEPPOL runs the EN 16931 / BIS Billing 3.0
+	// conformance pass on top of the export's own guard, and it reports the
+	// rule id (`due_date: BR-CO-25`) in that identical join, so it gets the
+	// identical readable treatment rather than a second error format.
+	let peppolError = $state<{ detail: string; issues: EInvoiceValidationIssue[] } | null>(null);
+
+	let canSendPeppol = $derived(auth.hasAnyRole('admin', 'ap_manager', 'cfo'));
+	let peppolStatusReady = $derived(PEPPOL_SENDABLE_STATUSES.has(status));
+
+	async function handlePeppolSend() {
+		peppolSending = true;
+		peppolError = null;
+		try {
+			const result = await sendInvoiceOverPeppol(invoice.id, {
+				receiver_scheme: peppolReceiverScheme.trim(),
+				receiver_value: peppolReceiverValue.trim(),
+			});
+			peppolResult = result;
+			showPeppolForm = false;
+			await loadAuditLog();
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : '';
+			const key = PEPPOL_ERROR_KEYS[detail];
+			peppolError = {
+				detail: key ? m(key) : detail || m('invoices.modal.peppol.failed'),
+				issues: key ? [] : parseEInvoiceIssues(detail),
+			};
+		} finally {
+			peppolSending = false;
 		}
 	}
 
@@ -1912,6 +2065,175 @@
 						/>
 					</div>
 
+					<!-- Structured e-invoicing. Distinct from the invoice's own source
+					     document (the PDF in the left pane): this GENERATES a
+					     standards-compliant XML from the invoice's data, in the dialect
+					     the receiver's jurisdiction expects. -->
+					<div class="einvoice-section" data-testid="einvoice-section">
+						<div class="review-title">{m('invoices.modal.einvoice.title')}</div>
+						<p class="einvoice-hint">{m('invoices.modal.einvoice.hint')}</p>
+
+						<div class="export-wrapper">
+							<button
+								type="button"
+								class="btn-export"
+								data-testid="einvoice-menu-toggle"
+								aria-haspopup="true"
+								aria-expanded={showEinvoiceMenu}
+								disabled={einvoiceBusy !== null}
+								onclick={() => (showEinvoiceMenu = !showEinvoiceMenu)}
+							>
+								{einvoiceBusy
+									? m('invoices.modal.einvoice.preparing')
+									: m('invoices.modal.einvoice.download')}
+							</button>
+							{#if showEinvoiceMenu}
+								<div
+									class="export-menu"
+									data-testid="einvoice-menu"
+									role="group"
+									aria-label={m('invoices.modal.einvoice.download')}
+								>
+									{#each E_INVOICE_FORMATS as opt (opt.format)}
+										<button
+											type="button"
+											data-testid="einvoice-format-{opt.format}"
+											onclick={() => handleEinvoiceDownload(opt.format)}
+										>
+											{m(opt.labelKey)}
+										</button>
+									{/each}
+								</div>
+							{/if}
+						</div>
+
+						{#if einvoiceError}
+							<div class="einvoice-error" role="alert" data-testid="einvoice-error">
+								<p class="einvoice-error-title">
+									{einvoiceError.invalid
+										? m('invoices.modal.einvoice.invalidTitle', {
+												format: einvoiceFormatLabel(einvoiceError.format)
+											})
+										: m('invoices.modal.einvoice.failed', {
+												format: einvoiceFormatLabel(einvoiceError.format)
+											})}
+								</p>
+								{#if einvoiceError.issues.length > 0}
+									<ul class="einvoice-issues">
+										{#each einvoiceError.issues as issue (issue.field + issue.code)}
+											<li>
+												<strong>{einvoiceFieldLabel(issue.field)}</strong>
+												{einvoiceIssueLabel(issue)}
+											</li>
+										{/each}
+									</ul>
+									<p class="einvoice-error-hint">{m('invoices.modal.einvoice.invalidHint')}</p>
+								{:else if einvoiceError.detail}
+									<p class="einvoice-error-detail">{einvoiceError.detail}</p>
+								{/if}
+							</div>
+						{/if}
+
+						{#if canSendPeppol}
+							<div class="peppol-block">
+								<div class="peppol-title">{m('invoices.modal.peppol.title')}</div>
+								{#if !peppolStatusReady}
+									<p class="einvoice-hint" data-testid="peppol-not-sendable">
+										{m('invoices.modal.peppol.notSendable')}
+									</p>
+								{:else if peppolResult}
+									<p class="peppol-result" data-testid="peppol-result">
+										{peppolResult.already_sent
+											? m('invoices.modal.peppol.alreadySent')
+											: m('invoices.modal.peppol.sent')}
+										{#if peppolResult.message_id}
+											<span class="peppol-msgid"
+												>{m('invoices.modal.peppol.messageId', {
+													id: peppolResult.message_id
+												})}</span
+											>
+										{/if}
+									</p>
+								{:else if showPeppolForm}
+									<div class="peppol-form" data-testid="peppol-form">
+										<p class="einvoice-hint">{m('invoices.modal.peppol.hint')}</p>
+										<label class="peppol-field">
+											<span>{m('invoices.modal.peppol.receiverScheme')}</span>
+											<input
+												type="text"
+												data-testid="peppol-receiver-scheme"
+												bind:value={peppolReceiverScheme}
+												placeholder="9930"
+											/>
+										</label>
+										<label class="peppol-field">
+											<span>{m('invoices.modal.peppol.receiverValue')}</span>
+											<input
+												type="text"
+												data-testid="peppol-receiver-value"
+												bind:value={peppolReceiverValue}
+											/>
+										</label>
+										<p class="einvoice-hint">{m('invoices.modal.peppol.idempotentNote')}</p>
+										<div class="reject-actions">
+											<button
+												type="button"
+												class="btn-cancel-sm"
+												onclick={() => {
+													showPeppolForm = false;
+													peppolError = null;
+												}}>{m('common.cancel')}</button
+											>
+											<button
+												type="button"
+												class="btn-peppol-confirm"
+												data-testid="peppol-confirm"
+												disabled={peppolSending ||
+													!peppolReceiverScheme.trim() ||
+													!peppolReceiverValue.trim()}
+												onclick={handlePeppolSend}
+											>
+												{peppolSending
+													? m('invoices.modal.peppol.sending')
+													: m('invoices.modal.peppol.confirm')}
+											</button>
+										</div>
+									</div>
+								{:else}
+									<button
+										type="button"
+										class="btn-export"
+										data-testid="peppol-send"
+										onclick={() => {
+											showPeppolForm = true;
+											peppolError = null;
+										}}
+									>
+										{m('invoices.modal.peppol.send')}
+									</button>
+								{/if}
+								{#if peppolError}
+									<div class="einvoice-error" role="alert" data-testid="peppol-error">
+										<p class="einvoice-error-title">{m('invoices.modal.peppol.failed')}</p>
+										{#if peppolError.issues.length > 0}
+											<ul class="einvoice-issues">
+												{#each peppolError.issues as issue (issue.field + issue.code)}
+													<li>
+														<strong>{einvoiceFieldLabel(issue.field)}</strong>
+														{einvoiceIssueLabel(issue)}
+													</li>
+												{/each}
+											</ul>
+											<p class="einvoice-error-hint">{m('invoices.modal.einvoice.invalidHint')}</p>
+										{:else}
+											<p class="einvoice-error-detail">{peppolError.detail}</p>
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/if}
+					</div>
+
 					{#if canReview}
 						<div class="review-section">
 							<div class="review-title">{m('invoices.modal.review.title')}</div>
@@ -2817,7 +3139,116 @@
 		color: var(--text-muted);
 	}
 
-	/* Export dropdown */
+	/* E-invoice section + its format dropdown */
+	.einvoice-section {
+		margin-top: 14px;
+		padding: 12px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+	}
+
+	.einvoice-hint {
+		margin: 4px 0 10px;
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: var(--text-muted);
+	}
+
+	.einvoice-error {
+		margin-top: 10px;
+		padding: 10px 12px;
+		border: 1px solid var(--danger);
+		border-left-width: 3px;
+		border-radius: 5px;
+		background: rgba(224, 82, 82, 0.08);
+	}
+
+	.einvoice-error-title {
+		margin: 0;
+		font-size: 0.82rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.einvoice-issues {
+		margin: 8px 0 0;
+		padding-left: 18px;
+		font-size: 0.78rem;
+		line-height: 1.5;
+		color: var(--text);
+	}
+
+	.einvoice-error-hint,
+	.einvoice-error-detail {
+		margin: 8px 0 0;
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: var(--text-muted);
+	}
+
+	.peppol-block {
+		margin-top: 14px;
+		padding-top: 12px;
+		border-top: 1px solid var(--border);
+	}
+
+	.peppol-title {
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--text);
+		margin-bottom: 4px;
+	}
+
+	.peppol-field {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		margin-bottom: 8px;
+		font-size: 0.76rem;
+		color: var(--text-muted);
+	}
+
+	.peppol-field input {
+		padding: 6px 8px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		font-family: inherit;
+	}
+
+	.btn-peppol-confirm {
+		padding: 6px 14px;
+		border: none;
+		border-radius: 4px;
+		background: var(--accent-strong);
+		color: #fff;
+		font-size: 0.8rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-peppol-confirm:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	.peppol-result {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--text);
+	}
+
+	.peppol-msgid {
+		display: block;
+		margin-top: 3px;
+		font-size: 0.72rem;
+		color: var(--text-muted);
+	}
+
 	.export-wrapper {
 		position: relative;
 	}
@@ -2840,6 +3271,11 @@
 	.btn-export:hover {
 		border-color: var(--accent);
 		color: var(--accent);
+	}
+
+	.btn-export:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
 	}
 
 	.export-menu {

@@ -32,6 +32,7 @@ from app.services.data_residency import (
 from app.services.org_settings_view import settings_for_response
 from app.services.sso import generate_scim_token
 from app.tenant import get_tenant, normalize_custom_domain
+from app.utils.tenant_urls import is_under_platform_domain
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +430,10 @@ async def update_branding(
     in-place mutation isn't auto-marked dirty), then audited into the tenant
     trail. PII-free: only the configured branding fields (a logo URL, links, a
     product name, colors) — never user data.
+
+    `tenant_url_template` is the vanity base URL every outbound link for this
+    tenant is built from (`app/utils/tenant_urls.py::tenant_base_url`); empty
+    means "use the global `FEOH_TENANT_URL_TEMPLATE`".
     """
     existing = dict(org.settings or {})
     # Preserve `custom_domains` — it lives under `settings.brand` but is NOT a
@@ -459,6 +464,11 @@ async def update_branding(
             "accent_color_set": bool(body.accent_color),
             "support_url_set": bool(body.support_url),
             "legal_url_set": bool(body.legal_url),
+            # The vanity base URL every outbound link is built from. Recorded
+            # as a boolean like its siblings — the value itself is tenant infra
+            # config, kept out of the trail for the same reason the hostnames
+            # in `organization.custom_domains_updated` are.
+            "tenant_url_template_set": bool(body.tenant_url_template),
         },
     )
 
@@ -507,6 +517,12 @@ async def update_custom_domains(
     resolver uses (strip `:port`, lowercase, reject empty / IPv6-literal /
     malformed), so a stored value can never diverge from what actually resolves.
     Malformed entries are rejected (422); the normalized list is de-duplicated.
+    So is a host under the platform's OWN domain (422) — that name is already
+    routed by the `<slug>.<platform-domain>` subdomain path, so registering it
+    would give two resolvers a conflicting claim on one hostname. The platform
+    domain is derived from `FEOH_TENANT_URL_TEMPLATE` (see
+    `app/utils/tenant_urls.py::platform_domain`), the one place the platform's
+    hostname shape is already declared.
 
     **Cross-org uniqueness (anti-hijack):** a host already registered to a
     *different* org is rejected (409). A custom domain is only a *candidate*
@@ -530,6 +546,25 @@ async def update_custom_domains(
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid custom domain: {raw!r}",
+            )
+        if is_under_platform_domain(host):
+            # A host under the platform's own domain is ALREADY routed, by the
+            # subdomain path (`<slug>.<platform-domain>` → tenant). Registering
+            # it here adds no reachability and creates a second, conflicting
+            # claim on a name another tenant's slug owns — or will own the next
+            # time a signup takes that slug — so the custom-domain resolver and
+            # the subdomain resolver would disagree about whose request it is.
+            # Refused at registration, where it is still cheap to fix.
+            #
+            # Message names no host: the hostnames are this endpoint's PII-free
+            # posture (see the 409 below), and the platform domain is derived
+            # config, not something to echo back per-request.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Custom domains under the platform's own domain are already "
+                    "routed by tenant subdomain and can't be registered here."
+                ),
             )
         if host in seen:
             # De-duplicate silently — a repeated host is not an error, just noise.

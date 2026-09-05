@@ -121,6 +121,13 @@ jobs:
   backend-test:
     name: Backend (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # A shard is ~7 min; every sibling matrix job in this file caps itself at
+    # 20-25. This one didn't, so it inherited GitHub's 360-minute default and a
+    # hung shard sat on a runner for six hours instead of failing. Observed on
+    # PR #366, where shards 1-3 finished in ~14 min and shard 4 was still
+    # "in_progress" 40 minutes in with no output. 25 leaves generous headroom
+    # over the whole serial suite (~27 min) while making a hang terminate.
+    timeout-minutes: 25
 
     strategy:
       # One shard failing shouldn't cancel the others — mirrors the e2e matrix

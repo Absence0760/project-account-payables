@@ -149,7 +149,7 @@ MAX_DUPLICATE_CANDIDATES = 500
 
 
 def normalize_invoice_number(value: str | None) -> str | None:
-    """Canonical comparison form of an invoice number. Pure.
+    r"""Canonical comparison form of an invoice number. Pure.
 
     Three steps, deliberately in this order:
 

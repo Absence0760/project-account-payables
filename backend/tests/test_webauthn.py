@@ -30,6 +30,19 @@ RP_ID = "localhost"
 ORIGIN = "http://localhost:7777"
 
 
+def platform_rp():
+    """The resolved Relying Party the dev defaults produce.
+
+    Every ceremony function now takes the RP explicitly (no config read inside),
+    so tests state it the same way a route does — via the resolver, not a
+    hand-built dataclass, so a change to how the platform RP is derived is felt
+    here too.
+    """
+    from app.services import webauthn_rp
+
+    return webauthn_rp.platform_relying_party()
+
+
 # ---------------------------------------------------------------------------
 # In-test software authenticator
 # ---------------------------------------------------------------------------
@@ -147,10 +160,10 @@ def fake_redis(monkeypatch):
 @pytest.fixture(autouse=True)
 def _webauthn_settings(monkeypatch):
     """Pin RP id / origin to the dev defaults the software authenticator uses."""
-    from app.services import webauthn
+    from app.services import webauthn, webauthn_rp
 
-    monkeypatch.setattr(webauthn.settings, "webauthn_rp_id", RP_ID)
-    monkeypatch.setattr(webauthn.settings, "webauthn_origins", ORIGIN)
+    monkeypatch.setattr(webauthn_rp.settings, "webauthn_rp_id", RP_ID)
+    monkeypatch.setattr(webauthn_rp.settings, "webauthn_origins", ORIGIN)
     monkeypatch.setattr(webauthn.settings, "webauthn_challenge_ttl_seconds", 300)
 
 
@@ -173,6 +186,7 @@ def test_registration_round_trip(fake_redis):
             user_name="user@acme.com",
             user_display_name="Acme User",
             existing_credential_ids=[],
+            rp=platform_rp(),
         )
     )
     assert json.loads(options_json)["rp"]["id"] == RP_ID
@@ -181,7 +195,9 @@ def test_registration_round_trip(fake_redis):
 
     auth = SoftAuthenticator()
     response = auth.create(_challenge_from_options(options_json))
-    fields = asyncio.run(webauthn.finish_registration(user_id=user_id, credential_json=response))
+    fields = asyncio.run(
+        webauthn.finish_registration(user_id=user_id, credential_json=response, rp=platform_rp())
+    )
     assert fields["credential_id"] == bytes_to_base64url(auth.credential_id)
     assert fields["public_key"]
     assert fields["sign_count"] == 0
@@ -200,14 +216,21 @@ def test_registration_rejects_replayed_challenge(fake_redis):  # noqa: ARG001
             user_name="u@x.com",
             user_display_name="U",
             existing_credential_ids=[],
+            rp=platform_rp(),
         )
     )
     auth = SoftAuthenticator()
     response = auth.create(_challenge_from_options(options_json))
-    asyncio.run(webauthn.finish_registration(user_id=user_id, credential_json=response))
+    asyncio.run(
+        webauthn.finish_registration(user_id=user_id, credential_json=response, rp=platform_rp())
+    )
     # Second verify with the same response — challenge already consumed
     with pytest.raises(webauthn.WebAuthnError):
-        asyncio.run(webauthn.finish_registration(user_id=user_id, credential_json=response))
+        asyncio.run(
+            webauthn.finish_registration(
+                user_id=user_id, credential_json=response, rp=platform_rp()
+            )
+        )
 
 
 def test_registration_rejects_bad_origin(fake_redis):  # noqa: ARG001
@@ -216,7 +239,11 @@ def test_registration_rejects_bad_origin(fake_redis):  # noqa: ARG001
     user_id = uuid.uuid4()
     options_json = asyncio.run(
         webauthn.begin_registration(
-            user_id=user_id, user_name="u@x.com", user_display_name="U", existing_credential_ids=[]
+            user_id=user_id,
+            user_name="u@x.com",
+            user_display_name="U",
+            existing_credential_ids=[],
+            rp=platform_rp(),
         )
     )
     auth = SoftAuthenticator()
@@ -232,7 +259,9 @@ def test_registration_rejects_bad_origin(fake_redis):  # noqa: ARG001
     tampered["response"]["clientDataJSON"] = bytes_to_base64url(bad_client_data)
     with pytest.raises(webauthn.WebAuthnError):
         asyncio.run(
-            webauthn.finish_registration(user_id=user_id, credential_json=json.dumps(tampered))
+            webauthn.finish_registration(
+                user_id=user_id, credential_json=json.dumps(tampered), rp=platform_rp()
+            )
         )
 
 
@@ -244,12 +273,18 @@ def test_registration_rejects_bad_origin(fake_redis):  # noqa: ARG001
 def _register(webauthn, user_id) -> tuple[SoftAuthenticator, dict]:
     options_json = asyncio.run(
         webauthn.begin_registration(
-            user_id=user_id, user_name="u@x.com", user_display_name="U", existing_credential_ids=[]
+            user_id=user_id,
+            user_name="u@x.com",
+            user_display_name="U",
+            existing_credential_ids=[],
+            rp=platform_rp(),
         )
     )
     auth = SoftAuthenticator()
     response = auth.create(_challenge_from_options(options_json))
-    fields = asyncio.run(webauthn.finish_registration(user_id=user_id, credential_json=response))
+    fields = asyncio.run(
+        webauthn.finish_registration(user_id=user_id, credential_json=response, rp=platform_rp())
+    )
     return auth, fields
 
 
@@ -266,6 +301,7 @@ def test_authentication_round_trip(fake_redis):  # noqa: ARG001
                 {"credential_id": fields["credential_id"], "transports": fields["transports"]}
             ],
             purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+            rp=platform_rp(),
         )
     )
     response = auth.get(_challenge_from_options(options_json))
@@ -276,6 +312,7 @@ def test_authentication_round_trip(fake_redis):  # noqa: ARG001
             stored_public_key=fields["public_key"],
             stored_sign_count=fields["sign_count"],
             purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+            rp=platform_rp(),
         )
     )
     # Software authenticator bumps its counter on get(); new count must advance
@@ -293,6 +330,7 @@ def test_authentication_rejects_counter_regression(fake_redis):  # noqa: ARG001
             user_id=user_id,
             credentials=[{"credential_id": fields["credential_id"], "transports": None}],
             purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+            rp=platform_rp(),
         )
     )
     response = auth.get(_challenge_from_options(options_json))
@@ -305,6 +343,7 @@ def test_authentication_rejects_counter_regression(fake_redis):  # noqa: ARG001
                 stored_public_key=fields["public_key"],
                 stored_sign_count=99,
                 purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+                rp=platform_rp(),
             )
         )
 
@@ -321,6 +360,7 @@ def test_authentication_rejects_wrong_key(fake_redis):  # noqa: ARG001
             user_id=user_id,
             credentials=[{"credential_id": fields["credential_id"], "transports": None}],
             purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+            rp=platform_rp(),
         )
     )
     response = auth.get(_challenge_from_options(options_json))
@@ -332,6 +372,7 @@ def test_authentication_rejects_wrong_key(fake_redis):  # noqa: ARG001
                 stored_public_key=other_fields["public_key"],  # wrong key
                 stored_sign_count=0,
                 purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+                rp=platform_rp(),
             )
         )
 
@@ -351,6 +392,7 @@ def test_authentication_missing_challenge(fake_redis):  # noqa: ARG001
                 stored_public_key=fields["public_key"],
                 stored_sign_count=0,
                 purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+                rp=platform_rp(),
             )
         )
 
@@ -371,12 +413,13 @@ def test_extract_credential_id():
 
 
 def test_allowed_origins_falls_back(monkeypatch):
-    from app.services import webauthn
+    """The origin list now lives on the RP resolver, not the ceremony module."""
+    from app.services import webauthn_rp
 
-    monkeypatch.setattr(webauthn.settings, "webauthn_origins", "")
-    assert webauthn._allowed_origins() == ["http://localhost:7777"]
-    monkeypatch.setattr(webauthn.settings, "webauthn_origins", "https://a.com, https://b.com")
-    assert webauthn._allowed_origins() == ["https://a.com", "https://b.com"]
+    monkeypatch.setattr(webauthn_rp.settings, "webauthn_origins", "")
+    assert webauthn_rp.platform_origins() == ("http://localhost:7777",)
+    monkeypatch.setattr(webauthn_rp.settings, "webauthn_origins", "https://a.com, https://b.com")
+    assert webauthn_rp.platform_origins() == ("https://a.com", "https://b.com")
 
 
 def test_round_trips_public_key_is_decodable(fake_redis):  # noqa: ARG001
@@ -393,27 +436,45 @@ def test_verify_origin_exact_and_wildcard(monkeypatch):
     multi-tenant deployment doesn't need an env change per tenant — while
     suffix look-alikes, scheme downgrades, ports, and userinfo tricks stay
     rejected, and the bare base needs its own exact entry."""
-    from app.services import webauthn
+    from app.services import webauthn, webauthn_rp
 
     monkeypatch.setattr(
-        webauthn.settings,
+        webauthn_rp.settings,
         "webauthn_origins",
         "https://app.example.com, https://*.app.example.com",
     )
-    assert webauthn._verify_origin_ok("https://app.example.com")
-    assert webauthn._verify_origin_ok("https://acme.app.example.com")
-    assert webauthn._verify_origin_ok("https://a.b.app.example.com")
+    assert webauthn._verify_origin_ok("https://app.example.com", webauthn_rp.platform_origins())
+    assert webauthn._verify_origin_ok(
+        "https://acme.app.example.com", webauthn_rp.platform_origins()
+    )
+    assert webauthn._verify_origin_ok("https://a.b.app.example.com", webauthn_rp.platform_origins())
 
-    monkeypatch.setattr(webauthn.settings, "webauthn_origins", "https://*.app.example.com")
-    assert not webauthn._verify_origin_ok("https://app.example.com")
-    assert not webauthn._verify_origin_ok("https://evilapp.example.com")
-    assert not webauthn._verify_origin_ok("http://acme.app.example.com")
-    assert not webauthn._verify_origin_ok("https://acme.app.example.com:8443")
-    assert not webauthn._verify_origin_ok("https://evil.com@acme.app.example.com")
-    assert not webauthn._verify_origin_ok("https://evil.com/?x=.app.example.com")
-    assert not webauthn._verify_origin_ok("https://foo..app.example.com")
-    assert not webauthn._verify_origin_ok("https://.app.example.com")
+    monkeypatch.setattr(webauthn_rp.settings, "webauthn_origins", "https://*.app.example.com")
+    assert not webauthn._verify_origin_ok("https://app.example.com", webauthn_rp.platform_origins())
+    assert not webauthn._verify_origin_ok(
+        "https://evilapp.example.com", webauthn_rp.platform_origins()
+    )
+    assert not webauthn._verify_origin_ok(
+        "http://acme.app.example.com", webauthn_rp.platform_origins()
+    )
+    assert not webauthn._verify_origin_ok(
+        "https://acme.app.example.com:8443", webauthn_rp.platform_origins()
+    )
+    assert not webauthn._verify_origin_ok(
+        "https://evil.com@acme.app.example.com", webauthn_rp.platform_origins()
+    )
+    assert not webauthn._verify_origin_ok(
+        "https://evil.com/?x=.app.example.com", webauthn_rp.platform_origins()
+    )
+    assert not webauthn._verify_origin_ok(
+        "https://foo..app.example.com", webauthn_rp.platform_origins()
+    )
+    assert not webauthn._verify_origin_ok(
+        "https://.app.example.com", webauthn_rp.platform_origins()
+    )
 
     # Malformed wildcard entries never match anything.
-    monkeypatch.setattr(webauthn.settings, "webauthn_origins", "https://*.")
-    assert not webauthn._verify_origin_ok("https://acme.app.example.com")
+    monkeypatch.setattr(webauthn_rp.settings, "webauthn_origins", "https://*.")
+    assert not webauthn._verify_origin_ok(
+        "https://acme.app.example.com", webauthn_rp.platform_origins()
+    )

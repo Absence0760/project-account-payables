@@ -76,6 +76,16 @@ export function cancelRequisition(id: string, reason?: string): Promise<Requisit
 	return api.post<Requisition>(`/api/requisitions/${id}/cancel`, { reason: reason ?? null });
 }
 
+// Rework loop: `rejected -> draft`. Gated `require_roles(ADMIN, AP_MANAGER,
+// AP_CLERK)` on the backend — the same set that may create/submit/cancel, and
+// deliberately NOT the approve/reject set (which includes the CFO but not the
+// clerk): reopening is the buyer redoing their own ask, not a decision.
+// `submitted_at` is cleared server-side; the rejection reason stays on the row
+// as the brief for the rework.
+export function reopenRequisition(id: string): Promise<Requisition> {
+	return api.post<Requisition>(`/api/requisitions/${id}/reopen`, {});
+}
+
 // --- Convert to PO (idempotent) ---
 
 export function convertRequisitionToPo(id: string): Promise<ConvertToPoResult> {

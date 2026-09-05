@@ -3328,3 +3328,243 @@ CI pin means production builds on a runtime CI never tested, and that
 disagreement is invisible until it breaks. Separately, the `# vN.N.N` comment
 beside `setup-node`'s SHA pin read `v6.0.0` at eight of nine sites against a SHA
 that is really `v7.0.0`; Scorecard reads the SHA, so nothing caught it.
+
+---
+
+## 86. A vanity host is a hostname the SPA must recognise, not a slug it can parse
+
+**Decided:** 2026-09-05 · `frontend/src/lib/hostRouting.ts`, `frontend/src/lib/tenant.ts`, `frontend/src/routes/+layout.svelte`, `frontend/src/routes/portal/+layout.svelte`
+
+White-label custom domains had shipped, were documented, had an admin panel and
+a provisioning runbook — and could not work. `backend/app/tenant.py` maps an
+inbound `Host` to a tenant, but only when `X-Tenant-Slug` is **absent**, and the
+SPA's rule was "the first label of any 3+-label hostname". So `ap.acmecorp.com`
+pointed at tenant `acme` sent `X-Tenant-Slug: ap` and every call 404'd
+`Unknown tenant: ap`. A bare apex sent no header but still called the
+*build-time* `PUBLIC_API_URL` origin, so the backend never saw the vanity `Host`
+either. The feature was unreachable in both shipped deployment shapes, and the
+`/organization` panel's own placeholder was the broken case.
+
+Three calls worth recording.
+
+**The fix is classification, not validation.** The cheap option on the table was
+to reject any custom domain whose first label isn't the tenant slug, forcing
+`acme.acmecorp.com`. That makes the panel honest but keeps the product narrower
+than what customers buy a vanity domain for. Instead the SPA now classifies a
+hostname against an operator-declared `PUBLIC_PLATFORM_DOMAINS`: a platform
+subdomain yields a slug, and **anything else deliberately yields none**, so the
+`Host` fallback the backend already had is finally reachable. Sending a guessed
+slug is strictly worse than sending nothing, because the header is what
+suppresses the lookup.
+
+**Unset config replays the old rule exactly.** The tempting default for an empty
+list is "then no host is a platform host" — which would have made every existing
+static build stop sending `X-Tenant-Slug` on upgrade and fall back to a `Host`
+map with no entries. Total breakage, in exchange for a feature nobody had
+enabled. The cost of the safe default is that custom domains stay unreachable
+until an operator opts in, which both docs state plainly. The var is read
+through `$env/dynamic/public`, not `static`, because a static import of an unset
+variable is a hard build error and thirteen-plus CI and deploy sites pass only
+`PUBLIC_API_URL`.
+
+**Suppressing the header is only half of it.** A vanity host that still calls
+the build-time API origin hands the backend the *platform's* `Host`. Only a
+same-origin request carries the vanity hostname, so the API base is now resolved
+at runtime and collapses to `/api` on a vanity host. That turns "terminate
+`/api` on the same origin" into an operator requirement rather than an
+implementation detail, which is why it is in the runbook and the panel's own
+help text rather than only in code.
+
+The layouts are the part that would have made all of the above still not work:
+both gated rendering on `getTenantSlug()`, so a correct `null` on a vanity host
+rendered the **marketing landing page** to a paying customer on their own
+domain. They now gate on `hasTenantContext()` — "does this host carry a tenant",
+which is a different question from "what is its slug", and the only one a render
+gate should ask.
+
+---
+
+## 87. A passkey's relying party comes from the account's org, never from the header
+
+**Decided:** 2026-09-05 · `backend/app/services/webauthn_rp.py`, `backend/alembic/versions/0091_webauthn_credential_rp_id.py`
+
+A WebAuthn credential is bound to one registrable domain, and
+`FEOH_WEBAUTHN_RP_ID` was a single global — so a tenant on a vanity host had a
+strictly reduced second-factor menu. Making the RP ID per-tenant means deriving
+it from a hostname, and the hostname arrives in a client-supplied header, so the
+whole question is what makes that safe.
+
+The answer is that the `Host` is never *trusted*, only *matched*. The
+custom-domain list consulted belongs to the org that owns **the account the
+ceremony is for**, resolved through `user.organization_id` — not to a tenant
+looked up from the header. A forged host, an unknown host, and another tenant's
+genuinely-registered vanity domain are therefore all the same thing here: not on
+this account's list, so the platform RP applies. Fail closed, with no branch
+where an attacker-supplied string becomes the relying party.
+
+Register and authenticate agreeing is enforced rather than intended: the RP ID
+is bound into the single-use Redis challenge and re-checked on finish, so a
+ceremony begun on one host and completed on another is refused instead of
+persisting a credential bound to a domain the authenticator never signed. A host
+already *under* the platform RP ID keeps the platform RP even if separately
+registered, so existing passkeys are never stranded.
+
+**The migration story was implemented, not deferred**, because the honest
+version of "passkeys now work per-tenant" is that a credential registered on the
+platform subdomain genuinely cannot be presented on a vanity host — that is
+WebAuthn, not a bug to code around. So it is made legible instead of silent:
+`webauthn_credentials.rp_id` records where each credential lives, the list
+endpoint reports `usable_here`, and the authenticate and step-up paths name the
+host an account's passkeys belong to rather than failing opaquely. That message
+is deliberately *not* opaque — the caller has already proved account control and
+the hosts named are the tenant's own — while an account with **no** passkey at
+all keeps the opaque answer, so the difference can't be used to probe whether a
+factor is enrolled.
+
+---
+
+## 88. Two ERP push paths, and the one with the retry was the unreachable one
+
+**Decided:** 2026-09-05 · `backend/app/services/erp.py`
+
+`erp.py` carried `send_to_erp` and `send_to_erp_internal`. Production reached
+only the second — `api/workflow.py` transitions the invoice itself and then
+dispatches, so `erp_dispatch` and `erp_lambda` both call `_internal`. The two
+had diverged on the thing that matters: `send_to_erp` had a 3-attempt
+exponential backoff, and the reachable one had **no retry at all**, sending a
+transient 503 or timeout straight to `InvoiceStatus.failed`.
+
+The retry semantics were *tested but not shipped*, which is exactly why nobody
+noticed: `test_erp_push_flow.py` called it "the load-bearing path",
+`test_erp_adapter_idempotency.py` opened by citing its retry loop, and
+`retry_erp` reset an `erp_retries` counter nothing in production ever
+incremented. Every one of those statements was false. This is the same shape as
+the diverged DPO calculation in §31 — two copies of one computation, the
+unreachable one carrying the behaviour everyone believed in.
+
+The retry moved to the reachable function and the copy was deleted, rather than
+the reverse. Retrying automatically is safe here specifically because `_call_erp`
+sends the invoice's `correlation_id` as the adapter's idempotency key, so a
+retry after a timeout the ERP actually applied returns the existing document
+instead of posting a second vendor bill. The transaction is committed before
+each backoff sleep: `erp_dispatch` builds a `pool_size=1` engine per send, and
+sleeping with the connection checked out would pin a worker slot for the whole
+backoff instead of just the call.
+
+Deleting the twin, rather than keeping it as the "full" entry point, is the
+point of the change. A second push path is what allowed the divergence, and
+nothing can drift against a function that no longer exists.
+
+---
+
+## 89. Half a validated pair is the worse failure
+
+**Decided:** 2026-09-05 · `backend/app/schemas/vendor.py`
+
+`validate_bank_routing_fields` is the documented chokepoint every bank-detail
+write passes through — the AP staging path, the supplier portal, and
+`approve_change_request`, where the dual-control BEC sign-off is applied. It
+validated `routing_number`, `wire_routing_number` and `sort_code`.
+`validate_uk_account_number` existed in `utils/banking.py`, was tested, and was
+reached by nothing.
+
+A UK payee is identified by the sort code **and** the account number together.
+Checking one half meant a valid sort code alongside a five-digit account number
+cleared staging, cleared the second approver, and surfaced days later as a
+returned or misdirected payment — precisely the outcome the module's own
+docstring says it exists to prevent. The asymmetry was invisible because the
+sort-code half *was* checked, so the payload looked validated.
+
+The account number is validated exactly when a sort code is present, and
+deliberately not otherwise: `account_number` is the generic key every rail uses,
+and a US or IBAN payee's is not eight digits. Validating it unconditionally
+would refuse most real payees — the failure mode this gate must never have.
+
+---
+
+## 90. Conformance rules are asserted only where we hold the whole list
+
+**Decided:** 2026-09-05 · `backend/app/services/e_invoice/{en16931_rules,codelists}.py`
+
+`bis3_conformance_errors` gates whether we declare BIS Billing 3.0 at all, so a
+document that fails it provably does not conform — that asymmetry is what makes
+the conditional declaration sound. It checked mandatory elements only, so a
+document that *passed* could still fail the real validator on arithmetic.
+
+Implementing the EN 16931 calculation rules immediately earned its keep: the
+generator mapped `Invoice.subtotal` into both BT-106 (sum of line nets) and
+BT-109 (total without VAT), but `subtotal` is derived before discount and
+shipping apply. **Every invoice carrying a discount or a shipping charge went
+out contradicting itself three ways** — BR-CO-13, BR-CO-15 and BR-CO-17 — with
+our conformance claim stamped on it. Fixed at the source in `mapper.py`, not by
+relaxing the rule.
+
+The judgment call is on code lists. Currency, country, VAT category and document
+type are enforced as membership, because those lists can be held completely.
+Unit of measure, payment means and the EAS scheme get a **shape check only**: a
+curated partial list would 422 a genuinely conforming send on a rare-but-valid
+code, and since this gate hard-refuses, refusing a conforming document is a
+worse failure than the detection gap it would close. That follows the precedent
+`tax_rules.py` already set — an unknown country is skipped, never rejected. For
+the same reason the lists lean deliberately inclusive: over-inclusion only
+weakens detection, under-inclusion refuses real documents.
+
+The official Schematron is still not vendored, so a pass remains "nothing we can
+compute objects", not a conformance guarantee. The failure direction is the one
+that carries the weight, and it is unchanged.
+
+---
+
+## 91. One tenant-URL resolver, and the two call sites deliberately left out of it
+
+**Decided:** 2026-09-05 · `backend/app/utils/tenant_urls.py`, `backend/app/api/organization.py`
+
+`FEOH_TENANT_URL_TEMPLATE` was one global with `{slug}` substituted inline at
+every call site, so a tenant reachable at its own hostname still got approval
+links, portal invites and password resets pointing at
+`<slug>.<platform-domain>` — working links that undo the white-label the vanity
+domain was bought for. The follow-up named six call sites; there were **ten**.
+Two of the extra ones are why the count matters: `services/supplier_chat.py` did
+its own substitution, and `services/card_issuance.py` did it on `api/payments`'
+behalf through an `org_slug` parameter, so neither read as a template call site
+from the outside.
+
+The per-org override is a *complete* base URL and the global is slug-shaped by
+construction, so `{slug}` is optional in the resolver: substituted when present,
+used verbatim when not. One rule, both sources. Rejected: a separate "vanity
+host" setting alongside the template, which is two spellings of one question.
+Substitution is `.replace`, not `.format` — a template is operator- and
+admin-supplied text, and `str.format` raises on any unrelated brace; the chat
+link used `.format` inside a bare `except`, so a stray `{` silently dropped the
+link from the email.
+
+**An empty result is a real answer.** Every caller now omits the URL line rather
+than fabricating one, and the two callers carrying their own hardcoded
+`http://{slug}.localhost:7777` dev fallback lost it. `_password_reset_url`
+returning nothing skips the email entirely instead of sending a relative
+`/login/reset-password?token=…` — a dead link that also burns a live single-use
+credential. The endpoint's generic response is unchanged, so this introduces no
+enumeration difference.
+
+**SSO stays on the global template on purpose**, and this is the part that is
+not laziness. The OIDC `redirect_uri` and the SAML bridge URL are values
+*registered with the customer's IdP*. Re-pointing them at a vanity host silently
+breaks every SSO login until the operator re-registers them — an
+operator-sequenced migration, not a config read. The "convert everything"
+reading of the follow-up was rejected, and both exemptions are asserted in the
+drift guard so they read as decisions rather than misses.
+
+**The platform domain is derived, not declared.** It comes from
+`FEOH_TENANT_URL_TEMPLATE`'s own host with the `{slug}` label stripped, because
+that is where the platform's hostname shape already lives; a new env var would
+be a second source that can disagree with the first. It is what lets
+`PUT /branding/custom-domains` refuse a host under the platform domain — such a
+host is already routed by subdomain, so registering it hands the custom-domain
+resolver and the subdomain resolver conflicting claims on one name, and lets one
+tenant claim a hostname another tenant's slug owns or takes at the next signup.
+
+**Adding a field to `BrandConfig` widens an unauthenticated endpoint.**
+`GET /portal/branding` is public-by-design and returns the whole config, so the
+new field would have published a staged, not-yet-cut-over vanity hostname to
+anyone who asked. It is blanked there explicitly. The general rule this records:
+a new `BrandConfig` field needs a publish / don't-publish call, not a default.

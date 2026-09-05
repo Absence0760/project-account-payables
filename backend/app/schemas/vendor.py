@@ -5,7 +5,11 @@ from pydantic import BaseModel, Field, model_validator
 from app.api.pagination import PageMeta
 from app.schemas.sanctions import ScreeningReviewItem
 from app.services.vendor_consolidation import mask_tax_id
-from app.utils.banking import validate_aba_routing, validate_uk_sort_code
+from app.utils.banking import (
+    validate_aba_routing,
+    validate_uk_account_number,
+    validate_uk_sort_code,
+)
 
 # Bulk-status targets a human may legitimately drive over a hand-picked set of
 # vendors — the same two the single-row `POST /{vendor_id}/verify` /
@@ -57,6 +61,18 @@ def validate_bank_routing_fields(details: dict) -> dict:
     sort_code = details.get("sort_code")
     if sort_code and not validate_uk_sort_code(sort_code):
         raise ValueError("sort_code is not a valid 6-digit UK sort code")
+    # A UK payee is identified by the sort code + account number PAIR, so the
+    # account number is checked exactly when a sort code is present. It is
+    # deliberately NOT checked otherwise: `account_number` is the generic key
+    # every rail uses, and a US or IBAN payee's is not 8 digits — validating it
+    # unconditionally would refuse most real payees. Checking only the sort-code
+    # half left the pair half-validated, which is the worse failure: a valid
+    # sort code alongside a 5-digit account number cleared staging AND the
+    # second-approver BEC sign-off, and surfaced days later as a returned or
+    # misdirected payment — the exact outcome this module exists to prevent.
+    account_number = details.get("account_number")
+    if sort_code and account_number and not validate_uk_account_number(account_number):
+        raise ValueError("account_number is not a valid 8-digit UK account number")
     return details
 
 

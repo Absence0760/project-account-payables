@@ -18,16 +18,22 @@ challenge. Nothing here logs credential material; the WebAuthn public key is not
 a secret in the password sense (the private key never leaves the authenticator),
 so there is no bcrypt/sops concern — but we still keep it out of logs.
 
-RP ID / allowed origins are configurable (``FEOH_WEBAUTHN_RP_ID`` /
-``FEOH_WEBAUTHN_ORIGINS``) so the same code runs on ``localhost`` in dev and a
-real apex in production. Local-first: the defaults work on
-``*.localhost:7777`` with no cloud account.
+The RP ID / allowed origins are NOT read from config here. They are resolved
+per request by ``services/webauthn_rp`` (from the host the ceremony is actually
+running on, validated against the tenant's registered custom domains) and passed
+in as a ``RelyingParty`` — a required argument on every ceremony function, with
+no default, so a call site cannot silently fall back to a different RP than the
+one its counterpart used. The RP ID the ``begin`` step minted under is also
+stored alongside the challenge and re-checked on ``finish``, so a ceremony
+started on one host can never be completed against another. Local-first: the
+defaults still work on ``*.localhost:7777`` with no cloud account.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 
 from webauthn import (
     generate_authentication_options,
@@ -51,6 +57,7 @@ from webauthn.helpers.structs import (
 
 from app.config import settings
 from app.redis import get_redis
+from app.services.webauthn_rp import RelyingParty
 
 # Redis key namespaces for the per-ceremony challenge. Distinct prefixes keep a
 # registration challenge from satisfying an authentication verify and vice
@@ -88,12 +95,6 @@ class WebAuthnError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _allowed_origins() -> list[str]:
-    raw = settings.webauthn_origins or ""
-    origins = [o.strip() for o in raw.split(",") if o.strip()]
-    return origins or ["http://localhost:7777"]
-
-
 def _origin_matches(seen_origin: str, allowed: str) -> bool:
     """Exact match, or a wildcard-subdomain entry.
 
@@ -124,15 +125,57 @@ def _origin_matches(seen_origin: str, allowed: str) -> bool:
     return all(sub.split(".")) and not any(c in sub for c in "/:@?#")
 
 
-def _verify_origin_ok(seen_origin: str) -> bool:
+def _verify_origin_ok(seen_origin: str, allowed_origins: Sequence[str]) -> bool:
     """py_webauthn's verify takes a single expected_origin (or list, version
-    dependent). We pre-check against our allowed set so a multi-tenant /
-    multi-origin deployment works regardless of the library's list support."""
-    return any(_origin_matches(seen_origin, allowed) for allowed in _allowed_origins())
+    dependent). We pre-check against the resolved RP's allowed set so a
+    multi-tenant / multi-origin / vanity-domain deployment works regardless of
+    the library's list support."""
+    return any(_origin_matches(seen_origin, allowed) for allowed in allowed_origins)
 
 
 def _redis_key(prefix: str, user_id: uuid.UUID) -> str:
     return f"{prefix}{user_id}"
+
+
+def _encode_challenge(challenge: bytes, rp: RelyingParty) -> str:
+    """Stash value for a minted challenge: the challenge PLUS the RP ID it was
+    minted under.
+
+    Binding the two is what makes "register and authenticate resolve the same
+    RP ID" enforceable rather than merely intended. Both steps resolve through
+    ``services/webauthn_rp``, but a ceremony could still be *started* on one
+    host and *finished* on another (the browser sends whatever Host it likes on
+    the second call). The finish step compares the RP it resolved against the
+    one recorded here and refuses a mismatch, so a half-host-swapped ceremony
+    fails loudly instead of producing a credential bound to a domain the user
+    never saw.
+    """
+    return json.dumps({"c": bytes_to_base64url(challenge), "rp": rp.rp_id})
+
+
+def _decode_challenge(stored: bytes | str, rp: RelyingParty) -> bytes:
+    """Inverse of ``_encode_challenge``; raises ``WebAuthnError`` on a
+    host-swapped ceremony.
+
+    A bare (non-JSON) value is a challenge minted by a pre-per-host worker
+    during a rolling deploy — accepted, with no RP binding to check, so an
+    in-flight ceremony isn't broken by the deploy itself. Those expire within
+    ``FEOH_WEBAUTHN_CHALLENGE_TTL_SECONDS``.
+    """
+    raw = stored.decode("utf-8") if isinstance(stored, bytes) else stored
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        payload = None
+    if not isinstance(payload, dict):
+        return base64url_to_bytes(raw)
+    bound_rp = payload.get("rp")
+    if isinstance(bound_rp, str) and bound_rp != rp.rp_id:
+        raise WebAuthnError("Ceremony started on a different host")
+    challenge = payload.get("c")
+    if not isinstance(challenge, str):
+        raise WebAuthnError("Malformed challenge")
+    return base64url_to_bytes(challenge)
 
 
 def _assertion_challenge_key(user_id: uuid.UUID, *, purpose: str, operation: str | None) -> str:
@@ -166,6 +209,7 @@ async def begin_registration(
     user_name: str,
     user_display_name: str,
     existing_credential_ids: list[str],
+    rp: RelyingParty,
 ) -> str:
     """Mint registration options the browser feeds to
     ``navigator.credentials.create()``. Returns the options as a JSON string
@@ -175,12 +219,16 @@ async def begin_registration(
     ``finish_registration`` verifies against a value the client never chose.
     ``existing_credential_ids`` are excluded so a user can't double-register the
     same authenticator.
+
+    ``rp`` is the resolved Relying Party for THIS request (see
+    ``services/webauthn_rp``) — the credential the browser mints is permanently
+    bound to ``rp.rp_id``, so the caller must persist it alongside the row.
     """
     exclude = [
         PublicKeyCredentialDescriptor(id=base64url_to_bytes(cid)) for cid in existing_credential_ids
     ]
     options = generate_registration_options(
-        rp_id=settings.webauthn_rp_id,
+        rp_id=rp.rp_id,
         rp_name=settings.webauthn_rp_name,
         user_id=str(user_id).encode("utf-8"),
         user_name=user_name,
@@ -197,7 +245,7 @@ async def begin_registration(
     await r.setex(
         _redis_key(_REG_CHALLENGE_PREFIX, user_id),
         settings.webauthn_challenge_ttl_seconds,
-        bytes_to_base64url(options.challenge),
+        _encode_challenge(options.challenge, rp),
     )
     return options_to_json(options)
 
@@ -206,13 +254,21 @@ async def finish_registration(
     *,
     user_id: uuid.UUID,
     credential_json: str,
+    rp: RelyingParty,
 ) -> dict:
     """Verify the browser's ``create()`` response against the stashed challenge.
 
     On success returns a dict of the row fields to persist:
-    ``{credential_id, public_key, sign_count, transports}`` (all base64url where
-    binary). Raises ``WebAuthnError`` on any failure. The challenge is consumed
-    (single-use) regardless of outcome so a captured response can't be replayed.
+    ``{credential_id, public_key, sign_count, transports, rp_id}`` (all base64url
+    where binary). Raises ``WebAuthnError`` on any failure. The challenge is
+    consumed (single-use) regardless of outcome so a captured response can't be
+    replayed.
+
+    ``rp`` must be the SAME Relying Party ``begin_registration`` minted under —
+    ``_decode_challenge`` enforces that, so a ceremony started on the platform
+    host and finished on a vanity one (or vice versa) fails instead of storing a
+    credential under an RP ID the authenticator never signed. ``rp_id`` is
+    returned so the caller persists what this credential is bound to.
     """
     r = await get_redis()
     key = _redis_key(_REG_CHALLENGE_PREFIX, user_id)
@@ -220,19 +276,17 @@ async def finish_registration(
     await r.delete(key)  # single-use: consume even on the failure path
     if not stored:
         raise WebAuthnError("Registration challenge expired or missing")
-    expected_challenge = base64url_to_bytes(
-        stored.decode("utf-8") if isinstance(stored, bytes) else stored
-    )
+    expected_challenge = _decode_challenge(stored, rp)
 
     seen_origin = _extract_origin(credential_json)
-    if not seen_origin or not _verify_origin_ok(seen_origin):
+    if not seen_origin or not _verify_origin_ok(seen_origin, rp.origins):
         raise WebAuthnError("Origin not allowed")
 
     try:
         verified = verify_registration_response(
             credential=credential_json,
             expected_challenge=expected_challenge,
-            expected_rp_id=settings.webauthn_rp_id,
+            expected_rp_id=rp.rp_id,
             expected_origin=seen_origin,
             require_user_verification=False,
         )
@@ -245,6 +299,7 @@ async def finish_registration(
         "public_key": bytes_to_base64url(verified.credential_public_key),
         "sign_count": verified.sign_count,
         "transports": ",".join(transports) if transports else None,
+        "rp_id": rp.rp_id,
     }
 
 
@@ -258,6 +313,7 @@ async def begin_authentication(
     user_id: uuid.UUID,
     credentials: list[dict],
     purpose: str,
+    rp: RelyingParty,
     operation: str | None = None,
 ) -> str:
     """Mint authentication options for ``navigator.credentials.get()``.
@@ -287,7 +343,7 @@ async def begin_authentication(
             )
         )
     options = generate_authentication_options(
-        rp_id=settings.webauthn_rp_id,
+        rp_id=rp.rp_id,
         allow_credentials=allow,
         user_verification=UserVerificationRequirement.PREFERRED,
     )
@@ -295,7 +351,7 @@ async def begin_authentication(
     await r.setex(
         _assertion_challenge_key(user_id, purpose=purpose, operation=operation),
         settings.webauthn_challenge_ttl_seconds,
-        bytes_to_base64url(options.challenge),
+        _encode_challenge(options.challenge, rp),
     )
     return options_to_json(options)
 
@@ -307,6 +363,7 @@ async def finish_authentication(
     stored_public_key: str,
     stored_sign_count: int,
     purpose: str,
+    rp: RelyingParty,
     operation: str | None = None,
 ) -> int:
     """Verify the browser's ``get()`` response. Returns the new signature
@@ -316,7 +373,10 @@ async def finish_authentication(
     ``purpose`` / ``operation`` must match the ones the challenge was minted
     under — they select the Redis slot, so an assertion produced for a different
     purpose simply doesn't match the value stored here and fails like any other
-    bad signature.
+    bad signature. ``rp`` must likewise match the one ``begin_authentication``
+    minted under, and must be the RP the presented credential is bound to — the
+    caller filters by that before getting here so a cross-host passkey is
+    reported as such rather than surfacing as an opaque signature failure.
 
     The caller resolves which ``WebAuthnCredential`` row to pass in by matching
     the response's credential id (``extract_credential_id``) before calling this.
@@ -327,19 +387,17 @@ async def finish_authentication(
     await r.delete(key)
     if not stored:
         raise WebAuthnError("Authentication challenge expired or missing")
-    expected_challenge = base64url_to_bytes(
-        stored.decode("utf-8") if isinstance(stored, bytes) else stored
-    )
+    expected_challenge = _decode_challenge(stored, rp)
 
     seen_origin = _extract_origin(credential_json)
-    if not seen_origin or not _verify_origin_ok(seen_origin):
+    if not seen_origin or not _verify_origin_ok(seen_origin, rp.origins):
         raise WebAuthnError("Origin not allowed")
 
     try:
         verified = verify_authentication_response(
             credential=credential_json,
             expected_challenge=expected_challenge,
-            expected_rp_id=settings.webauthn_rp_id,
+            expected_rp_id=rp.rp_id,
             expected_origin=seen_origin,
             credential_public_key=base64url_to_bytes(stored_public_key),
             credential_current_sign_count=stored_sign_count,

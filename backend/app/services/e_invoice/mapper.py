@@ -12,6 +12,7 @@ Money stays ``Decimal`` end to end — no field is ever coerced to ``float``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from app.models.invoice import Invoice, InvoiceLineItem
 from app.services.e_invoice.model import (
@@ -85,6 +86,33 @@ def _country_from_tax_id(tax_id: str | None) -> str | None:
     return _VAT_PREFIX_TO_COUNTRY.get(prefix)
 
 
+_ZERO = Decimal("0")
+
+
+def _tax_exclusive_base(invoice: Invoice) -> Decimal | None:
+    """BT-109 — the invoice total **without** VAT.
+
+    EN 16931 BR-CO-13 defines it as the sum of the line net amounts (BT-106)
+    minus the document-level allowances (BT-107) plus the document-level
+    charges (BT-108). ``Invoice.subtotal`` is only BT-106 — `invoice_warnings`
+    derives it as ``amount - tax_amount - shipping_amount + discount_amount``,
+    i.e. before the discount and shipping columns are applied — so mapping it
+    into BT-109 as well produced a document that contradicted itself the moment
+    an invoice carried either: BR-CO-13 (109 vs 106-107+108), BR-CO-15
+    (112 vs 109+110) and BR-CO-17 (the VAT category amount vs its base times its
+    rate, since the same figure is BT-116) all failed at once, and a receiver's
+    Schematron would have rejected it. It is also the taxable base of the single
+    VAT breakdown group, which is why both read this one helper.
+
+    ``None`` in (no subtotal on the row) → ``None`` out, exactly as before.
+    """
+    if invoice.subtotal is None:
+        return None
+    return (
+        invoice.subtotal - (invoice.discount_amount or _ZERO) + (invoice.shipping_amount or _ZERO)
+    )
+
+
 @dataclass
 class BuyerIdentity:
     """The buyer (AccountingCustomerParty) — our org / entity identity.
@@ -144,13 +172,16 @@ def invoice_to_einvoice_document(
         email=buyer_identity.email,
     )
 
+    # BT-109 / BT-116 — both are the tax-exclusive base, not the raw line total.
+    tax_exclusive = _tax_exclusive_base(invoice)
+
     taxes: list[EInvoiceTax] = []
     if invoice.tax_amount is not None or invoice.tax_rate is not None:
         taxes.append(
             EInvoiceTax(
                 category=_DEFAULT_TAX_CATEGORY,
                 rate=invoice.tax_rate,
-                taxable_amount=invoice.subtotal,
+                taxable_amount=tax_exclusive,
                 tax_amount=invoice.tax_amount,
             )
         )
@@ -199,7 +230,7 @@ def invoice_to_einvoice_document(
         seller=seller,
         buyer=buyer,
         line_extension_amount=invoice.subtotal,
-        tax_exclusive_amount=invoice.subtotal,
+        tax_exclusive_amount=tax_exclusive,
         tax_inclusive_amount=invoice.amount,
         tax_total=invoice.tax_amount,
         allowance_total=invoice.discount_amount,

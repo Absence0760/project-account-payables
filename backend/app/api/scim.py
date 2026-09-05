@@ -15,7 +15,6 @@ per-tenant `scim_group_role_map`. See app/services/scim_groups.py.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 import uuid
@@ -46,6 +45,7 @@ from app.schemas.scim import (
     SCIMUserCreate,
 )
 from app.services import scim_groups
+from app.services.sso import hash_scim_token
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,9 @@ async def get_scim_tenant(
         raise _scim_http_error(401, "Missing or malformed Authorization header.")
 
     token = authorization.split(None, 1)[1].strip()
-    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    # Via the shared owner, not an inline sha256 — mint and verify must move
+    # together or SCIM breaks for every tenant at once. See hash_scim_token.
+    digest = hash_scim_token(token)
 
     # Indexed lookup via the dedicated column (migration 0021). The
     # settings.sso.scim_bearer_hash key is still mirrored for backward

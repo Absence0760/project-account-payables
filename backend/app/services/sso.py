@@ -26,7 +26,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 import httpx
 from joserfc import jwt
@@ -489,19 +489,18 @@ def saml_bridge_url(tenant_slug: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_authorize_url(
-    discovery_doc: dict, client_id: str, state: str, nonce: str, tenant_slug: str
-) -> str:
-    endpoint = discovery_doc["authorization_endpoint"]
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri(tenant_slug),
-        "scope": "openid email profile",
-        "state": state,
-        "nonce": nonce,
-    }
-    return f"{endpoint}?{urlencode(params)}"
+# `build_authorize_url` used to live here and was reached by nothing but its own
+# test. It read `discovery_doc["authorization_endpoint"]` VERBATIM — the one
+# endpoint accessor in this module with no host pinning, while its siblings
+# (`exchange_code_for_tokens`, `fetch_jwks`) both go through `_pinned_endpoint`
+# + `_assert_sso_url_public`. Unreachable code cannot be caught drifting, and a
+# future caller reaching for the obvious-looking helper would have reintroduced
+# an open-redirect / credential-phishing primitive off a mis-served discovery
+# document. It was deleted rather than hardened: the live path in
+# `api/auth_sso.py::sso_authorize` already rebuilds the URL from individually
+# validated components, and that inline data-flow shape is what CodeQL's
+# py/url-redirection query recognises as a sanitizer — hoisting it behind a
+# function call here would trade a real static-analysis guarantee for tidiness.
 
 
 async def exchange_code_for_tokens(
@@ -587,9 +586,18 @@ def generate_scim_token() -> tuple[str, str]:
     to the admin once at generation time and never persisted.
     """
     raw = secrets.token_urlsafe(32)
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return raw, digest
+    return raw, hash_scim_token(raw)
 
 
 def hash_scim_token(raw: str) -> str:
+    """The ONE place a SCIM bearer token becomes its stored digest.
+
+    Mint (`generate_scim_token`) and verify (`api/scim.py::get_scim_tenant`)
+    are the two halves of one credential check, and both used to inline
+    `hashlib.sha256(...).hexdigest()` themselves. They agreed, but nothing made
+    them agree: changing the mint side alone — the estate is moving this class
+    of secret toward `bcrypt_sha256`, see `models/api_key.py` — would lock
+    every tenant out of SCIM provisioning with no failing test.
+    `tests/test_sso_scim.py` guards that no other module spells the recipe out.
+    """
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
