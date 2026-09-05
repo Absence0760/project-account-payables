@@ -483,7 +483,7 @@
 						{@const overlapEnds = overlapActiveUntil(sub)}
 						<tr
 							class="clickable"
-							class:inactive={!sub.active}
+							class:row-muted={!sub.active}
 							onclick={(e) => {
 								if (isRowOpenClick(e)) openEdit(sub);
 							}}
@@ -885,9 +885,10 @@
 		white-space: nowrap;
 	}
 
-	tr.inactive td:not(.actions) {
-		opacity: 0.6;
-	}
+	/* A paused subscription's row is de-emphasised by the shared `.row-muted`
+	 * recipe in app.css (a muted colour token). It used to be `opacity: 0.6`
+	 * on these cells, which composited the row's status pill down to 2.93:1
+	 * and any muted cell to 2.77:1 on --surface. */
 
 	/* "A rotation is mid-flight" signal on the secret cell. The pill itself is
 	   `<Badge tone="warning">` — amber, matching a `pending` delivery, because

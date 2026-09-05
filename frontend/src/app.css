@@ -575,6 +575,39 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 .grid-container tr.row-selected {
 	background: rgba(99, 140, 255, 0.08);
 }
+/* De-emphasised row: a subscription that is paused, an API key that was
+ * revoked, a user who was deactivated. The row is still readable evidence —
+ * it is quieter, not decorative.
+ *
+ * WCAG 1.4.3: this is the colour form of a de-emphasis that used to be spelled
+ * `opacity: 0.5/0.6` on the cells, and that is the one spelling it must never
+ * go back to. `opacity` is GROUP opacity: it composites the cell's whole
+ * subtree — text, badges and all — down onto the surface behind it, so it
+ * fades colours that were each calibrated against that surface at full
+ * strength. On --surface it measured:
+ *
+ *     --text        @0.6 → 5.65:1 (passes)   @0.5 → 4.34:1 (fails)
+ *     --text-muted  @0.6 → 2.77:1            @0.5 → 2.33:1
+ *     a tinted <Badge> @0.6 → 2.78–2.93:1    @0.5 → 2.32–2.43:1
+ *
+ * i.e. the fade was harmless on the one colour that needed dimming and
+ * catastrophic on every colour that was already dim — the exact inversion of
+ * the intent. Naming the muted TOKEN instead lands every cell at 5.38:1, and
+ * leaves a descendant that sets its own colour (a Badge's calibrated
+ * -on-tint pair, a RowLink's accent on hover) untouched at its own full
+ * strength, which is what makes a status pill legible on a paused row.
+ *
+ * `:not(.actions)` keeps the row's controls at full strength: a disabled
+ * control is exempt under 1.4.3, but an ENABLED Delete button on a paused
+ * row is not, and it should not read as unavailable either.
+ *
+ * The three call sites dropped their own `.inactive` / `.revoked` classes when
+ * they moved here: those carried nothing but the fade, and no spec selected on
+ * them. Keep a page-local semantic class alongside `row-muted` only if
+ * something actually reads it. Guard: src/lib/a11y/opacityAudit.test.ts. */
+.grid-container tr.row-muted td:not(.actions) {
+	color: var(--text-muted);
+}
 /* Whole-row click affordance for list rows whose primary cell is a RowLink.
  * The pointer handler lives on the <tr>; isRowOpenClick (utils/rowNav.ts) keeps
  * it from firing on the checkbox / actions cells or any nested control. */

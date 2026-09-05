@@ -309,7 +309,7 @@
 		{#each adminStore.users as user (user.id)}
 			<tr
 				class="clickable"
-				class:inactive={!user.is_active}
+				class:row-muted={!user.is_active}
 				class:row-selected={selectedIds.has(user.id)}
 				onclick={(e) => {
 					if (isRowOpenClick(e)) openEdit(user);
@@ -512,9 +512,10 @@
 
 	/* --- Table cells --- */
 
-	.inactive td {
-		opacity: 0.5;
-	}
+	/* A deactivated user's row is de-emphasised by the shared `.row-muted`
+	 * recipe in app.css (a muted colour token), not by an `opacity` fade —
+	 * the fade put this row's email cell at 2.33:1 and its role badges at
+	 * 2.32–2.43:1 against --surface. */
 
 	.name-cell {
 		font-weight: 500;

@@ -172,7 +172,14 @@
 		<div class="steps">
 			{#each steps as step, i}
 				<div class="step">
-					<div class="step-num">{i + 1}</div>
+					<!-- A watermark ordinal behind the card, faded to 12%.
+					     `aria-hidden` because that fade is only defensible if this
+					     really is decoration: the ordinal is already carried by the
+					     cards' reading order, so nothing is lost by hiding it — and
+					     hiding it turns the WCAG 1.4.3 decoration exemption into a
+					     statement rather than an assumption. Guard:
+					     src/lib/a11y/opacityAudit.test.ts -->
+					<div class="step-num" aria-hidden="true">{i + 1}</div>
 					<div class="step-icon"><step.icon /></div>
 					<h3>{step.title}</h3>
 					<p>{step.body}</p>

@@ -1036,6 +1036,28 @@ inherit it for free. Reuse these; don't re-solve them per page.
 - **Icon-only controls** — every icon-only `<button>` needs an
   `aria-label` (NotificationBell reflects the unread count; the sidebar
   collapse toggle + profile button carry `aria-label` + `aria-expanded`).
+- **De-emphasised rows** (`.row-muted`, app.css; WCAG 1.4.3) — a paused
+  subscription, a revoked API key, a deactivated user. Put
+  `class:row-muted` on the `<tr>`; the shared rule colours its non-actions
+  cells `--text-muted` (5.38:1). **Never spell this as `opacity`.** Opacity
+  is GROUP opacity: it composites the row's whole subtree onto the surface
+  behind it, so it fades hardest the colours that were already quiet. On
+  `--surface` the old fade measured `--text` 5.65:1 @0.6 / 4.34:1 @0.5,
+  `--text-muted` 2.77:1 @0.6 / 2.33:1 @0.5, and a tinted `<Badge>`
+  2.78–2.93:1 @0.6 — i.e. it was survivable on the one colour that wanted
+  dimming and ruinous on every colour that didn't. A colour token also
+  needs no carve-out: a descendant that sets its own colour (a `Badge`'s
+  `-on-tint` pair, a `RowLink`'s accent) keeps its own calibrated contrast,
+  which is why `/admin/api-keys` could drop the `:not(.status-col)` its
+  fade had needed. `:not(.actions)` stays — a disabled control is exempt
+  under 1.4.3, but an enabled Delete on a paused row is not, and it must
+  not read as unavailable either. `opacity` remains correct for an
+  **inactive** control (`:disabled` — exempt), a transient `:hover` fade on
+  a filled button (measured 4.72–5.10:1), and genuinely text-free
+  decoration. Guards: `src/lib/a11y/opacityAudit.test.ts` (static, catches
+  the idiom anywhere in the tree) + `tests-e2e/a11y/deemphasised-rows.spec.ts`
+  (axe, stubs the list so the faded row is actually on screen — the route
+  scan passed for years because a fresh tenant has no paused row).
 
 ### Colour tokens and contrast (WCAG 1.4.3)
 
