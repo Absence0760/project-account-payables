@@ -118,7 +118,9 @@ async function portalSignIn(page: import('@playwright/test').Page): Promise<void
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
 	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
 	await page.locator('button[type="submit"]').click();
-	await page.waitForURL(/\/portal\/invoices/);
+	// Sign-in lands on the portal HOME. The footer under test is rendered by the
+	// portal LAYOUT, so it is on screen there just as it is on any child page.
+	await page.waitForURL(/\/portal\/?$/);
 }
 
 test.describe('supplier-portal support/legal footer', () => {

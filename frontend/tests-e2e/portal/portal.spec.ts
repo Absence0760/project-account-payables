@@ -132,11 +132,15 @@ test.describe("/portal — authenticated vendor", () => {
     await expect(page.getByRole("link", { name: "Overview" })).toBeVisible({
       timeout: 5_000,
     });
-    await expect(page.getByRole("link", { name: "Invoices" })).toBeVisible();
+    // `exact` matters: the home body also links out to the invoice list ("All
+    // invoices", "Fix rejected invoices"). We want the SHELL nav link here.
+    await expect(
+      page.getByRole("link", { name: "Invoices", exact: true }),
+    ).toBeVisible();
     await expect(page.getByRole("link", { name: "Payments" })).toBeVisible();
 
     // …and the invoice list is one click away.
-    await page.getByRole("link", { name: "Invoices" }).click();
+    await page.getByRole("link", { name: "Invoices", exact: true }).click();
     await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
     await expect(
       page.getByRole("heading", { name: "My Invoices" }),
@@ -411,7 +415,8 @@ test.describe("/portal — self-service (PO flip, remittance, company)", () => {
       await expect(page).toHaveURL(/\/portal\/company/, { timeout: 5_000 });
 
       await page.getByLabel("Account number").fill("99887766");
-      await page.getByLabel("Routing number").fill("011000015");
+      // `exact`: the form also carries "Wire routing number (optional)".
+      await page.getByLabel("Routing number", { exact: true }).fill("011000015");
       await page
         .getByRole("button", { name: /Request bank-detail change/ })
         .click();
@@ -491,11 +496,13 @@ test.describe("/portal — must-change-password redirect", () => {
     );
 
     try {
-      await portalSignIn(page);
+      // Raw: this test IS the landing behaviour, so it must not go through the
+      // helper — that one asserts the normal landing (the portal home).
+      await portalSignInRaw(page);
 
       // The login handler sees `must_change_password` on the token
       // response and routes straight to change-password rather than
-      // invoices.
+      // the portal home.
       await expect(page).toHaveURL(/\/portal\/change-password/, {
         timeout: 15_000,
       });
