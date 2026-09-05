@@ -193,23 +193,19 @@ test.describe('/organization tenant URL override — non-admin', () => {
 			await putBranding(page, { ...before, tenant_url_template: 'https://clerk.example.test' })
 		).toBe(403);
 
-		// …and driving the panel's own Save button surfaces that refusal rather
-		// than reporting a save that did not happen.
+		// …and the page no longer lets a clerk reach that refusal at all. It used
+		// to render a fully editable form whose Save 403'd, which reads as a
+		// broken product rather than a permission boundary; /organization now
+		// goes read-only for a non-admin (one disabled <fieldset> around every
+		// panel) with a banner saying why. The server gate above is unchanged
+		// and remains the authority — this is the UI catching up to it.
 		await page.goto('/organization');
 		await page.waitForLoadState('networkidle');
 
+		await expect(page.getByTestId('org-readonly-banner')).toBeVisible();
 		const card = brandingCard(page);
-		await card.getByLabel('Email Link Base URL').fill('https://clerk-ui.example.test');
-		const refused = page.waitForResponse(
-			(r) =>
-				r.url().endsWith('/api/organization/branding') &&
-				r.request().method() === 'PUT' &&
-				r.status() === 403
-		);
-		await card.getByRole('button', { name: 'Save Branding' }).click();
-		await refused;
-
-		await expect(page.locator('.toast.error')).toContainText('role does not permit');
+		await expect(card.getByLabel('Email Link Base URL')).toBeDisabled();
+		await expect(card.getByRole('button', { name: 'Save Branding' })).toBeDisabled();
 		expect((await getBranding(page)).tenant_url_template).toBe(before.tenant_url_template);
 	});
 });

@@ -632,6 +632,7 @@ async def test_admin_rotate_token_changes_address_and_kills_old(realdb, monkeypa
     body = shown.json()
     assert body["address"] == second
     assert body["enabled"] is True
+    assert body["domain_configured"] is True
 
     # The old address no longer resolves; the current one does. Goes through
     # realdb.control_sessionmaker() (not a bare create_async_engine(cfg.database_url))
@@ -643,3 +644,36 @@ async def test_admin_rotate_token_changes_address_and_kills_old(realdb, monkeypa
         org = await resolve_tenant_from_recipient(s, second)
         assert org is not None
         assert org.slug == realdb.info("a").slug
+
+
+async def test_admin_intake_read_distinguishes_no_domain_from_no_token(realdb, monkeypatch):
+    """`address: null` has two causes and the UI needs opposite copy for each.
+
+    With no `FEOH_EMAIL_INTAKE_DOMAIN` the deployment cannot do email intake at
+    all; with a domain but no token the org simply has not created its address
+    yet. Both render `address: null`, so without `domain_configured` an admin
+    panel had to mint a throwaway token to tell them apart.
+    """
+    from app.config import settings as cfg
+
+    # No platform domain: intake is unavailable regardless of any token.
+    monkeypatch.setattr(cfg, "email_intake_domain", "")
+    async with realdb.client(key="a", role="admin") as c:
+        body = (await c.get("/api/organization/email-intake")).json()
+    assert body["address"] is None
+    assert body["domain_configured"] is False
+
+    # Domain configured, org not yet provisioned: still no address, but now the
+    # panel can offer to create one instead of claiming the feature is off.
+    monkeypatch.setattr(cfg, "email_intake_domain", "intake.test")
+    async with realdb.client(key="a", role="admin") as c:
+        body = (await c.get("/api/organization/email-intake")).json()
+    assert body["domain_configured"] is True
+
+
+async def test_admin_intake_read_is_admin_only(realdb, monkeypatch):
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "email_intake_domain", "intake.test")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.get("/api/organization/email-intake")).status_code == 403
