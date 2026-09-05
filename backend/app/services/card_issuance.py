@@ -521,12 +521,17 @@ async def notify_vendor_of_card(
     card: VirtualCard,
     invoice: Invoice,
     org_name: str,
-    org_slug: str,
     public_url_template: str | None,
 ) -> bool:
     """Mint a single-use reveal token, send the vendor an email with
     the link. Returns True if the email was dispatched, False if we
-    skipped (no vendor email, no template, or adapter error).
+    skipped (no vendor email, no base URL, or adapter error).
+
+    `public_url_template` is the tenant's ALREADY-RESOLVED base URL (see
+    `app/utils/tenant_urls.tenant_base_url`). It used to be the raw global
+    template plus an `org_slug` this function substituted itself — one of the
+    six inline `{slug}` substitutions that made a white-label tenant's links
+    point back at the platform subdomain.
 
     Fail-soft: a missing vendor email or a flaky email adapter must not
     block the card issuance flow. The card is already minted; the email
@@ -548,13 +553,14 @@ async def notify_vendor_of_card(
 
     plaintext_token = await mint_reveal_token(db, card)
 
-    # `public_url_template` is the same `FEOH_TENANT_URL_TEMPLATE` the
-    # signup flow uses ("https://{slug}.app.com"). When empty, we skip
-    # the email — nothing useful to point the vendor at.
+    # `public_url_template` arrives ALREADY RESOLVED for this tenant — the
+    # caller runs `app/utils/tenant_urls.tenant_base_url`, which is the one
+    # place `{slug}` is substituted and the one place a tenant's per-org vanity
+    # host wins over the global template. Empty means nothing is configured, so
+    # we skip the email rather than point the vendor at a fabricated host.
     if not public_url_template:
         return False
-    base = public_url_template.replace("{slug}", org_slug)
-    link = f"{base.rstrip('/')}/portal/cards/{plaintext_token}"
+    link = f"{public_url_template.rstrip('/')}/portal/cards/{plaintext_token}"
 
     subject = f"{org_name} sent you a virtual card payment"
     body_text = (

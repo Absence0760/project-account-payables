@@ -107,6 +107,7 @@ from app.tenant import (
 from app.utils.dates import utc_today
 from app.utils.http import content_disposition_attachment
 from app.utils.search import ilike_contains
+from app.utils.tenant_urls import tenant_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -2793,8 +2794,10 @@ async def _execute_single_payment(
                 card=card,
                 invoice=invoice,
                 org_name=org.name,
-                org_slug=org.slug,
-                public_url_template=app_settings.tenant_url_template,
+                # Already resolved here (per-org vanity host, else the global
+                # template) so the card-reveal link lands on the same host as
+                # every other tenant link.
+                public_url_template=tenant_base_url(org.slug, org.settings),
             )
         except Exception:  # noqa: BLE001
             # `notify_vendor_of_card` already swallows known

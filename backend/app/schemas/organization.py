@@ -15,6 +15,26 @@ _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 # data:, and other schemes outright.
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+# Whitespace (incl. the C0/C1 control range) inside a URL is never legitimate
+# here and is how a value smuggles a second token past a naive consumer — a
+# newline in a URL that later lands in an email header being the classic. The
+# shape rule below is the ONE URL check for `settings.brand`; both validators
+# read it, so a field can't drift onto a looser spelling of "is this a URL".
+_URL_FORBIDDEN_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]")
+
+
+def looks_like_http_url(value: str) -> bool:
+    """True when `value` is an http(s) URL safe to store and later emit.
+
+    Exported because `app/utils/tenant_urls.py` re-checks the persisted
+    `brand.tenant_url_template` on read — a row written straight into the
+    database has never passed through the branding endpoint, and that value
+    ends up in outbound email bodies.
+    """
+    v = (value or "").strip()
+    return bool(v) and bool(_URL_RE.match(v)) and not _URL_FORBIDDEN_RE.search(v)
+
+
 # Defensive caps so a giant string can't bloat the settings JSONB.
 _MAX_NAME = 120
 _MAX_URL = 2048
@@ -63,6 +83,15 @@ class BrandConfig(BaseModel):
     accent_strong_color: str = ""  # darker companion for accent BACKGROUNDS (AA text)
     support_url: str = Field(default="", max_length=_MAX_URL)
     legal_url: str = Field(default="", max_length=_MAX_URL)
+    # Where this tenant's app actually lives. Empty = the platform's global
+    # `FEOH_TENANT_URL_TEMPLATE`. A white-label tenant reachable at its own
+    # vanity hostname sets its full base URL here (`https://ap.acmecorp.com`)
+    # so every outbound link — invites, password resets, portal and approval
+    # deep links — points at the brand the customer paid for instead of
+    # `<slug>.<platform-domain>`. `{slug}` is OPTIONAL: substituted when
+    # present, used verbatim when not. Read by `app/utils/tenant_urls.py`,
+    # which is the only place that substitution happens.
+    tenant_url_template: str = Field(default="", max_length=_MAX_URL)
 
     @field_validator("accent_color", "accent_strong_color")
     @classmethod
@@ -72,11 +101,20 @@ class BrandConfig(BaseModel):
             raise ValueError("must be a 3- or 6-digit hex color (e.g. #638cff)")
         return v
 
-    @field_validator("logo_url", "support_url", "legal_url")
+    @field_validator("tenant_url_template", mode="before")
+    @classmethod
+    def _null_to_empty(cls, v: object) -> object:
+        # The field is "nullable" on the wire — an admin clearing the override
+        # in the UI sends `null`, which must mean "fall back to the platform
+        # template", not a 422. Every other brand field predates that and is
+        # cleared with `""`; both spellings land on `""` here.
+        return "" if v is None else v
+
+    @field_validator("logo_url", "support_url", "legal_url", "tenant_url_template")
     @classmethod
     def _validate_url(cls, v: str) -> str:
         v = (v or "").strip()
-        if v and not _URL_RE.match(v):
+        if v and not looks_like_http_url(v):
             raise ValueError("must be an http(s) URL")
         return v
 

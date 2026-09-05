@@ -275,7 +275,7 @@ async def test_send_chat_best_effort_swallows_failure():
             raise RuntimeError("slack 500")
 
     async def _fake_cfg(_org_id):
-        return ({"enabled": True, "provider": "boom"}, "acme")
+        return ({"enabled": True, "provider": "boom"}, "acme", {})
 
     with (
         patch.object(nd, "_resolve_org_chat_config", _fake_cfg),
@@ -321,7 +321,7 @@ async def test_send_chat_failure_never_logs_the_webhook_url(caplog):
             response.raise_for_status()
 
     async def _fake_cfg(_org_id):
-        return ({"enabled": True, "provider": "slack"}, "acme")
+        return ({"enabled": True, "provider": "slack"}, "acme", {})
 
     caplog.set_level(logging.DEBUG)
     with (
@@ -386,7 +386,7 @@ async def test_send_chat_best_effort_noop_when_disabled():
     built = {"count": 0}
 
     async def _fake_cfg(_org_id):
-        return ({"enabled": False}, "acme")
+        return ({"enabled": False}, "acme", {})
 
     def _spy(cfg):
         built["count"] += 1
@@ -414,7 +414,11 @@ async def test_send_chat_best_effort_per_event_toggle():
     SENT.clear()
 
     async def _fake_cfg(_org_id):
-        return ({"enabled": True, "provider": "mock", "events": {"invoice_paid": False}}, "acme")
+        return (
+            {"enabled": True, "provider": "mock", "events": {"invoice_paid": False}},
+            "acme",
+            {},
+        )
 
     with patch.object(nd, "_resolve_org_chat_config", _fake_cfg):
         # invoice_paid suppressed:

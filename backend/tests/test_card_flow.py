@@ -585,7 +585,6 @@ async def test_notify_vendor_returns_false_when_invoice_has_no_vendor_id():
         card=card,
         invoice=inv,
         org_name="Acme",
-        org_slug="acme",
         public_url_template="https://{slug}.app.com",
     )
     assert sent is False
@@ -613,7 +612,6 @@ async def test_notify_vendor_returns_false_when_vendor_has_no_email():
         card=card,
         invoice=inv,
         org_name="Acme",
-        org_slug="acme",
         public_url_template="https://{slug}.app.com",
     )
     assert sent is False
@@ -643,7 +641,6 @@ async def test_notify_vendor_returns_false_when_no_url_template():
             card=card,
             invoice=inv,
             org_name="Acme",
-            org_slug="acme",
             public_url_template="",
         )
     assert sent is False

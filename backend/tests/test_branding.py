@@ -117,6 +117,9 @@ async def test_get_branding_any_authed_role(realdb):
         "accent_strong_color",
         "support_url",
         "legal_url",
+        # The tenant's vanity base URL — empty means "use the platform's
+        # `FEOH_TENANT_URL_TEMPLATE`". See `test_branding_tenant_url_template.py`.
+        "tenant_url_template",
     }
 
 

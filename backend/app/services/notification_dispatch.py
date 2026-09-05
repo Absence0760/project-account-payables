@@ -51,6 +51,7 @@ from app.config import settings
 from app.models.notification import NOTIFICATION_EVENT_TYPES, Notification
 from app.services.notification_templates import InvoiceContext, RenderedNotification, render
 from app.services.post_commit import enqueue_post_commit
+from app.utils.tenant_urls import tenant_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +146,16 @@ async def _resolve_org_slug(organization_id: uuid.UUID) -> str | None:
         return result.scalar_one_or_none()
 
 
-async def _resolve_org_chat_config(organization_id: uuid.UUID) -> tuple[dict, str | None]:
-    """Load an org's `settings.chat_notifications` config + its slug.
+async def _resolve_org_chat_config(
+    organization_id: uuid.UUID,
+) -> tuple[dict, str | None, dict]:
+    """Load an org's `settings.chat_notifications` config, its slug + its settings.
 
-    Returns ``({}, None)`` on any miss so the caller can degrade to "no chat
-    notification" without raising. The slug is used to build the (PII-free)
-    deep link into the tenant app.
+    Returns ``({}, None, {})`` on any miss so the caller can degrade to "no chat
+    notification" without raising. The slug and the full settings blob together
+    build the (PII-free) deep link into the tenant app — the blob because the
+    tenant may override its own base URL under `settings.brand`, which is what
+    keeps a white-label tenant's Slack/Teams approval link on its vanity host.
     """
     from app.database import control_session_factory
     from app.models.organization import Organization
@@ -163,12 +168,13 @@ async def _resolve_org_chat_config(organization_id: uuid.UUID) -> tuple[dict, st
         )
         row = result.first()
     if row is None:
-        return {}, None
+        return {}, None, {}
     slug, org_settings = row
-    chat_config = (org_settings or {}).get("chat_notifications") or {}
+    org_settings = org_settings if isinstance(org_settings, dict) else {}
+    chat_config = org_settings.get("chat_notifications") or {}
     if not isinstance(chat_config, dict):
-        return {}, slug
-    return chat_config, slug
+        return {}, slug, org_settings
+    return chat_config, slug, org_settings
 
 
 async def resolve_role_user_ids(organization_id: uuid.UUID, role_name: str) -> list[uuid.UUID]:
@@ -540,7 +546,7 @@ async def _send_chat_best_effort(
     )
 
     try:
-        chat_config, slug = await _resolve_org_chat_config(organization_id)
+        chat_config, slug, org_settings = await _resolve_org_chat_config(organization_id)
     except Exception:  # noqa: BLE001
         logger.exception("notify_event: failed loading chat config for event_type=%s", event_type)
         return
@@ -552,11 +558,8 @@ async def _send_chat_best_effort(
     # when the slug or entity is missing.
     link: str | None = None
     if slug and invoice_id is not None:
-        try:
-            base = settings.tenant_url_template.format(slug=slug).rstrip("/")
-            link = f"{base}/invoices/{invoice_id}"
-        except Exception:  # noqa: BLE001 — a bad template must not break dispatch
-            link = None
+        base = tenant_base_url(slug, org_settings)
+        link = f"{base}/invoices/{invoice_id}" if base else None
 
     approve_token, reject_token = _build_chat_action_tokens(
         event_type=event_type,

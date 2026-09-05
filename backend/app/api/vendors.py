@@ -35,7 +35,6 @@ from app.api.permissions import (
     PERM_VENDOR_MANAGE,
 )
 from app.api.sorting import SortParams, resolve_order_by, sort_params
-from app.config import settings
 from app.models.contract import Contract
 from app.models.credit_memo import CreditMemo
 from app.models.discount import DiscountOffer
@@ -98,6 +97,7 @@ from app.tenant import (
 )
 from app.utils.passwords import generate_temp_password, hash_password
 from app.utils.search import ilike_contains
+from app.utils.tenant_urls import tenant_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -1612,12 +1612,13 @@ async def invite_vendor_portal_user(
     # `temp_password` so the admin can share it manually — same pattern as
     # the tenant-signup welcome email.
     email_adapter = get_email_adapter()
-    # Real tenant portal URL, built from the same `FEOH_TENANT_URL_TEMPLATE`
-    # the signup welcome email (app/api/signup.py::_tenant_url) and the
-    # supplier-chat portal-link email (services/supplier_chat.py) use — never
-    # a hardcoded placeholder domain. No template configured -> no URL line.
-    template_base = (settings.tenant_url_template or "").replace("{slug}", org.slug)
-    portal_url = f"{template_base.rstrip('/')}/portal" if template_base else None
+    # Real tenant portal URL, resolved through the one `tenant_base_url`
+    # resolver the signup welcome email and the supplier-chat portal-link email
+    # also use — so a white-label tenant's supplier is invited to the tenant's
+    # own vanity host, never a placeholder domain. Nothing configured -> no URL
+    # line rather than a fabricated one.
+    template_base = tenant_base_url(org.slug, org.settings)
+    portal_url = f"{template_base}/portal" if template_base else None
     try:
         await email_adapter.send(
             EmailMessage(

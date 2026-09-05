@@ -284,8 +284,8 @@ handles (`invoice_assigned` / `invoice_approved` / `invoice_rejected` /
 `settings.chat_notifications`, checks the enable + per-event gate, renders the
 message, builds the adapter, and sends — the whole thing wrapped in its own
 try/except so any failure (config load, adapter build, transport) is swallowed
-and logged PII-free. The deep link is built from `FEOH_TENANT_URL_TEMPLATE` +
-invoice id (no secrets).
+and logged PII-free. The deep link is `tenant_base_url(slug, org_settings)` +
+invoice id (no secrets) — see § Where a tenant's links point below.
 
 ### Interactive approval actions
 
@@ -527,6 +527,82 @@ is best-effort (a failure — e.g. not yet authenticated at cold-start, since
 push init runs before session restore — is logged and swallowed, never blocks
 push setup). See `mobile/CLAUDE.md`.
 
+## Where a tenant's links point
+
+Every outbound link this backend builds for a tenant — the Slack/Teams approval
+deep link above, the email-approval link, the signup welcome email, the admin
+"you've been invited" email, the supplier-portal invite, the password-reset
+link, the virtual-card reveal link, the supplier-chat portal link — resolves its
+base URL through **one** function:
+
+```python
+from app.utils.tenant_urls import tenant_base_url
+
+base = tenant_base_url(org.slug, org.settings)   # "" when nothing is configured
+link = f"{base}/invoices/{invoice.id}"           # base never has a trailing slash
+```
+
+`tenant_base_url` reads two sources, in order:
+
+1. **the per-org override** `Organization.settings.brand.tenant_url_template`,
+   managed by `GET`/`PUT /api/organization/branding` (field
+   `tenant_url_template`, nullable string; GET readable by any authed user,
+   admin-only mutate, audited on the existing PII-free
+   `organization.branding_updated` row as the boolean `tenant_url_template_set`
+   — the URL itself is never written to the trail); then
+2. **the global** `FEOH_TENANT_URL_TEMPLATE`.
+
+`{slug}` is **optional in the per-org value** and structural in the global one:
+a vanity host is a complete base URL (`https://ap.acmecorp.com`) with no slug
+label in it, while the platform template is slug-shaped
+(`https://{slug}.app.example.com`). Both go through the same rule — substitute
+the placeholder if it is present, use the value verbatim if it is not — and the
+result is returned with any trailing slash stripped, because every call site
+appends a path.
+
+Why it exists: before this, each of those call sites substituted `{slug}` into
+the global template itself, so a tenant reachable at its own vanity hostname
+still got every invite, reset and approval link pointing back at
+`<slug>.<platform-domain>`. That works, and it undoes the white-label the custom
+domain was bought for.
+
+`""` is a real answer, not an error: an operator may deliberately blank
+`FEOH_TENANT_URL_TEMPLATE`, and every caller omits the URL line rather than
+fabricating a `localhost` link into a customer's inbox.
+
+The persisted override is re-validated on **read** as well as on write (same
+http(s) shape rule the sibling brand URLs use, in
+`app/schemas/organization.looks_like_http_url`): a row edited straight in the
+database has never been through the API, and this value ends up in an outbound
+email body.
+
+**Two deliberate non-callers**, both asserted by
+`tests/test_tenant_url_resolver.py`:
+
+- `app/services/sso.py` — the OIDC `redirect_uri` and the SAML bridge URL are
+  values *registered with the customer's IdP*. Silently re-pointing them at a
+  vanity host breaks every SSO login until the operator re-registers the app at
+  the IdP, so that move is an operator-sequenced migration, not a config read.
+- `app/main.py` — the public signup-config endpoint hands the raw global
+  template to the unauthenticated signup page, which is showing the shape of a
+  hostname for a tenant that does not exist yet. There is no org to override
+  from.
+
+### The platform domain, and why a custom domain can't sit under it
+
+`app/utils/tenant_urls.platform_domain()` derives the platform's own registrable
+host from `FEOH_TENANT_URL_TEMPLATE` — `https://{slug}.app.example.com` →
+`app.example.com`. That is the one place the platform's hostname shape is
+already declared, so no new env var was added for it.
+
+`PUT /api/organization/branding/custom-domains` refuses (422) any host that IS
+the platform domain or sits under it. Such a host is already routed by the
+`<slug>.<platform-domain>` subdomain path, so registering it as a custom domain
+adds no reachability — it hands the custom-domain resolver and the subdomain
+resolver a conflicting claim on one hostname, and lets one tenant claim a name
+another tenant's slug owns (or takes at the next signup). The refusal echoes no
+hostname, matching the endpoint's existing PII-free posture.
+
 ## Configuration & local-first
 
 - `FEOH_NOTIFICATIONS_ENABLED` (default `true`) — master kill switch. When off,
@@ -534,6 +610,11 @@ push setup). See `mobile/CLAUDE.md`.
 - No new external dependency: outbound email reuses the existing adapter stack
   (`FEOH_EMAIL_PROVIDER`, `console` default — no network, no secrets). Mailpit
   (`pnpm mail:up`) previews SMTP locally. The in-app center is pure Postgres.
+- `FEOH_TENANT_URL_TEMPLATE` (default `http://{slug}.localhost:7777`) — the
+  platform-wide tenant URL shape, and the source the platform domain is derived
+  from. It is now a **fallback**: a tenant that sets
+  `settings.brand.tenant_url_template` (via `PUT /api/organization/branding`)
+  overrides it for every outbound link. See § Where a tenant's links point.
 - `FEOH_CHAT_NOTIFICATION_PROVIDER` (default `mock`) — platform-default chat
   adapter. Per-org override + webhook URL + per-event toggles live on
   `Organization.settings.chat_notifications` (see § Chat notifications above).
@@ -542,6 +623,19 @@ push setup). See `mobile/CLAUDE.md`.
 
 ## Tests
 
+- `tests/test_tenant_url_resolver.py` — the one tenant-base-URL resolver:
+  per-org override wins, global fallback, `{slug}` optional in the override
+  (substituted when present, verbatim when not), trailing-slash normalisation,
+  unusable/malformed persisted values falling back rather than being emitted,
+  the platform-domain derivation + subdomain guard, and an AST **drift guard**
+  failing if any module under `app/` reads `settings.tenant_url_template` or
+  substitutes `{slug}` inline instead of calling the resolver (two documented
+  exemptions: `main.py`, `services/sso.py`). Pure — no DB.
+- `tests/test_branding_tenant_url_template.py` — the management surface: GET
+  exposes the field and defaults empty, PUT is admin-only, persists + audits
+  PII-free + drives the resolver, `null` clears it, invalid URLs 422,
+  `custom_domains` survives a branding PUT, and the custom-domains
+  platform-domain guard rejects while a legitimate vanity host passes (real DB).
 - `tests/test_notification_templates.py` — content + PII safety (pure).
 - `tests/test_email_catalogue.py` — email-catalogue parity (every locale resolves
   every key, no empty strings, placeholder-faithful vs English), English fallback
