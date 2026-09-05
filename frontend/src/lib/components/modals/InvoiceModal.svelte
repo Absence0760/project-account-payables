@@ -56,45 +56,25 @@
 		E_INVOICE_FORMATS,
 		downloadEInvoice,
 		einvoiceFilename,
-		einvoiceIssueFieldKey,
+		listPeppolTransmissions,
+		livePeppolTransmission,
 		parseEInvoiceIssues,
 		sendInvoiceOverPeppol,
 		type EInvoiceFormat,
 		type EInvoiceValidationIssue,
 		type PeppolSendResult,
+		type PeppolTransmissionSummary,
 	} from '$lib/api/einvoice';
 
-	/**
-	 * The e-invoice generator refuses a document it cannot emit compliantly
-	 * (422), and its body is the backend's PII-free `"field: code"` join. These
-	 * two maps turn that join into a sentence a clerk can act on — the code
-	 * says WHAT is wrong, the field says WHERE — instead of leaving
-	 * `seller.tax_id: malformed` on screen. An unmapped code falls back to
-	 * `issue.other` (which prints the code) and an unmapped field to its raw
-	 * path, so a new backend rule degrades to the old wording rather than
-	 * vanishing from the list.
+	/*
+	 * There is deliberately NO code→prose map here any more. The 422 body is now
+	 * the backend's structured error list, so each row carries the server's own
+	 * PII-free sentence (and, where the failure is an EN 16931 / PEPPOL rule,
+	 * the rule id that a receiving Access Point's validator names). A map here
+	 * could only ever cover the codes it happened to know about — most rows fell
+	 * through to "was rejected (BR-CO-09)" — and a second copy of the same
+	 * wording is a second thing to keep in step with the standard.
 	 */
-	const EINVOICE_ISSUE_CODE_KEYS: Record<string, MessageKey> = {
-		missing: 'invoices.modal.einvoice.issue.missing',
-		malformed: 'invoices.modal.einvoice.issue.malformed',
-		inconsistent: 'invoices.modal.einvoice.issue.inconsistent',
-		implausible: 'invoices.modal.einvoice.issue.implausible',
-	};
-
-	const EINVOICE_FIELD_KEYS: Record<string, MessageKey> = {
-		invoice_number: 'invoices.modal.einvoice.field.invoiceNumber',
-		issue_date: 'invoices.modal.einvoice.field.issueDate',
-		currency: 'invoices.modal.einvoice.field.currency',
-		lines: 'invoices.modal.einvoice.field.lines',
-		payable_amount: 'invoices.modal.einvoice.field.payableAmount',
-		tax_inclusive_amount: 'invoices.modal.einvoice.field.taxInclusiveAmount',
-		tax_exclusive_amount: 'invoices.modal.einvoice.field.taxExclusiveAmount',
-		'seller.name': 'invoices.modal.einvoice.field.sellerName',
-		'seller.tax_id': 'invoices.modal.einvoice.field.sellerTaxId',
-		'buyer.name': 'invoices.modal.einvoice.field.buyerName',
-		'buyer.tax_id': 'invoices.modal.einvoice.field.buyerTaxId',
-		'taxes[].rate': 'invoices.modal.einvoice.field.taxRate',
-	};
 
 	/** PEPPOL failure codes the send route returns as a bare token (everything
 	 *  else — a malformed participant id, an unconfigured sender — arrives as
@@ -859,16 +839,6 @@
 		return opt ? m(opt.labelKey) : format;
 	}
 
-	function einvoiceFieldLabel(field: string): string {
-		const key = EINVOICE_FIELD_KEYS[einvoiceIssueFieldKey(field)];
-		return key ? m(key) : field;
-	}
-
-	function einvoiceIssueLabel(issue: EInvoiceValidationIssue): string {
-		const key = EINVOICE_ISSUE_CODE_KEYS[issue.code];
-		return key ? m(key) : m('invoices.modal.einvoice.issue.other', { code: issue.code });
-	}
-
 	async function handleEinvoiceDownload(format: EInvoiceFormat) {
 		showEinvoiceMenu = false;
 		einvoiceError = null;
@@ -878,9 +848,10 @@
 			triggerDownload(blob, einvoiceFilename(format, invoice.invoice_number || invoice.id));
 		} catch (err) {
 			// `api.downloadBlob` already ran the body through `formatApiDetail`,
-			// so the message IS the backend's `detail`. Re-split it into the
-			// per-field rows it was built from; an unparseable detail (any other
-			// 4xx/5xx) renders verbatim rather than being reshaped into a lie.
+			// which renders the backend's structured error list as
+			// `"field: message; …"`. Re-split it into the per-field rows it was
+			// built from; an unparseable detail (any other 4xx/5xx) renders
+			// verbatim rather than being reshaped into a lie.
 			const detail = err instanceof Error ? err.message : '';
 			const invalid = err instanceof ApiError && err.status === 422;
 			einvoiceError = {
@@ -908,14 +879,46 @@
 	let peppolSending = $state(false);
 	let peppolResult = $state<PeppolSendResult | null>(null);
 	// Same two shapes as the export refusal: a named failure code, or the
-	// PII-free `field: code` join — PEPPOL runs the EN 16931 / BIS Billing 3.0
-	// conformance pass on top of the export's own guard, and it reports the
-	// rule id (`due_date: BR-CO-25`) in that identical join, so it gets the
-	// identical readable treatment rather than a second error format.
+	// per-field rendering of the structured 422 — PEPPOL runs the EN 16931 /
+	// BIS Billing 3.0 conformance pass on top of the export's own guard, and it
+	// reports the rule id (`due_date: BR-CO-25`) through that identical
+	// channel, so it gets the identical readable treatment rather than a second
+	// error format.
 	let peppolError = $state<{ detail: string; issues: EInvoiceValidationIssue[] } | null>(null);
 
 	let canSendPeppol = $derived(auth.hasAnyRole('admin', 'ap_manager', 'cfo'));
 	let peppolStatusReady = $derived(PEPPOL_SENDABLE_STATUSES.has(status));
+
+	// The transmission LOG, read on open. Until this endpoint existed the only
+	// evidence a send had ever happened was the response to a send made in this
+	// same session, so the block could report an outcome but had to stay silent
+	// about the state — and silence reads as "not sent", which is the one claim
+	// it could not support. Four states, deliberately distinct: not-yet-known
+	// (`null`, still loading or unreadable), none, a live transmission, or only
+	// failed attempts (which the backend's partial unique index also treats as
+	// re-sendable, so the UI must not present them as done).
+	let peppolTransmissions = $state<PeppolTransmissionSummary[] | null>(null);
+	let peppolTransmissionsErrored = $state(false);
+	let peppolLive = $derived(
+		peppolTransmissions ? livePeppolTransmission(peppolTransmissions) : null
+	);
+
+	async function loadPeppolTransmissions() {
+		// Reference invoice.id first so the effect re-runs when the modal is
+		// pointed at a different invoice, and drop the previous invoice's rows
+		// rather than showing them against this one.
+		const id = invoice.id;
+		peppolTransmissions = null;
+		peppolTransmissionsErrored = false;
+		try {
+			const res = await listPeppolTransmissions(id);
+			peppolTransmissions = res.transmissions;
+		} catch {
+			// A read failure must not become a "not yet transmitted" claim.
+			peppolTransmissions = null;
+			peppolTransmissionsErrored = true;
+		}
+	}
 
 	async function handlePeppolSend() {
 		peppolSending = true;
@@ -928,6 +931,7 @@
 			peppolResult = result;
 			showPeppolForm = false;
 			await loadAuditLog();
+			await loadPeppolTransmissions();
 		} catch (err) {
 			const detail = err instanceof Error ? err.message : '';
 			const key = PEPPOL_ERROR_KEYS[detail];
@@ -1300,6 +1304,9 @@
 		loadChatTemplates();
 		loadChatMembers();
 		loadWorkflowInstance();
+		// Only the roles that can send ever see the PEPPOL block, so nobody
+		// else pays for the read.
+		if (canSendPeppol) loadPeppolTransmissions();
 	});
 
 	async function loadSummary() {
@@ -2120,10 +2127,10 @@
 								</p>
 								{#if einvoiceError.issues.length > 0}
 									<ul class="einvoice-issues">
-										{#each einvoiceError.issues as issue (issue.field + issue.code)}
+										{#each einvoiceError.issues as issue (issue.field + issue.message)}
 											<li>
-												<strong>{einvoiceFieldLabel(issue.field)}</strong>
-												{einvoiceIssueLabel(issue)}
+												{issue.message}
+												<code class="einvoice-issue-field">{issue.field}</code>
 											</li>
 										{/each}
 									</ul>
@@ -2141,6 +2148,41 @@
 									<p class="einvoice-hint" data-testid="peppol-not-sendable">
 										{m('invoices.modal.peppol.notSendable')}
 									</p>
+								{:else if !peppolResult}
+									<!--
+										The transmission state on OPEN, from the invoice's own
+										transmission log. Four distinct states — a read that
+										failed says so rather than degrading into "not yet
+										transmitted", and attempts that all FAILED are re-sendable
+										(the backend's partial unique index excludes them), so
+										they must not read as done.
+									-->
+									<p class="peppol-state" data-testid="peppol-state">
+										{#if peppolTransmissionsErrored}
+											{m('invoices.modal.peppol.state.unknown')}
+										{:else if peppolTransmissions === null}
+											{m('invoices.modal.peppol.state.loading')}
+										{:else if peppolLive}
+											{m('invoices.modal.peppol.state.transmitted', {
+												date: formatAuditDate(peppolLive.transmitted_at ?? peppolLive.created_at)
+											})}
+											{#if peppolLive.message_id}
+												<span class="peppol-msgid"
+													>{m('invoices.modal.peppol.messageId', {
+														id: peppolLive.message_id
+													})}</span
+												>
+											{/if}
+										{:else if peppolTransmissions.length > 0}
+											{m('invoices.modal.peppol.state.failedOnly')}
+										{:else}
+											{m('invoices.modal.peppol.state.none')}
+										{/if}
+									</p>
+								{/if}
+								{#if !peppolStatusReady}
+									<!-- The send controls stay behind the same gate the backend
+									     enforces; only the state line above is independent of it. -->
 								{:else if peppolResult}
 									<p class="peppol-result" data-testid="peppol-result">
 										{peppolResult.already_sent
@@ -2217,10 +2259,10 @@
 										<p class="einvoice-error-title">{m('invoices.modal.peppol.failed')}</p>
 										{#if peppolError.issues.length > 0}
 											<ul class="einvoice-issues">
-												{#each peppolError.issues as issue (issue.field + issue.code)}
+												{#each peppolError.issues as issue (issue.field + issue.message)}
 													<li>
-														<strong>{einvoiceFieldLabel(issue.field)}</strong>
-														{einvoiceIssueLabel(issue)}
+														{issue.message}
+														<code class="einvoice-issue-field">{issue.field}</code>
 													</li>
 												{/each}
 											</ul>
@@ -3179,6 +3221,16 @@
 		color: var(--text);
 	}
 
+	/* The server's sentence is the explanation; the field path stays visible
+	   because it is what says WHICH line or tax row is at fault. */
+	.einvoice-issue-field {
+		display: block;
+		margin-top: 1px;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		color: var(--text-muted);
+	}
+
 	.einvoice-error-hint,
 	.einvoice-error-detail {
 		margin: 8px 0 0;
@@ -3240,6 +3292,13 @@
 		margin: 0;
 		font-size: 0.8rem;
 		color: var(--text);
+	}
+
+	.peppol-state {
+		margin: 0 0 8px;
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: var(--text-muted);
 	}
 
 	.peppol-msgid {

@@ -7,13 +7,16 @@ attempt full EN 16931 business-rule (BR-*) conformance.
 PII invariant: a :class:`FieldError` names the *field path* and a generic
 reason code — it NEVER embeds the field's value. So a malformed tax id,
 address, or amount can be reported (``seller.tax_id: missing``) without the
-value ever entering a log line or an HTTP error body.
+value ever entering a log line or an HTTP error body. The same invariant is
+what makes :func:`error_payload` safe to return as an HTTP body.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 from app.services.e_invoice.model import EInvoiceDocument
 
@@ -28,16 +31,70 @@ class FieldError:
     message: str  # names the FIELD only — never the value (no PII)
 
 
+def _message_with_rule(error: FieldError) -> str:
+    """The human message, guaranteed to name its rule id when it has one.
+
+    Two kinds of ``code`` reach here. The structural + tax passes report a
+    generic *kind* of problem (``missing`` / ``malformed`` / ``inconsistent``
+    / ``implausible``), which the message already spells out in words. The
+    EN 16931 / PEPPOL conformance pass reports the **rule id itself**
+    (``BR-CO-09``, ``PEPPOL-EN16931-R120``) — the identifier a receiving
+    Access Point's own validator will name — and its message does not repeat
+    it. Folding the rule id into the message keeps it reaching a client that
+    flattens :func:`error_payload` down to a string (ours does), instead of
+    the rule id living only in a field such a client discards.
+
+    A rule id is recognised by being upper-case; a generic code is not.
+    """
+    code = error.code
+    if not code or code != code.upper() or not any(ch.isalpha() for ch in code):
+        return error.message
+    if error.message.startswith(f"{code}:"):
+        return error.message
+    return f"{code}: {error.message}"
+
+
+def error_payload(errors: Sequence[FieldError]) -> list[dict[str, Any]]:
+    """Serialize field errors as an HTTP 422 ``detail`` body.
+
+    The shape is FastAPI/Pydantic's own validation-error item — ``loc`` /
+    ``msg`` / ``type`` — deliberately, so a client that already renders a
+    FastAPI 422 renders this one with no new code, and the HUMAN half of each
+    error travels with the machine half. Before this, the routes returned
+    ``str(exc)`` (``"field: code"``), which meant every client had to carry
+    its own code→prose map to say anything a person could act on.
+
+    - ``loc`` — the dotted field path, as a single element, so the standard
+      renderer produces ``"seller.tax_id: …"``.
+    - ``type`` — :attr:`FieldError.code`: a generic kind (``missing`` /
+      ``malformed`` / ``inconsistent`` / ``implausible``) or an EN 16931 /
+      PEPPOL rule id (``BR-CO-25``).
+    - ``msg`` — the PII-free sentence, with the rule id folded in when the
+      code is one (see :func:`_message_with_rule`).
+
+    PII invariant: field, code and message never carry a field VALUE (module
+    docstring), so nothing this returns can leak one.
+    """
+    return [{"loc": [e.field], "msg": _message_with_rule(e), "type": e.code} for e in errors]
+
+
 class EInvoiceValidationError(ValueError):
     """Raised when a parsed document fails structural validation.
 
     Carries the full :class:`FieldError` list. ``str(exc)`` is a PII-free
-    ``"field: code"`` join suitable for logging / error responses.
+    ``"field: code"`` join, kept for logging (the inbound PEPPOL receive path
+    and the einvoice extraction adapter both log it). HTTP callers should use
+    :attr:`payload` instead — same facts, plus the human message.
     """
 
     def __init__(self, errors: list[FieldError]):
         self.errors = errors
         super().__init__("; ".join(f"{e.field}: {e.code}" for e in errors))
+
+    @property
+    def payload(self) -> list[dict[str, Any]]:
+        """This error as an HTTP 422 ``detail`` body — see :func:`error_payload`."""
+        return error_payload(self.errors)
 
 
 def validate_document(doc: EInvoiceDocument, *, check_tax: bool = True) -> list[FieldError]:

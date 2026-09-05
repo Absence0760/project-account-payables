@@ -121,9 +121,11 @@ nicety: the check now evaluates the EN 16931 calculation rules, and adding them
 is what caught the generator mapping `subtotal` into both BT-106 and BT-109 —
 so every invoice carrying a discount or a shipping charge used to go out
 contradicting itself while we stamped the conformance claim on it.
-PII-free `field: code` body — `code` is the rule id a receiving Access Point's
-own validator would name (`BR-CO-15`) — mapped to 422 at the route. See
-`backend/docs/e-invoicing.md` § PEPPOL BIS Billing 3.0 conformance.
+PII-free STRUCTURED body — one item per failing field carrying `loc` (the
+field path), `type` (the rule id a receiving Access Point's own validator would
+name, `BR-CO-15`) and `msg` (the human sentence, with that rule id folded in) —
+mapped to 422 at the route. See `backend/docs/e-invoicing.md` § The 422 body is
+structured, not a flattened string + § PEPPOL BIS Billing 3.0 conformance.
 
 The buyer identity is built by the existing
 `invoices._buyer_identity_from_org` helper. **SBDH** (Standard Business
@@ -196,13 +198,51 @@ non-empty `supported_doc_types`.
 | transmitted (or idempotent re-send) | 200 |
 | invoice not found | 404 |
 | malformed participant id / no sender configured | 400 |
-| invoice not approved / tax-invalid / receiver not registered / doc-type unsupported | 422 (PII-free detail) |
+| invoice not approved / receiver not registered / doc-type unsupported | 422 (PII-free bare code, e.g. `invoice_not_approved`) |
+| tax-invalid / not BIS 3.0 conformant | 422 (PII-free structured `[{loc, type, msg}]` list — see `e-invoicing.md` § The 422 body) |
 | role not permitted | 403 |
 
 A send writes a `invoice.peppol_sent` (or `invoice.peppol_send_failed`) audit
 row through `dispatch_audit` (`details` records provider, `receiver_scheme`,
 `message_id`, `doc_type` — **never** the receiver value / tax id). The
 idempotent short-circuit deliberately writes **no** duplicate audit row.
+
+## Reading an invoice's transmission state
+
+`GET /api/invoices/{id}/peppol-transmissions` returns every transmission
+recorded for the invoice, newest first:
+
+```json
+{"transmissions": [{
+  "id": "…", "direction": "outbound", "status": "sent", "provider": "mock",
+  "participant_scheme": "9930", "message_id": "…", "failure_reason": null,
+  "transmitted_at": "…", "created_at": "…"
+}]}
+```
+
+- **A sub-resource, not a field on the invoice detail.** `GET
+  /api/invoices/{id}` is the hottest read in the app (list rows, the modal,
+  every poll) and PEPPOL concerns a minority of tenants, so a second query on
+  every invoice read would be paid by everyone to serve a few. It also matches
+  the shape its siblings already use (`/line-items`, `/summary`, `/einvoice`,
+  `/chat`).
+- **Read-gated `ALL_ROLES`**, matching `GET /{id}/einvoice` — the same subject,
+  read-only, PII-free. The network-touching `POST /peppol-send` stays narrower
+  (admin / ap_manager / cfo). Tenant isolation is `get_tenant_db`; the invoice
+  lookup is entity-scoped (`X-Entity-ID`), and an invoice outside the selected
+  entity — or another tenant's — is the same opaque 404.
+- **PII-free by omission.** `participant_value` / `sender_value` are the
+  counterparty's and our own registered org/tax ids; they live on the row and
+  inside the UBL and are deliberately not in this response. The schemes are bare
+  EAS registry codes, which identify nobody. `failure_reason` is a reason code.
+
+It exists because the send response's `already_sent` describes only a send the
+caller just made. Without this the UI could report an outcome but could not
+state the state when an invoice is opened — and staying silent reads as "not
+sent", the one claim it could not support. The frontend's PEPPOL block renders
+four distinct states off it: still loading, unreadable (the read failed —
+never degraded into "not sent"), transmitted, and *only failed attempts*, which
+the partial unique index treats as re-sendable and so must not read as done.
 
 ## Inbound (AS4 receive)
 
@@ -325,7 +365,11 @@ real inbound signing secret (sops) to receive/transmit for real.
 - `tests/test_peppol_send.py` — happy path (row + one audit), idempotent
   re-send (one adapter call), tax-invalid (no row), unknown receiver, failed-
   then-retry, PII-not-in-logs.
-- `tests/test_peppol_route.py` — 200 / already_sent / 404 / 400 / 422 / 403.
+- `tests/test_peppol_route.py` — 200 / already_sent / 404 / 400 / 422 / 403,
+  the structured 422 body, and `GET /peppol-transmissions` (empty / populated
+  / PII-free / clerk-readable / 404 / tenant- + entity-scoped).
+- `tests/test_e_invoice_error_payload.py` — the 422 payload shape, its
+  PII-freeness across both validation passes, and that rule ids survive.
 - `tests/test_peppol_inbound.py` — inbound receive: signed happy path (one
   Invoice + one inbound transmission), sequential + concurrent-race dedupe (one
   invoice), bad/missing signature, unknown tenant, malformed payload, master

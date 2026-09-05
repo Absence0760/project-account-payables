@@ -24,13 +24,19 @@ import {
  * 1. every dialect is offered and a permitted role can download one;
  * 2. a role without the PEPPOL gate sees the download menu but no send control;
  * 3. the **422** — an invoice the dialect refuses — renders the backend's own
- *    `field: code` reasons as a readable, persistent explanation, not a
- *    generic "export failed" toast. That path is the interesting one: the
- *    export deliberately refuses to emit a non-compliant document, so a clerk
- *    meets it routinely and must be told which fields to fix;
+ *    per-field reasons as a readable, persistent explanation, not a generic
+ *    "export failed" toast. That path is the interesting one: the export
+ *    deliberately refuses to emit a non-compliant document, so a clerk meets
+ *    it routinely and must be told which fields to fix. The body is the
+ *    backend's STRUCTURED error list, so the sentence on screen is the
+ *    server's own — there is no code→prose map on the client to drift from it;
  * 4. PEPPOL is confirm-then-act, and a repeat send reports the EXISTING
  *    transmission (`already_sent`) rather than claiming a second document went
- *    onto the network.
+ *    onto the network;
+ * 5. the PEPPOL block states the real transmission state **on open**, read from
+ *    `GET /api/invoices/{id}/peppol-transmissions` — before that endpoint the
+ *    UI could only describe a send made in the same session, so it had to stay
+ *    silent, and silence reads as "not sent".
  */
 
 const MARKER = 'E2E-EINV';
@@ -215,11 +221,14 @@ test.describe('/invoices — e-invoice export', () => {
 		const err = modal.getByTestId('einvoice-error');
 		await expect(err).toBeVisible({ timeout: 10_000 });
 		await expect(err).toContainText('cannot be issued as UBL 2.1');
-		// The backend's `issue_date: missing; lines: missing` rendered as prose,
-		// per field — never the raw `field: code` join.
-		await expect(err).toContainText('Invoice date');
-		await expect(err).toContainText('Line items');
-		await expect(err).toContainText('is required and is missing.');
+		// The backend's own PII-free sentences, one row per field — the client
+		// keeps no code→prose map, so what is on screen is what the server said.
+		await expect(err).toContainText('Issue date is required');
+		await expect(err).toContainText('At least one invoice line is required');
+		// The field path stays visible beside each reason (it is what says WHICH
+		// line or tax row is at fault) — but as a bare path, never the raw
+		// `field: message` join, which is what an unparseable detail falls back to.
+		await expect(err).toContainText('issue_date');
 		await expect(err).not.toContainText('issue_date:');
 
 		// No download was triggered, and the control is usable again.
@@ -281,6 +290,13 @@ test.describe('/invoices — e-invoice export', () => {
 			});
 
 			const modal = await openModal(page, inv.id);
+			// The state is read on OPEN, from the invoice's own transmission log —
+			// an approved invoice nobody has transmitted says so, rather than the
+			// block staying silent about it.
+			await expect(modal.getByTestId('peppol-state')).toContainText(
+				'Not yet transmitted over PEPPOL.',
+				{ timeout: 10_000 }
+			);
 			// Confirm-then-act: the first click only opens the form.
 			await modal.getByTestId('peppol-send').click();
 			const form = modal.getByTestId('peppol-form');
@@ -300,6 +316,13 @@ test.describe('/invoices — e-invoice export', () => {
 			// a second document reached the network.
 			await modal.getByRole('button', { name: 'Close' }).click();
 			const reopened = await openModal(page, inv.id);
+			// A fresh modal holds no send response, so this line is the ONLY thing
+			// that can report the transmission — and it must, or a second send is
+			// the user's only way to find out whether the first one happened.
+			await expect(reopened.getByTestId('peppol-state')).toContainText(
+				'Transmitted over PEPPOL on',
+				{ timeout: 10_000 }
+			);
 			await reopened.getByTestId('peppol-send').click();
 			await reopened.getByTestId('peppol-receiver-scheme').fill('9930');
 			await reopened.getByTestId('peppol-receiver-value').fill('E2E-RECEIVER');

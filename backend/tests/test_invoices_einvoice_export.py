@@ -1,9 +1,16 @@
 """Authenticated UBL e-invoice export — GET /api/invoices/{id}/einvoice.
 
 Covers the happy path for each allowed role, the 400 on a bad format, the 404
-for an invoice not in the tenant DB, and the 422 (PII-free body) when the
-mapped document is tax-invalid. Auth/role gating itself is covered by
+for an invoice not in the tenant DB, and the 422 (STRUCTURED, PII-free body)
+when the mapped document is tax-invalid. Auth/role gating itself is covered by
 test_rbac.py (the route carries require_roles and is not in NO_AUTH_REQUIRED).
+
+The 422 body is a list of FastAPI validation-error items — ``loc`` (the dotted
+field path) / ``type`` (the reason code or EN 16931 rule id) / ``msg`` (the
+PII-free human sentence). It used to be the flattened ``"field: code"`` string,
+which forced every client to keep its own code→prose map; `_issues` below reads
+the structured form, and `resp.text` is what the PII assertions check, because
+`x in <list>` is membership and would pass vacuously.
 """
 
 from __future__ import annotations
@@ -16,6 +23,13 @@ from app.models.entity import Entity
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.organization import Organization
 from app.services.e_invoice import parse_cii, parse_ubl
+
+
+def _issues(resp) -> list[tuple[str, str, str]]:
+    """(field, code, message) triples from a structured 422 body."""
+    detail = resp.json()["detail"]
+    assert isinstance(detail, list), detail
+    return [(i["loc"][0], i["type"], i["msg"]) for i in detail]
 
 
 async def _add_invoice(mk, org_id, *, number="INV-XP-1") -> str:
@@ -193,10 +207,10 @@ async def test_export_cii_tax_invalid_422_pii_free(realdb):
         async with realdb.client(key="a", role="ap_manager") as c:
             resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=cii")
         assert resp.status_code == 422, resp.text
-        detail = resp.json()["detail"]
-        assert "buyer.tax_id" in detail
-        assert "malformed" in detail
-        assert "DE12" not in detail  # PII-free
+        assert ("buyer.tax_id", "malformed", "Buyer tax id format is invalid for country") in (
+            _issues(resp)
+        )
+        assert "DE12" not in resp.text  # PII-free
     finally:
         await _set_company(realdb, "a", {})
 
@@ -316,10 +330,10 @@ async def test_export_invalid_vendor_tax_id_422_for_known_country(realdb):
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.get(f"/api/invoices/{inv_id}/einvoice")
     assert resp.status_code == 422, resp.text
-    detail = resp.json()["detail"]
-    assert "seller.tax_id" in detail
-    assert "malformed" in detail
-    assert "FR12" not in detail  # PII-free
+    assert ("seller.tax_id", "malformed", "Seller tax id format is invalid for country") in (
+        _issues(resp)
+    )
+    assert "FR12" not in resp.text  # PII-free
 
 
 async def test_export_national_format_fatturapa(realdb):
@@ -497,10 +511,12 @@ async def test_export_national_format_422_pii_free(realdb):
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=nfe")
     assert resp.status_code == 422, resp.text
-    detail = resp.json()["detail"]
-    assert "seller.tax_id" in detail
-    assert "malformed" in detail
-    assert "123" not in detail  # PII-free
+    fields, codes, messages = zip(*_issues(resp), strict=True)
+    assert "seller.tax_id" in fields
+    assert "malformed" in codes
+    # The human half travels with the machine half — no client-side code map.
+    assert any(msg.strip() for msg in messages)
+    assert "123" not in resp.text  # PII-free
 
 
 async def test_export_tax_invalid_422_pii_free(realdb):
@@ -519,11 +535,10 @@ async def test_export_tax_invalid_422_pii_free(realdb):
         async with realdb.client(key="a", role="ap_manager") as c:
             resp = await c.get(f"/api/invoices/{inv_id}/einvoice")
         assert resp.status_code == 422, resp.text
-        body = resp.json()
-        detail = body["detail"]
-        assert "buyer.tax_id" in detail
-        assert "malformed" in detail
+        assert ("buyer.tax_id", "malformed", "Buyer tax id format is invalid for country") in (
+            _issues(resp)
+        )
         # PII-free: the malformed value must not appear in the error body.
-        assert "DE12" not in detail
+        assert "DE12" not in resp.text
     finally:
         await _set_company(realdb, "a", {})
