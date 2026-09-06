@@ -825,20 +825,20 @@ CISO / Security Analyst before acting.**
       Dispatch-time tests added to `test_payment_run_blocking_exceptions.py` +
       `test_payment_run_live_card_claim.py`.
 
-- [ ] **(c) The ERP webhook is a fourth writer of `payment_scheduled → paid` and
-      bypasses the settlement-coverage hold.** `payment_erp_sync` deliberately
-      holds a short-settled invoice and documents two exits
-      (`/settlement/accept` or `/void`); `api/erp_webhook.py` transitions on
-      `VALID_TRANSITIONS` alone and never reads `settled_amount` /
-      `settlement_coverage`. A validly-signed `{"status":"Paid"}` from the
-      tenant's own ERP flips a short-settled invoice to `paid`, fires the
-      outbound `payment.settled` webhook, emails the supplier, counts the full
-      amount in aging / dashboard / 1099 YTD — and `/settlement/accept` then
-      409s, so the documented exit is gone. Needs no attacker: the ERP
-      legitimately reports "paid" once a bill payment is applied there.
-      **Durable fix:** run `settlement_coverage` in the webhook's `paid` branch
-      and take the existing `_raise_erp_reconciliation_exception` path on a
-      non-covering verdict. **Trigger:** next ERP or settlement slice.
+- [x] **DONE (PR #375).** The ERP webhook was a writer of
+      `payment_scheduled → paid` that bypassed the settlement-coverage hold:
+      `api/erp_webhook.py` transitioned on `VALID_TRANSITIONS` alone and never
+      read `settled_amount` / `settlement_coverage`, so a validly-signed
+      `{"status":"Paid"}` from the tenant's own ERP flipped a short-settled
+      invoice to `paid` (firing `payment.settled`, emailing the supplier,
+      counting the full amount in aging / 1099 YTD) while `/settlement/accept`
+      then 409'd — the documented exit gone. The webhook's
+      `payment_scheduled → paid` branch now runs the SAME `settlement_coverage`
+      check off the SAME persisted `Payment.settled_amount` and, on a
+      non-covering verdict, opens an `erp_reconciliation` exception (dedup'd) and
+      leaves the invoice at `payment_scheduled` — a silent 204, same two exits
+      (`/settlement/accept` or `/void`). `backend/docs/payments.md` corrected
+      ("primary code path", not "only").
 
 - [x] **DONE (PR #373).** `derive_run_status` failed open — a run of voided
       payments reported `completed`. `voided` matched none of the four bucket

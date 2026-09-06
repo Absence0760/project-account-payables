@@ -12,7 +12,9 @@ from app.database import control_session_factory, get_tenant_engine
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
+from app.models.payment import Payment
 from app.services.exception_service import create_exception
+from app.services.payment_settlement import settlement_coverage
 from app.services.webhook_security import (
     extract_signature_header,
     is_event_already_processed,
@@ -270,6 +272,60 @@ async def erp_webhook(
                     await db.commit()
                 return  # silent 204 on every forbidden-transition path
 
+            # `payment_scheduled → paid` is a legal edge, but it is the exact
+            # transition the settlement-coverage hold governs. `payment_erp_sync`
+            # (the normal, one-shot path to `paid`) refuses to close out an
+            # invoice whose rail settled SHORT of what AP authorized — it holds
+            # at `payment_scheduled` for a human, with `/settlement/accept` and
+            # `/void` as the two exits. A validly-signed `{"status":"Paid"}`
+            # from the tenant's own ERP (which legitimately fires once a bill
+            # payment is applied there) must not walk around that: it would
+            # flip a short-paid invoice to `paid`, fire the outbound
+            # `payment.settled` webhook, email the supplier, and count the full
+            # amount in aging / dashboard / 1099 YTD — and `/settlement/accept`
+            # would then 409, so the documented exit is gone. Run the SAME check
+            # off the SAME persisted figure (`Payment.settled_amount`) and take
+            # the reconciliation-exception path on a non-covering verdict.
+            if target_status is InvoiceStatus.paid and current == InvoiceStatus.payment_scheduled:
+                settling = (
+                    await db.execute(
+                        select(Payment)
+                        .where(
+                            Payment.invoice_id == invoice.id,
+                            Payment.status == "completed",
+                        )
+                        .order_by(Payment.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if settling is not None:
+                    coverage = settlement_coverage(
+                        settled_amount=settling.settled_amount,
+                        settled_currency=settling.settled_currency,
+                        target_amount=settling.amount,
+                        target_currency=invoice.currency,
+                        source_amount=settling.source_amount,
+                        source_currency=settling.source_currency,
+                        settled_amount_unstorable=settling.settled_amount_unstorable,
+                    )
+                    if not coverage.completes_invoice:
+                        await _open_erp_reconciliation_exception(
+                            db,
+                            invoice,
+                            org_id=org.id,
+                            description=(
+                                f"ERP reported 'Paid' via {erp_type} for an invoice "
+                                f"whose payment settled {coverage.state} of what AP "
+                                f"authorized (shortfall {coverage.shortfall or '-'}) — "
+                                f"held at 'payment_scheduled'. Reconcile via "
+                                f"POST /api/payments/{{id}}/settlement/accept or /void "
+                                f"(erp_document_id={erp_document_id or '-'}, "
+                                f"event={event_id or '-'})."
+                            ),
+                        )
+                        await db.commit()
+                        return  # silent 204 — held for human reconciliation
+
             await transition_invoice(
                 db,
                 invoice,
@@ -317,34 +373,23 @@ async def erp_webhook(
             return _retry_please()
 
 
-async def _raise_erp_reconciliation_exception(
+async def _open_erp_reconciliation_exception(
     db: AsyncSession,
     invoice: Invoice,
     *,
     org_id,
-    erp_type: str,
-    erp_status: str,
-    erp_document_id: str | None,
-    event_id,
+    description: str,
 ) -> None:
-    """Open an ``erp_reconciliation`` Exception for human review.
-
-    Called when the ERP reports an invoice VOIDED/CANCELLED (``→ failed``) that
-    we've already advanced past the point where ``→ failed`` is a legal
-    transition (``sent_to_erp`` / ``posted_in_erp`` / ``payment_scheduled`` /
-    ``paid``). Money may already be in flight, so this is a review signal — we
-    deliberately do NOT auto-transition the invoice.
+    """Open ONE ``erp_reconciliation`` Exception for human review, PII-free.
 
     **Idempotent.** The webhook already dedupes redeliveries by event id, but
-    two DISTINCT ERP void events for the same invoice must not pile up duplicate
+    two DISTINCT ERP events for the same invoice must not pile up duplicate
     reconciliation exceptions — so we skip if an OPEN ``erp_reconciliation``
     exception already exists for this invoice.
 
-    **PII-free.** The ``description`` carries only the safe ERP routing
-    identifiers already whitelisted for the audit row (``erp_type`` /
-    ``erp_status`` / ``erp_document_id`` / the event id) plus the invoice's
-    current status — never the raw ERP ``details`` payload (which may include
-    vendor bank / tax / address fields).
+    ``description`` must carry only safe routing identifiers and status —
+    never the raw ERP ``details`` payload (which may include vendor bank / tax
+    / address fields).
     """
     existing = await db.execute(
         select(func.count()).where(
@@ -356,12 +401,6 @@ async def _raise_erp_reconciliation_exception(
     if (existing.scalar() or 0) > 0:
         return  # already flagged for this invoice — don't duplicate
 
-    description = (
-        f"ERP reported '{erp_status}' (void/cancel) via {erp_type} for an "
-        f"invoice already at '{invoice.status.value}' — money may be in flight. "
-        f"Needs human reconciliation "
-        f"(erp_document_id={erp_document_id or '-'}, event={event_id or '-'})."
-    )
     await create_exception(
         db,
         exception_type=ERP_RECONCILIATION_EXCEPTION_TYPE,
@@ -370,4 +409,34 @@ async def _raise_erp_reconciliation_exception(
         status="open",
         organization_id=org_id,
         invoice=invoice,
+    )
+
+
+async def _raise_erp_reconciliation_exception(
+    db: AsyncSession,
+    invoice: Invoice,
+    *,
+    org_id,
+    erp_type: str,
+    erp_status: str,
+    erp_document_id: str | None,
+    event_id,
+) -> None:
+    """Open an ``erp_reconciliation`` Exception when the ERP reports an invoice
+    VOIDED/CANCELLED (``→ failed``) that we've already advanced past the point
+    where ``→ failed`` is a legal transition (``sent_to_erp`` /
+    ``posted_in_erp`` / ``payment_scheduled`` / ``paid``). Money may already be
+    in flight, so this is a review signal — we deliberately do NOT
+    auto-transition the invoice.
+    """
+    await _open_erp_reconciliation_exception(
+        db,
+        invoice,
+        org_id=org_id,
+        description=(
+            f"ERP reported '{erp_status}' (void/cancel) via {erp_type} for an "
+            f"invoice already at '{invoice.status.value}' — money may be in flight. "
+            f"Needs human reconciliation "
+            f"(erp_document_id={erp_document_id or '-'}, event={event_id or '-'})."
+        ),
     )

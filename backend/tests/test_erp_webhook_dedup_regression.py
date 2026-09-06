@@ -162,10 +162,23 @@ async def test_distinct_status_events_without_event_id_both_apply(fake_redis):
     correlation_id = str(uuid.uuid4())
     erp_document_id = "doc_1"
 
+    # The `payment_scheduled → paid` webhook branch now runs a
+    # `settlement_coverage` check; this fake session returns the same object for
+    # every `execute`, so the settling-payment lookup resolves to `invoice`
+    # itself. Carry the payment fields the check reads, `settled_amount=None`
+    # (= "nothing reported", coverage fails OPEN) so the transition still
+    # applies — this test is about dedup, not the hold.
     invoice = SimpleNamespace(
         id=uuid.uuid4(),
         correlation_id=uuid.UUID(correlation_id),
+        currency="USD",
         status=InvoiceStatus.sent_to_erp,
+        amount=None,
+        settled_amount=None,
+        settled_currency=None,
+        settled_amount_unstorable=False,
+        source_amount=None,
+        source_currency=None,
     )
     first_calls = await _post(
         org=org,
