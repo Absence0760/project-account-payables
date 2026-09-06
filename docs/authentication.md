@@ -1335,26 +1335,111 @@ Invoices, workflow definitions list/active-steps, GL accounts list, and POs list
 
 ### Endpoints that intentionally do **not** require a JWT
 
-These are explicitly listed in `tests/test_rbac.py::NO_AUTH_REQUIRED` and use other auth mechanisms or are public:
+Every such route is declared in `tests/test_rbac.py`, in **one of two lists that
+carry different obligations**. Which list a route belongs in is not a labelling
+choice — each list asserts something specific, and a route in the wrong one
+fails.
 
-- `POST /auth/login`, `POST /auth/mfa/challenge/email`, `POST /auth/mfa/verify` — pre-login flow, gated by password + challenge token.
-- `POST /auth/logout` — uses Bearer header but reads it directly, not via `Depends`.
-- `GET /auth/sso/*` and `POST /auth/sso/callback` — OIDC handshake.
-- `POST /signup/*`, `GET /signup/slug-check` — public signup.
-- `POST /cards/webhook/{provider}`, `POST /erp/webhook/{erp_type}` — provider-signed webhooks.
-- `GET /scim/v2/*`, `POST /scim/v2/Users`, etc. — per-tenant SCIM bearer token validated inside the handler.
+#### `PUBLIC_BY_DESIGN` — must answer an anonymous caller
+
+Listing a route here does not exempt it: the test **drives** each entry with a
+real credential-free request and asserts the response is not 401/403. A route
+that in fact requires a credential fails the probe, so it cannot be quietly
+parked here.
+
+| Route | Why it is public |
+|---|---|
+| `GET /health` | Liveness probe. No identity, no tenant data. |
+| `GET /public-config` | Non-secret config (hCaptcha sitekey, tenant URL template) the SPA needs before a session exists. |
+| `GET /v1/openapi.json`, `GET /v1/docs` | The published contract + reference for the public `/api/v1` surface — public to read like any API doc; both 404 when `FEOH_PUBLIC_API_ENABLED` is off. |
+| `GET /scim/v2/ServiceProviderConfig`, `GET /scim/v2/Schemas/{id}` | SCIM discovery documents. IdPs (Entra) probe them before they hold a bearer token; static capability/schema flags, no tenant data. |
+| `GET /auth/sso/config`, `GET /auth/saml/config` | The login page decides whether to render the SSO button before anyone is signed in. Returns only `{enabled, provider, sso_only}`. |
+| `GET /auth/sso/authorize`, `GET /auth/saml/login` | Entry legs of the OIDC / SAML dance — they 302 the browser to the IdP. There is no session yet, by definition. |
+| `GET /auth/saml/metadata` | SP `EntityDescriptor` XML an IdP admin registers. No secrets — only the public SP cert when AuthnRequest signing is on. |
+| `GET /signup/slug-check`, `POST /signup/start` | Self-service tenant signup: there is no account to authenticate yet. Abuse is bounded by the per-IP / per-email rate limits and the captcha, not by a credential. |
+| `POST /auth/forgot-password` | **Self-service password recovery.** It has to be reachable by a user who — by definition — cannot log in; requiring a credential to ask for a password reset would be circular. It is not an unguarded surface: it answers *identically* for a known and an unknown address (the email is dispatched on a detached task, so response time can't enumerate accounts either), and it is throttled on two axes — per IP (5/hour) and per submitted address (3/hour), so an attacker rotating IPs still can't email-bomb one victim's inbox with reset links. The state-changing half of the flow is **not** public: `POST /auth/reset-password` is gated by the single-use emailed token (see below). |
+| `GET /portal/branding` | White-label brand read for the **unauthenticated** supplier-portal login page. Tenant resolved by the `get_tenant` chokepoint; returns only the whitelisted `BrandConfig` fields. See `white-label.md`. |
+
+#### `ALTERNATE_AUTH` — gated by something other than the JWT
+
+Each entry names its **specific** gate, and the test asserts that gate is still
+there: dependency gates are resolved **by identity** in `route.dependant`, and
+body gates (an HMAC verify, a signed-token decode, a password check — none of
+which are FastAPI dependencies) are asserted as symbols the handler's own code
+references. Deleting the gate fails the suite.
+
+Be clear on what the symbol half proves. It is a *static* check — it makes the
+structural regression (the gate simply going away, or being swapped for a
+different primitive) impossible to land unnoticed. It cannot prove the gate is
+still reached on every path, or that its verdict is still acted on; a call left
+in place but ignored would pass it. That residual is what the per-route
+behavioural suites cover (`test_slack_approvals`, `test_webhook_security`,
+`test_payment_webhook_security`, `test_email_intake`, `test_peppol_inbound`,
+`test_auth_*`), which drive the rejection paths for real.
+
+| Routes | Gate |
+|---|---|
+| `POST /auth/login`, `POST /portal/auth/login` | The submitted password, through the shared `pwd_context` (`verify_password` / `dummy_verify`). |
+| `POST /auth/logout`, `POST /portal/auth/logout` | Bearer token read off the header and validated by `decode_token` rather than through `Depends`. |
+| `POST /auth/mfa/verify`, `POST /auth/mfa/challenge/email`, `POST /auth/mfa/passkey/authenticate[/verify]` | The login-issued MFA challenge token (`typ=mfa_challenge`) — password already proven, access token not yet issued. The passkey verify additionally checks the assertion against the single-use login-purpose challenge slot. |
+| `POST /portal/auth/mfa/challenge[/email]` | The portal's own `typ=vendor_mfa_challenge` token — distinct from the employee one so neither crosses the AP/vendor boundary. |
+| `POST /auth/reset-password` | The single-use emailed reset token IS the credential; `consume_reset_token` GETDELs it atomically, so a replay 400s exactly like an expiry. |
+| `POST /auth/sso/callback` | Server-minted single-use `state`, then the IdP's signed, nonce-bound ID token. |
+| `POST /auth/saml/acs`, `POST /auth/saml/exchange` | Server-minted single-use RelayState + python3-saml's signed-assertion verification; the exchange leg consumes a one-time handoff code. |
+| `POST /signup/complete` | The emailed `EmailVerification` token, taken `FOR UPDATE` and consumed so two calls can't double-provision a tenant. |
+| `POST /cards/webhook/{provider}`, `POST /erp/webhook/{erp_type}` | Per-tenant webhook signing secret (HMAC over the raw body) + Redis dedupe on the provider event id. |
+| `POST /payments/webhook/{tenant_slug}/{provider}`, `POST /billing/webhook/{provider}` | The adapter's `parse_webhook` verifies the processor HMAC, then event-id dedupe. |
+| `POST /email-intake/inbound/{provider}` | Process-level HMAC over the raw body plus the opaque per-tenant token in the recipient address. |
+| `POST /peppol/inbound/{tenant_slug}` | Access Point HMAC; dedupe is the DB `uq_peppol_message_id` index. |
+| `POST /catalogs/punchout/return/{tenant_slug}` | Supplier shared-secret HMAC over the cart body, BuyerCookie-correlated to a pending session. |
+| `GET /invoices/email-action/{token}`, `POST .../confirm` | The signed single-action token in the URL IS the credential (re-verified on the acting request, never trusted from the confirm page). |
+| `POST /approvals/slack/interactivity`, `POST /approvals/teams/interactivity` | The provider request signature **and** the signed single-use action token in the button / card action. |
+| `GET /portal/cards/{token}` | Single-use card-reveal token; `consume_reveal_token` claims it atomically before the PAN is fetched. |
+| `GET/POST/PUT/PATCH/DELETE /scim/v2/Users[...]` and `/scim/v2/Groups[...]` (12 routes) | The per-tenant SCIM bearer token, via `Depends(get_scim_tenant)` — asserted present in the dependency tree by identity. |
 
 ### Coverage gate
 
-`tests/test_rbac.py::test_every_endpoint_requires_auth_or_is_explicitly_public` walks every router at import time. If a new endpoint is added without an auth dependency and is not on the `NO_AUTH_REQUIRED` allowlist, the test fails. This is the *one* test that has to fail noisily in CI when someone forgets RBAC — the kind of mistake that put us in the "any authenticated user can hit any endpoint" hole that this work fixed.
+`tests/test_rbac.py::test_every_endpoint_requires_auth_or_is_explicitly_public`
+walks every router at import time. If a new endpoint ships without an auth
+dependency and is on neither allowlist, the test fails. This is the *one* test
+that has to fail noisily in CI when someone forgets RBAC.
 
-A companion test catches the inverse: if `NO_AUTH_REQUIRED` references an endpoint that no longer exists, it fails so the allowlist can't silently rot.
+**Auth is resolved by identity, not by name.** The gate walks `route.dependant`
+— the same tree walk `test_sod_endpoint_wiring.py` uses — and compares against
+the actual callables `app/api/deps.py` / `portal_deps.py` export:
+`get_current_user`, `get_current_vendor_user`, `get_api_key_principal`. Every
+factory (`require_roles`, `require_permission`, `require_api_scope`,
+`require_entitlement`, `require_api_entitlement`) declares one of those as its
+own sub-dependency, so all five are covered for free.
+
+It did not always work that way, and the earlier version is worth remembering as
+the shape of a guard that *looks* like it is checking something. It read only
+the endpoint function's own signature and accepted any dependency whose closure
+happened to be named `checker` — the house style for all five factories. A name
+is not a security property in either direction: renaming the closure broke the
+gate on every route at once, and an unrelated function called `checker` that
+authenticated nobody satisfied it. Paired with a single `NO_AUTH_REQUIRED` set
+that asserted *nothing* once an entry was listed, the result was demonstrable:
+deleting `Depends(get_scim_tenant)` from all six SCIM `/Groups` handlers — the
+credential that creates accounts and grants roles — left the suite green. Both
+planted bypasses now fail.
+
+Three companion tests keep the allowlists honest: an entry naming a route that
+no longer exists fails (no silent rot), a route declared in both lists fails
+(the weaker obligation would be the one satisfied), and a route that already
+carries a real auth dependency may not be allowlisted at all (dead weight that
+would pre-authorise it if its auth were later removed).
+
+`test_split_endpoints_are_permission_gated` resolves the `require_permission`
+gate by its **code object** — every closure that factory returns shares one
+`__code__` — so it likewise can't be satisfied by an unrelated `checker` or
+broken by renaming the real one.
 
 ### Adding a new endpoint
 
 1. Pick the right role tuple from the matrix above (or invent one and update this doc).
 2. Add `user: User = Depends(require_roles(ROLE_X, ...))` to the endpoint signature.
-3. If the endpoint genuinely cannot take a JWT (webhook, login flow), add it to `NO_AUTH_REQUIRED` in `tests/test_rbac.py` with a one-line comment explaining why.
+3. If the endpoint genuinely cannot take a JWT, put it in the right list in `tests/test_rbac.py` — `PUBLIC_BY_DESIGN` (and supply a probe that drives it anonymously) or `ALTERNATE_AUTH` (and name the gate it is actually protected by) — and add a row to the tables above.
 4. Run `pytest tests/test_rbac.py` — the coverage gate will tell you if anything's missing.
 
 ### Not in this pass
