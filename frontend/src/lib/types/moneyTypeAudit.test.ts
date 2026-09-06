@@ -86,6 +86,13 @@ const JUDGED_NOT_MONEY: Record<string, Record<string, string>> = {
 		'InvoiceListResult.total': 'row count of the assistant tool result',
 		'PendingApprovalsResult.total': 'row count of the assistant tool result'
 	},
+	'lib/types/cardRebate.ts': {
+		// Deliberately renamed apart from the money it used to be: the envelope's
+		// `total` is now the pagination row COUNT (the canonical list shape), and
+		// the summed rebate amount lives beside it as `total_amount`, typed
+		// `MoneyAmount`.
+		'RebateListResponse.total': 'pagination row count of the whole filtered set'
+	},
 	'lib/types/catalog.ts': {
 		'CatalogListResponse.total': 'pagination row count of the whole filtered set'
 	},

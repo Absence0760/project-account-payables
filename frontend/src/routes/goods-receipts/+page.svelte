@@ -23,7 +23,7 @@
 	 * no button; `require_roles` refuses the write regardless.
 	 */
 	import { api } from '$lib/api';
-	import { appendUnique } from '$lib/utils/pagination';
+	import { MAX_PAGE_SIZE, appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -91,15 +91,20 @@
 
 	const PAGE_SIZE = 20;
 	/**
-	 * Page size of the receipts fetch that backs the Inspections tab's "Goods
-	 * receipt" column. `GET /api/inspections` returns `gr_id` only, and there is
-	 * no server-side join, so the numbers have to be resolved locally.
-	 * `MAX_PAGE_SIZE` on the backend is 100, which is the cap here — an
-	 * inspection pointing at a receipt outside that window renders a link that
-	 * opens the receipt (and resolves its number from the API) instead of a
-	 * number, rather than a blank cell implying there is nothing there.
+	 * Page size of the receipts fetch that populates the record-inspection
+	 * form's receipt PICKER — the only thing that still needs a list of
+	 * receipts the page has not paged to.
+	 *
+	 * It used to also back the Inspections tab's "Goods receipt" column, because
+	 * `GET /api/inspections` returned `gr_id` and no number: every inspection
+	 * load dragged a 100-row receipts fetch along with it purely to build an
+	 * id→number map, and any receipt outside that window still rendered
+	 * unlabelled — a defect growing the page size could only move, not fix. The
+	 * row now carries `gr_number` from a server-side join, so this fetch is
+	 * loaded once for the picker and skipped entirely for a reader who cannot
+	 * record an inspection.
 	 */
-	const RECEIPT_LOOKUP_SIZE = 100;
+	const RECEIPT_PICKER_SIZE = 100;
 
 	type TabKey = 'receipts' | 'inspections';
 
@@ -127,9 +132,19 @@
 	let inspections = $state<Inspection[]>([]);
 	let inspectionsLoaded = $state(false);
 	let inspectionsLoading = $state(false);
-	/** Receipts fetched purely to resolve `gr_id` → `gr_number`; kept apart from
-	 *  `grs` so the Load-more pagination of the Receipts tab is untouched. */
-	let lookupReceipts = $state<GRListItem[]>([]);
+	let loadingMoreInspections = $state(false);
+	let inspectionsTotal = $state(0);
+	let inspectionsPage = $state(1);
+	/** Inspections for the receipt whose detail modal is open, fetched with
+	 *  `?gr_id=` rather than filtered out of the tab's list — the tab now shows
+	 *  a PAGE, so filtering it would silently miss this receipt's inspections
+	 *  whenever they sit past the loaded rows. */
+	let detailInspections = $state<Inspection[]>([]);
+	let detailInspectionsLoading = $state(false);
+	/** Receipts the record form may pick from; kept apart from `grs` so the
+	 *  Load-more pagination of the Receipts tab is untouched. Loaded only for a
+	 *  user who can actually record one. */
+	let pickerReceipts = $state<GRListItem[]>([]);
 	let syncing = $state(false);
 	let recordOpen = $state(false);
 	/** Set when the record form is opened from a receipt's detail — the subject
@@ -144,6 +159,7 @@
 	const listSequence = createRequestSequencer();
 	const detailSequence = createRequestSequencer();
 	const inspectionSequence = createRequestSequencer();
+	const detailInspectionSequence = createRequestSequencer();
 
 	$effect(() => {
 		void loadGRs();
@@ -163,18 +179,25 @@
 
 	$effect(() => {
 		if (tab !== 'inspections') return;
-		untrack(() => void ensureInspections());
+		untrack(() => {
+			void ensureInspections();
+			void ensurePickerReceipts();
+		});
 	});
 
 	$effect(() => {
 		if (!detailId) {
 			detail = null;
+			detailInspections = [];
 			return;
 		}
-		// The detail modal renders this receipt's inspections, so it needs the
-		// same list the tab does.
-		untrack(() => void ensureInspections());
-		void loadDetail(detailId);
+		// The modal asks the SERVER for this receipt's inspections (`?gr_id=`)
+		// rather than filtering the tab's list: the tab holds one page now, so a
+		// client-side filter would show an empty "no inspections" panel for a
+		// receipt whose rows simply had not been paged to yet.
+		const id = detailId;
+		untrack(() => void loadDetailInspections(id));
+		void loadDetail(id);
 	});
 
 	async function loadGRs(opts: { append?: boolean; nextPage?: number } = {}) {
@@ -234,31 +257,23 @@
 		}
 	}
 
-	/** Load the inspection list once. `GET /api/inspections` is unpaginated by
-	 *  design and has no `gr_id` filter, so both consumers (the tab and the
-	 *  detail modal's panel) read the same fetched set rather than one request
-	 *  per receipt opened. */
+	/** Load the first page of inspections once per tab activation. */
 	async function ensureInspections() {
 		if (inspectionsLoaded || inspectionsLoading) return;
 		await refreshInspections();
 	}
 
-	async function refreshInspections() {
+	async function refreshInspections(opts: { append?: boolean; nextPage?: number } = {}) {
+		const nextPage = opts.nextPage ?? 1;
 		const token = inspectionSequence.start();
-		inspectionsLoading = true;
+		if (opts.append) loadingMoreInspections = true;
+		else inspectionsLoading = true;
 		try {
-			// The receipt lookup rides along: it exists only to label the rows
-			// this fetch returns, so issuing it separately would show a table of
-			// unresolved ids for a frame.
-			const [rows, receiptPage] = await Promise.all([
-				listInspections(),
-				api.get<{ items: GRListItem[] }>(
-					`/api/goods-receipts?page=1&page_size=${RECEIPT_LOOKUP_SIZE}`
-				)
-			]);
+			const data = await listInspections({ page: nextPage, pageSize: PAGE_SIZE });
 			if (!inspectionSequence.canCommit(token)) return;
-			inspections = rows;
-			lookupReceipts = receiptPage.items;
+			inspections = opts.append ? appendUnique(inspections, data.items) : data.items;
+			inspectionsTotal = data.total;
+			inspectionsPage = nextPage;
 			inspectionsLoaded = true;
 		} catch (err) {
 			if (!inspectionSequence.isCurrentRequest(token)) return;
@@ -267,17 +282,66 @@
 				'error'
 			);
 		} finally {
-			if (inspectionSequence.isCurrentRequest(token)) inspectionsLoading = false;
+			if (inspectionSequence.isCurrentRequest(token)) {
+				inspectionsLoading = false;
+				loadingMoreInspections = false;
+			}
+		}
+	}
+
+	async function loadMoreInspections() {
+		await refreshInspections({ append: true, nextPage: inspectionsPage + 1 });
+	}
+
+	/** This receipt's inspections, asked for by `gr_id`. `MAX_PAGE_SIZE` is the
+	 *  ceiling; a single delivery inspected more than 100 times is not a case
+	 *  this panel needs to page, and the count is visible in the tab regardless. */
+	async function loadDetailInspections(grId: string) {
+		const token = detailInspectionSequence.start();
+		detailInspectionsLoading = true;
+		try {
+			const data = await listInspections({ grId, pageSize: MAX_PAGE_SIZE });
+			// Open one receipt, close it, open another: the first response must
+			// not land in the modal now showing the second.
+			if (!detailInspectionSequence.canCommit(token)) return;
+			detailInspections = data.items;
+		} catch (err) {
+			if (!detailInspectionSequence.isCurrentRequest(token)) return;
+			toast(
+				err instanceof Error ? err.message : m('goodsReceipts.inspections.toast.loadFailed'),
+				'error'
+			);
+		} finally {
+			if (detailInspectionSequence.isCurrentRequest(token)) detailInspectionsLoading = false;
+		}
+	}
+
+	/** The record form's receipt picker. Loaded once, and only for a user who
+	 *  can record — a reader never pays for a list they cannot use. */
+	async function ensurePickerReceipts() {
+		if (!canMutate || pickerReceipts.length > 0) return;
+		try {
+			const data = await api.get<{ items: GRListItem[] }>(
+				`/api/goods-receipts?page=1&page_size=${RECEIPT_PICKER_SIZE}`
+			);
+			pickerReceipts = data.items;
+		} catch {
+			// Non-fatal: the picker falls back to whatever receipts the page has
+			// already loaded, and recording from a receipt's own detail modal
+			// (which passes a fixed receipt) is unaffected.
 		}
 	}
 
 	let hasMore = $derived(grs.length < total);
+	let hasMoreInspections = $derived(inspections.length < inspectionsTotal);
 
-	/** Every receipt the page can name, keyed by id — the paged Receipts tab
-	 *  plus the lookup window plus whichever detail is open. */
+	/** Every receipt the record form can offer, keyed by id — the paged Receipts
+	 *  tab plus the picker window plus whichever detail is open. Labelling an
+	 *  inspection's receipt no longer goes through here: the row carries
+	 *  `gr_number` from the server. */
 	const receiptIndex = $derived.by(() => {
 		const index = new Map<string, GRListItem>();
-		for (const gr of lookupReceipts) index.set(gr.id, gr);
+		for (const gr of pickerReceipts) index.set(gr.id, gr);
 		for (const gr of grs) index.set(gr.id, gr);
 		if (detail) index.set(detail.id, detail);
 		return index;
@@ -295,19 +359,6 @@
 			}))
 			.sort((a, b) => a.gr_number.localeCompare(b.gr_number))
 	);
-
-	const inspectionsByReceipt = $derived.by(() => {
-		const byReceipt = new Map<string, Inspection[]>();
-		for (const ins of inspections) {
-			if (!ins.gr_id) continue;
-			const bucket = byReceipt.get(ins.gr_id);
-			if (bucket) bucket.push(ins);
-			else byReceipt.set(ins.gr_id, [ins]);
-		}
-		return byReceipt;
-	});
-
-	const detailInspections = $derived(detail ? (inspectionsByReceipt.get(detail.id) ?? []) : []);
 
 	const RESULT_LABELS: Record<string, MessageKey> = {
 		pass: 'goodsReceipts.inspections.result.pass',
@@ -353,9 +404,12 @@
 		);
 		// Re-read rather than splicing the returned row in: the tab is a plain
 		// list of what the tenant holds, and a re-read is what proves the write
-		// landed where the matcher will look for it.
+		// landed where the matcher will look for it. Back to page 1 — the new row
+		// is the newest, so it belongs at the top of the ordering the pages were
+		// cut from.
 		inspectionsLoaded = false;
 		void refreshInspections();
+		if (detailId) void loadDetailInspections(detailId);
 	}
 
 	async function runSync() {
@@ -518,17 +572,16 @@
 							<td class="mono">
 								{#if ins.gr_id}
 									{@const grId = ins.gr_id}
-									{@const known = receiptIndex.get(grId)}
-									<!-- A receipt outside the lookup window has no number here, so
-									     the link carries a generic name and resolves the number
-									     from the API when opened — better than a blank cell. -->
+									<!-- `gr_number` rides the row, resolved by the server's own
+									     outer join — every linked receipt is named, including one
+									     the page has not paged to. -->
 									<RowLink
 										onclick={() => (detailId = grId)}
-										ariaLabel={known
-											? m('goodsReceipts.row.view', { number: known.gr_number })
+										ariaLabel={ins.gr_number
+											? m('goodsReceipts.row.view', { number: ins.gr_number })
 											: m('goodsReceipts.inspections.viewReceipt')}
 									>
-										{known ? known.gr_number : m('goodsReceipts.inspections.viewReceipt')}
+										{ins.gr_number ?? m('goodsReceipts.inspections.viewReceipt')}
 									</RowLink>
 								{:else}
 									<span class="muted" title={m('goodsReceipts.inspections.unlinkedHint')}>
@@ -544,6 +597,30 @@
 					{/each}
 				{/snippet}
 			</DataTable>
+
+			{#if hasMoreInspections}
+				<div class="load-more-row">
+					<button
+						class="btn-load-more"
+						onclick={loadMoreInspections}
+						disabled={loadingMoreInspections}
+						data-testid="load-more-inspections"
+					>
+						{loadingMoreInspections
+							? m('common.loading')
+							: m('goodsReceipts.inspections.loadMore', {
+									shown: inspections.length,
+									total: inspectionsTotal
+								})}
+					</button>
+				</div>
+			{:else if inspectionsTotal > 0}
+				<div class="load-more-row">
+					<span class="load-more-end">
+						{m('goodsReceipts.inspections.showingAll', { total: inspectionsTotal })}
+					</span>
+				</div>
+			{/if}
 		</div>
 	{/if}
 </PageHeader>
@@ -636,7 +713,7 @@
 					{:else}
 						<tr>
 							<td colspan="4" class="empty">
-								{inspectionsLoading
+								{detailInspectionsLoading
 									? m('common.loading')
 									: m('goodsReceipts.modal.noInspections')}
 							</td>

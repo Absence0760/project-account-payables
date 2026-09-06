@@ -106,17 +106,36 @@ class RebateResponse(BaseModel):
     # The negotiated rebate ratio (e.g. 0.0125 = 1.25%) — a Decimal in the DB;
     # kept exact in Python, serialised to a JSON number like the money fields.
     rate: MoneyAmount
+    # What THIS row's `amount` is denominated in. `card_rebates` has no currency
+    # column — a rebate's currency is knowable only through the `virtual_cards`
+    # row it accrued on — so every path returning a rebate joins that table and
+    # resolves the code through `currency_conversion.card_currency_sql`, the one
+    # owner of that expression. Before this the shape carried no currency at
+    # all, so on a mixed-currency programme the UI could only render bare
+    # figures with no code: honest, and useless. Resolved from the card, never
+    # defaulted to the reporting currency — stamping that onto a row which is
+    # not in it is the mistake the bare rendering existed to avoid.
+    currency: str
     status: str
     period: str | None
     created_at: str
 
 
-class RebateListResponse(BaseModel):
+class RebateListResponse(PageMeta):
     items: list[RebateResponse]
-    total: MoneyAmount  # total rebate amount, in `currency`
-    # What `total` is denominated in, and how many rebates were left out of it
-    # for being denominated in something else. `total` was a bare
-    # cross-currency SUM presented beside per-row amounts that each state their
-    # own card's currency, so it could be a figure in nothing the rows showed.
+    # Row COUNT over the whole filtered set, like every other list envelope in
+    # `api/pagination.py` — NOT the money figure. `total` used to be the summed
+    # rebate amount, which made this the one list endpoint whose `total` meant
+    # something different from all the others; the money moved to
+    # `total_amount` when the endpoint was paginated.
+    total: int
+    # Summed rebate amount over the WHOLE filtered set, never the loaded page,
+    # in `currency`. Built by the same `_rebate_list_filters` the rows use, so
+    # the figure and the set it claims to describe cannot drift.
+    total_amount: MoneyAmount
+    # What `total_amount` is denominated in, and how many rebates were left out
+    # of it for being denominated in something else. Each ROW now states its own
+    # currency, so this no longer gates whether a row can be rendered — it is
+    # what stops a single-currency total beside a mixed list looking complete.
     currency: str = "USD"
     excluded_rebate_count: int = 0

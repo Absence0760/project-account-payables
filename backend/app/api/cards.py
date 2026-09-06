@@ -1038,87 +1038,130 @@ async def card_webhook(provider: str, request: Request):
     return
 
 
+def _rebate_list_filters(query, *, period: str | None, entity_id: uuid.UUID | None):
+    """The predicates BOTH the rebate page and its whole-set rollup apply.
+
+    One builder, two callers — the shape `tests/test_whole_set_kpi_rollups.py`
+    pins on every other list-plus-KPI surface — so the total under the table can
+    never describe a different set than the rows in it once the table is only
+    ever showing a page of them (`docs/decisions.md` §79, §82).
+
+    `CardRebate` carries no `entity_id` of its own, so the entity scope reaches
+    it through the `VirtualCard` join every caller already needs for the
+    currency. The join itself is the caller's, not this builder's, because the
+    count/rollup/page queries each select from a different shape.
+    """
+    query = apply_entity_scope(query, VirtualCard, entity_id)
+    if period:
+        query = query.where(CardRebate.period == period)
+    return query
+
+
 @router.get("/rebates", response_model=RebateListResponse)
 async def list_rebates(
     period: str | None = None,
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    # CardRebate carries no entity_id of its own — join to VirtualCard
-    # (which does, via EntityMixin) so this scopes like every other
-    # entity-aware KPI instead of always returning the whole org's rebates.
-    query = select(CardRebate).join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
-    query = apply_entity_scope(query, VirtualCard, entity_id)
-    if period:
-        query = query.where(CardRebate.period == period)
-    query = query.order_by(CardRebate.created_at.desc())
+    """A page of the tenant's card rebates, newest first, plus the whole-set
+    money total under them.
 
-    result = await db.execute(query)
-    rebates = result.scalars().all()
+    Paginated on the canonical `page` / `page_size` contract (`api/pagination`)
+    like every other list here: the table this backs grows monotonically —
+    one rebate per settled card, forever — and returning all of them made the
+    response size a function of how long the tenant had been running.
 
+    `total` is therefore the ROW COUNT of the whole filtered set (what the
+    Load-More control counts against); `total_amount` is the summed money, also
+    over the whole filtered set and never over the loaded page.
+    """
     # Denominated like the dashboard's rebate figures: `card_rebates` carries no
     # currency column, so the join that scopes the entity also supplies the
-    # currency (`card_currency_sql` owns that expression). It was a bare
-    # cross-currency SUM presented as one `total` beside per-row amounts that
-    # each state their own card's currency — so the total could be denominated
-    # in nothing the rows below it showed.
+    # currency (`card_currency_sql` owns that expression). It denominates the
+    # total AND — since this change — each row, so a mixed-currency programme
+    # renders every amount under its own code instead of bare.
     reporting_currency = resolve_reporting_currency(org.settings)
     _rebate_ccy = card_currency_sql(reporting_currency)
-    total_q = apply_entity_scope(
+
+    def _joined(selectable):
+        return _rebate_list_filters(
+            selectable.join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id),
+            period=period,
+            entity_id=entity_id,
+        )
+
+    total = (
+        await db.execute(
+            select(func.count()).select_from(_joined(select(CardRebate.id)).subquery())
+        )
+    ).scalar() or 0
+
+    # `created_at` alone is not a total order — two rebates minted by the same
+    # settlement batch share a timestamp, and a tie split across a page boundary
+    # drops one row and repeats another. `id` is the tiebreak.
+    rows = (
+        await db.execute(
+            _joined(select(CardRebate, _rebate_ccy.label("card_currency")))
+            .order_by(CardRebate.created_at.desc(), CardRebate.id.desc())
+            .offset(pagination.offset)
+            .limit(pagination.limit)
+        )
+    ).all()
+
+    total_q = _joined(
         select(
             func.coalesce(
                 func.sum(case((_rebate_ccy == reporting_currency, CardRebate.amount))), 0
             ),
             func.count(case((_rebate_ccy != reporting_currency, CardRebate.id))),
-        )
-        .select_from(CardRebate)
-        .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id),
-        VirtualCard,
-        entity_id,
+        ).select_from(CardRebate)
     )
-    if period:
-        total_q = total_q.where(CardRebate.period == period)
-    total, excluded_rebate_count = (await db.execute(total_q)).one()
-    total = total or 0
+    total_amount, excluded_rebate_count = (await db.execute(total_q)).one()
 
     return RebateListResponse(
-        items=[
-            RebateResponse(
-                id=str(r.id),
-                virtual_card_id=str(r.virtual_card_id),
-                amount=r.amount,
-                rate=r.rate,
-                status=r.status,
-                period=r.period,
-                created_at=r.created_at.isoformat() if r.created_at else "",
-            )
-            for r in rebates
-        ],
-        total=total,
+        items=[_rebate_response(r, currency) for r, currency in rows],
+        total=int(total),
+        page=pagination.page,
+        page_size=pagination.page_size,
+        total_amount=total_amount or 0,
         currency=reporting_currency,
         excluded_rebate_count=int(excluded_rebate_count or 0),
     )
 
 
-async def _get_org_rebate(db: AsyncSession, rebate_id: uuid.UUID) -> CardRebate:
-    """Look up a rebate scoped to the caller's tenant DB (implicit — `db` is
-    already the tenant session). No entity filter: a rebate confirmation is an
-    org-level bookkeeping action, not a per-subsidiary read."""
-    result = await db.execute(select(CardRebate).where(CardRebate.id == rebate_id))
-    rebate = result.scalar_one_or_none()
-    if rebate is None:
+async def _get_org_rebate(
+    db: AsyncSession, rebate_id: uuid.UUID, reporting_currency: str
+) -> tuple[CardRebate, str]:
+    """A rebate plus the currency it is denominated in, scoped to the caller's
+    tenant DB (implicit — `db` is already the tenant session). No entity filter:
+    a rebate confirmation is an org-level bookkeeping action, not a
+    per-subsidiary read.
+
+    The `VirtualCard` join is not optional garnish — `card_rebates` has no
+    currency column, so it is the only way the response can state one, and
+    `RebateResponse.currency` is required. `virtual_card_id` is a NOT NULL FK,
+    so the join never loses a row that exists."""
+    result = await db.execute(
+        select(CardRebate, card_currency_sql(reporting_currency))
+        .join(VirtualCard, CardRebate.virtual_card_id == VirtualCard.id)
+        .where(CardRebate.id == rebate_id)
+    )
+    row = result.one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Rebate not found")
-    return rebate
+    return row[0], row[1]
 
 
-def _rebate_response(r: CardRebate) -> RebateResponse:
+def _rebate_response(r: CardRebate, currency: str) -> RebateResponse:
     return RebateResponse(
         id=str(r.id),
         virtual_card_id=str(r.virtual_card_id),
         amount=r.amount,
         rate=r.rate,
+        currency=currency,
         status=r.status,
         period=r.period,
         created_at=r.created_at.isoformat() if r.created_at else "",
@@ -1138,7 +1181,8 @@ async def confirm_rebate(
     real rebate reporting from Lithic/Nium arrives out-of-band (a periodic
     statement, not a webhook event we already ingest), so this is a
     human-driven confirmation, not something the card webhook can do for us."""
-    rebate = await _get_org_rebate(db, rebate_id)
+    reporting_currency = resolve_reporting_currency(org.settings)
+    rebate, currency = await _get_org_rebate(db, rebate_id, reporting_currency)
     if rebate.status != "pending":
         raise HTTPException(
             status_code=409, detail=f"Cannot confirm a rebate in '{rebate.status}' status"
@@ -1159,7 +1203,7 @@ async def confirm_rebate(
     )
     await db.commit()
     await db.refresh(rebate)
-    return _rebate_response(rebate)
+    return _rebate_response(rebate, currency)
 
 
 @router.post("/rebates/{rebate_id}/mark-paid", response_model=RebateResponse)
@@ -1173,7 +1217,8 @@ async def mark_rebate_paid(
     actually lands (e.g. as a line on the org's own bank statement). Requires
     `confirmed` first — a rebate can't be recorded paid before it was
     confirmed to exist."""
-    rebate = await _get_org_rebate(db, rebate_id)
+    reporting_currency = resolve_reporting_currency(org.settings)
+    rebate, currency = await _get_org_rebate(db, rebate_id, reporting_currency)
     if rebate.status != "confirmed":
         raise HTTPException(
             status_code=409, detail=f"Cannot mark paid a rebate in '{rebate.status}' status"
@@ -1194,4 +1239,4 @@ async def mark_rebate_paid(
     )
     await db.commit()
     await db.refresh(rebate)
-    return _rebate_response(rebate)
+    return _rebate_response(rebate, currency)

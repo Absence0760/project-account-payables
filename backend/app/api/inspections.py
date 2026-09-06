@@ -10,8 +10,8 @@ router is the CRUD surface that creates those rows. See
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -21,8 +21,10 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.pagination import PaginationParams, paginated, pagination_params
 from app.database import get_control_db
 from app.models.organization import Organization
+from app.models.procurement import GoodsReceipt
 from app.models.quality_inspection import QualityInspection
 from app.models.user import User
 from app.schemas.inspection import VALID_RESULTS, InspectionCreate
@@ -40,12 +42,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 
 
-def _serialize(qi: QualityInspection) -> dict:
+def _serialize(qi: QualityInspection, gr_number: str | None = None) -> dict:
+    """One inspection as the API returns it.
+
+    ``gr_number`` is the goods receipt's human-readable number, resolved by an
+    outer join on every path that has one. It exists because the row carried
+    only ``gr_id``: the UI had nothing to label the "Goods receipt" column with,
+    so `/goods-receipts` fetched a whole 100-row page of receipts alongside
+    every inspection load purely to build an id→number map — and any receipt
+    outside that window still rendered unlabelled. A join here is one column;
+    that was a second list request that could not be made correct by growing it.
+    """
     return {
         "id": str(qi.id),
         "inspection_number": qi.inspection_number,
         "po_id": str(qi.po_id) if qi.po_id else None,
         "gr_id": str(qi.gr_id) if qi.gr_id else None,
+        "gr_number": gr_number,
         "result": qi.result,
         "inspected_date": qi.inspected_date.isoformat() if qi.inspected_date else None,
         "inspector": qi.inspector,
@@ -61,17 +74,69 @@ def _serialize(qi: QualityInspection) -> dict:
     }
 
 
+def _inspection_list_filters(query, *, gr_id: uuid.UUID | None, entity_id: uuid.UUID | None):
+    """The predicates the inspection page and its row count both apply.
+
+    One builder, two callers, so ``total`` can never describe a different set
+    than the rows it is counted beside — the shape every other paginated list
+    here uses.
+    """
+    query = apply_entity_scope(query, QualityInspection, entity_id)
+    if gr_id is not None:
+        query = query.where(QualityInspection.gr_id == gr_id)
+    return query
+
+
 @router.get("")
 async def list_inspections(
+    gr_id: uuid.UUID | None = Query(
+        None, description="Only inspections recorded against this goods receipt."
+    ),
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = apply_entity_scope(select(QualityInspection), QualityInspection, entity_id).order_by(
-        QualityInspection.created_at.desc()
-    )
-    result = await db.execute(query)
-    return [_serialize(qi) for qi in result.scalars().all()]
+    """A page of the tenant's quality inspections, newest first.
+
+    Paginated on the canonical ``page`` / ``page_size`` contract
+    (``api/pagination``). It used to return every row: the table it backs only
+    ever grows — one row per inspection recorded or synced from the QMS,
+    forever — so the response size was a function of how long the tenant had
+    been running, and the ``/goods-receipts`` Inspections tab rendered all of
+    them in one table with no way to stop.
+
+    ``gr_id`` narrows to one goods receipt, which is what the receipt detail
+    modal actually wants: it used to load the whole list and filter it in the
+    browser because the server offered no way to ask.
+    """
+
+    def _joined(selectable):
+        return _inspection_list_filters(
+            selectable.outerjoin(GoodsReceipt, QualityInspection.gr_id == GoodsReceipt.id),
+            gr_id=gr_id,
+            entity_id=entity_id,
+        )
+
+    total = (
+        await db.execute(
+            select(func.count()).select_from(_joined(select(QualityInspection.id)).subquery())
+        )
+    ).scalar() or 0
+
+    # `created_at` alone is not a total order — a QMS sync writes a batch of
+    # rows in one transaction, and a tie split across a page boundary would drop
+    # one row and repeat another. `id` is the tiebreak.
+    rows = (
+        await db.execute(
+            _joined(select(QualityInspection, GoodsReceipt.gr_number))
+            .order_by(QualityInspection.created_at.desc(), QualityInspection.id.desc())
+            .offset(pagination.offset)
+            .limit(pagination.limit)
+        )
+    ).all()
+
+    return paginated([_serialize(qi, gr_number) for qi, gr_number in rows], int(total), pagination)
 
 
 @router.post("", status_code=201)
@@ -117,7 +182,17 @@ async def create_inspection(
     )
     db.add(inspection)
     await db.flush()
-    return _serialize(inspection)
+    # Same shape as a listed row, `gr_number` included — a client that renders
+    # the created row without re-reading would otherwise show a blank cell that
+    # fills itself in on the next load.
+    gr_number = (
+        (
+            await db.execute(select(GoodsReceipt.gr_number).where(GoodsReceipt.id == gr_id))
+        ).scalar_one_or_none()
+        if gr_id
+        else None
+    )
+    return _serialize(inspection, gr_number)
 
 
 @router.post("/sync")
@@ -209,9 +284,11 @@ async def get_inspection(
     user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(QualityInspection).where(QualityInspection.id == inspection_id)
+        select(QualityInspection, GoodsReceipt.gr_number)
+        .outerjoin(GoodsReceipt, QualityInspection.gr_id == GoodsReceipt.id)
+        .where(QualityInspection.id == inspection_id)
     )
-    qi = result.scalar_one_or_none()
-    if not qi:
+    row = result.one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Inspection not found")
-    return _serialize(qi)
+    return _serialize(row[0], row[1])

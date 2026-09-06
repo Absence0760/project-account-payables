@@ -2,32 +2,33 @@ import { describe, expect, it } from 'vitest';
 import {
 	formatRebateRate,
 	nextRebateTransition,
-	rebateAmountCurrency,
 	rebateTone,
-	REBATE_STATUSES
+	REBATE_STATUSES,
+	type CardRebate
 } from './cardRebate';
 
-describe('rebateAmountCurrency', () => {
-	it('names the reporting currency when the list is provably homogeneous', () => {
-		// `excluded_rebate_count` is computed over the SAME filter as `items`, so
-		// zero exclusions proves every listed row is denominated in `currency`.
-		expect(rebateAmountCurrency({ currency: 'GBP', excluded_rebate_count: 0 })).toBe('GBP');
-	});
-
-	it('refuses to name one when at least one row is denominated elsewhere', () => {
-		// Nothing on the wire says WHICH row — `RebateResponse` carries no
-		// currency, and a rebate's currency is knowable only through its card.
-		// Stamping the reporting code onto every row would put a symbol on a
-		// figure that is not in it.
-		expect(rebateAmountCurrency({ currency: 'USD', excluded_rebate_count: 1 })).toBeNull();
-	});
-
-	it('treats a missing count as zero rather than crashing', () => {
-		expect(
-			rebateAmountCurrency({ currency: 'EUR' } as unknown as Parameters<
-				typeof rebateAmountCurrency
-			>[0])
-		).toBe('EUR');
+describe('CardRebate.currency', () => {
+	// `rebateAmountCurrency` used to live here: it derived, from the envelope's
+	// `excluded_rebate_count`, whether a ROW could honestly be labelled at all —
+	// zero exclusions proved the set was homogeneous, anything else meant "we
+	// cannot say", and the table rendered bare figures. It is gone because the
+	// wire answers the question directly now: `RebateResponse.currency` is
+	// resolved server-side from the `virtual_cards` row the rebate accrued on,
+	// so a MIXED list renders every row under its own code and nothing has to be
+	// inferred from a count. This test stands in its place so the deletion is
+	// legible rather than silent.
+	it('is a required per-row field, not something derived from the envelope', () => {
+		const row: CardRebate = {
+			id: 'r1',
+			virtual_card_id: 'c1',
+			amount: '125.50',
+			rate: 0.0125,
+			currency: 'EUR',
+			status: 'pending',
+			period: '2026-06',
+			created_at: '2026-06-01T00:00:00Z'
+		};
+		expect(row.currency).toBe('EUR');
 	});
 });
 
