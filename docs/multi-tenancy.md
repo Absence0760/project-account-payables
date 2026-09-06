@@ -41,6 +41,60 @@ X-Tenant-Slug header + Authorization Bearer <JWT>
 
 The cross-check in `get_tenant` is the load-bearing security control. Without it, an authenticated user from tenant A could read or mutate tenant B's data by sending `X-Tenant-Slug: <other-tenant>`. Vendor-portal tokens (`typ="vendor"`) are exempt — they're scoped naturally because `VendorUser` rows live in the per-tenant DB. See `docs/authentication.md § Cross-tenant guard`.
 
+### Engine construction is the other half of the guard
+
+`get_tenant` being *correct* is only useful if it is *used*. A tenant session is
+never more isolated than the URL its engine was built from, and a URL is a
+string — a module that writes
+
+```python
+create_async_engine(f"{base}/feoh_{slug}")     # slug straight off the request
+```
+
+reaches a tenant database with no `Organization` row behind it, so every check
+in `get_tenant` sits upstream of a call that never happens. `tests/test_tenant_isolation.py`
+would still be green.
+
+So the construction discipline is asserted too, by
+**`backend/tests/test_tenant_engine_construction.py`** — a pure-AST scan over
+`backend/app/`, no database, sub-second. It enforces five things:
+
+1. **One builder.** `app/database.py` owns engine construction; `_make_tenant_url(db_name)`
+   is the single place a tenant DB name becomes a URL. Every engine built elsewhere
+   must be handed `_make_tenant_url(...)` (tenant) or `settings.database_url`
+   (control plane) — directly, or via a local assigned from one of them. The scan
+   follows renamed imports (`create_async_engine as make_engine`), covers the
+   synchronous `create_engine` twin, and treats a `**kwargs`-hidden or
+   later-mutated URL as unresolved, so the easy ways around it fail closed.
+2. **The constructor is never renamed.** A constructor bound to another name
+   (`engine_factory = create_async_engine`) or passed as a value takes every call
+   through it *out of the enumeration* rather than into the offender list, so a
+   non-call reference is refused outright.
+3. **No interpolated URLs.** No f-string, `%`, or `.format()` anywhere in an
+   engine's URL expression — the exempt modules included.
+4. **Narrow exemptions.** The three AWS Lambda handlers (`extraction_lambda`,
+   `erp_lambda`, `audit_lambda`) cannot import `app.database` (it reaches
+   `app.config`; see backend/CLAUDE.md on dotenv-free Lambda paths), so they read
+   the control URL from the environment and inline `_make_tenant_url`'s body.
+   They are exempt from the *helper*, not from the rule: the guard asserts each
+   still mirrors that body structurally, and a stale exemption on a module that
+   no longer builds an engine fails too.
+5. **No hardcoded tenant DB names.** A `feoh_`-prefixed database-name literal
+   appears nowhere outside `app/config.py`, which owns `tenant_db_prefix`.
+
+The `tenant-url-interpolation` and `hardcoded-tenant-db-name` rules in
+`.claude/hooks/security-patterns.sh` catch the same two shapes earlier, at edit
+time. They are line-based greps, so they see a URL interpolated *at* the call —
+positionally or as `url=` — but not one assembled on an earlier line and passed
+by name, and not a renamed constructor. The pytest guard resolves both; the hook
+is the fast first pass, never the backstop.
+
+What no static rule can prove is that a given `db_name` came from a *resolved
+row* rather than from the request. What the guard does prove is that every call
+site goes through the one helper whose only caller-visible input is a `db_name`,
+which turns reviewing a new engine site into a one-line question instead of an
+audit.
+
 ### Custom-domain fallback (white-label vanity hostnames)
 
 When the `X-Tenant-Slug` header is **absent**, `get_tenant_slug` falls back to matching the request `Host` against the per-org `settings.brand.custom_domains` JSON array, so a tenant served on its own vanity hostname (`ap.acmecorp.com`) resolves to its slug without the SPA supplying the header. An unknown / unmatched host (or a malformed settings blob) falls back to the original `400` — never a wrong tenant. **The fallback only picks a *candidate* slug; the `get_tenant` JWT `org`-claim cross-check above still gates it**, so a forged `Host` header can no more widen access than a forged `X-Tenant-Slug` header can. The list is managed by tenant admins via `GET/PUT /api/organization/branding/custom-domains` (admin-only mutate; each host normalized through the same `normalize_custom_domain` the resolver uses, **cross-org-unique** — a host registered to another tenant is `409` — and audited count-only) + the Organization → Custom Domains panel. See `docs/white-label.md § Custom domains` for the full trust model.

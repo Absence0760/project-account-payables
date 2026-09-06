@@ -175,6 +175,53 @@ if [[ "$FILE" == */app/models/*.py ]]; then
   done < <(hits 'mapped_column\(Float' | grep -iE 'amount|total|price|subtotal|tax|rebate')
 fi
 
+# ----- RULE: tenant DB URL assembled by interpolation ---------------------
+# Why: project invariant #4. A tenant session is only as isolated as the
+# URL its engine was built from. `create_async_engine(f"{base}/feoh_{slug}")`
+# reaches a tenant database with no resolved Organization row behind it, so
+# the `get_tenant` JWT org-claim cross-check never runs at all — every guard
+# in it sits upstream of a call that never happens. Bug class: any new
+# module that builds its own tenant URL instead of asking for one.
+#
+# Line-based by design (like every rule here), so it catches the URL built
+# inline at the call — positionally or as `url=`. A URL assembled on an
+# earlier line and passed by name is beyond a grep;
+# tests/test_tenant_engine_construction.py resolves that case and is the
+# real backstop.
+if [[ "$FILE" == */app/*.py && "$FILE" != */app/database.py ]]; then
+  while IFS= read -r m; do
+    ln="${m%%:*}"
+    register "tenant-url-interpolation" "$ln" \
+      "create_async_engine() URL built by interpolation / concatenation — no Organization row, no get_tenant cross-check" \
+      "from app.database import _make_tenant_url — pass _make_tenant_url(org.db_name) off a resolved row; see tests/test_tenant_engine_construction.py"
+  done < <(hits "create_async_engine\(\s*(f[\"']|[^)]*(url\s*=\s*f[\"']|\+|%|\.format\())")
+fi
+
+# ----- RULE: hardcoded tenant database name -------------------------------
+# Why: `Don't hardcode tenant DB names` (root CLAUDE.md). A literal like
+# `feoh_acme` points a query at one specific tenant from code that has no
+# business knowing which tenant it runs for, and it survives every runtime
+# guard because it never asks a question. `app/config.py` owns the prefix.
+# Bug class: a debugging shortcut or a copy-pasted fixture that ships.
+if [[ "$FILE" == */app/*.py && "$FILE" != */app/config.py ]]; then
+  # The public-API key brand (`feoh_live_<43 chars>`) shares the product prefix
+  # with the tenant DB names but names no database. Exempted only in the two
+  # modules that own it — a blanket filter would also swallow a real tenant
+  # literal whose slug starts `live` (`feoh_livecorp`).
+  DB_NAME_HITS="$(hits "[\"']feoh_[a-z0-9]+[a-z0-9_]*[\"']")"
+  case "$FILE" in
+    */app/services/api_keys.py|*/app/models/api_key.py)
+      DB_NAME_HITS="$(printf '%s' "$DB_NAME_HITS" | grep -vE "[\"']feoh_live(_[A-Za-z0-9]+)?[\"']" || true)" ;;
+  esac
+  while IFS= read -r m; do
+    [[ -n "$m" ]] || continue
+    ln="${m%%:*}"
+    register "hardcoded-tenant-db-name" "$ln" \
+      "Tenant database name hardcoded as a literal — pins this code to one tenant" \
+      "Resolve it from the Organization row (org.db_name); the feoh_ prefix lives in settings.tenant_db_prefix"
+  done <<<"$DB_NAME_HITS"
+fi
+
 # ----- RULE: raw user input interpolated into S3 key / file path ----------
 # Why: caught a real bug — `f"{org_id}/{invoice_id}/{file.filename}"`
 # let a vendor land their upload under another tenant's prefix. Bug
