@@ -567,6 +567,12 @@ async def test_failure_classifier_splits_deterministic_from_in_doubt():
         # could never auto-clear them there.
         "modern_treasury_no_counterparty",
         "method 'check' is not supported by Modern Treasury (supports: ach, wire)",
+        # `_execute_single_payment` dispatch-time re-checks — a blocking
+        # exception or a live card raised AFTER the run was built. Both refuse
+        # BEFORE the adapter call, so a `/retry-failed` can auto-clear them once
+        # the human resolves the flag / cancels the card.
+        "invoice_blocked:fraud_flag",
+        "invoice_has_live_card",
     ):
         assert classify_payment_failure(failure_reason=reason, provider_payment_id=None) == (
             RETRY_SAFE

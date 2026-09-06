@@ -1714,12 +1714,14 @@ The exception `description` is still never included (it can carry vendor / bank
 | `POST /api/payments/runs` + the copilot draft-run | the batch entry point |
 | `POST /api/payments` (standalone) | books money exactly like executing a run, and has no `/execute` step to gate later. Until this was wired it was a complete bypass: an invoice the run path refused with a 409 could simply be posted here instead |
 | `POST /api/payments/runs/{id}/retry-failed` | a flag raised *between* run creation and a re-send days later (a BEC bank-detail swap, an altered cheque off a Positive Pay return) has to stop the re-send |
+| `_execute_single_payment` (the `/execute`, `/resume` and `/compliance/release` dispatch leg) | run creation refuses a blocked invoice, but a draft run can sit for days awaiting CFO sign-off and nothing freezes the invoice — a `fraud_flag` from an approved bank-detail swap raised in that window has to stop dispatch, right beside the payable-status re-check, refused BEFORE the adapter call (`invoice_blocked:<type>`, retry-safe). The live-card claim (`card_claimed_invoice_ids`) is re-checked at the same point (`invoice_has_live_card`) |
 
 Coverage: `tests/test_payment_run_blocking_exceptions.py` drives real exception
 rows against a real DB, so the membership of the tuple is pinned in **both**
 directions (a `po_mismatch`, which is advisory here, must not block) — and
-covers the standalone path with the same parametrised cases, including that
-clearing the flag releases it there too.
+covers the standalone path AND the dispatch-time re-check (a flag raised after
+the run is built) with the same parametrised cases, including that clearing the
+flag releases it there too.
 
 #### The queue says which rows the gate would refuse
 

@@ -477,6 +477,17 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None, comp
     bank_res = MagicMock()
     bank_res.scalar_one_or_none = MagicMock(return_value=vendor_bank)
 
+    # `_execute_single_payment` re-runs `blocking_exception_types` +
+    # `card_claimed_invoice_ids` (→ `live_card_invoice_ids`) right after the
+    # invoice lookup — a `fraud_flag` or a live card raised after the run was
+    # built stops dispatch. Both modelled empty (not blocked, no card).
+    blocking_res = MagicMock()
+    blocking_res.all = MagicMock(return_value=[])
+    card_claim_res = MagicMock()
+    card_claim_scalars = MagicMock()
+    card_claim_scalars.all = MagicMock(return_value=[])
+    card_claim_res.scalars = MagicMock(return_value=card_claim_scalars)
+
     # `_execute_single_payment` re-derives the invoice's net payable (amount
     # minus applied credit memos) immediately before the adapter call, so a
     # credit recorded after the run was built can't pay the stale figure. That
@@ -485,7 +496,7 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None, comp
     credit_res = MagicMock()
     credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
 
-    queue = [run_res, pay_res, inv_res, credit_res, bank_res]
+    queue = [run_res, pay_res, inv_res, blocking_res, card_claim_res, credit_res, bank_res]
 
     if compliance_vendor is not False:
         v = compliance_vendor or SimpleNamespace(

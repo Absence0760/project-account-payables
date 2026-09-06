@@ -694,6 +694,16 @@ async def test_execute_payment_run_refuses_sanctions_matched_vendor_without_call
     vendor_lookup_res.scalar_one_or_none = MagicMock(return_value=full_vendor)
     trailing_spend_res = _trailing_row(Decimal("0"))
 
+    # `_execute_single_payment` re-runs `blocking_exception_types` +
+    # `card_claimed_invoice_ids` (→ `live_card_invoice_ids`) right after the
+    # invoice lookup — modelled empty (not blocked, no card).
+    blocking_res = MagicMock()
+    blocking_res.all = MagicMock(return_value=[])
+    card_claim_res = MagicMock()
+    card_claim_scalars = MagicMock()
+    card_claim_scalars.all = MagicMock(return_value=[])
+    card_claim_res.scalars = MagicMock(return_value=card_claim_scalars)
+
     # `_execute_single_payment` re-derives the invoice's net payable (amount −
     # applied credit memos) immediately before the adapter/card call, so a
     # credit recorded after the run was built can never pay the stale figure.
@@ -707,6 +717,8 @@ async def test_execute_payment_run_refuses_sanctions_matched_vendor_without_call
             run_res,
             pay_res,
             inv_res,
+            blocking_res,
+            card_claim_res,
             credit_res,
             bank_res,
             vendor_lookup_res,
@@ -835,6 +847,14 @@ async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
     no_existing_exception = MagicMock()
     no_existing_exception.scalar_one_or_none = MagicMock(return_value=None)
 
+    # `_execute_single_payment` re-runs `blocking_exception_types` right after
+    # the invoice lookup (keyed on invoice.id, so it fires regardless of the
+    # NULL vendor). `card_claimed_invoice_ids` does NOT issue a query here —
+    # a `virtual_card` payment legitimately converges on any live card, so the
+    # candidate list is empty and no `live_card_invoice_ids` SELECT runs.
+    blocking_res = MagicMock()
+    blocking_res.all = MagicMock(return_value=[])
+
     # `_execute_single_payment` re-derives the invoice's net payable (amount −
     # applied credit memos) immediately before the adapter/card call, so a
     # credit recorded after the run was built can never pay the stale figure.
@@ -843,13 +863,21 @@ async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
     credit_res.scalar_one = MagicMock(return_value=Decimal("0"))
 
     db = AsyncMock()
-    # Four queries fire before the hold: run lookup, payments fan-out,
-    # invoice lookup, the compliance-hold-exception dedupe check. The vendor
-    # .bank_details lookup is skipped (vendor_id NULL) and no compliance/card
-    # query runs. The final rollup query then re-reads every payment on the
-    # run to compute the run's final status.
+    # Five queries fire before the hold: run lookup, payments fan-out, invoice
+    # lookup, the blocking-exception re-check, the net-payable SUM, then the
+    # compliance-hold-exception dedupe check. The vendor .bank_details lookup
+    # is skipped (vendor_id NULL) and no compliance/card query runs. The final
+    # rollup query then re-reads every payment on the run.
     db.execute = AsyncMock(
-        side_effect=[run_res, pay_res, inv_res, credit_res, no_existing_exception, rollup_res]
+        side_effect=[
+            run_res,
+            pay_res,
+            inv_res,
+            blocking_res,
+            credit_res,
+            no_existing_exception,
+            rollup_res,
+        ]
     )
     db.commit = AsyncMock()
     db.add = MagicMock()

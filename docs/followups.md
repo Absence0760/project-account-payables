@@ -806,22 +806,24 @@ CISO / Security Analyst before acting.**
 
 #### Money path — verified, unfixed
 
-- [ ] **(c) `/payments/runs/{id}/execute` and `/resume` skip two of the four
-      gates run creation applies.** Creation checks payable status, financial
-      integrity (`blocking_exception_types`), credit-memo netting and the live
-      card claim; the dispatch leg re-checks only the first two. So a
-      `fraud_flag` raised **after** a draft run exists — exactly what an approved
-      vendor bank change raises, with the description *"Vendor bank details
-      changed; verify before payment"* — does not stop execution, and
-      `_execute_single_payment` re-reads `Vendor.bank_details` at dispatch time.
-      A virtual card minted for an invoice already in a draft run is the second
-      variant. The asymmetry is already stated in the tree: `/retry-failed`'s
-      comment says *"a retry dispatches real money days or weeks later, so it
-      re-checks everything they check"* — and a run awaiting CFO sign-off
-      dispatches days later too.
-      **Durable fix:** one shared pre-dispatch re-check, the way the payability
-      guard was added. **Trigger:** next payments slice — this is the cheapest
-      fix with the largest money exposure in this list.
+- [x] **DONE (PR #374).** `/payments/runs/{id}/execute` and `/resume` skipped
+      two of the four gates run creation applies. Creation checks payable
+      status, financial integrity (`blocking_exception_types`), credit-memo
+      netting and the live card claim; the dispatch leg (`_execute_single_payment`)
+      re-checked payable status + credit-memo netting but NOT the blocking
+      exception or the card claim. So a `fraud_flag` raised **after** a draft run
+      exists — exactly what an approved vendor bank change raises ("Vendor bank
+      details changed; verify before payment"), while a draft run sits for days
+      awaiting CFO sign-off and `_execute_single_payment` re-reads
+      `Vendor.bank_details` — did not stop execution; a virtual card minted after
+      the run was built was the second variant. `_execute_single_payment` now
+      runs `blocking_exception_types` + `card_claimed_invoice_ids` (the SAME
+      shared predicates the run builder and `/retry-failed` use) right after the
+      payable-status re-check, refusing BEFORE the adapter call with named
+      retry-safe reasons `invoice_blocked:<type>` / `invoice_has_live_card`. Also
+      covers `/compliance/release`, which flows through the same chokepoint.
+      Dispatch-time tests added to `test_payment_run_blocking_exceptions.py` +
+      `test_payment_run_live_card_claim.py`.
 
 - [ ] **(c) The ERP webhook is a fourth writer of `payment_scheduled → paid` and
       bypasses the settlement-coverage hold.** `payment_erp_sync` deliberately

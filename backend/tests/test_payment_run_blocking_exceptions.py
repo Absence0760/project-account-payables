@@ -249,3 +249,41 @@ async def test_standalone_payment_proceeds_once_the_flag_is_cleared(realdb, clea
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.post("/api/payments", json={"invoice_id": str(inv_id), "method": "ach"})
     assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.parametrize("exc_type", ["fraud_flag", "duplicate", "line_total_mismatch"])
+async def test_blocking_exception_raised_after_the_run_is_built_stops_dispatch(realdb, exc_type):
+    """The sharpest case: an approved BEC bank-detail swap raises a `fraud_flag`
+    ("Vendor bank details changed; verify before payment") between run creation
+    and `/execute` — a draft run can sit for days awaiting CFO sign-off.
+    `_execute_single_payment` re-reads `Vendor.bank_details`, so without a
+    re-check the money goes to the swapped account. It must land the payment
+    `failed` with a named, retry-safe reason BEFORE the adapter is called."""
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    inv_id = await _seed_approved_invoice(mk, info.org_id, number=f"PRB-MIDRUN-{exc_type}")
+
+    async with realdb.client(key="a", role="admin") as c:
+        run_resp = await c.post(
+            "/api/payments/runs",
+            json={"items": [{"invoice_id": str(inv_id), "method": "ach"}]},
+        )
+        assert run_resp.status_code == 201, run_resp.text
+        run_id = run_resp.json()["id"]
+
+    # The flag is raised in the window between run creation and dispatch.
+    await _add_exception(mk, info.org_id, inv_id, exc_type=exc_type)
+
+    async with realdb.client(key="a", role="ap_manager") as c2:
+        exec_resp = await c2.post(f"/api/payments/runs/{run_id}/execute")
+        assert exec_resp.status_code == 200, exec_resp.text
+        assert exec_resp.json()["payments_completed"] == 0
+
+    async with mk() as s:
+        payment = (
+            await s.execute(select(Payment).where(Payment.invoice_id == inv_id))
+        ).scalar_one()
+        assert payment.status == "failed"
+        assert payment.failure_reason == f"invoice_blocked:{exc_type}"
+        # Refused BEFORE the adapter call — no order at the processor.
+        assert payment.provider_payment_id is None
