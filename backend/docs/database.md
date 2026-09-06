@@ -39,6 +39,61 @@ postgresql+asyncpg://postgres:postgres@localhost:5432/feoh_acme
 
 ## Data Models
 
+### Numeric column types — the guard is opt-out
+
+Project invariant #1 is **money is exact**: currency is `Numeric(precision,
+scale)`, never `Float` / `Double` / `REAL`, because a binary float cannot
+represent `0.10` and every `SUM` across the column comes back slightly wrong.
+Two rules follow, and both are enforced across the *whole* schema by
+`backend/tests/test_money_invariants.py` — not against a list of columns
+someone remembered to add:
+
+1. **Every `Numeric` column declares precision AND scale.** A bare
+   `Numeric()` is arbitrary-precision on one backend and double-precision
+   float on another, so the same model rounds differently depending on where
+   it is deployed. There is no allowlist — nothing wants an unspecified one.
+2. **No `Float` / `Double` / `DOUBLE_PRECISION` / `REAL` column exists at
+   all**, unless it is named in `NON_MONEY_FLOAT_ALLOWLIST` in that test file
+   with a written reason.
+
+The consequence for a new column is that protection is **opt-out**: add
+`mapped_column(Numeric(15, 2))` and you are already covered — you do not have
+to register it anywhere. Adding a float is what costs you something.
+
+This replaced a name-token sweep that matched `amount` / `total` / `price` /
+`subtotal` / `_tax` and asserted only "not Float". It had drifted off the
+schema — 35 of the 88 `Numeric` columns matched no token (every FX rate at
+`NUMERIC(18, 8)`, every expense-policy threshold, `Contract.spend_limit`,
+`CashPlan.opening_balance`) — so a `Column(Float)` named `balance`, `budget`,
+`limit`, `fee`, `cost` or `*_rate` passed the entire file.
+
+**Adding a justified non-money float.** Rare enough that the allowlist is
+currently empty. If you genuinely need one:
+
+```python
+# backend/tests/test_money_invariants.py
+NON_MONEY_FLOAT_ALLOWLIST: dict[tuple[str, str], str] = {
+    ("some_table", "some_column"): "model confidence score, never multiplied by money",
+}
+```
+
+The key is `(table_name, column_name)` and the value is the reason. The bar is
+high, and *"the test went red"* is not it — if the column plausibly holds
+currency, a quantity that gets multiplied by a price, a rate applied to money,
+or a threshold money is compared against, it **is** money: fix the column type
+(with an Alembic migration that fans out to every tenant), don't list it.
+Legitimate entries look like a model confidence score, a ranking weight, a
+latency measurement, a geo coordinate. `test_float_allowlist_has_no_stale_entries`
+prunes the list for you — an entry whose column is no longer a float fails,
+because a stale key silently pre-approves a *future* column of that name.
+
+Note that several existing columns are `Numeric` **without** being money —
+`agent_decisions.confidence` `NUMERIC(5, 4)`, `vendors.risk_score`
+`NUMERIC(5, 2)`, `invoice_line_items.quantity` `NUMERIC(12, 4)`. They stay
+`Numeric` deliberately: a confidence is compared against a configured
+threshold and a quantity is multiplied by a unit price, so both want exact
+decimal comparison rather than binary drift.
+
 ### Control-Plane Tables
 
 - `organizations` — tenant registry (name, slug, db_name, settings, plan)
