@@ -2573,6 +2573,37 @@ async def _execute_single_payment(
         payment.completed_at = now
         return
 
+    # A payment-blocking exception raised AFTER the run was built must stop
+    # dispatch. `create_payment_run_for_invoices` refuses `duplicate` /
+    # `fraud_flag` / `line_total_mismatch` / `payment_reconciliation` at
+    # creation, but nothing freezes the invoice while a draft run waits for CFO
+    # sign-off or a payment sits `pending_compliance` — and the single sharpest
+    # case is an approved BEC bank-detail swap, which raises a `fraud_flag`
+    # ("Vendor bank details changed; verify before payment") and whose new
+    # `Vendor.bank_details` this function then re-reads two blocks down.
+    # `/retry-failed` already re-runs this gate before a days-later re-send; so
+    # must `/execute`, `/resume` and `/compliance/release`. Same shared
+    # predicate (`blocking_exception_types`), refused BEFORE the adapter call so
+    # it is retry-safe and a fresh run re-derives the payment once the human
+    # clears the flag.
+    _blocked = await blocking_exception_types(db, [invoice.id])
+    if invoice.id in _blocked:
+        payment.status = "failed"
+        payment.failure_reason = f"invoice_blocked:{_blocked[invoice.id]}"
+        payment.completed_at = now
+        return
+
+    # A live virtual card minted for this invoice since the run was built claims
+    # it on a rail this payment isn't using (`card_claimed_invoice_ids` returns
+    # nothing for a `virtual_card` payment, which legitimately CONVERGES on that
+    # card). Paying now on any other rail is a second, independent outflow —
+    # the same gate the run builder and `/retry-failed` run.
+    if await card_claimed_invoice_ids(db, [(invoice.id, payment.method)]):
+        payment.status = "failed"
+        payment.failure_reason = "invoice_has_live_card"
+        payment.completed_at = now
+        return
+
     # What the invoice is worth NOW, immediately before the adapter call.
     # `payment.amount` was netted against applied credit memos when the row was
     # booked (`payment_runs.net_payable_amount`), but `credit_memos.py` gates an

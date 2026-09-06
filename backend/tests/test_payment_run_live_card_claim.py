@@ -170,3 +170,37 @@ async def test_standalone_payment_refuses_a_card_claimed_invoice(realdb):
             json={"invoice_id": invoice_id, "amount": "1000.00", "method": "ach"},
         )
     assert resp.status_code == 409, resp.text
+
+
+async def test_card_minted_after_the_run_is_built_stops_a_non_card_dispatch(realdb):
+    """The run-creation gate can't see a card minted LATER — a draft run sits
+    for days awaiting CFO sign-off. Without a dispatch-time re-check the vendor
+    holds a live card AND receives the ACH. `_execute_single_payment` must land
+    the payment `failed` with a named, retry-safe reason BEFORE the adapter."""
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    invoice_id, _ = await _seed(mk, info.org_id, number="CARDCLM-MIDRUN", amount=Decimal("1000.00"))
+
+    async with realdb.client(key="a", role="admin") as c:
+        run_resp = await c.post(
+            "/api/payments/runs",
+            json={"items": [{"invoice_id": invoice_id, "method": "ach"}]},
+        )
+        assert run_resp.status_code == 201, run_resp.text
+        run_id = run_resp.json()["id"]
+
+    # The card is minted in the window between run creation and dispatch.
+    await _mint_card(mk, info.org_id, invoice_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c2:
+        exec_resp = await c2.post(f"/api/payments/runs/{run_id}/execute")
+        assert exec_resp.status_code == 200, exec_resp.text
+        assert exec_resp.json()["payments_completed"] == 0
+
+    async with mk() as s:
+        payment = (
+            await s.execute(select(Payment).where(Payment.invoice_id == invoice_id))
+        ).scalar_one()
+        assert payment.status == "failed"
+        assert payment.failure_reason == "invoice_has_live_card"
+        assert payment.provider_payment_id is None

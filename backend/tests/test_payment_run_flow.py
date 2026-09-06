@@ -135,6 +135,20 @@ def _mock_db(*, run, payments, invoice_by_id, completing_payment_ids=None):
         inv_res.scalar_one_or_none = MagicMock(return_value=inv)
         per_pay_results.append(inv_res)
         if inv is not None:
+            # `_execute_single_payment` re-runs two shared gates right after the
+            # payable-status re-check, before pricing: `blocking_exception_types`
+            # (a `fraud_flag` raised after the run was built) and
+            # `card_claimed_invoice_ids` → `live_card_invoice_ids` (a card minted
+            # after the run). Both modelled empty. A `virtual_card` payment skips
+            # the second; these tests use `ach`.
+            blocking_res = MagicMock()
+            blocking_res.all = MagicMock(return_value=[])
+            per_pay_results.append(blocking_res)
+            card_claim_res = MagicMock()
+            card_claim_scalars = MagicMock()
+            card_claim_scalars.all = MagicMock(return_value=[])
+            card_claim_res.scalars = MagicMock(return_value=card_claim_scalars)
+            per_pay_results.append(card_claim_res)
             # `_execute_single_payment` re-derives the invoice's net payable
             # (invoice amount − applied credit memos) immediately before the
             # adapter call, so a credit recorded after the run was built can't

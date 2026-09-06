@@ -274,6 +274,15 @@ _RETRY_SAFE_FAILURE_PREFIXES = (
     # the payability gate itself and skips while the invoice is still
     # unpayable, so this only unlocks the retry once it is payable again.
     "invoice_not_payable",
+    # A payment-blocking exception (`fraud_flag` from an approved BEC bank
+    # swap, `duplicate`, `line_total_mismatch`, `payment_reconciliation`) was
+    # raised after the run was built. `_execute_single_payment` refuses BEFORE
+    # the adapter call; `/retry-failed` re-runs the same gate and keeps
+    # skipping until a human clears the flag.
+    "invoice_blocked:",
+    # A live virtual card claimed the invoice after the run was built —
+    # refused before the adapter call, and `/retry-failed` re-checks it.
+    "invoice_has_live_card",
 )
 
 # Per-adapter pre-flight refusals — checked before any HTTP call is made.
