@@ -58,7 +58,12 @@ logger = logging.getLogger(__name__)
 # derivation: a `pending` payment is one nothing has attempted yet, which is
 # the normal state of a `draft` run and the resumable state of a crashed one.
 RUN_PAYMENT_COMPLETED_STATUSES = ("completed",)
-RUN_PAYMENT_FAILED_STATUSES = ("failed", "cancelled")
+# `voided` belongs here too: it is a non-success TERMINAL state (grouped with
+# `failed` / `cancelled` in `api/payments.LIVE_PAYMENT_TERMINAL_STATUSES`), and
+# a payment a human reversed after the fact must pull the run off "completed"
+# exactly as a `cancelled` one does. Leaving it out made a run of all-voided
+# payments fall through to `completed` with `payments_completed: 0`.
+RUN_PAYMENT_FAILED_STATUSES = ("failed", "cancelled", "voided")
 RUN_PAYMENT_IN_FLIGHT_STATUSES = ("submitted", "processing", "pending_compliance")
 RUN_PAYMENT_PENDING_STATUSES = ("pending",)
 
@@ -81,13 +86,18 @@ class PaymentRunRollup:
         Precedence: all-fail → `failed`, any-fail-with-a-survivor → `partial`,
         anything still in flight → `submitted`, otherwise `completed`.
 
-        The two rungs BELOW `completed` exist because the default used to be
+        The rungs BELOW `completed` exist because the default used to be
         `completed` — a fail-OPEN answer on a money-run status. A run with
         every payment still `pending` (nothing attempted) and a run with no
         payments at all both reported "completed" without a cent having moved.
         A run whose payments are all `pending` is precisely the resumable
         state, so it reports `executing`; a run with no payments has never been
         dispatched at all, so it reports `draft`. Neither claims success.
+
+        The final rung is fail-CLOSED for the same reason: `completed` is
+        returned only when EVERY active payment completed. A status no bucket
+        recognised (a future adapter status) leaves `completed < total`, and
+        the run reports `partial` / `failed` — not a success no money supports.
         """
         if self.failed and not (self.completed or self.in_flight):
             return "failed"
@@ -99,7 +109,9 @@ class PaymentRunRollup:
             return "draft"
         if self.pending:
             return "executing"
-        return "completed"
+        if self.completed == self.total:
+            return "completed"
+        return "partial" if self.completed else "failed"
 
 
 #: Run statuses that describe a CLAIM on the run, not an outcome of its
