@@ -513,8 +513,39 @@ operational Queue) rendering `lib/components/exceptions/AgentDashboard.svelte` o
 - an **accuracy** card that shows "Not yet measured" with an explainer — never a
   fabricated number — until a human-overturn signal exists (see below).
 
-Read-only; both endpoints are admin/ap_manager-gated server-side. e2e:
+Both endpoints are admin/ap_manager-gated server-side. e2e:
 `frontend/tests-e2e/exceptions/agent-dashboard.spec.ts`.
+
+#### Running an agent from the dashboard
+
+`POST /{exception_id}/agent-resolve` had **no caller in `frontend/src`** — the
+dashboard reported on agent activity that could only be triggered outside the
+product. It now ships as a **Run an agent** panel above the decision log
+(`getAgentCandidates` / `runExceptionAgent` in `lib/api/exceptionAgents.ts`):
+
+- The runnable queue is `GET /api/exceptions?status=open,escalated` — the exact
+  statuses `agent-resolve` accepts, so the panel never offers a row the endpoint
+  would 409. It keeps its own loading / errored / empty states: a failed read
+  must never render as "nothing to run an agent on", which is a claim about the
+  open exception queue.
+- An **invoice-less** exception (a Positive Pay never-issued-cheque `fraud_flag`)
+  is listed with a *disabled* Run carrying the reason, not hidden — the backend
+  422s it, and a missing button explains nothing.
+- Running is **confirm-then-act**: a run can mutate the invoice, so it is never
+  a bare click.
+- **The outcome is rendered from the response, and `escalated` / `no_action` are
+  OUTCOMES, not failures.** The coordinator applies a fix only when confidence
+  clears the org's autonomy threshold and hands the rest to a human — that is
+  what the threshold is for, and rendering it as an error would teach operators
+  that the safe path is the broken one. Each renders its own explanatory note
+  beside the action badge, the new exception status, the resolver, the
+  confidence, the autonomy level and the rationale. The persistent error region
+  is reserved for a genuine HTTP refusal (404 / 409 / 422), whose `detail` stays
+  on screen rather than fading in a toast.
+- After a run the stats, the decision log and the runnable queue all re-read
+  together.
+
+e2e: `frontend/tests-e2e/exceptions/agent-resolve.spec.ts`.
 
 **Concurrency:** `coordinator.run_agent` takes a `FOR UPDATE` lock on the
 exception row and re-asserts its status before doing anything. The API's

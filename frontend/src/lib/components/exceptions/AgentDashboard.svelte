@@ -5,9 +5,22 @@
 	import { onMount } from 'svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
-	import { getAgentStats, getAgentDecisions } from '$lib/api/exceptionAgents';
-	import { ACTION_LABELS, type AgentStats, type AgentDecision } from '$lib/types/exceptionAgents';
+	import {
+		getAgentStats,
+		getAgentDecisions,
+		getAgentCandidates,
+		runExceptionAgent
+	} from '$lib/api/exceptionAgents';
+	import {
+		ACTION_LABELS,
+		type AgentStats,
+		type AgentDecision,
+		type AgentCandidateException,
+		type AgentResolveResult
+	} from '$lib/types/exceptionAgents';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
@@ -21,6 +34,19 @@
 	let loading = $state(true);
 	let loadingMore = $state(false);
 	let actionFilter = $state<string | null>(null);
+
+	// --- The run action -------------------------------------------------------
+	// `POST /api/exceptions/{id}/agent-resolve` had no caller anywhere in the
+	// app: this dashboard reported on agent activity that could only be
+	// triggered outside the product. Reporting on a capability nobody can invoke
+	// from here is what made the whole surface read-only theatre.
+	let candidates = $state<AgentCandidateException[]>([]);
+	let candidatesLoading = $state(true);
+	let candidatesErrored = $state(false);
+	let runTarget = $state<AgentCandidateException | null>(null);
+	let runBusy = $state(false);
+	let runError = $state<string | null>(null);
+	let runOutcome = $state<AgentResolveResult | null>(null);
 
 	let hasMore = $derived(decisions.length < total);
 
@@ -49,12 +75,74 @@
 	async function load() {
 		loading = true;
 		try {
-			const [s] = await Promise.all([getAgentStats(), loadDecisions()]);
+			const [s] = await Promise.all([getAgentStats(), loadDecisions(), loadCandidates()]);
 			stats = s;
 		} catch {
 			toast('Failed to load agent activity', 'error');
 		} finally {
 			loading = false;
+		}
+	}
+
+	// The runnable queue is fetched separately from the decision log and keeps
+	// its own three states. A failed read must never render as "nothing to run
+	// an agent on" — that is a claim about the open exception queue, and the
+	// same rule the /exceptions queue itself follows.
+	async function loadCandidates() {
+		candidatesLoading = true;
+		candidatesErrored = false;
+		try {
+			const data = await getAgentCandidates();
+			candidates = data.items;
+		} catch {
+			candidatesErrored = true;
+			candidates = [];
+		} finally {
+			candidatesLoading = false;
+		}
+	}
+
+	function openRun(exc: AgentCandidateException) {
+		runTarget = exc;
+		runError = null;
+		runOutcome = null;
+	}
+
+	function closeRun() {
+		const ran = runOutcome !== null;
+		runTarget = null;
+		runError = null;
+		runOutcome = null;
+		// Refresh only after a run actually happened — the decision log, the
+		// rates above it and the runnable queue all move together.
+		if (ran) void refreshAfterRun();
+	}
+
+	async function refreshAfterRun() {
+		try {
+			stats = await getAgentStats();
+		} catch {
+			// The rates are a read-only summary; a failed refresh must not
+			// overwrite what is on screen with an error state for a run that
+			// succeeded. The next mount re-reads them.
+		}
+		await Promise.all([loadDecisions(), loadCandidates()]);
+	}
+
+	async function commitRun() {
+		if (!runTarget || runBusy) return;
+		runBusy = true;
+		runError = null;
+		try {
+			runOutcome = await runExceptionAgent(runTarget.id);
+		} catch (err) {
+			// Persistent, not a toast that fades: 409 (already resolved, or lost
+			// a race with a concurrent run) and 422 (invoice-less exception) each
+			// carry the actionable half of the refusal, and the operator needs it
+			// while the dialog is still open.
+			runError = err instanceof Error ? err.message : 'The agent run failed.';
+		} finally {
+			runBusy = false;
 		}
 	}
 
@@ -92,6 +180,14 @@
 		loadDecisions();
 	}
 
+	/** An exception with no invoice has nothing for an agent to act on — the
+	 *  backend 422s it (a Positive Pay `not_on_file` fraud return is the case).
+	 *  Shown with a disabled Run and the reason rather than hidden, so the queue
+	 *  the panel lists stays the queue the queue page shows. */
+	function isRunnable(exc: AgentCandidateException): boolean {
+		return exc.invoice_id !== null;
+	}
+
 	function changeSummary(d: AgentDecision): string {
 		if (!d.changes) return '—';
 		return Object.entries(d.changes)
@@ -107,6 +203,15 @@
 		{ label: 'Confidence', class: 'right' },
 		{ label: 'Autonomy' },
 		{ label: 'Change' }
+	];
+
+	const RUN_COLUMNS = [
+		{ label: 'Raised' },
+		{ label: 'Exception' },
+		{ label: 'Invoice' },
+		{ label: 'Vendor' },
+		{ label: 'Status' },
+		{ label: '' }
 	];
 
 	const ACTION_CHIPS = [
@@ -148,7 +253,71 @@
 		<p class="dash-loading">Loading agent activity…</p>
 	{/if}
 
-	<section class="log-section">
+	<section class="log-section" data-testid="agent-run-panel">
+		<header class="log-head">
+			<h2>Run an agent</h2>
+			<button class="filter-chip" onclick={loadCandidates} disabled={candidatesLoading}>
+				{candidatesLoading ? 'Refreshing…' : 'Refresh'}
+			</button>
+		</header>
+		<!-- What a run actually does, said before the button rather than after
+		     it. The coordinator applies a fix only when the resolver's confidence
+		     clears the org's autonomy threshold; otherwise it hands the exception
+		     to a human. Both paths record one append-only decision. -->
+		<p class="run-note">
+			Running an agent evaluates one exception and, when its confidence clears this
+			organization's autonomy threshold, applies the fix through the same audited path
+			a person would use. Below that threshold it escalates to a human instead. Either
+			way it records one decision in the log below.
+		</p>
+
+		<DataTable
+			columns={RUN_COLUMNS}
+			isEmpty={candidates.length === 0}
+			empty={candidatesLoading
+				? 'Loading open exceptions…'
+				: candidatesErrored
+					? 'Could not load the open exceptions. Try Refresh.'
+					: 'No open or escalated exceptions to run an agent on.'}
+			colspan={6}
+		>
+			{#snippet body()}
+				{#each candidates as exc (exc.id)}
+					<tr>
+						<td class="muted-cell" title={exc.created_at}>{formatDate(exc.created_at)}</td>
+						<td>{exc.type_label}</td>
+						<td class="mono">{exc.invoice_number ?? '—'}</td>
+						<td class="muted-cell">{exc.vendor_name ?? '—'}</td>
+						<td class="muted-cell">{exc.status}</td>
+						<td class="right">
+							{#if isRunnable(exc)}
+								<RowAction
+									variant="accent"
+									ariaLabel={`Run agent on ${exc.type_label} exception${exc.invoice_number ? ` for invoice ${exc.invoice_number}` : ''}`}
+									onclick={() => openRun(exc)}
+								>
+									Run agent
+								</RowAction>
+							{:else}
+								<!-- Disabled with the reason attached, not omitted: an
+								     invoice-less exception is human triage only and the
+								     backend 422s it. A missing button explains nothing. -->
+								<RowAction
+									disabled
+									title="This exception has no invoice, so an agent has nothing to act on — human triage only."
+									ariaLabel={`Cannot run an agent on this ${exc.type_label} exception: it has no invoice`}
+								>
+									Run agent
+								</RowAction>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			{/snippet}
+		</DataTable>
+	</section>
+
+	<section class="log-section" data-testid="agent-decision-log">
 		<header class="log-head">
 			<h2>Recent decisions</h2>
 			<nav class="filters" aria-label="Filter agent decisions by action">
@@ -206,6 +375,107 @@
 		{/if}
 	</section>
 </div>
+
+<!-- Confirm-then-act: a run can MUTATE the invoice (the resolver applies its fix
+     through the same audited path a human would), so it is never a bare click.
+     The outcome is then rendered from the RESPONSE — `escalated` and
+     `no_action` are outcomes of a successful run, not failures. -->
+<Modal
+	open={runTarget !== null}
+	ariaLabel="Run an exception agent"
+	title={runOutcome ? 'Agent decision' : 'Run an agent on this exception'}
+	onclose={closeRun}
+>
+	{#if runTarget}
+		<p class="modal-hint">
+			<strong>{runTarget.type_label}</strong>
+			{#if runTarget.invoice_number}· <span class="mono">{runTarget.invoice_number}</span>{/if}
+			{#if runTarget.vendor_name}· {runTarget.vendor_name}{/if}
+		</p>
+
+		{#if runOutcome}
+			<!-- Every outcome renders the same way. Escalation is what the autonomy
+			     threshold is FOR: presenting it as a failure would teach operators
+			     that the safe path is the broken one. -->
+			<div class="run-outcome" data-testid="agent-run-outcome">
+				<span
+					class="action-badge"
+					data-testid="agent-run-action"
+					style="background:{ACTION_COLORS[runOutcome.decision.action_taken] ?? '#888'}1f;color:{ACTION_COLORS[runOutcome.decision.action_taken] ?? '#888'}"
+				>
+					{ACTION_LABELS[runOutcome.decision.action_taken] ?? runOutcome.decision.action_taken}
+				</span>
+				<span class="run-outcome-status" data-testid="agent-run-status">
+					Exception is now <strong>{runOutcome.exception.status}</strong>
+				</span>
+			</div>
+
+			{#if runOutcome.decision.action_taken === 'escalated'}
+				<p class="run-note" data-testid="agent-run-escalated-note">
+					The agent's confidence did not clear this organization's autonomy threshold,
+					so it escalated the exception to a human instead of changing anything. That
+					is a normal, recorded outcome — the decision is in the log below.
+				</p>
+			{:else if runOutcome.decision.action_taken === 'no_action'}
+				<p class="run-note" data-testid="agent-run-no-action-note">
+					The agent found nothing it could safely change on this exception. Nothing was
+					modified; the decision is recorded in the log below.
+				</p>
+			{/if}
+
+			<dl class="run-facts" data-testid="agent-run-facts">
+				<div>
+					<dt>Resolver</dt>
+					<dd class="mono">{runOutcome.decision.agent_type}</dd>
+				</div>
+				<div>
+					<dt>Confidence</dt>
+					<dd class="mono">{(runOutcome.decision.confidence * 100).toFixed(0)}%</dd>
+				</div>
+				<div>
+					<dt>Autonomy</dt>
+					<dd>{runOutcome.decision.autonomy_level}</dd>
+				</div>
+			</dl>
+
+			{#if runOutcome.decision.rationale}
+				<p class="run-rationale" data-testid="agent-run-rationale">
+					{runOutcome.decision.rationale}
+				</p>
+			{/if}
+			{#if runOutcome.decision.changes}
+				<p class="run-changes" data-testid="agent-run-changes">
+					{changeSummary(runOutcome.decision)}
+				</p>
+			{/if}
+
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={closeRun}>Close</button>
+			</div>
+		{:else}
+			<p class="modal-warn" data-testid="agent-run-warning">
+				The agent may change this invoice. It applies a fix only when its confidence
+				clears the autonomy threshold; otherwise it escalates to a human. Both outcomes
+				are recorded.
+			</p>
+			{#if runError}
+				<p class="state error" role="alert" data-testid="agent-run-error">{runError}</p>
+			{/if}
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={closeRun}>Cancel</button>
+				<button
+					type="button"
+					class="btn-primary"
+					data-testid="agent-run-confirm"
+					disabled={runBusy}
+					onclick={commitRun}
+				>
+					{runBusy ? 'Running…' : 'Run agent'}
+				</button>
+			</div>
+		{/if}
+	{/if}
+</Modal>
 
 <style>
 	.agent-dash {
@@ -289,5 +559,78 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.run-note {
+		margin: 0;
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		max-width: 78ch;
+	}
+
+	.run-outcome {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+		margin-bottom: 10px;
+	}
+
+	.run-outcome-status {
+		font-size: 0.85rem;
+		color: var(--text-muted);
+	}
+
+	.run-facts {
+		display: flex;
+		gap: 20px;
+		flex-wrap: wrap;
+		margin: 12px 0 0;
+	}
+
+	.run-facts dt {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+
+	.run-facts dd {
+		margin: 2px 0 0;
+		font-size: 0.9rem;
+		color: var(--text);
+	}
+
+	.run-rationale,
+	.run-changes {
+		margin: 12px 0 0;
+		font-size: 0.85rem;
+		color: var(--text);
+	}
+
+	.run-changes {
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+	}
+
+	/* Amber-neutral, not danger-red: a run is a normal operation that may change
+	   the invoice — the box states a consequence, it does not report an error. */
+	.modal-warn {
+		font-size: 0.82rem;
+		color: var(--text);
+		margin: 0 0 14px;
+		padding: 10px 12px;
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+	}
+
+	.state {
+		color: var(--text-muted);
+		padding: 0.75rem 0;
+	}
+
+	.state.error {
+		color: var(--danger);
 	}
 </style>
