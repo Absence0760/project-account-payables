@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
@@ -174,7 +175,13 @@ async def test_token_exchange_posts_the_overridden_redirect_uri(monkeypatch):
     discovery = {"issuer": "https://idp.example", "token_endpoint": "https://idp.example/token"}
     await sso_module.exchange_code_for_tokens(discovery, "cid", "sec", "code", "acme", org_settings)
     assert captured["data"]["redirect_uri"] == sso_module.redirect_uri("acme", org_settings)
-    assert captured["data"]["redirect_uri"].startswith("https://sso.acmecorp.test")
+    # Compare the parsed scheme + netloc, not a `startswith` on the prefix:
+    # "https://sso.acmecorp.test.evil.example" also starts with that string, so
+    # the substring form asserts less than it appears to (and CodeQL flags it as
+    # incomplete URL sanitization for exactly that reason). This is the same
+    # host-of-record check the authorize path itself performs.
+    parsed = urlparse(captured["data"]["redirect_uri"])
+    assert (parsed.scheme, parsed.netloc) == ("https", VANITY_HOST)
 
 
 # ---------------------------------------------------------------------------
