@@ -36,8 +36,10 @@ for the tracker view. Keep the two reconciled when either moves.
 
 **Last reconciled:** 2026-09-05 (round 22) — a ten-agent round spent entirely
 on this file's own round-21 remainder: capabilities that ship, are tested, are
-documented, and could not be reached from the product. **Eleven entries closed,
-one narrowed, ten opened**, 33 → 32.
+documented, and could not be reached from the product. **Twelve entries closed,
+one narrowed, ten opened**, 33 → 31 — the twelfth being SSO on a vanity host,
+which took roadmap Priority 13 to the archive and left the open roadmap with
+six areas, every one of them blocked on an external credential or account.
 
 Three of the closures found something the entry had not predicted, which is the
 argument for working this file rather than around it: the two `approval_levels`
@@ -55,11 +57,11 @@ owner, and the e-invoice generator's BT-106/BT-109 collision), and the verified
 remainder is recorded below rather than dropped. A follow-up file that shrinks
 while its sweeps keep finding things is measuring the wrong quantity.
 
-Round 21 closed the whole white-label vanity-domain trio the round-20 runbook
-surfaced (SPA host resolution, per-tenant outbound links, per-tenant passkeys),
-narrowed the BIS Billing 3.0 conformance entry to its official-Schematron half,
-and left roadmap Priority 13 with exactly one open piece: the SSO callback URLs,
-which stay global on purpose because they are registered at the customer's IdP.
+Round 21 closed the white-label vanity-domain trio the round-20 runbook
+surfaced (SPA host resolution, per-tenant outbound links, per-tenant passkeys)
+and narrowed the BIS Billing 3.0 conformance entry to its official-Schematron
+half; round 22 closed the last piece, SSO on a vanity host. **Roadmap Priority
+13 is complete and archived.**
 
 What did **not** move, and why, so it is not re-surveyed next round: the (a) and
 (b) sections are unchanged and remain blocked on things this repo cannot
@@ -247,7 +249,7 @@ this round took to zero — it would have begun passing vacuously, so it now
 names `ScreeningBadge`, a *permanent* keep that cannot be invalidated by the
 next conversion.
 
-### Surfaced by the round-20 parallel sweep — CLOSED except SSO (round 21)
+### Surfaced by the round-20 parallel sweep — CLOSED (rounds 21-22)
 
 All three entries here said a white-label vanity domain did not really work.
 Two are now closed and the third is narrowed to one remaining piece.
@@ -286,27 +288,19 @@ said "needs designing, not just a config field" was designed and shipped:
 endpoint, and a named cross-host message so a credential registered elsewhere
 reports itself instead of failing opaquely ([decisions.md](decisions.md) §87).
 
-- [ ] **(c) SSO callback URLs still pin a vanity-domain tenant to the platform
-      host.** `services/sso.py` builds the OIDC `redirect_uri` and the SAML
-      bridge URL from the global `FEOH_TENANT_URL_TEMPLATE`, and was
-      deliberately left there when the other eight call sites moved: both are
-      values **registered at the customer's IdP**, so a silent per-org re-point
-      breaks every SSO login until the operator re-registers them. Both
-      exemptions are asserted in the resolver's drift guard, so they read as
-      decisions rather than misses ([decisions.md](decisions.md) §91).
-      Consequence today: a vanity-host tenant with SSO enabled either keeps
-      logging in via the platform hostname, or turns SSO off. The SPA also
-      hides the SSO/SAML buttons on a vanity host, because
-      `GET /api/auth/sso/authorize` takes the tenant as a required `?slug=`
-      query param that a vanity host has no way to supply — which is why
-      `routes/login/+page.svelte` is the one remaining entry on the
-      `BUILD_TIME_API_URL_BASELINE` ratchet in `tenantSlugUsage.test.ts`.
-      **Durable fix:** accept a `Host`-resolved tenant when `slug` is absent on
-      the SSO/SAML entry points, plus a per-org callback override, plus the IdP
-      re-registration step in
-      [custom-domain-provisioning.md](founder-runbooks/custom-domain-provisioning.md).
-      **Trigger:** the first customer cutting over to a vanity host with SSO
-      enabled.
+**SSO on a vanity host — CLOSED (round 22).** The last piece. `slug` is now
+optional on the four SSO/SAML entry points, falling back to the existing
+`resolve_tenant_slug_by_custom_domain`; an unresolvable `Host` reuses the
+**existing** 404 verbatim, so no enumeration surface was added (a test asserts
+the two exceptions are equal, not merely both 404s). The callback base URL is a
+**separate** opt-in field from `tenant_url_template`, because it is registered
+at the customer's IdP and folding the two would mean fixing invite links
+silently breaks SSO ([decisions.md](decisions.md) §92); the runbook carries the
+ordered re-registration. Closing it surfaced a defect the entry had not
+predicted: a routine branding save would have silently wiped that callback,
+since it IS a `BrandConfig` field and `model_dump()` emits `""` for an omitted
+one. `BUILD_TIME_API_URL_BASELINE` is now empty — the ratchet shrank to zero as
+designed, and roadmap Priority 13 moved to the archive.
 
 - [ ] **(b) True end-to-end e2e for the vanity host needs two env lines.** The
       unit layer covers the classification rules exhaustively and the e2e spec
