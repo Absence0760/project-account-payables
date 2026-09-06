@@ -98,11 +98,20 @@
 		brandError = null;
 		brandLoading = true;
 		try {
-			brand = await getChildBranding(child.id);
+			const loaded = await getChildBranding(child.id);
+			// Request-identity guard, the same rule `goods-receipts` states: open
+			// one child, close it, open another, and the FIRST response must not
+			// land in the dialog now showing the second. Here it is not cosmetic —
+			// `saveBrand` PUTs these fields to `editingChild.id`, so a late
+			// response would push one tenant's white-label brand onto ANOTHER
+			// tenant's users, under a heading naming the second.
+			if (editingChild?.id !== child.id) return;
+			brand = loaded;
 		} catch (e) {
+			if (editingChild?.id !== child.id) return;
 			brandError = e instanceof Error ? e.message : m('admin.partner.branding.loadFailed');
 		} finally {
-			brandLoading = false;
+			if (editingChild?.id === child.id) brandLoading = false;
 		}
 	}
 
