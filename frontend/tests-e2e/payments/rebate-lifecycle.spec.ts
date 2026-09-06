@@ -24,12 +24,17 @@ import { expectNoA11yViolations } from '../a11y/axe-helper';
  *  1. **Neither transition moves money.** They record what the processor
  *     already did. "Mark paid out" is otherwise very easy to read as a button
  *     that pays someone, so the dialog says so before it can be pressed.
- *  2. **A rebate carries no currency on the wire.** `card_rebates` has no
- *     currency column and `RebateResponse` reports none; the envelope's
- *     `currency` + `excluded_rebate_count` only prove the row set is
- *     homogeneous when the count is zero. A mixed list therefore renders bare
- *     figures and says why, rather than stamping a symbol on a figure that is
- *     not in it.
+ *  2. **A rebate's currency comes from the card that earned it.**
+ *     `card_rebates` has no currency column, so `RebateResponse.currency` is
+ *     resolved server-side through the `virtual_cards` join. Each ROW is
+ *     therefore labelled with its own code — a mixed-currency programme renders
+ *     correctly rather than as bare figures. `excluded_rebate_count` survives
+ *     with a narrower job: the envelope's `total_amount` is a SINGLE-currency
+ *     figure, and it says how many listed rows are not in it.
+ *  3. **The list is a page.** `total` is the row COUNT (canonical envelope) and
+ *     `total_amount` is the money over the WHOLE filtered set — never a sum of
+ *     the rows on screen, which is the defect family `decisions.md` §79/§82
+ *     records.
  *
  * The rebate list is driven through `page.route()` — a real response the page
  * parses — because manufacturing a settled card rebate in each lifecycle state
@@ -41,22 +46,39 @@ import { expectNoA11yViolations } from '../a11y/axe-helper';
 const PENDING_ID = '44444444-4444-4444-4444-444444444444';
 const CARD_ID = '55555555-5555-5555-5555-555555555555';
 
-function rebate(status: string, id = PENDING_ID, amount: string | number = '125.50') {
+/** The rebate LIST route only — never its `/{id}/confirm` siblings. */
+const REBATE_LIST = (url: URL) => url.pathname === '/api/cards/rebates';
+
+function rebate(
+	status: string,
+	id = PENDING_ID,
+	amount: string | number = '125.50',
+	currency = 'USD'
+) {
 	return {
 		id,
 		virtual_card_id: CARD_ID,
 		amount,
 		rate: 0.0125,
+		currency,
 		status,
 		period: '2026-06',
 		created_at: '2026-06-01T00:00:00Z'
 	};
 }
 
-function listBody(items: ReturnType<typeof rebate>[], excluded = 0) {
+function listBody(
+	items: ReturnType<typeof rebate>[],
+	{ excluded = 0, total = items.length, totalAmount = '125.50' } = {}
+) {
 	return {
 		items,
-		total: '125.50',
+		// Row COUNT of the whole filtered set, not the money — `total_amount` is
+		// the money, and it spans that same whole set.
+		total,
+		page: 1,
+		page_size: 20,
+		total_amount: totalAmount,
 		currency: 'USD',
 		excluded_rebate_count: excluded
 	};
@@ -77,7 +99,12 @@ async function mockRebates(
 	initial: ReturnType<typeof listBody>
 ): Promise<(next: ReturnType<typeof listBody>) => void> {
 	let body = initial;
-	await page.route('**/api/cards/rebates', async (route) => {
+	// A PATHNAME predicate, not a glob: the client now sends `?page=&page_size=`,
+	// so the old exact-path glob would silently stop matching (letting the real
+	// endpoint answer and making every assertion below depend on the shared
+	// tenant's own rows) — and a `**` glob loose enough to catch the query string
+	// would also swallow `/rebates/{id}/confirm`.
+	await page.route(REBATE_LIST, async (route) => {
 		await route.fulfill({
 			status: 200,
 			contentType: 'application/json',
@@ -211,17 +238,80 @@ test.describe('/payments — card-rebate lifecycle', () => {
 		await expect(error).toBeVisible();
 	});
 
-	test('a mixed-currency list shows bare figures and says why, rather than a symbol that may be wrong', async ({
+	test('a mixed-currency list labels every row in its own currency, and says what the total leaves out', async ({
 		page
 	}) => {
-		await mockRebates(page, listBody([rebate('pending')], 1));
+		// The follow-up round 22 opened: with no per-row currency the honest
+		// rendering was a bare figure with no code. Now each row states its own.
+		await mockRebates(
+			page,
+			listBody(
+				[
+					rebate('pending', PENDING_ID, '125.50', 'USD'),
+					rebate('paid_out', '66666666-6666-6666-6666-666666666666', '90.00', 'EUR')
+				],
+				{ excluded: 1, totalAmount: '125.50' }
+			)
+		);
 		await openCards(page);
 
+		const amounts = page.getByTestId('rebate-amount');
+		await expect(amounts).toHaveCount(2);
+		// Both labelled, each under its OWN code — never one stamped on the other.
+		await expect(amounts.nth(0)).toContainText('125.50');
+		await expect(amounts.nth(1)).toContainText('90.00');
+		await expect(amounts.nth(1)).toContainText('€');
+
+		// The advisory's job is now narrower: the total below is single-currency
+		// and this row is not in it.
 		await expect(page.getByTestId('rebate-mixed-currency')).toContainText(
-			"card's own currency"
+			'not included in the total'
 		);
-		// No currency code claimed on the row — just the exact figure the API sent.
-		await expect(page.getByTestId('rebate-amount-bare')).toHaveText('125.50');
+		await expect(page.getByTestId('rebate-total')).toContainText('125.50');
+	});
+
+	test('the money total describes the whole set, not the page on screen', async ({ page }) => {
+		// One row loaded out of five, and a total that is the sum of all five.
+		// Reducing over the loaded rows would read 125.50 — the exact defect the
+		// whole-set rollup guard exists for.
+		await mockRebates(
+			page,
+			listBody([rebate('pending')], { total: 5, totalAmount: '627.50' })
+		);
+		await openCards(page);
+
+		await expect(page.getByTestId('rebate-amount')).toHaveCount(1);
+		await expect(page.getByTestId('rebate-total')).toContainText('627.50');
+	});
+
+	test('Load-more counts against the whole set and appends the next page', async ({ page }) => {
+		const SECOND_ID = '77777777-7777-7777-7777-777777777777';
+		await page.route(REBATE_LIST, async (route) => {
+			const page2 = new URL(route.request().url()).searchParams.get('page') === '2';
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(
+					page2
+						? listBody([rebate('confirmed', SECOND_ID, '75.00')], {
+								total: 2,
+								totalAmount: '200.50'
+							})
+						: listBody([rebate('pending')], { total: 2, totalAmount: '200.50' })
+				)
+			});
+		});
+		await openCards(page);
+
+		// By TESTID, not accessible name: the Cards table beneath this one has a
+		// Load-more of its own, and a name-based match would be ambiguous.
+		const loadMore = page.getByTestId('load-more-rebates');
+		await expect(loadMore).toHaveText(/1 of 2/);
+		await loadMore.click();
+
+		await expect(page.getByTestId('rebate-amount')).toHaveCount(2);
+		// Exhausted — the control is replaced by the end-of-list marker.
+		await expect(page.getByTestId('load-more-rebates')).toHaveCount(0);
 	});
 
 	test('a role without the rebate role gate sees the rebates but no transition', async ({

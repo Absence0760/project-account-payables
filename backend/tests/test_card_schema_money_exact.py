@@ -78,6 +78,10 @@ def test_rebate_rate_stays_exact_decimal():
         virtual_card_id="2",
         amount=Decimal("15.00"),
         rate=Decimal("0.0125"),
+        # Required: a rebate's currency comes from the card that earned it, and
+        # the shape has no honest default (the reporting currency is exactly the
+        # wrong guess for a foreign-currency card).
+        currency="USD",
         status="pending",
         period="2026-06",
         created_at="",

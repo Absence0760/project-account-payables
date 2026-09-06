@@ -99,6 +99,26 @@ export function createGr(opts: {
 	return { grId, grNumber };
 }
 
+/**
+ * Seed a `QualityInspection` straight into the tenant DB.
+ *
+ * `POST /api/inspections` is the normal path and the specs use it — this exists
+ * for the cases that need a row to EXIST for a caller who cannot create one
+ * (the clerk / reader specs), where going through the API would test the RBAC
+ * gate instead of the thing under test.
+ */
+export function createInspectionRow(opts: {
+	grId: string;
+	number: string;
+	result?: 'pass' | 'fail' | 'partial';
+}): void {
+	const { orgId, entityId } = tenantScope();
+	sql(
+		`insert into quality_inspections (id, inspection_number, gr_id, result, status, organization_id, entity_id, created_at, updated_at)
+		 values (gen_random_uuid(), '${opts.number}', '${opts.grId}', '${opts.result ?? 'pass'}', 'completed', '${orgId}', '${entityId}', now(), now());`
+	);
+}
+
 /** Create an invoice via the API, then PATCH it once so the matcher runs and
  *  `po_match` is materialized. Returns the id and the computed po_match. */
 export async function createMatchedInvoice(

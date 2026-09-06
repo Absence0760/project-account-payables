@@ -84,20 +84,25 @@ async def test_list_rebates_scopes_by_entity(realdb):
     )
 
     async with realdb.client(key=TENANT, role="admin") as c:
+        # `total` is the row COUNT (canonical list envelope); `total_amount`
+        # is the money, over the same entity-scoped set.
         scoped_sub = await c.get("/api/cards/rebates", headers={"X-Entity-ID": sub_id})
         assert scoped_sub.status_code == 200, scoped_sub.text
-        assert scoped_sub.json()["total"] == 15.0
+        assert scoped_sub.json()["total_amount"] == 15.0
+        assert scoped_sub.json()["total"] == 1
         assert len(scoped_sub.json()["items"]) == 1
 
         scoped_def = await c.get("/api/cards/rebates", headers={"X-Entity-ID": default_id})
         assert scoped_def.status_code == 200
-        assert scoped_def.json()["total"] == 25.0
+        assert scoped_def.json()["total_amount"] == 25.0
+        assert scoped_def.json()["total"] == 1
         assert len(scoped_def.json()["items"]) == 1
 
         # Consolidated (no header) sees both.
         consolidated = await c.get("/api/cards/rebates")
         assert consolidated.status_code == 200
-        assert consolidated.json()["total"] == 40.0
+        assert consolidated.json()["total_amount"] == 40.0
+        assert consolidated.json()["total"] == 2
         assert len(consolidated.json()["items"]) == 2
 
 
