@@ -74,6 +74,27 @@ def test_existing_precedence_is_unchanged(statuses, expected):
     assert rollup_payment_statuses(statuses).run_status == expected
 
 
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        # `voided` is a non-success terminal — a run of all-voided payments is
+        # `failed`, not `completed` with `payments_completed: 0`.
+        (["voided"], "failed"),
+        (["voided", "voided"], "failed"),
+        # …and a run where one payment was voided after another completed is
+        # `partial`, not `completed`.
+        (["completed", "voided"], "partial"),
+        # A status no bucket recognises (a future adapter status) can never
+        # report success: the final rung is fail-closed.
+        (["surprise"], "failed"),
+        (["completed", "surprise"], "partial"),
+        (["completed", "completed", "surprise"], "partial"),
+    ],
+)
+def test_voided_and_unknown_statuses_never_report_completed(statuses, expected):
+    assert rollup_payment_statuses(statuses).run_status == expected
+
+
 @pytest.mark.parametrize("claim", CLAIM_RUN_STATUSES)
 def test_claim_states_are_never_re_derived(claim):
     """`draft` / `executing` / `cancelled` describe a CLAIM on the run, not an

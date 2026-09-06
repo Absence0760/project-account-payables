@@ -1199,7 +1199,13 @@ returned `completed` whenever nothing was completed, failed or in flight — so 
 run with every payment still `pending` (nothing attempted) and a run with no
 payments at all both reported success without a cent moving. All-pending is
 the resumable state, so it reports `executing`; no payments at all reports
-`draft`. Neither claims success.
+`draft`. Neither claims success. The **default** is fail-closed too:
+`RUN_PAYMENT_FAILED_STATUSES` includes `voided` (a human reversing a payment
+after the fact — a non-success terminal, like `cancelled`), and `completed` is
+returned only when EVERY active payment completed. A run of all-voided payments
+reports `failed`, not `completed` with `payments_completed: 0`; a payment status
+no bucket recognises (a future adapter status) reports `partial` / `failed`, not
+success.
 
 **Tests:** `tests/test_payment_run_status_derivation.py`.
 

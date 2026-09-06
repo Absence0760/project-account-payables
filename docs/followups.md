@@ -838,20 +838,17 @@ CISO / Security Analyst before acting.**
       and take the existing `_raise_erp_reconciliation_exception` path on a
       non-covering verdict. **Trigger:** next ERP or settlement slice.
 
-- [ ] **(c) `derive_run_status` still fails open — a run of voided payments
-      reports `completed`.** `voided` is in none of the four bucket tuples, so
-      it increments `total` only and every branch falls through to
-      `return "completed"`. A draft run whose single pending payment is voided
-      then executes to `status="completed"`, `executed_at=now` and an
-      append-only `payment_run.executed` audit row carrying
-      `payments_completed: 0` beside the full `total_amount` — a SOX reviewer
-      reads a completed, executed run against which no money moved, and every
-      button then 409s. [decisions.md](decisions.md) §41 fixed the all-`pending`
-      and zero-payment cases and left the default itself fail-open; `voided` is
-      the reachable third case and any future adapter status the fourth.
-      **Durable fix:** ~3 lines — return `"completed"` only when
-      `completed == total`, plus parametrized cases for `voided` and an unknown
-      status. **Trigger:** next payments slice.
+- [x] **DONE.** `derive_run_status` failed open — a run of voided
+      payments reported `completed`. `voided` matched none of the four bucket
+      tuples so it bumped `total` only and every branch fell through to
+      `return "completed"` (with `payments_completed: 0` beside the full
+      `total_amount`). Fixed both halves: `voided` joins
+      `RUN_PAYMENT_FAILED_STATUSES` (it is a non-success terminal, grouped with
+      `cancelled` in `LIVE_PAYMENT_TERMINAL_STATUSES`), and the final rung is now
+      fail-closed — `"completed"` only when `completed == total`, otherwise
+      `partial` / `failed` — so any future adapter status a bucket doesn't
+      recognise can't report success either. Parametrized cases for both in
+      `test_payment_run_status_derivation.py`.
 
 - [ ] **(c) The payment queue offers, and counts, rows the run builder hard-409s.**
       `paid_ids` filters on `Payment.status == "completed"` only, so an invoice

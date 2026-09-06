@@ -1764,6 +1764,15 @@ attempted) and a run with no payments at all both report success without a cent
 moving. All-pending is the resumable state and now reports `executing`; no
 payments at all reports `draft`.
 
+That first pass left the *default itself* fail-open — `completed` was still the
+fallthrough for any payment status no bucket named. A later pass closed it: a
+`voided` payment (a human reversing one after the fact) joined
+`RUN_PAYMENT_FAILED_STATUSES` beside `cancelled`, and the final rung now returns
+`completed` **only** when every active payment completed — otherwise `partial` /
+`failed`. So a run of all-voided payments reports `failed`, not `completed` with
+`payments_completed: 0`, and a future adapter status can't slip through as
+success either.
+
 ## 42. The corridor-quote optimizer got a caller, but not the one that routes money
 
 **Decided:** 2026-08-19 · `backend/app/services/corridor_quotes.py`, `backend/app/api/payments.py`
