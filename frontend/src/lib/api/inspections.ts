@@ -9,9 +9,14 @@
 //     ap_manager (`require_roles`). `/goods-receipts` gates its controls on the
 //     same split via `auth.isManager`; the backend is authoritative regardless.
 //
-// The list endpoint is deliberately unpaginated on the backend (no `page` /
-// `page_size` params), so there is no pagination shape to model here.
+// The list endpoint is paginated on the canonical `page` / `page_size`
+// contract and accepts a `gr_id` filter; see {@link listInspections}.
 import { api } from '$lib/api';
+import type { PagedResponse } from '$lib/utils/pagination';
+
+/** Mirrors `backend/app/api/pagination.py::DEFAULT_PAGE_SIZE`, so a bare call
+ *  and the server's own default return the same rows. */
+const DEFAULT_PAGE_SIZE = 20;
 
 /** The result vocabulary `po_matching` acts on. Mirrors
  *  `backend/app/schemas/inspection.py::VALID_RESULTS` — the API validates the
@@ -45,6 +50,18 @@ export interface Inspection {
 	inspection_number: string;
 	po_id: string | null;
 	gr_id: string | null;
+	/**
+	 * The goods receipt's human-readable number, resolved server-side by an
+	 * outer join. `null` when the inspection is tied to no receipt — a different
+	 * fact from "linked to a receipt we could not name", which is why the page
+	 * renders the two differently.
+	 *
+	 * It exists because the row used to carry `gr_id` alone: `/goods-receipts`
+	 * fetched a 100-row page of receipts alongside every inspection load purely
+	 * to build an id→number map, and any receipt outside that window still
+	 * rendered unlabelled.
+	 */
+	gr_number: string | null;
 	result: string;
 	inspected_date: string | null;
 	inspector: string | null;
@@ -94,8 +111,24 @@ export interface InspectionSyncResult {
 	skipped: number;
 }
 
-export function listInspections(): Promise<Inspection[]> {
-	return api.get<Inspection[]>('/api/inspections');
+/**
+ * One PAGE of the tenant's quality inspections, newest first.
+ *
+ * Paginated like every other list here — the table it backs only ever grows
+ * (one row per inspection recorded or synced from the QMS). `grId` narrows to a
+ * single goods receipt, which is what the receipt detail modal wants: it used
+ * to load the whole list and filter it in the browser because the server
+ * offered no way to ask.
+ */
+export function listInspections(
+	opts: { grId?: string; page?: number; pageSize?: number } = {}
+): Promise<PagedResponse<Inspection>> {
+	const params = new URLSearchParams({
+		page: String(opts.page ?? 1),
+		page_size: String(opts.pageSize ?? DEFAULT_PAGE_SIZE)
+	});
+	if (opts.grId) params.set('gr_id', opts.grId);
+	return api.get<PagedResponse<Inspection>>(`/api/inspections?${params}`);
 }
 
 export function getInspection(id: string): Promise<Inspection> {

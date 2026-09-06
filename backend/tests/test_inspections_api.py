@@ -44,10 +44,12 @@ async def test_create_and_get_inspection(realdb, header_role):
         assert detail.status_code == 200
         assert detail.json()["inspector"] == "Sam Lee"
 
-        # List.
+        # List — the canonical `{items, total, page, page_size}` envelope.
         lst = await c.get("/api/inspections")
         assert lst.status_code == 200
-        assert iid in {row["id"] for row in lst.json()}
+        body = lst.json()
+        assert {"items", "total", "page", "page_size"} <= body.keys()
+        assert iid in {row["id"] for row in body["items"]}
 
 
 async def test_get_unknown_inspection_is_404(realdb):
@@ -92,13 +94,16 @@ async def test_list_scopes_by_entity(realdb):
         )
         assert r_def.status_code == 201, r_def.text
 
-        # Scoped to US → only the US inspection.
+        # Scoped to US → only the US inspection. `total` counts the whole
+        # SCOPED set, not the whole tenant.
         scoped = await c.get("/api/inspections", headers={"X-Entity-ID": us})
-        assert {r["inspection_number"] for r in scoped.json()} == {"QI-US"}
+        assert {r["inspection_number"] for r in scoped.json()["items"]} == {"QI-US"}
+        assert scoped.json()["total"] == 1
 
         # Consolidated (no header) → both.
         allv = await c.get("/api/inspections")
-        assert {r["inspection_number"] for r in allv.json()} == {"QI-US", "QI-DEF"}
+        assert {r["inspection_number"] for r in allv.json()["items"]} == {"QI-US", "QI-DEF"}
+        assert allv.json()["total"] == 2
 
 
 async def test_sync_refuses_when_no_qms_is_configured(realdb):
@@ -118,5 +123,7 @@ async def test_sync_refuses_when_no_qms_is_configured(realdb):
         # And nothing from the mock fixture set landed.
         listing = await c.get("/api/inspections")
         assert not [
-            r for r in listing.json() if str(r["inspection_number"]).startswith("QMS-INSP-")
+            r
+            for r in listing.json()["items"]
+            if str(r["inspection_number"]).startswith("QMS-INSP-")
         ]

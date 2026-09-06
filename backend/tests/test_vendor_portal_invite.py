@@ -120,3 +120,44 @@ async def test_portal_invite_email_omits_url_line_without_template(realdb, monke
     msg = sent[0]
     assert "app.com" not in msg.body_text
     assert "URL:" not in msg.body_text
+
+
+async def test_deleting_a_portal_user_writes_an_audit_row(realdb):
+    """Revoking a supplier's portal credential is an access-control change, and
+    it was the one leaving no trace.
+
+    The row is keyed on the VENDOR rather than the deleted `VendorUser`, so it
+    stays reachable from the vendor's own trail once the user row is gone, and
+    it carries the vendor-user id only — never the supplier's login address.
+    """
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        created = await c.post(
+            f"/api/vendors/{vendor_id}/portal-users",
+            json={"email": "revoke-me@supplier.example", "full_name": "Doomed"},
+        )
+        assert created.status_code == 201, created.text
+        vendor_user_id = created.json()["user"]["id"]
+
+        deleted = await c.delete(f"/api/vendors/{vendor_id}/portal-users/{vendor_user_id}")
+    assert deleted.status_code in (200, 204), deleted.text
+
+    async with mk() as s:
+        rows = list(
+            (
+                await s.execute(select(AuditLog).where(AuditLog.action == "vendor_user.deleted"))
+            ).scalars()
+        )
+    mine = [r for r in rows if r.details.get("vendor_user_id") == vendor_user_id]
+    assert len(mine) == 1, "revoking a portal credential must leave exactly one audit row"
+    assert str(mine[0].entity_id) == str(vendor_id)
+    assert mine[0].actor_id is not None
+    # PII-free: the id, never the supplier's email address.
+    assert "revoke-me@supplier.example" not in str(mine[0].details)

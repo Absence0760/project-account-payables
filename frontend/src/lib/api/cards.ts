@@ -19,16 +19,31 @@
 import { api } from '$lib/api';
 import type { CardRebate, RebateListResponse } from '$lib/types/cardRebate';
 
+/** Mirrors `backend/app/api/pagination.py::DEFAULT_PAGE_SIZE`, so a bare call
+ *  and the server's own default return the same rows. */
+const DEFAULT_PAGE_SIZE = 20;
+
 /**
- * List the tenant's card rebates, newest first.
+ * One PAGE of the tenant's card rebates, newest first.
  *
  * Entity-scoped server-side through the `VirtualCard` join (the `X-Entity-ID`
- * header the shared client already sends), and NOT paginated — the route
- * returns every rebate matching the optional `period` filter.
+ * header the shared client already sends), and paginated on the canonical
+ * `page` / `page_size` contract like every other list here — the table it backs
+ * grows by one row per settled card, forever.
+ *
+ * Two totals, deliberately named apart: `total` is the row COUNT of the whole
+ * filtered set (what Load-more counts against) and `total_amount` is the summed
+ * money over that same whole set, never over the page returned here.
  */
-export function listCardRebates(period?: string): Promise<RebateListResponse> {
-	const qs = period ? `?period=${encodeURIComponent(period)}` : '';
-	return api.get<RebateListResponse>(`/api/cards/rebates${qs}`);
+export function listCardRebates(
+	opts: { period?: string; page?: number; pageSize?: number } = {}
+): Promise<RebateListResponse> {
+	const params = new URLSearchParams({
+		page: String(opts.page ?? 1),
+		page_size: String(opts.pageSize ?? DEFAULT_PAGE_SIZE)
+	});
+	if (opts.period) params.set('period', opts.period);
+	return api.get<RebateListResponse>(`/api/cards/rebates?${params}`);
 }
 
 /**

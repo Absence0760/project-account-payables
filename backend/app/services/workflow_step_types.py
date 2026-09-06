@@ -93,9 +93,17 @@ def is_known_step_type(step_type: str | None) -> bool:
     return resolve_step_type(step_type) in KNOWN_STEP_TYPES
 
 
-def is_canonical_step_type(step_type: str | None) -> bool:
-    """True only for the four state-machine steps (aliases resolved)."""
-    return resolve_step_type(step_type) in CANONICAL_STEP_TYPES
+# There is deliberately NO boolean `is_canonical_step_type` here. It existed,
+# had no caller and no test, and it collapsed the one distinction this module
+# was written to draw: it answers `False` for both `"condition"` (a recognised
+# builder type used in the wrong place) and `"aproval"` (a typo that is not a
+# step type at all), which is exactly the silent coercion the module docstring
+# refuses. `canonical_step_index` is the canonical-ness question, and it
+# answers it BY NAME — `NonCanonicalStepTypeError` vs `UnknownStepTypeError`.
+# Where a plain predicate really is enough, `workflow_builder` asks the inverse
+# after `is_known_step_type` has already passed (`step_type not in
+# BUILDER_STEP_TYPES`), which `tests/test_workflow_step_types.py` pins as
+# equivalent to "resolves into CANONICAL_STEP_TYPES" for every known name.
 
 
 def canonical_step_index(step_type: str | None) -> int:

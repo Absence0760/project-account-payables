@@ -51,11 +51,14 @@ test.describe('/exceptions AI Agents dashboard (manager)', () => {
 		await expect(page.getByRole('heading', { name: 'Recent decisions' })).toBeVisible();
 		// Either there are decision rows or the empty-state cell is shown — both
 		// prove the table mounted and the API call succeeded (no error toast).
-		const tableMounted = page.locator('[data-testid="agent-dashboard"] table');
+		// Scoped to the decision-log section: the dashboard also carries the
+		// runnable-exception table the Run-agent action lives on
+		// (`agent-resolve.spec.ts`), so an unscoped `table` matches two.
+		const tableMounted = page.locator('[data-testid="agent-decision-log"] table');
 		await expect(tableMounted).toBeVisible();
 
 		// The action filter chips are operable.
-		await page.locator('[data-testid="agent-dashboard"] .filter-chip', { hasText: 'Auto-resolved' }).click();
+		await page.locator('[data-testid="agent-decision-log"] .filter-chip', { hasText: 'Auto-resolved' }).click();
 		await page.waitForLoadState('networkidle');
 		await expect(page.getByTestId('agent-dashboard')).toBeVisible();
 	});

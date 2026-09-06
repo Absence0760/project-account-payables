@@ -76,12 +76,17 @@ List endpoints share one contract, defined once in `app/api/pagination.py`
 The frontend renders the first page then a "Load more" control that requests
 `page=N+1` and appends. Paginated lists: `/invoices`, `/vendors`, `/payments`,
 `/payments/runs/`, `/purchase-orders`, `/goods-receipts`, `/credit-memos`,
-`/exceptions`, `/notifications`, `/cards`, `/workflows`, `/admin/users`, and the
-supplier-portal `/portal/invoices` + `/portal/payments`.
+`/exceptions`, `/notifications`, `/cards`, `/cards/rebates`, `/inspections`,
+`/workflows`, `/admin/users`, and the supplier-portal `/portal/invoices` +
+`/portal/payments`.
+
+`/cards/rebates` carries a money figure BESIDE the envelope: `total` is the row
+count like everywhere else, and the summed rebate amount over the whole filtered
+set is `total_amount`. It was the one list whose `total` meant the money, which
+is exactly how a `total` stops meaning the same thing twice.
 
 **Intentionally not paginated** (bounded reference collections returned in
-full): `/gl-accounts` (feeds the invoice GL dropdown, which needs every row)
-and `/cards/rebates` (whose `total` is a money sum, not a row count).
+full): `/gl-accounts` — it feeds the invoice GL dropdown, which needs every row.
 
 ## Auth
 
@@ -350,7 +355,7 @@ All card endpoints require `admin/manager/cfo` (except the webhook).
 | `POST` | `/api/cards/generate`         | Generate one or more cards (returns the new list) |
 | `GET`  | `/api/cards/{id}/details`     | Card details (includes PAN — Lithic/Nium fetched on demand) |
 | `POST` | `/api/cards/{id}/cancel`      | Cancel/void a card |
-| `GET`  | `/api/cards/rebates`          | List rebate rows (billing) |
+| `GET`  | `/api/cards/rebates`          | List rebate rows, paginated (`page`/`page_size`, optional `period`). Each row states the `currency` of the card that earned it; `total` is the row count and `total_amount` the whole-set money sum in the org's reporting currency |
 | `POST` | `/api/cards/webhook/{provider}` | (provider-signed) — Lithic/Nium event webhook |
 
 ## Exceptions

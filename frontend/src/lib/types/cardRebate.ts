@@ -56,6 +56,14 @@ export interface CardRebate {
 	 * {@link formatRebateRate}.
 	 */
 	rate: MoneyAmount;
+	/**
+	 * ISO code this row's `amount` is denominated in, resolved server-side from
+	 * the `virtual_cards` row that earned the rebate (`card_rebates` has no
+	 * currency column of its own). Always present — a mixed-currency programme's
+	 * rows each carry their own code, which is what lets every amount render
+	 * through {@link formatMoney} instead of bare.
+	 */
+	currency: string;
 	/** Bare string on the wire; widen through {@link rebateTone} / a label map. */
 	status: string;
 	period: string | null;
@@ -64,39 +72,28 @@ export interface CardRebate {
 
 export interface RebateListResponse {
 	items: CardRebate[];
-	/** Sum of the rows denominated in {@link RebateListResponse.currency}. */
-	total: MoneyAmount;
-	/** What `total` is denominated in — the org's reporting currency. */
+	/**
+	 * Row COUNT of the whole filtered set — the canonical list envelope, what
+	 * Load-more counts against. NOT the money; that is `total_amount`.
+	 */
+	total: number;
+	page: number;
+	page_size: number;
+	/**
+	 * Summed rebate amount over the WHOLE filtered set (never the loaded page),
+	 * denominated in {@link RebateListResponse.currency}.
+	 */
+	total_amount: MoneyAmount;
+	/** What `total_amount` is denominated in — the org's reporting currency. */
 	currency: string;
-	/** Rows left OUT of `total` for being denominated in something else. */
+	/**
+	 * Rows left OUT of `total_amount` for being denominated in something else.
+	 *
+	 * It no longer gates whether a row can be rendered — every row states its
+	 * own currency now — but it is still what stops a single-currency total
+	 * beside a mixed list from reading as complete.
+	 */
 	excluded_rebate_count: number;
-}
-
-/**
- * The ISO code a rebate ROW's amount may honestly be rendered in — or `null`
- * when the wire cannot support the claim.
- *
- * `RebateResponse` carries no currency of its own: `card_rebates` has no
- * currency column, and a rebate's currency is knowable only through the card
- * that earned it (`api/cards.py` says exactly that, and joins to
- * `VirtualCard` to denominate the total). The envelope carries `currency` —
- * what `total` is in — plus `excluded_rebate_count`, the rows left out of that
- * total for being denominated in something else, computed over the SAME filter
- * as `items`.
- *
- * So a zero exclusion count PROVES every listed row is in `currency`. A
- * non-zero one means at least one is not, and nothing on the wire says which —
- * stamping the reporting code onto every row there would put a currency symbol
- * on a figure that is not in it. `null` is the honest answer; the table renders
- * the exact figure bare and says why.
- *
- * This is a derivation from the response, not client-side money arithmetic:
- * nothing is added, subtracted or compared.
- */
-export function rebateAmountCurrency(
-	list: Pick<RebateListResponse, 'currency' | 'excluded_rebate_count'>
-): string | null {
-	return (list.excluded_rebate_count ?? 0) > 0 ? null : list.currency;
 }
 
 /** The lifecycle step available from `status`, or `null` at a terminal one. */

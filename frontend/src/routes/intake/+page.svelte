@@ -2,10 +2,10 @@
 	import type { IntakeRequest } from '$lib/types/intake';
 	import {
 		INTAKE_STATUSES,
-		INTAKE_STATUS_LABELS,
+		intakeStatusLabelKey,
 		intakeStatusTone,
 		INTAKE_TYPES,
-		INTAKE_TYPE_LABELS
+		intakeTypeLabelKey
 	} from '$lib/types/intake';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -73,13 +73,24 @@
 	let reopenArmedId = $state<string | null>(null);
 	let busyId = $state<string | null>(null);
 
+	// Status / type names are message keys, not English literals — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = intakeStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+	const typeLabel = (t: string) => {
+		const key = intakeTypeLabelKey(t);
+		return key ? m(key) : t;
+	};
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...INTAKE_STATUSES.map((s) => ({ key: s, label: INTAKE_STATUS_LABELS[s] }))
+		...INTAKE_STATUSES.map((s) => ({ key: s, label: statusLabel(s) }))
 	]);
 	const TYPE_CHIPS = $derived([
 		{ key: 'all', label: m('intake.filter.allTypes') },
-		...INTAKE_TYPES.map((t) => ({ key: t, label: INTAKE_TYPE_LABELS[t] }))
+		...INTAKE_TYPES.map((t) => ({ key: t, label: typeLabel(t) }))
 	]);
 
 	const COLUMNS = $derived([
@@ -390,7 +401,7 @@
 						</RowLink>
 					</td>
 					<td>{i.title}</td>
-					<td>{INTAKE_TYPE_LABELS[i.request_type as keyof typeof INTAKE_TYPE_LABELS] ?? i.request_type}</td>
+					<td>{typeLabel(i.request_type)}</td>
 					<td>{i.vendor_name ?? '—'}</td>
 					<td class="right mono">
 						{#if i.estimated_amount != null}
@@ -399,7 +410,7 @@
 					</td>
 					<td>
 						<Badge tone={intakeStatusTone(i.status)} variant={i.status}>
-							{INTAKE_STATUS_LABELS[i.status as keyof typeof INTAKE_STATUS_LABELS] ?? i.status}
+							{statusLabel(i.status)}
 						</Badge>
 					</td>
 					<td class="actions">

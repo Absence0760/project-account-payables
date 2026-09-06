@@ -23,7 +23,19 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import { formatMoney, type MoneyAmount } from '$lib/utils/money';
+	import { formatMoney, isPositiveAmount, type MoneyAmount } from '$lib/utils/money';
+	import type { MessageKey } from '$lib/i18n/messages';
+	import { compareCorridorQuotes } from '$lib/api/corridorQuotes';
+	import {
+		allQuotes,
+		formatFeeRate,
+		isRankedQuote,
+		quoteReasonKey,
+		unrankedQuotes,
+		type CorridorQuote,
+		type CorridorQuoteComparison,
+		type QuoteMode
+	} from '$lib/types/corridorQuote';
 	import {
 		formatCurrencyTotals,
 		groupAmountsByCurrency,
@@ -48,7 +60,6 @@
 	import {
 		formatRebateRate,
 		nextRebateTransition,
-		rebateAmountCurrency,
 		rebateTone,
 		type CardRebate,
 		type RebateListResponse,
@@ -1225,15 +1236,26 @@
 	// there is no role that can see this table without being able to act on it;
 	// the check is still made, because `/payments` is reachable by a custom role
 	// holding only `payment.execute` / `payment.void` (see `lib/nav.ts`).
+	//
+	// The list is PAGED (`page` / `page_size`, like every other list here) — it
+	// grows by one row per settled card, forever. Two totals, named apart on the
+	// wire: `total` is the row COUNT the Load-more control counts against, and
+	// `total_amount` is the summed money over the WHOLE filtered set, never over
+	// the loaded page. Each ROW carries its own `currency`, resolved server-side
+	// from the card that earned it, so a mixed-currency programme renders every
+	// amount under its own code instead of bare.
+	const REBATES_PAGE_SIZE = 20;
 	let rebates = $state<CardRebate[]>([]);
-	let rebateTotal = $state<RebateListResponse['total']>(null);
-	// `null` until a list has loaded. `rebateAmountCurrency` returns `null` when
-	// the wire cannot support a per-row currency claim — see its docstring.
+	let rebateTotalAmount = $state<RebateListResponse['total_amount']>(null);
+	let rebateCount = $state(0);
+	let rebatePage = $state(1);
+	// `null` until a list has loaded — what `rebateTotalAmount` is denominated in.
 	let rebateListCurrency = $state<string | null>(null);
-	let rebateRowCurrency = $state<string | null>(null);
 	let rebateExcludedCount = $state(0);
 	let loadingRebates = $state(false);
+	let loadingMoreRebates = $state(false);
 	let rebatesErrored = $state(false);
+	let hasMoreRebates = $derived(rebates.length < rebateCount);
 
 	// `RebateResponse.status` is a bare string, so the label is looked up rather
 	// than interpolated into a message key: an unrecognised status renders
@@ -1254,16 +1276,121 @@
 		return !!auth.user && auth.hasAnyRole('admin', 'ap_manager', 'cfo');
 	}
 
-	async function loadRebates() {
-		const token = rebatesSequence.start();
-		loadingRebates = true;
+	// --- Corridor quote comparison (advisory) --------------------------------
+	// `POST /api/payments/corridor-quotes` prices ONE payable invoice across
+	// every processor the org has configured and ranks them. It had no caller in
+	// the app at all, so the optimizer was a module nothing reached.
+	//
+	// It is ADVISORY: it books no Payment, claims no run, touches no invoice and
+	// does not decide which rail pays — `payment_corridor.pick_corridor` + the
+	// org's configured provider still do that at execute time. Nothing in this
+	// UI may imply that opening or comparing a quote selected a route, which is
+	// why the dialog leads with the standing advisory notice rather than
+	// closing with a disclaimer.
+	//
+	// Role gate mirrors the endpoint's own `require_roles(admin, ap_manager,
+	// cfo)`, so a clerk never sees a control that can only 403.
+	let quoteTarget = $state<QueueItem | null>(null);
+	let quoteMode = $state<QuoteMode>('cheapest');
+	let quoteMethod = $state('');
+	let quoteBusy = $state(false);
+	let quoteError = $state<string | null>(null);
+	let quoteResult = $state<CorridorQuoteComparison | null>(null);
+
+	/** Rails worth pricing. `''` = let the server default (`ach`). Kept to the
+	 *  corridor-relevant set — the point of the comparison is cross-border
+	 *  routing, where the fee spread between processors is real. */
+	const QUOTE_METHODS = [
+		{ value: '', key: 'payments.quotes.method.default' },
+		{ value: 'ach', key: 'payments.quotes.method.ach' },
+		{ value: 'wire', key: 'payments.quotes.method.wire' },
+		{ value: 'international_wire', key: 'payments.quotes.method.internationalWire' },
+		{ value: 'sepa', key: 'payments.quotes.method.sepa' },
+		{ value: 'international_ach', key: 'payments.quotes.method.internationalAch' },
+		{ value: 'check', key: 'payments.quotes.method.check' }
+	] as const;
+
+	function canCompareRoutes(): boolean {
+		return !!auth.user && auth.hasAnyRole('admin', 'ap_manager', 'cfo');
+	}
+
+	function openQuotes(item: QueueItem) {
+		quoteTarget = item;
+		quoteMode = 'cheapest';
+		quoteMethod = '';
+		quoteError = null;
+		quoteResult = null;
+		void runQuotes();
+	}
+
+	function closeQuotes() {
+		quoteTarget = null;
+		quoteError = null;
+		quoteResult = null;
+		quoteBusy = false;
+	}
+
+	async function runQuotes() {
+		if (!quoteTarget) return;
+		const invoiceId = quoteTarget.id;
+		quoteBusy = true;
+		quoteError = null;
 		try {
-			const list = await listCardRebates();
+			const cmp = await compareCorridorQuotes({
+				invoiceId,
+				method: quoteMethod || undefined,
+				mode: quoteMode
+			});
+			// Guard against a slow response landing after the dialog moved on.
+			if (quoteTarget?.id !== invoiceId) return;
+			quoteResult = cmp;
+		} catch (err) {
+			if (quoteTarget?.id !== invoiceId) return;
+			// Persistent, not a toast: the 409 body names each provider's own
+			// machine reason ("no provider can quote method=sepa for …"), which is
+			// the actionable half of the refusal.
+			quoteResult = null;
+			quoteError = err instanceof Error ? err.message : m('payments.quotes.failed');
+		} finally {
+			if (quoteTarget?.id === invoiceId) quoteBusy = false;
+		}
+	}
+
+	function setQuoteMode(mode: QuoteMode) {
+		if (quoteMode === mode) return;
+		quoteMode = mode;
+		void runQuotes();
+	}
+
+	/** The reason a processor is not in the ranking, in the user's language when
+	 *  we have copy for the machine code, and VERBATIM otherwise — an adapter's
+	 *  own sentence ("method 'sepa' not supported by column") says more than any
+	 *  bucket we could invent for it. */
+	function quoteReasonText(q: CorridorQuote): string {
+		const key = quoteReasonKey(q.unavailable_reason);
+		if (key) return m(key as MessageKey);
+		return q.unavailable_reason ?? m('payments.quotes.reason.unknown');
+	}
+
+	async function loadRebates(opts: { append?: boolean; nextPage?: number } = {}) {
+		const nextPage = opts.nextPage ?? 1;
+		// Fetch and Load-more share one counter (latest-issued wins), exactly as
+		// the cards list beside them does: a Load-more resolving after a fresh
+		// reload must not append a stale page onto the new list.
+		const token = rebatesSequence.start();
+		if (opts.append) loadingMoreRebates = true;
+		else loadingRebates = true;
+		try {
+			const list = await listCardRebates({ page: nextPage, pageSize: REBATES_PAGE_SIZE });
 			if (!rebatesSequence.canCommit(token)) return; // superseded
-			rebates = list.items;
-			rebateTotal = list.total;
+			rebates = opts.append ? appendUnique(rebates, list.items) : list.items;
+			rebateCount = list.total;
+			rebatePage = nextPage;
+			// Both figures below describe the WHOLE filtered set, not the rows
+			// just loaded — they are read off the envelope rather than reduced
+			// over `rebates`, which is the whole point of `decisions.md` §79/§82.
+			rebateTotalAmount = list.total_amount;
 			rebateListCurrency = list.currency;
-			rebateRowCurrency = rebateAmountCurrency(list);
 			rebateExcludedCount = list.excluded_rebate_count ?? 0;
 			rebatesErrored = false;
 		} catch (err) {
@@ -1272,15 +1399,24 @@
 			// failed read (mirrors `/exceptions`, `frontend/CLAUDE.md`).
 			if (rebatesSequence.isCurrentRequest(token)) {
 				rebatesErrored = true;
-				rebates = [];
+				if (!opts.append) rebates = [];
 				toast(
 					err instanceof Error ? err.message : m('payments.rebates.errored'),
 					'error'
 				);
 			}
 		} finally {
-			if (rebatesSequence.isCurrentRequest(token)) loadingRebates = false;
+			// NOT canCommit — reading it here would leave the spinner stuck on
+			// once a newer request superseded this one.
+			if (rebatesSequence.isCurrentRequest(token)) {
+				loadingRebates = false;
+				loadingMoreRebates = false;
+			}
 		}
+	}
+
+	async function loadMoreRebates() {
+		await loadRebates({ append: true, nextPage: rebatePage + 1 });
 	}
 
 	let rebateTarget = $state<CardRebate | null>(null);
@@ -1317,6 +1453,10 @@
 			closeRebate();
 			// The dashboard's realized headline is `confirmed + paid_out`, so it
 			// moves on a confirm — reload both rather than patching the row.
+			// The rebate list re-bases to page 1: the row's status changed, so
+			// the whole-set `total_amount` and the ordering the loaded pages were
+			// cut from have both moved, and a re-read is what proves the write
+			// landed (the same posture `loadQueue` takes after an execute).
 			await loadCards();
 			await loadRebates();
 		} catch (err) {
@@ -1649,7 +1789,7 @@
 				: queueErrored
 					? m('payments.queue.empty.errored')
 					: m('payments.queue.empty')}
-			colspan={8}
+			colspan={canCompareRoutes() ? 9 : 8}
 		>
 			{#snippet header()}
 				<tr>
@@ -1661,6 +1801,9 @@
 					<th>{m('payments.col.discount')}</th>
 					<th>{m('payments.col.terms')}</th>
 					<th>{m('payments.col.status')}</th>
+					{#if canCompareRoutes()}
+						<th class="right">{m('payments.col.routes')}</th>
+					{/if}
 				</tr>
 			{/snippet}
 			{#snippet body()}
@@ -1727,6 +1870,22 @@
 								</span>
 							{/if}
 						</td>
+						{#if canCompareRoutes()}
+							<!-- Advisory: opening this prices the invoice across the
+							     org's configured processors. It selects nothing and
+							     moves nothing — offered on a BLOCKED row too, because
+							     seeing what a payment would cost is not paying it. -->
+							<td class="right">
+								<RowAction
+									ariaLabel={m('payments.quotes.openAria', {
+										invoice: item.invoice_number
+									})}
+									onclick={() => openQuotes(item)}
+								>
+									{m('payments.quotes.open')}
+								</RowAction>
+							</td>
+						{/if}
 					</tr>
 				{/each}
 			{/snippet}
@@ -1960,14 +2119,16 @@
 		<p class="section-note">{m('payments.rebates.subtitle')}</p>
 
 		{#if rebateExcludedCount > 0}
-			<!-- A rebate carries no currency of its own on the wire (see
-			     `rebateAmountCurrency`). When the list is not homogeneous we say
-			     so instead of stamping the reporting code onto every row. -->
+			<!-- Every ROW states its own card's currency, so a mixed list renders
+			     fine. What this says is narrower and still true: the total below
+			     the table is a single-currency figure, and these rows are not in
+			     it. Without it, a total beside a mixed list reads as complete. -->
 			<p class="fx-skipped" role="alert" data-testid="rebate-mixed-currency">
 				{m('payments.rebates.mixedCurrency', { n: rebateExcludedCount })}
 			</p>
 		{/if}
 
+		<div data-testid="rebates-table">
 		<DataTable
 			columns={REBATES_COLUMNS}
 			isEmpty={rebates.length === 0}
@@ -1984,15 +2145,12 @@
 						<td class="mono">{rebate.period ?? '\u2014'}</td>
 						<td class="mono muted">{rebate.virtual_card_id.slice(0, 8)}</td>
 						<td class="right mono">{formatRebateRate(rebate.rate)}</td>
+						<!-- The row's OWN currency, resolved server-side from the card
+						     that earned the rebate. `card_rebates` has no currency
+						     column, so this used to be unavailable and a
+						     mixed-currency programme's amounts had to render bare. -->
 						<td class="right mono" data-testid="rebate-amount">
-							{#if rebateRowCurrency}
-								{formatCurrency(rebate.amount, rebateRowCurrency)}
-							{:else}
-								<!-- Currency unknowable per row: render the exact figure the
-								     API sent, with no code, rather than a symbol that may be
-								     wrong. The advisory above names how many rows this hits. -->
-								<span data-testid="rebate-amount-bare">{rebate.amount}</span>
-							{/if}
+							{formatCurrency(rebate.amount, rebate.currency)}
 						</td>
 						<td>
 							<Badge tone={rebateTone(rebate.status)}>
@@ -2027,11 +2185,33 @@
 				{/each}
 			{/snippet}
 		</DataTable>
+		</div>
 
-		{#if rebates.length > 0 && rebateListCurrency}
+		{#if hasMoreRebates}
+			<div class="load-more-row">
+				<button
+					class="btn-load-more"
+					onclick={loadMoreRebates}
+					disabled={loadingMoreRebates}
+					data-testid="load-more-rebates"
+				>
+					{loadingMoreRebates ? m('common.loading') : m('payments.rebates.loadMore', { shown: rebates.length, total: rebateCount })}
+				</button>
+			</div>
+		{:else if rebateCount > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">{m('payments.rebates.showingAll', { total: rebateCount })}</span>
+			</div>
+		{/if}
+
+		{#if rebateCount > 0 && rebateListCurrency}
+			<!-- The WHOLE filtered set's total, off the envelope — never a sum of
+			     the loaded page. The Load-more control above can leave most of the
+			     rows unfetched, and a total that moved as you paged would be the
+			     exact defect `decisions.md` §79/§82 record. -->
 			<p class="rebate-total" data-testid="rebate-total">
 				{m('payments.rebates.total')}
-				<strong class="mono">{formatCurrency(rebateTotal, rebateListCurrency)}</strong>
+				<strong class="mono">{formatCurrency(rebateTotalAmount, rebateListCurrency)}</strong>
 			</p>
 		{/if}
 
@@ -2156,13 +2336,9 @@
 			· {formatRebateRate(rebateTarget.rate)}
 		</p>
 		<!-- The figure being recorded, rendered the same way the table renders
-		     it — with a currency code only where the wire supports the claim. -->
+		     it — under the row's own currency, off the row. -->
 		<p class="rebate-dialog-amount mono" data-testid="rebate-dialog-amount">
-			{#if rebateRowCurrency}
-				{formatCurrency(rebateTarget.amount, rebateRowCurrency)}
-			{:else}
-				{rebateTarget.amount}
-			{/if}
+			{formatCurrency(rebateTarget.amount, rebateTarget.currency)}
 		</p>
 
 		<p class="modal-note" data-testid="rebate-warning">
@@ -2462,6 +2638,149 @@
 				</button>
 			</div>
 		{/if}
+	{/if}
+</Modal>
+
+<!-- Compare what each configured processor would charge to pay ONE invoice.
+     Read-only and ADVISORY — `POST /api/payments/corridor-quotes` books no
+     payment, claims no run and picks no rail; `payment_corridor.pick_corridor`
+     plus the org's configured provider still decide that at execute time. The
+     notice therefore leads, before any figure: a comparison a user reads as a
+     choice is worse than no comparison. -->
+<Modal
+	open={quoteTarget !== null}
+	ariaLabel="Compare payment routes"
+	title={m('payments.quotes.title')}
+	width="lg"
+	onclose={closeQuotes}
+>
+	{#if quoteTarget}
+		<p class="modal-note" data-testid="quotes-advisory">
+			{m('payments.quotes.advisory')}
+		</p>
+		<p class="modal-hint">
+			<strong class="mono">{quoteTarget.invoice_number}</strong>
+			{#if quoteTarget.vendor_name}· {quoteTarget.vendor_name}{/if}
+			· {formatCurrency(quoteTarget.amount, quoteTarget.currency)}
+		</p>
+
+		<div class="quote-controls">
+			<div class="quote-modes" role="group" aria-label={m('payments.quotes.modeAria')}>
+				<button
+					type="button"
+					class="filter-chip"
+					class:active={quoteMode === 'cheapest'}
+					aria-pressed={quoteMode === 'cheapest'}
+					data-testid="quotes-mode-cheapest"
+					onclick={() => setQuoteMode('cheapest')}
+				>
+					{m('payments.quotes.mode.cheapest')}
+				</button>
+				<button
+					type="button"
+					class="filter-chip"
+					class:active={quoteMode === 'fastest'}
+					aria-pressed={quoteMode === 'fastest'}
+					data-testid="quotes-mode-fastest"
+					onclick={() => setQuoteMode('fastest')}
+				>
+					{m('payments.quotes.mode.fastest')}
+				</button>
+			</div>
+			<label class="quote-method">
+				<span>{m('payments.quotes.methodLabel')}</span>
+				<select bind:value={quoteMethod} data-testid="quotes-method" onchange={() => runQuotes()}>
+					{#each QUOTE_METHODS as opt (opt.value)}
+						<option value={opt.value}>{m(opt.key)}</option>
+					{/each}
+				</select>
+			</label>
+		</div>
+
+		{#if quoteBusy}
+			<p class="state" data-testid="quotes-loading">{m('common.loading')}</p>
+		{:else if quoteError}
+			<!-- Persistent, not a toast. The 409 body names each provider's own
+			     machine reason, which is what tells an operator whether the corridor
+			     is unsupported or the processors are misconfigured. -->
+			<p class="state error" role="alert" data-testid="quotes-error">{quoteError}</p>
+		{:else if quoteResult}
+			<table
+				class="quote-table"
+				data-testid="quotes-ranking"
+				aria-label={m('payments.quotes.rankingCaption')}
+			>
+				<thead>
+					<tr>
+						<th scope="col">{m('payments.quotes.col.processor')}</th>
+						<th scope="col">{m('payments.quotes.col.rail')}</th>
+						<th scope="col" class="right">{m('payments.quotes.col.eta')}</th>
+						<th scope="col" class="right">{m('payments.quotes.col.fee')}</th>
+						<th scope="col" class="right">{m('payments.quotes.col.total')}</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each allQuotes(quoteResult).filter(isRankedQuote) as q, i (q.provider)}
+						<tr class:quote-winner={i === 0} data-testid="quote-row">
+							<td>
+								<span class="mono">{q.provider}</span>
+								{#if i === 0}
+									<Badge tone="success" variant="quote-best">
+										{m('payments.quotes.best')}
+									</Badge>
+								{/if}
+							</td>
+							<td class="muted">{q.method}</td>
+							<td class="right">{m('payments.quotes.etaDays', { n: q.eta_business_days })}</td>
+							<td class="right mono">
+								{formatCurrency(q.flat_fee, quoteResult.currency)}
+								+ {formatFeeRate(q.pct_fee)}
+							</td>
+							<td class="right mono" data-testid="quote-total">
+								{formatCurrency(q.total_cost, quoteResult.currency)}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+
+			{#if isPositiveAmount(quoteResult.savings_vs_runner_up)}
+				<!-- The server computed this delta; the client never subtracts two
+				     amounts (frontend/CLAUDE.md § Money formatting). -->
+				<p class="quote-savings" data-testid="quotes-savings">
+					{m('payments.quotes.savings', {
+						amount: formatCurrency(quoteResult.savings_vs_runner_up, quoteResult.currency)
+					})}
+				</p>
+			{/if}
+
+			{#if unrankedQuotes(quoteResult).length > 0}
+				<!-- Rendered EXPLICITLY, never omitted. An adapter with no published
+				     fee schedule fails closed (`no_quote_endpoint`) and drops out of
+				     the ranking — `modern_treasury` is exactly that case today. A
+				     tenant on such a rail would otherwise watch an auction its own
+				     rail never entered and read the winner as the best route open to
+				     it. A ranking that hides its own gaps is worse than no ranking. -->
+				<section class="quote-unranked" data-testid="quotes-unranked">
+					<h3>{m('payments.quotes.unranked.title')}</h3>
+					<p class="quote-unranked-note">{m('payments.quotes.unranked.note')}</p>
+					<ul>
+						{#each unrankedQuotes(quoteResult) as q (q.provider)}
+							<li data-testid="quote-unranked-row">
+								<span class="mono">{q.provider}</span>
+								<span class="quote-unranked-reason">{quoteReasonText(q)}</span>
+							</li>
+						{/each}
+					</ul>
+				</section>
+			{/if}
+		{/if}
+
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={closeQuotes}>
+				{m('payments.close')}
+			</button>
+		</div>
 	{/if}
 </Modal>
 
@@ -3179,5 +3498,113 @@
 			flex-direction: column;
 			align-items: stretch;
 		}
+	}
+
+	/* --- Corridor quote comparison (advisory) --- */
+
+	.quote-controls {
+		display: flex;
+		align-items: flex-end;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: 12px;
+		margin: 0 0 14px;
+	}
+
+	.quote-modes {
+		display: flex;
+		gap: 6px;
+	}
+
+	.quote-method {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 0.82rem;
+		color: var(--text-muted);
+	}
+
+	.quote-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.86rem;
+	}
+
+	.quote-table th,
+	.quote-table td {
+		padding: 8px 10px;
+		border-bottom: 1px solid var(--border);
+		text-align: left;
+	}
+
+	.quote-table th {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		font-weight: 600;
+	}
+
+	.quote-table .right {
+		text-align: right;
+	}
+
+	.quote-table .mono {
+		font-family: var(--font-mono);
+	}
+
+	.quote-table .muted {
+		color: var(--text-muted);
+	}
+
+	.quote-table tr.quote-winner td {
+		font-weight: 600;
+	}
+
+	.quote-savings {
+		margin: 10px 0 0;
+		font-size: 0.85rem;
+		color: var(--text);
+	}
+
+	.quote-unranked {
+		margin-top: 18px;
+		padding: 12px 14px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--surface-2);
+	}
+
+	.quote-unranked h3 {
+		margin: 0 0 6px;
+		font-size: 0.9rem;
+	}
+
+	.quote-unranked-note {
+		margin: 0 0 10px;
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		max-width: 78ch;
+	}
+
+	.quote-unranked ul {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.quote-unranked li {
+		display: flex;
+		gap: 10px;
+		flex-wrap: wrap;
+		align-items: baseline;
+		font-size: 0.84rem;
+	}
+
+	.quote-unranked-reason {
+		color: var(--text-muted);
 	}
 </style>

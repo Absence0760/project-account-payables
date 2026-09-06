@@ -37,6 +37,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from app.api.pagination import PaginationParams
 from app.models.entity import Entity
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.virtual_card import CardRebate, VirtualCard
@@ -296,13 +297,23 @@ async def test_the_rebate_list_total_matches_the_rows_it_sits_above(realdb):
     await _seed_rebate(mk, org_id, currency="EUR", amount="6.00")
 
     async with mk() as s:
-        res = await list_rebates(period=None, db=s, org=_org(org_id), user=_user(), entity_id=None)
+        res = await list_rebates(
+            period=None,
+            pagination=PaginationParams(page=1, page_size=20),
+            db=s,
+            org=_org(org_id),
+            user=_user(),
+            entity_id=None,
+        )
 
-    assert Decimal(str(res.total)) == Decimal("4.00")
+    assert Decimal(str(res.total_amount)) == Decimal("4.00")
     assert res.currency == "USD"
     assert res.excluded_rebate_count == 1
-    # Both rows are still listed — the total narrows, the list does not.
+    # Both rows are still listed — the total narrows, the list does not — and
+    # each now states its OWN card's currency rather than rendering bare.
+    assert res.total == 2
     assert len(res.items) == 2
+    assert {i.currency for i in res.items} == {"USD", "EUR"}
 
 
 async def test_the_rebate_yield_numerator_shares_its_denominators_currency(realdb):

@@ -1653,6 +1653,7 @@ async def invite_vendor_portal_user(
 async def delete_vendor_portal_user(
     vendor_id: uuid.UUID,
     vendor_user_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_org_id),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
@@ -1665,6 +1666,21 @@ async def delete_vendor_portal_user(
     vu = result.scalar_one_or_none()
     if not vu:
         raise HTTPException(status_code=404, detail="Portal user not found")
+    # Revoking a supplier's portal credential is an access-control change, and
+    # it was the one that left no trace. Audited BEFORE the delete, and keyed on
+    # the VENDOR (the surviving entity) so the row remains reachable from the
+    # vendor's own trail once the user row is gone. PII-free: the vendor-user id
+    # only, never the supplier's login address.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor_user.deleted",
+        entity_type="vendor",
+        entity_id=vendor_id,
+        details={"vendor_user_id": str(vu.id)},
+    )
     await db.delete(vu)
     await db.commit()
 

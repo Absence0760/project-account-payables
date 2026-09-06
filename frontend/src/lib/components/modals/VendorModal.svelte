@@ -30,6 +30,8 @@
 	} from '$lib/types/vendor';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { getVendorScore, type VendorScoreResponse } from '$lib/api/enrichment';
+	import type { MessageKey } from '$lib/i18n/messages';
 
 	const SCREENING_RESULTS: ScreeningStatus[] = ['unscreened', 'clear', 'review', 'match'];
 
@@ -67,9 +69,53 @@
 	// `_ENRICH_ROLES`). isManager = admin|ap_manager, isCfo = admin|cfo.
 	const canEnrich = $derived(auth.isManager || auth.isCfo);
 
+	// The performance score is gated admin / ap_manager / cfo on the backend
+	// (`_SCORE_ROLES`) — the same audience as enrichment, clerk excluded.
+	const canSeeScore = $derived(auth.isManager || auth.isCfo);
+
 	let history = $state<SanctionsCheck[]>([]);
 	let loadingHistory = $state(true);
 	let busy = $state(''); // which action is in flight ('' = none)
+
+	// --- Performance score (advisory, compute-on-read) ------------------------
+	// `GET /api/enrichment/vendors/{id}/score`. Nothing is persisted and the
+	// read changes nothing, so it loads on open like the screening history
+	// rather than sitting behind a button. `scoreError` is a distinct state from
+	// "no data": a failed read must not render as a vendor with no history.
+	let score = $state<VendorScoreResponse | null>(null);
+	let loadingScore = $state(true);
+	let scoreError = $state(false);
+
+	/** Localized label per sub-score. An unrecognised name (a sub-score added
+	 *  backend-side before this map catches up) falls back to the raw key rather
+	 *  than rendering blank. */
+	const SUB_SCORE_LABEL_KEYS: Record<string, MessageKey> = {
+		accuracy: 'vendors.modal.score.subAccuracy',
+		dispute: 'vendors.modal.score.subDispute',
+		on_time: 'vendors.modal.score.subOnTime'
+	};
+	function subScoreLabel(name: string): string {
+		const key = SUB_SCORE_LABEL_KEYS[name];
+		return key ? m(key) : name;
+	}
+
+	$effect(() => {
+		const id = vendor.id;
+		if (!canSeeScore) return;
+		loadingScore = true;
+		scoreError = false;
+		getVendorScore(id)
+			.then((res) => {
+				score = res;
+			})
+			.catch(() => {
+				score = null;
+				scoreError = true;
+			})
+			.finally(() => {
+				loadingScore = false;
+			});
+	});
 
 	// Load history whenever the open vendor changes.
 	$effect(() => {
@@ -285,6 +331,66 @@
 		</div>
 	</section>
 
+	{#if canSeeScore}
+		<section class="panel" data-testid="vendor-score">
+			<h3>{m('vendors.modal.score.heading')}</h3>
+			<p class="hint muted">{m('vendors.modal.score.hint')}</p>
+
+			{#if loadingScore}
+				<p class="muted">{m('common.loading')}</p>
+			{:else if scoreError}
+				<!-- A failed read is its own state. Falling through to the
+				     "no history yet" copy below would report a vendor with a
+				     clean record when we simply could not compute one. -->
+				<p class="muted" data-testid="vendor-score-error">{m('vendors.modal.score.loadFailed')}</p>
+			{:else if score}
+				<div class="score-headline">
+					<span class="score-composite" data-testid="vendor-score-composite">
+						{score.composite ?? m('vendors.modal.score.notAvailable')}
+					</span>
+					<span class="score-composite-label">
+						{score.composite
+							? m('vendors.modal.score.compositeLabel')
+							: m('vendors.modal.score.noHistory')}
+					</span>
+				</div>
+
+				<!-- The inputs, not just the number: a score attached to a
+				     business relationship that cannot be explained is worse than
+				     no score. Each row carries the sample it was computed over
+				     and the backend's own evidence sentence. -->
+				<table class="score-table">
+					<thead>
+						<tr>
+							<th scope="col">{m('vendors.modal.score.colSignal')}</th>
+							<th scope="col" class="score-num">{m('vendors.modal.score.colScore')}</th>
+							<th scope="col" class="score-num">{m('vendors.modal.score.colSample')}</th>
+							<th scope="col">{m('vendors.modal.score.colBasis')}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each score.sub_scores as s (s.name)}
+							<tr data-testid="vendor-score-row-{s.name}">
+								<th scope="row" class="score-signal">{subScoreLabel(s.name)}</th>
+								<td class="score-num">
+									{#if s.score === null}
+										<span class="muted">{m('vendors.modal.score.notAvailable')}</span>
+									{:else}
+										{s.score}
+									{/if}
+								</td>
+								<td class="score-num muted">{s.sample_size}</td>
+								<!-- Plain-text binding, never {@html}. The detail is the
+								     backend's own PII-free sentence (counts only). -->
+								<td class="score-basis muted">{s.detail}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+		</section>
+	{/if}
+
 	{#if canEnrich}
 		<section class="panel">
 			<h3>{m('vendors.modal.externalEnrichment')}</h3>
@@ -428,6 +534,59 @@
 		font-size: 0.8rem;
 		line-height: 1.4;
 		margin: 0;
+	}
+	.score-headline {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		margin-top: 4px;
+	}
+	.score-composite {
+		font-size: 1.6rem;
+		font-weight: 600;
+		line-height: 1;
+	}
+	.score-composite-label {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+	}
+	.score-table {
+		width: 100%;
+		border-collapse: collapse;
+		margin-top: 12px;
+		font-size: 0.82rem;
+	}
+	.score-table th[scope='col'] {
+		text-align: left;
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		padding: 4px 10px 6px;
+		border-bottom: 1px solid var(--border);
+	}
+	.score-table td,
+	.score-table th[scope='row'] {
+		padding: 8px 10px;
+		border-bottom: 1px solid var(--border);
+		vertical-align: top;
+		text-align: left;
+	}
+	.score-table tr:last-child td,
+	.score-table tr:last-child th[scope='row'] {
+		border-bottom: none;
+	}
+	.score-signal {
+		font-weight: 500;
+		white-space: nowrap;
+	}
+	.score-table .score-num {
+		text-align: right;
+		white-space: nowrap;
+	}
+	.score-basis {
+		line-height: 1.4;
 	}
 	.enrich-empty {
 		margin-top: 12px;

@@ -446,6 +446,19 @@ real gaps:
 The posture is `decisions §29`'s: a step type we do not recognise is refused by
 name, never quietly coerced into something plausible.
 
+**There is deliberately no boolean `is_canonical_step_type()`.** One existed,
+with no caller and no test, and it answered a strictly worse version of the
+question the table above already covers: `False` for both `"condition"` (a
+recognised builder type used where a pipeline step is required) and `"aproval"`
+(not a step type at all). Collapsing those two into one bare boolean is exactly
+the silent coercion this section refuses — `canonical_step_index()` separates
+them by name. Where a plain predicate genuinely suffices,
+`validate_builder_steps` asks the inverse *after* `is_known_step_type()` has
+passed (`step_type not in BUILDER_STEP_TYPES`); within that guarded set the
+shorthand is equivalent to "resolves into `CANONICAL_STEP_TYPES`", aliases
+included, and `tests/test_workflow_step_types.py` pins that equivalence so a
+future alias or builder name cannot quietly break it.
+
 #### Per-entity selection (multi-entity Phase 3)
 
 `workflow_definitions` carries a nullable `entity_id` (`EntityMixin`): a definition either belongs to a specific subsidiary (`entity_id` set) or is **shared / org-wide** (`entity_id IS NULL`). When a new invoice is created, `workflow_engine.get_or_create_workflow_definition(db, organization_id, entity_id)` (called by `create_workflow_instance` with `invoice.entity_id`) resolves which definition governs it, in precedence order:

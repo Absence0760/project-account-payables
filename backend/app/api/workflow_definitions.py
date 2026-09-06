@@ -795,6 +795,35 @@ async def _workflow_instance_count(db: AsyncSession, workflow_id: uuid.UUID) -> 
     return int(result.scalar() or 0)
 
 
+async def _audit_workflow_deleted(
+    db: AsyncSession,
+    defn: WorkflowDefinition,
+    *,
+    org_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    version_count: int,
+    bulk: bool,
+) -> None:
+    """PII-free terminal record for a workflow-definition delete.
+
+    Deleting a definition also removes every `WorkflowVersion` under it — the
+    change history of how invoices were routed for approval. That history is
+    exactly what a SOX auditor reaches for, so its removal cannot be the one
+    tenant mutation with no record of who did it. The version count is recorded
+    because it is the size of what went with the definition.
+    """
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=actor_id,
+        action="workflow.deleted",
+        entity_type="workflow_definition",
+        entity_id=defn.id,
+        details={"name": defn.name, "versions_deleted": version_count, "bulk": bulk},
+    )
+
+
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_workflow(
     workflow_id: uuid.UUID,
@@ -836,6 +865,19 @@ async def delete_workflow(
     # workflow_versions FK-reference the definition with no DB cascade, so they
     # must be removed first or the DELETE raises a ForeignKeyViolation. (Every
     # PATCH snapshots a version, so any edited workflow has rows here.)
+    version_count = int(
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(WorkflowVersion)
+                .where(WorkflowVersion.definition_id == defn.id)
+            )
+        ).scalar()
+        or 0
+    )
+    await _audit_workflow_deleted(
+        db, defn, org_id=org_id, actor_id=user.id, version_count=version_count, bulk=False
+    )
     await db.execute(sql_delete(WorkflowVersion).where(WorkflowVersion.definition_id == defn.id))
     await db.delete(defn)
 
@@ -906,6 +948,19 @@ async def bulk_delete_workflows(
             )
             continue
 
+        version_count = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(WorkflowVersion)
+                    .where(WorkflowVersion.definition_id == defn.id)
+                )
+            ).scalar()
+            or 0
+        )
+        await _audit_workflow_deleted(
+            db, defn, org_id=org_id, actor_id=user.id, version_count=version_count, bulk=True
+        )
         # Remove version-history rows first (no DB cascade on the FK).
         await db.execute(
             sql_delete(WorkflowVersion).where(WorkflowVersion.definition_id == defn.id)

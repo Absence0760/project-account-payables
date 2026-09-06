@@ -800,7 +800,7 @@ scheduled reports, expense export), the audit export
 (`/api/audit/export?format=csv`), the report builder
 (`/api/reports/{id}/export?format=csv`), the invoice bulk export
 (`POST /api/invoices/bulk/export`), and the single-invoice workflow export
-(`GET /api/workflow/{id}/export?format=csv`). The **Positive Pay** files are
+(`GET /api/invoices/{id}/export?format=csv`). The **Positive Pay** files are
 deliberately excluded — fixed-format bank-machine uploads where a `'` prefix
 would break the bank's payee exact-match (see `docs/positive-pay.md`).
 Pinned by `tests/test_csv_injection.py` + `tests/test_bulk_export_csv_injection.py`.

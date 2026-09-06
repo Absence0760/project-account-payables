@@ -316,7 +316,7 @@ top-ranked eligible approver** to the invoice. Body `{ "invoice_id": <uuid> }`
 (`?days=` reuses the GET lookback). It re-runs the *identical* ranking
 (`_rank_for_invoice`, shared with the GET) and routes the chosen approver
 **through `services/review.assign_reviewer`** — the same audited service the
-manual `POST /api/workflow/{id}/assign` endpoint calls. That guarantees, with no
+manual `POST /api/invoices/{id}/assign` endpoint calls. That guarantees, with no
 new audit code here:
 
 - an immutable **`invoice.assigned_for_review` audit row** is written (the
@@ -330,7 +330,7 @@ new audit code here:
 Behaviour / guards:
 
 - **RBAC** `admin` / `ap_manager` — a **write** surface, so it matches who can
-  already assign reviewers (`POST /api/workflow/{id}/assign`), **not** the
+  already assign reviewers (`POST /api/invoices/{id}/assign`), **not** the
   manager/CFO *read* roles. **CFO can read the recommendation but cannot apply
   it** (403), exactly like the manual assign endpoint excludes CFO.
 - **Status precondition** — the invoice must be `ready_for_review`; otherwise

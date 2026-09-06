@@ -488,7 +488,7 @@ If the supplier portal is implemented, vendors can:
 | `POST` | `/api/cards/generate` | Generate cards for selected invoices |
 | `POST` | `/api/cards/{id}/cancel` | Cancel an unused card |
 | `POST` | `/api/cards/webhook/{provider}` | Receive charge/settlement webhooks (public-by-design, HMAC-gated) |
-| `GET` | `/api/cards/rebates` | List rebates by period |
+| `GET` | `/api/cards/rebates` | List rebates (paginated `page` / `page_size`, optional `period`) — see § The rebate list is paginated |
 | `POST` | `/api/cards/rebates/{id}/confirm` | Advance a rebate `pending` → `confirmed` (admin/ap_manager/cfo) — see § Rebate status lifecycle |
 | `POST` | `/api/cards/rebates/{id}/mark-paid` | Advance a rebate `confirmed` → `paid_out` (admin/ap_manager/cfo) — see § Rebate status lifecycle |
 | `GET` | `/api/cards/dashboard` | Card program KPIs |
@@ -540,23 +540,59 @@ mirrors it with `auth.hasAnyRole(...)`. `/payments` is nonetheless reachable by
 a custom role holding only `payment.execute` / `payment.void` (see
 `frontend/src/lib/nav.ts`), which is why the check is still made client-side.
 
-**A rebate row carries no currency, and the UI refuses to invent one.**
-`card_rebates` has no currency column and `RebateResponse` reports none — a
-rebate's currency is knowable only through the card that earned it, which is
-why `list_rebates` joins `VirtualCard` to denominate the total. The envelope's
-`currency` + `excluded_rebate_count` are computed over the same filter as
-`items`, so a **zero** exclusion count proves every listed row is in `currency`
-and the row amount renders through the shared money formatter with that code. A
-**non-zero** count means at least one row is not, and nothing on the wire says
-which: those lists render the exact figure the API sent with **no currency
-code**, plus a standing advisory naming the count
-(`rebateAmountCurrency` in `frontend/src/lib/types/cardRebate.ts`, unit-tested
-in `cardRebate.test.ts`). The durable fix is a `currency` field on
-`RebateResponse`, resolved from the joined card.
+**A rebate row states the currency of the card that earned it.**
+`card_rebates` has no currency column, so a rebate's currency is knowable only
+through its `virtual_cards` row — which is why every path that returns a rebate
+(`list_rebates`, `confirm`, `mark-paid`) joins that table and resolves the code
+through `currency_conversion.card_currency_sql`, the one owner of that
+expression (it uppercases: the column is a free-form `varchar(3)`). The result
+is `RebateResponse.currency`, a **required** field with no default — the org's
+reporting currency is exactly the wrong guess for a foreign-currency card.
+
+This replaced a rendering that was honest but useless. `RebateResponse` used to
+carry no currency at all, so the UI could only infer one from the envelope: a
+**zero** `excluded_rebate_count` proved the listed rows were homogeneous and
+could be labelled, and a **non-zero** count meant at least one was not and
+nothing said which — so a mixed-currency programme rendered every amount as a
+bare figure with no code. The table now labels every row under its own code,
+mixed list included.
+
+`excluded_rebate_count` survives with a narrower job: `total_amount` is a
+SINGLE-currency figure (rows outside `currency` are filtered out of it, not
+converted — an FX fetch on a list read would make a historical realised figure
+non-deterministic), and the count is what stops that total reading as complete
+beside a mixed list.
+
+### The rebate list is paginated
+
+`GET /api/cards/rebates` returns a PAGE on the canonical `page` / `page_size`
+contract (`app/api/pagination.py`), like every other list here. It used to
+return everything, and the table it backs grows by one row per settled card
+forever, so the response size was a function of how long the tenant had been
+running.
+
+Two totals, deliberately named apart:
+
+| Field | What it is |
+|-------|-----------|
+| `total` | Row COUNT of the whole filtered set — the canonical list envelope, what the Load-more control counts against. It used to be the money, which made this the one list endpoint whose `total` meant something different from all the others. |
+| `total_amount` | Summed rebate amount over that same WHOLE filtered set, in `currency` — never over the loaded page. |
+
+Both come from `_rebate_list_filters`, the one builder the row query, the count
+and the rollup all pass through, so the figure and the set it claims to describe
+cannot drift — the defect family `docs/decisions.md` §79 / §82 records, and the
+reason `backend/tests/test_whole_set_kpi_rollups.py` exists. **That guard does
+not discover this surface**: it pairs a list with a `GET .../summary` sibling,
+and this rollup rides inside the list envelope instead. Ordering is
+`created_at DESC, id DESC` — `created_at` alone is not a total order, and a tie
+split across a page boundary drops one row and repeats another.
 
 E2E: `frontend/tests-e2e/payments/rebate-lifecycle.spec.ts` — both transitions,
-the terminal row, the persistent 409, the mixed-currency rendering, the hidden
-control for a clerk, and the real backend's 403 on all three routes.
+the terminal row, the persistent 409, per-row currencies on a mixed list, the
+whole-set total under a single loaded page, Load-more, the hidden control for a
+clerk, and the real backend's 403 on all three routes. Backend:
+`tests/test_list_pagination_rebates_inspections.py` +
+`tests/test_rebate_currency_denomination.py`.
 
 ### Dashboard "Rebates Earned" is REALIZED money only
 

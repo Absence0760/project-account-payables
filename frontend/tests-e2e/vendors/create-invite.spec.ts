@@ -67,7 +67,13 @@ test.describe('/vendors create + portal invite (acme admin)', () => {
 			expect((await secret.textContent())?.trim().length ?? 0).toBeGreaterThan(8);
 
 			// Dismiss — the secret must be gone from the DOM afterwards.
-			await page.getByRole('button', { name: 'Done' }).click();
+			// `exact: true`, because the default substring match also hits the
+			// row link of any vendor whose NAME contains "Done" — and one exists
+			// in every worker tenant that has run `invoices/file-management`
+			// (it posts an invoice for "E2E Done Vendor", which auto-creates the
+			// vendor). A real tenant can name a supplier anything, so the exact
+			// match is the durable fix, not a tidier fixture.
+			await page.getByRole('button', { name: 'Done', exact: true }).click();
 			await expect(secret).toHaveCount(0);
 		} finally {
 			if (vendorId) {

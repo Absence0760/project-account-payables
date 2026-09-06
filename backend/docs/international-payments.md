@@ -150,6 +150,55 @@ the caller written down. Registering an adapter that silently
 inherits all four is otherwise invisible — the inherited code
 "works" in every case.
 
+### The UI
+
+`POST /api/payments/corridor-quotes` (`app/api/payments.py`) is the
+read surface: it prices ONE payable invoice across every configured
+processor and returns `{winner, runners_up, savings_vs_runner_up,
+advisory: true}`, money as exact decimal strings. Gated
+`require_roles(admin, ap_manager, cfo)`, entity-scoped, 404 on an
+out-of-scope invoice and 409 (`NoEligibleCorridorError`) when nobody
+can quote the corridor at all.
+
+It had **no caller in `frontend/src`** — the optimizer was a module
+nothing reached. It now ships as a **Compare routes** row action on the
+`/payments` Queue tab (`$lib/api/corridorQuotes.ts` +
+`$lib/types/corridorQuote.ts`, the latter holding the pure display
+helpers and their vitest guard). Four contracts the UI has to keep:
+
+- **It leads with the advisory notice, before any figure.** Nothing
+  here selects a rail: `pick_corridor` + the org's configured provider
+  still decide that at execute time (`docs/decisions.md` §42). A
+  comparison a user reads as a choice is worse than no comparison.
+- **A non-quoting processor is rendered, never omitted.** An adapter
+  with no published fee schedule fails closed to `available=False` /
+  `no_quote_endpoint` and drops out of the ranking — `modern_treasury`
+  is exactly that case today. A tenant on such a rail would otherwise
+  watch an auction its own rail never entered and read the winner as
+  the best route open to it, so the dialog carries an explicit **Not in
+  the ranking** section listing each excluded processor with its reason.
+  A ranking that hides its own gaps is worse than no ranking.
+- **The reason vocabulary is open, so only the machine codes are
+  translated.** `quoteReasonKey` maps `no_quote_endpoint`,
+  `provider_not_supported`, `disabled_in_config`, `not_configured` and
+  the `provider_not_configured:` / `adapter_error:` prefixes to copy;
+  an adapter's own sentence (`"method 'sepa' not supported by column"`)
+  renders verbatim, because it says more than any bucket the client
+  could invent for an unmapped code.
+- **Money is never computed client-side.** Every figure renders through
+  `formatMoney`, and `savings_vs_runner_up` is the SERVER's delta —
+  the client never subtracts two amounts. `pct_fee` is a dimensionless
+  ratio, not money, so `formatFeeRate` renders it as a percentage and
+  guards non-finite provider input to `—` rather than `NaN%`.
+
+Changing the mode (**Cheapest** / **Fastest**) re-asks the server
+rather than re-sorting the loaded rows: `_rank` owns the ordering rule,
+and a client re-sort would silently disagree with it.
+
+E2E: `frontend/tests-e2e/payments/corridor-quotes.spec.ts` (the role
+gate is asserted against the real backend, the payload shapes through
+`page.route()`).
+
 ## KYC / AML compliance
 
 `services/compliance.check_payment_compliance` is the gate between

@@ -12,6 +12,7 @@
 // See `frontend/CLAUDE.md` § Money formatting.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type IntakeStatus =
@@ -31,13 +32,24 @@ export const INTAKE_STATUSES: IntakeStatus[] = [
 	'cancelled'
 ];
 
-export const INTAKE_STATUS_LABELS: Record<IntakeStatus, string> = {
-	open: 'Open',
-	in_review: 'In Review',
-	approved: 'Approved',
-	rejected: 'Rejected',
-	converted: 'Converted',
-	cancelled: 'Cancelled'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * Both surfaces that render an intake status (the `/intake` list page and
+ * `IntakeModal`) are inside the i18n extraction slice, so a hardcoded English
+ * map here put a translated Reopen confirm ("Zurück auf „Offen“") directly
+ * beside an untranslated `Open` badge. Keyed the same way
+ * `notification.ts::EVENT_LABEL_KEYS` is; `Record<IntakeStatus, MessageKey>`
+ * makes a new status a compile error rather than a blank badge, and
+ * `intake.test.ts` proves every key exists in the catalogue.
+ */
+export const INTAKE_STATUS_LABEL_KEYS: Record<IntakeStatus, MessageKey> = {
+	open: 'intake.status.open',
+	in_review: 'intake.status.inReview',
+	approved: 'intake.status.approved',
+	rejected: 'intake.status.rejected',
+	converted: 'intake.status.converted',
+	cancelled: 'intake.status.cancelled'
 };
 
 // Badge tone per status, so the list page and the modal can't tint the same
@@ -66,16 +78,35 @@ export function intakeStatusTone(status: string): BadgeTone {
 	return INTAKE_STATUS_TONES[status as IntakeStatus] ?? 'neutral';
 }
 
+/**
+ * The message key for a status, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank badge). Mirrors `intakeStatusTone`'s tolerance: `IntakeRequest.status`
+ * is typed `string` because the API is the source of truth.
+ */
+export function intakeStatusLabelKey(status: string): MessageKey | null {
+	return INTAKE_STATUS_LABEL_KEYS[status as IntakeStatus] ?? null;
+}
+
 export type IntakeType = 'software' | 'services' | 'hardware' | 'other';
 
 export const INTAKE_TYPES: IntakeType[] = ['software', 'services', 'hardware', 'other'];
 
-export const INTAKE_TYPE_LABELS: Record<IntakeType, string> = {
-	software: 'Software',
-	services: 'Services',
-	hardware: 'Hardware',
-	other: 'Other'
+// Same treatment as the status labels above: the type name is a filter-chip
+// label, a table cell AND the `{type}` interpolated into the translated
+// questionnaire heading, so an English literal here shows up mid-sentence in a
+// German modal.
+export const INTAKE_TYPE_LABEL_KEYS: Record<IntakeType, MessageKey> = {
+	software: 'intake.type.software',
+	services: 'intake.type.services',
+	hardware: 'intake.type.hardware',
+	other: 'intake.type.other'
 };
+
+/** The message key for a request type, or `null` for an unrecognised one. */
+export function intakeTypeLabelKey(requestType: string): MessageKey | null {
+	return INTAKE_TYPE_LABEL_KEYS[requestType as IntakeType] ?? null;
+}
 
 // Flexible questionnaire payload — free-form key/value answers, shape varies by
 // request type. Persisted verbatim as JSONB on the backend.
@@ -160,21 +191,21 @@ export interface IntakeConvertResponse {
 
 // Per-request-type questionnaire fields shown in the create modal. The labels
 // drive a small dynamic form; answers are collected into `form_data`.
-export const INTAKE_FORM_FIELDS: Record<IntakeType, { key: string; label: string }[]> = {
+export const INTAKE_FORM_FIELDS: Record<IntakeType, { key: string; labelKey: MessageKey }[]> = {
 	software: [
-		{ key: 'seats', label: 'Number of seats' },
-		{ key: 'renewal', label: 'Renewal cadence (monthly/annual)' },
-		{ key: 'data_residency', label: 'Data residency requirement' }
+		{ key: 'seats', labelKey: 'intake.form.software.seats' },
+		{ key: 'renewal', labelKey: 'intake.form.software.renewal' },
+		{ key: 'data_residency', labelKey: 'intake.form.software.dataResidency' }
 	],
 	services: [
-		{ key: 'scope', label: 'Scope of work' },
-		{ key: 'duration', label: 'Engagement duration' },
-		{ key: 'sow_ref', label: 'SOW reference' }
+		{ key: 'scope', labelKey: 'intake.form.services.scope' },
+		{ key: 'duration', labelKey: 'intake.form.services.duration' },
+		{ key: 'sow_ref', labelKey: 'intake.form.services.sowRef' }
 	],
 	hardware: [
-		{ key: 'quantity', label: 'Quantity' },
-		{ key: 'model', label: 'Model / spec' },
-		{ key: 'ship_to', label: 'Ship-to location' }
+		{ key: 'quantity', labelKey: 'intake.form.hardware.quantity' },
+		{ key: 'model', labelKey: 'intake.form.hardware.model' },
+		{ key: 'ship_to', labelKey: 'intake.form.hardware.shipTo' }
 	],
-	other: [{ key: 'details', label: 'Details' }]
+	other: [{ key: 'details', labelKey: 'intake.form.other.details' }]
 };

@@ -95,6 +95,53 @@ freshly provisioned tenants (`create_all`, not Alembic) get it as well.
   `uq_invoice_intercompany_mirror` unique index (whose `IntegrityError` the
   handler turns into a clean, PII-free **409**).
 
+## Frontend UI
+
+The control ships on the **invoice detail modal**
+(`frontend/src/lib/components/modals/InvoiceModal.svelte`) as an *Inter-company*
+panel. API client: `frontend/src/lib/api/invoices.ts` (`routeIntercompany`).
+
+It is gated three ways, each guarding a different way the surface could lie:
+
+1. **Role** — `auth.isManager` (`admin` / `ap_manager`), the frontend mirror of
+   the router's `require_roles`.
+2. **Tenancy** — `entityStore.multiEntity` (`entities.length > 1`), the SAME
+   signal the sidebar entity switcher renders on rather than a second derivation.
+   A single-entity tenant has no possible counterparty, so the endpoint could
+   only ever answer 400 ("an entity cannot bill itself"); the panel simply does
+   not exist there. This was moot until `/admin/entities` shipped a way to create
+   a second entity.
+3. **State** — once `intercompany_mirror_id` is set the panel shows the ROUTED
+   STATE (counterparty name + the mirror's id) and no longer offers the action.
+   The backend stamps a counterparty only while unrouted and returns the same
+   mirror on a repeat call, so an action offered here could not change anything —
+   and the visible 409 the naive UI would produce is only ever reached by a real
+   concurrent race, not by a user clicking twice.
+
+Because it creates a live payable under books the operator may not be looking at,
+the button is **confirm-then-act** and the armed label names the entity
+("Create a payable under *Northwind GmbH*? Confirm"), reusing the two-step
+`RowAction armed` pattern the destructive controls elsewhere use.
+
+Counterparty candidates are the tenant's other ACTIVE entities. When the entity
+switcher has a specific entity selected, that is the invoice's own entity (the
+list it was opened from was scoped by the same `X-Entity-ID`) and it is excluded.
+Under the consolidated "All entities" view the invoice's entity is **not knowable
+client-side** — `InvoiceResponse` carries no `entity_id` — so every active entity
+is offered and the backend's own self-billing 400 is surfaced verbatim rather
+than guessed at. Adding `entity_id` to `InvoiceResponse` would let the picker
+exclude it in that view too; it is deliberately not done here because it widens a
+response consumed by the public API surface's neighbours for a UI convenience.
+
+The `routeIntercompany` response is the MIRROR, not the origin — the panel
+records the routed state from it and refreshes the host list + audit log, rather
+than assuming the returned row is the one it was rendering.
+
+e2e: `frontend/tests-e2e/invoices/intercompany-routing.spec.ts` (creates a second
+entity through the API, routes with the named confirm, asserts the mirror exists
+under the counterparty at `new`, re-opens to prove the action is gone, and checks
+a direct repeat POST still yields exactly one mirror; plus a clerk 403).
+
 ## Tests
 
 `backend/tests/test_intercompany.py` (opt-in `realdb`):

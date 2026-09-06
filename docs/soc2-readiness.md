@@ -94,7 +94,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | RBAC denial logging | Done | `app/api/deps.py` `require_roles()` writes WARNING with actor + path |
 | Auth event logging (login, logout, MFA events) | Done | `app/services/audit_dispatch.py::dispatch_auth_audit` resolves the tenant DB from the org id and writes an `auth.*` row for every login / logout / MFA / SSO event |
 | Webhook HMAC verification + event dedup | Done | `backend/app/services/webhook_security.py` (`verify_hmac_sha256` constant-time + `is_event_already_processed` Redis SET NX EX with 24h TTL). Applied to `/api/payments/webhook/...`, `/api/cards/webhook/{provider}`, `/api/erp/webhook/{erp_type}`. All four rejection paths return 204 silently so the response doesn't enumerate. |
-| File-upload sanitisation + cross-tenant download check | Done | `backend/app/services/storage.py::_safe_filename` strips path separators + control chars before interpolating into the S3 key; `GET /api/workflow/file/{file_key}` verifies the key's first segment equals the requesting user's `organization_id`. |
+| File-upload sanitisation + cross-tenant download check | Done | `backend/app/services/storage.py::_safe_filename` strips path separators + control chars before interpolating into the S3 key; `GET /api/invoices/file/{file_key}` verifies the key's first segment equals the requesting user's `organization_id`. |
 | **Centralized + WORM-compliant audit log shipping** | Done | `backend/app/services/audit_log_shipper.py` + `services/audit_shipping/` adapters — background loop ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock. See `backend/docs/audit-log-shipping.md`. |
 | Centralized application logs (stderr) | Done in prod | ECS → CloudWatch Logs |
 | Alerting on 5xx + RBAC-denial spikes | Pending | CloudWatch Alarms or Datadog |
@@ -136,7 +136,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 |---|---|---|
 | All changes via PR + review | Done | GitHub branch protection on `main`: PR required and enforced on admins (no direct pushes, incl. the owner), linear history, no force-push/deletions, conversation resolution required. 0 required approvals — a green CI is the merge gate, not a human sign-off. |
 | CI gate (lint + tests) before merge | Done | `.github/workflows/ci.yml` — the "CI gate" aggregator job (`needs:` every CI job) is the **single required status check** on `main`, so a red CI blocks the merge. |
-| Production deploy from `main` only | Done | `.github/workflows/deploy.yml` triggers on `push: main` |
+| Production deploy from `main` only | **Not yet evidenced** | Corrected 2026-09-06: the cited `.github/workflows/deploy.yml` **does not exist**. The real workflow is `.github/workflows/aws-deploy.yml`, which triggers on `release: [published]` — not `push: main` — and every job is gated on the repo variable `AWS_DEPLOY_ENABLED`, unset today, so **nothing deploys at all**. Branch protection (row 1) does enforce that `main` is the only source a release tag can come from, which is the control's substance; but there is no running deploy pipeline to evidence, so this cannot be claimed as Done until the AWS estate exists and the variable is set. Re-evidence at that point against `aws-deploy.yml` and its release trigger. |
 | Documented incident-response runbook | Pending | Vendor template + customise; needs on-call rotation |
 
 ---

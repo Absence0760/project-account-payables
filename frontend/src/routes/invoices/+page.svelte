@@ -302,7 +302,19 @@
 	let deepLinkLoaded = $state<string | null>(null);
 	$effect(() => {
 		const id = $page.url.searchParams.get('id');
-		if (!id || deepLinkLoaded === id) return;
+		// Re-arming is driven by the URL, never by the close handler. When the
+		// handler cleared `deepLinkLoaded` itself it did so right after calling
+		// `replaceState`, and this effect could re-run before the `$page` store
+		// had caught up — reading the still-present `id` against a now-null
+		// marker and immediately RE-OPENING the modal the user had just closed.
+		// The window is tiny, which is why it only surfaced once something else
+		// in the modal (an extra fetch on mount) shifted the scheduling; keying
+		// the reset off the scrubbed URL removes it rather than hiding it.
+		if (!id) {
+			deepLinkLoaded = null;
+			return;
+		}
+		if (deepLinkLoaded === id) return;
 		deepLinkLoaded = id;
 		api
 			.get<Invoice>(`/api/invoices/${id}`)
@@ -330,8 +342,8 @@
 		if (url.searchParams.has('id')) {
 			url.searchParams.delete('id');
 			replaceState(`${url.pathname}${url.search}`, {});
-			// Allow re-opening the same invoice from a fresh deep-link click.
-			deepLinkLoaded = null;
+			// Re-arming for a fresh deep-link click is the effect's job, off the
+			// scrubbed URL — clearing the marker here raced `replaceState`.
 		}
 		// Re-apply this page's active filters. The modal's mutation handlers
 		// (approve / reject / save / …) deliberately don't refresh the list

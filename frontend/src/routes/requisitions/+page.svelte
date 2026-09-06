@@ -2,7 +2,8 @@
 	import type { Requisition, RequisitionStatus } from '$lib/types/requisition';
 	import {
 		REQUISITION_FILTER_STATUSES,
-		REQUISITION_STATUS_LABELS,
+		REQUISITION_STATUS_LABEL_KEYS,
+		requisitionStatusLabelKey,
 		REQUISITION_STATUS_TONES
 	} from '$lib/types/requisition';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -96,14 +97,21 @@
 	// invisible and the user can always click back to All.
 	const chipStatuses = $derived.by(() => {
 		const active = statusFilter as RequisitionStatus;
-		if (REQUISITION_FILTER_STATUSES.includes(active) || !(active in REQUISITION_STATUS_LABELS))
+		if (REQUISITION_FILTER_STATUSES.includes(active) || !(active in REQUISITION_STATUS_LABEL_KEYS))
 			return REQUISITION_FILTER_STATUSES;
 		return [...REQUISITION_FILTER_STATUSES, active];
 	});
 
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = requisitionStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...chipStatuses.map((s) => ({ key: s, label: REQUISITION_STATUS_LABELS[s] }))
+		...chipStatuses.map((s) => ({ key: s, label: statusLabel(s) }))
 	]);
 
 	const COLUMNS = $derived([
@@ -464,7 +472,7 @@
 					<td class="muted">{formatDate(r.needed_by)}</td>
 					<td class="right mono"><Money amount={r.total} currency={r.currency} /></td>
 					<td>
-						<Badge tone={REQUISITION_STATUS_TONES[r.status as RequisitionStatus]} variant={r.status}>{REQUISITION_STATUS_LABELS[r.status as keyof typeof REQUISITION_STATUS_LABELS] ?? r.status}</Badge>
+						<Badge tone={REQUISITION_STATUS_TONES[r.status as RequisitionStatus]} variant={r.status}>{statusLabel(r.status)}</Badge>
 					</td>
 					<td class="actions">
 						{#if canCreate && r.status === 'draft'}

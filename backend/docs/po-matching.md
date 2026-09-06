@@ -315,13 +315,13 @@ goods receipt. The page has two tabs:
   **Quality Inspections** panel listing that receipt's rows newest-first (the
   order the matcher itself picks from) plus a **Record inspection** button that
   opens the form with the receipt already fixed.
-- **Inspections** — every `QualityInspection` the tenant holds, with a
-  **Sync from QMS** action and a **+ Record Inspection** action. This flat list
-  is not a convenience: a synced row often resolves to neither a receipt nor a
-  PO (`_resolve_gr_id` / `_resolve_po_id` return `None` when the QMS names a
-  document this tenant does not hold), and such a row exists nowhere else in
-  the app. It renders as **Not linked**, titled with what that means — PO
-  matching will never read it.
+- **Inspections** — the `QualityInspection` rows the tenant holds, newest
+  first, behind a Load-more control, with a **Sync from QMS** action and a
+  **+ Record Inspection** action. This flat list is not a convenience: a synced
+  row often resolves to neither a receipt nor a PO (`_resolve_gr_id` /
+  `_resolve_po_id` return `None` when the QMS names a document this tenant does
+  not hold), and such a row exists nowhere else in the app. It renders as
+  **Not linked**, titled with what that means — PO matching will never read it.
 
 Three things the form encodes, each of them a property of the matcher rather
 than a UI preference:
@@ -344,6 +344,38 @@ than a UI preference:
   mandatory before payment is resolved per invoice by `services/matching_rules`
   (vendor rule → commodity/GL rule → org default), so the standing hint says
   exactly that.
+
+#### The list is a page, and it names its own receipts
+
+`GET /api/inspections` returns a PAGE on the canonical `page` / `page_size`
+contract (`app/api/pagination.py`) with the usual `{items, total, page,
+page_size}` envelope, ordered `created_at DESC, id DESC` (`created_at` alone is
+not a total order — a QMS sync writes a batch in one transaction, and a tie
+split across a page boundary drops one row and repeats another). It used to
+return every row: the table only ever grows, so the response size was a function
+of how long the tenant had been running.
+
+Two things landed with the page, because the tab could not have been paged
+correctly without them:
+
+- **`gr_number` rides the row**, resolved by an outer join on the list, the
+  detail and the create response alike. The row used to carry `gr_id` alone, so
+  the page fetched a 100-row page of goods receipts *alongside every inspection
+  load* purely to build an id→number map — and any receipt outside that window
+  still rendered unlabelled, a defect a bigger page size could only move. It is
+  `null` only when the inspection is linked to no receipt, which the tab renders
+  as **Not linked** — a different fact from "linked to a receipt we could not
+  name". A receipts fetch still backs the record form's receipt PICKER, but it
+  is loaded once per tab activation and skipped entirely for a user who cannot
+  record one.
+- **`?gr_id=` narrows to one receipt**, which is what the receipt detail modal's
+  Quality Inspections panel asks for. It used to filter the tab's list in the
+  browser; against a PAGE that would render an empty "no inspections" panel for
+  any receipt whose rows had not been paged to yet.
+
+There is no rollup beside this list — inspections are counted, not summed — so
+the only figure to keep honest is `total`, and it comes from
+`_inspection_list_filters`, the same builder the rows go through.
 
 Quantities are held and sent as the **raw text** the inspector typed, validated
 by shape (`\d{1,8}(\.\d{1,4})?`, matching the `Numeric(12, 4)` column) rather
@@ -518,6 +550,8 @@ PATCH→`refresh_warnings`→`match_invoice_to_po` path (PO/GR rows seeded via
   `po_match.details.tolerance_pct`, and tenant isolation (a PO is invisible to a
   different tenant).
 - `inspections-api.spec.ts` — `/api/inspections` create/list/detail round-trip,
+  the paginated envelope + its `page_size` cap, `?gr_id=` narrowing, `gr_number`
+  on every path,
   result-enum + bad-uuid 400s, 404, and the create RBAC gate (clerk denied).
 - `inspection-ui.spec.ts` — the same three gate outcomes driven through the
   **app** instead of the API: a `pass` recorded from a receipt's detail modal, a

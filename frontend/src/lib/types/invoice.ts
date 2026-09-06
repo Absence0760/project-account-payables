@@ -204,6 +204,17 @@ export interface Invoice {
 	department: string | null;
 	project: string | null;
 	contract_id: string | null;
+	/**
+	 * Inter-company routing (multi-entity). `counterparty_entity_id` names the
+	 * OTHER subsidiary on an inter-company charge; `intercompany_mirror_id` links
+	 * an origin invoice to its generated mirror payable (and vice-versa). Both
+	 * null on an ordinary invoice. `intercompany_mirror_id` being set is the
+	 * ROUTED signal — the backend only stamps a counterparty while it is null, so
+	 * the UI must render the routed state rather than re-offer the action.
+	 * See `backend/docs/inter-company.md`.
+	 */
+	counterparty_entity_id: string | null;
+	intercompany_mirror_id: string | null;
 	created_at: string;
 	/**
 	 * The row's current `updated_at`, ISO-8601. Capture this verbatim when the

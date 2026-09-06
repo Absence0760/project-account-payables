@@ -112,11 +112,22 @@ def _step(cadence: str, when: datetime, steps: int = 1) -> datetime:
 
 
 def compute_next_run(cadence: str, from_dt: datetime) -> datetime:
-    """Advance `from_dt` by one cadence period. One step, no catch-up.
+    """Advance ``from_dt`` by exactly one cadence period. One step, no catch-up.
 
-    Used when seeding a brand-new schedule. To ADVANCE a schedule that just
-    ran, use :func:`advance_next_run` — anchoring on the wall clock is what
-    made every run drift later than the last.
+    This is the tested public spelling of :func:`_step`, and deliberately not
+    part of either live path:
+
+    * It does **not** seed a new schedule. ``POST /api/analytics/scheduled-
+      reports`` seeds ``next_run_at = body.next_run_at or now()`` instead
+      (``api/scheduled_reports.py``), so an operator who creates a schedule
+      without naming a first slot sees it fire on the very next sweep tick and
+      can watch it work. Seeding one whole period ahead would leave a freshly
+      created daily/weekly/monthly schedule looking broken — nothing sent, no
+      error, nothing to check — for up to a month.
+    * It does **not** advance a schedule that just ran; that is
+      :func:`advance_next_run`, which anchors on the slot the run was DUE at
+      rather than the wall clock. Bumping by ``compute_next_run(cadence, now)``
+      is what made every run drift later than the last.
     """
     return _step(cadence, from_dt)
 

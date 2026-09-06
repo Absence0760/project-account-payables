@@ -7,7 +7,15 @@ import {
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
-import { cleanup, createGr, createMatchedInvoice, createPo, exceptionsFor, uniq } from './setup';
+import {
+	cleanup,
+	createGr,
+	createInspectionRow,
+	createMatchedInvoice,
+	createPo,
+	exceptionsFor,
+	uniq
+} from './setup';
 import { expectNoA11yViolations } from '../a11y/axe-helper';
 import type { Page } from '@playwright/test';
 
@@ -217,7 +225,10 @@ test.describe('recording an inspection through /goods-receipts', () => {
 
 test.describe('inspection controls are admin / ap_manager only', () => {
 	const created: { grIds: string[]; poIds: string[] } = { grIds: [], poIds: [] };
+	const READER_PREFIX = 'QI-UI-LABEL';
 	let grNumber: string;
+	let grId: string;
+	let readerInspection: string;
 
 	test.beforeAll(() => {
 		const { poId } = createPo({ total: 500 });
@@ -225,8 +236,16 @@ test.describe('inspection controls are admin / ap_manager only', () => {
 		const gr = createGr({ poId, lines: [{ description: 'part', quantityReceived: 5 }] });
 		created.grIds.push(gr.grId);
 		grNumber = gr.grNumber;
+		grId = gr.grId;
+		// Seeded in SQL rather than through the API: the spec below signs in as a
+		// clerk, who cannot create one — and the point is what a READER sees.
+		readerInspection = uniq(READER_PREFIX);
+		createInspectionRow({ grId, number: readerInspection });
 	});
-	test.afterAll(() => cleanup(created));
+	test.afterAll(() => {
+		deleteInspectionsLike(READER_PREFIX);
+		cleanup(created);
+	});
 
 	test('a clerk reads the inspections and gets no way to write one', async ({
 		page,
@@ -247,6 +266,34 @@ test.describe('inspection controls are admin / ap_manager only', () => {
 		await page.getByRole('button', { name: `View goods receipt ${grNumber}` }).click();
 		await expect(page.getByRole('dialog', { name: 'Goods receipt' })).toBeVisible();
 		await expect(page.getByTestId('record-inspection-for-receipt')).toHaveCount(0);
+	});
+
+	test('a reader gets no receipts-lookup fetch, and the receipt column is labelled anyway', async ({
+		page,
+		tenantClerk
+	}) => {
+		// The tab used to drag a `page_size=100` goods-receipts fetch along with
+		// EVERY inspection load, purely to turn `gr_id` into a number — and a
+		// receipt outside that window still rendered unlabelled, which growing
+		// the page size could only move. The row now carries `gr_number` from the
+		// server's own join, so the only receipts fetch left backs the record
+		// form's PICKER — which a clerk cannot open, so none is issued at all.
+		await signInAndWait(page, tenantClerk);
+		const lookups: string[] = [];
+		page.on('request', (req) => {
+			const url = new URL(req.url());
+			if (url.pathname === '/api/goods-receipts' && url.searchParams.get('page_size') === '100') {
+				lookups.push(req.url());
+			}
+		});
+
+		await page.goto(INSPECTIONS_URL);
+		// Labelled from the row itself — the receipt's real number, not the
+		// generic "View receipt" fallback an unresolvable id renders.
+		await expect(page.locator(`[data-inspection-number="${readerInspection}"]`)).toContainText(
+			grNumber
+		);
+		expect(lookups).toEqual([]);
 	});
 });
 

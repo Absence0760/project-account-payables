@@ -57,6 +57,9 @@
 		return Object.entries(changes as Record<string, AuditFieldChange>);
 	}
 
+	// Snapshot of the last SUCCESSFUL query's parameters — what the table shows.
+	let exportedParams = $state<ReturnType<typeof currentParams> | null>(null);
+
 	function currentParams() {
 		return mode === 'invoice'
 			? { invoiceId: invoiceId.trim() }
@@ -71,19 +74,30 @@
 		error = '';
 		loading = true;
 		ran = true;
+		// The params that produced what is ON SCREEN. `downloadCsv` exports THIS,
+		// not the live form: the controls stay editable after a run, so exporting
+		// `currentParams()` handed an auditor a CSV covering a different set from
+		// the table they were reading — silently, in the console whose output is
+		// the evidence. It also let Download fire in a state `runQuery` refuses
+		// (By-invoice with an empty id), producing a 400 from a control that
+		// looked enabled.
+		const params = currentParams();
 		try {
-			entries = await getAuditExport(currentParams());
+			entries = await getAuditExport(params);
+			exportedParams = params;
 		} catch (e) {
 			error = e instanceof Error ? e.message : m('audit.error.queryFailed');
 			entries = [];
+			exportedParams = null;
 		} finally {
 			loading = false;
 		}
 	}
 
 	async function downloadCsv() {
+		if (!exportedParams) return;
 		try {
-			const blob = await downloadAuditExportCsv(currentParams());
+			const blob = await downloadAuditExportCsv(exportedParams);
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
@@ -201,7 +215,7 @@
 <PageHeader title={m('audit.title')}>
 	{#snippet actions()}
 		{#if userLoaded && allowed}
-			<button class="btn-primary" onclick={downloadCsv} disabled={!ran || entries.length === 0}>
+			<button class="btn-primary" onclick={downloadCsv} disabled={!exportedParams || entries.length === 0}>
 				{m('audit.downloadCsv')}
 			</button>
 		{/if}
