@@ -53,7 +53,30 @@ env:
   # vendors/contracts — each adding its own route/component weight. ~14%
   # headroom on the new 890 baseline, matching the original ceiling's headroom
   # over its baseline.
-  MAX_TOTAL_KB: 1000
+  # 2026-09-05 — total 1000 → 1150. Measured 1046 / 228 files on CI (1042
+  # locally); largest chunk 68, still well under 100, so that ceiling is
+  # unchanged. Round 22 wired up ten shipped-but-unreachable capabilities —
+  # four new routes (/adaptive, /admin/entities, /admin/health, plus the
+  # goods-receipts inspections tab) and panels on /organization, /audit and
+  # /payments.
+  #
+  # The growth is overwhelmingly i18n, and the number is worth writing down:
+  # the SIX locale catalogues are the six largest chunks in the build at
+  # 61-68 KB each — 391 KB, **37% of the counted total**. This round added 324
+  # keys per locale (3956 → 4280), i.e. ~1944 translated strings.
+  #
+  # Note what that means for this metric: a user downloads ONE catalogue, not
+  # six, so the counted total overstates what anyone actually fetches by ~325
+  # KB. The ceiling still counts all six deliberately (see above) — a lazy
+  # chunk is still weight the project ships — but if this ceiling binds again,
+  # the honest fix is to make the metric distinguish "shipped" from "fetched
+  # per user" rather than to keep ratcheting a number that is 37% duplicated
+  # translations. Tracked in docs/followups.md.
+  #
+  # ~10% headroom on the new 1046 baseline — tighter than the last bump's 14%,
+  # because this round's growth is understood and attributable rather than
+  # diffuse.
+  MAX_TOTAL_KB: 1150
   MAX_LARGEST_CHUNK_KB: 100
 
 jobs:

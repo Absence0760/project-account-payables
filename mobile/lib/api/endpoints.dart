@@ -546,6 +546,19 @@ class PaymentApi {
     });
   }
 
+  /// CFO sign-off on a draft run that trips the org's approval threshold —
+  /// `POST /api/payments/runs/{id}/approve`. Backend gate is
+  /// `require_roles(ROLE_CFO)` (deliberately NOT the shared
+  /// `payment_run.approve` permission, which admin/ap_manager also hold — that
+  /// would let the same person who drafted the run sign it off). Refuses 409
+  /// outside `draft` / when sign-off isn't required / when already approved,
+  /// and 403 on the maker-checker check (the run's creator can't approve it).
+  /// Returns `{id, status, cfo_approved_by, cfo_approved_at, message}`.
+  /// Authorizes execution; it does not move money.
+  static Future<Map<String, dynamic>> approveRun(String id) async {
+    return _api.post('/payments/runs/$id/approve');
+  }
+
   /// Execute a draft run via the configured payment adapter.
   /// `POST /api/payments/runs/{id}/execute`.
   static Future<Map<String, dynamic>> executeRun(String id) async {

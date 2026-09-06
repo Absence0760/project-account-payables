@@ -847,6 +847,31 @@ class AppLocalizationsEs extends AppLocalizations {
   String get payRunActionCancel => 'Cancelar';
 
   @override
+  String get payRunActionApprove => 'Aprobar como CFO';
+
+  @override
+  String get payRunApproveTitle => '¿Aprobar el lote de pago?';
+
+  @override
+  String payRunApproveBody(String date, int count, String amount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count pagos',
+      one: '$count pago',
+    );
+    return 'Aprobación del lote creado el $date: $_temp0 por un total de $amount. Esto autoriza la ejecución; no mueve dinero.';
+  }
+
+  @override
+  String get payRunApproveConfirm => 'Aprobar';
+
+  @override
+  String payRunApproveFailed(String error) {
+    return 'Error al aprobar: $error';
+  }
+
+  @override
   String get payRunCfoBlocked =>
       'Este lote necesita la aprobación del CFO antes de poder ejecutarse.';
 

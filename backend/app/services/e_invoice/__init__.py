@@ -50,6 +50,7 @@ from app.services.e_invoice.validate import (
     EInvoiceValidationError,
     FieldError,
     assert_valid,
+    error_payload,
     validate_document,
 )
 
@@ -68,6 +69,7 @@ __all__ = [
     "assert_valid",
     "EInvoiceValidationError",
     "FieldError",
+    "error_payload",
     "parse_e_invoice",
     "generate_ubl",
     "BIS3_CUSTOMIZATION_ID",

@@ -220,6 +220,18 @@ export const NAV: NavEntry[] = [
 			// A/B testing of workflow rules — compare two configs on objective
 			// metrics. Read for managers/CFO; mutate is admin (backend RBAC).
 			{ label: 'Experiments', labelKey: 'nav.experiments', href: '/experiments', roles: ['admin', 'ap_manager', 'cfo'] },
+			// Adaptive AI workflows — approval-pattern learning, baseline
+			// anomalies, advisory suggestions, smart routing, the auto-approve
+			// threshold recommendation and the feedback loop. Read is
+			// admin/ap_manager/cfo (the backend's `_READ_ROLES`); the two acts are
+			// gated further inside the page (dismiss/route-apply ap_manager+,
+			// threshold apply admin-only — it edits a workflow definition).
+			{ label: 'Adaptive Workflows', labelKey: 'nav.adaptive', href: '/adaptive', roles: ['admin', 'ap_manager', 'cfo'] },
+			// Legal entities / subsidiaries — the `entity_id` scope target the
+			// sidebar switcher selects. `GET /api/entities` is open to any authed
+			// user, but this page is a mutation surface (POST / PATCH /
+			// set-default are all `require_roles(ROLE_ADMIN)`), so admin only.
+			{ label: 'Entities', labelKey: 'nav.entities', href: '/admin/entities', roles: ['admin'] },
 			// Developer-API key management — admin only (the backend 403s the rest).
 			{ label: 'API Keys', labelKey: 'nav.apiKeys', href: '/admin/api-keys', roles: ['admin'] },
 			// Outbound-webhook subscriptions + delivery log / redelivery — admin
@@ -239,6 +251,12 @@ export const NAV: NavEntry[] = [
 			// GDPR/CCPA data-subject rights — DSAR export + right-to-erasure.
 			// Admin only (the backend /api/privacy surface 403s the rest).
 			{ label: 'Privacy & DSAR', labelKey: 'nav.privacy', href: '/admin/privacy', roles: ['admin'] },
+			// Background-sweep health — per-sweep last run / outcome / failure
+			// streak. Admin only, matching `require_roles(ROLE_ADMIN)` on
+			// GET /api/health/sweeps. The public /api/health probe deliberately
+			// reports none of this, so this row is the only way to see a dead or
+			// stalled sweep (backend/docs/background-sweeps.md).
+			{ label: 'Sweep Health', labelKey: 'nav.sweepHealth', href: '/admin/health', roles: ['admin'] },
 		],
 	},
 ];

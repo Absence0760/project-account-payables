@@ -3,7 +3,9 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
+	import SecretReveal from '$lib/components/ui/SecretReveal.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import { formatDate } from '$lib/utils/time';
@@ -13,6 +15,7 @@
 		rotateChatWebhook,
 		updateChatNotifications
 	} from '$lib/api/chatNotifications';
+	import { getEmailIntake, rotateEmailIntakeToken } from '$lib/api/emailIntake';
 	import {
 		CHAT_EVENT_LABELS,
 		CHAT_PROVIDER_LABELS,
@@ -268,6 +271,20 @@
 		}
 	}
 
+	// ── Read-only mode for non-admins ───────────────────────────────────
+	// Every mutating endpoint behind this page is `require_roles(ROLE_ADMIN)`
+	// — the server is and stays the authority. What was missing was any
+	// client-side acknowledgement of that: a clerk navigating straight here got
+	// a fully editable form across ~10 panels whose every Save 403s, which
+	// reads as a broken product rather than a permission boundary.
+	//
+	// `auth.user` starts null while `GET /api/auth/me` is in flight, and
+	// `isAdmin` is false until it lands — so gate on the user having RESOLVED,
+	// otherwise the banner flashes on every admin's page load and the form is
+	// briefly disabled under them.
+	const userLoaded = $derived(auth.user !== null);
+	const readOnly = $derived(userLoaded && !auth.isAdmin);
+
 	$effect(() => {
 		loadOrg();
 		loadPlatformTenantUrl();
@@ -394,6 +411,7 @@
 				brandSupportUrl = (brandCfg.support_url as string) || '';
 				brandLegalUrl = (brandCfg.legal_url as string) || '';
 				brandTenantUrlTemplate = (brandCfg.tenant_url_template as string) || '';
+				brandSsoCallbackBaseUrl = (brandCfg.sso_callback_base_url as string) || '';
 			}
 		} catch {
 			toast(m('org.toast.loadFailed'), 'error');
@@ -670,6 +688,12 @@
 	// `{slug}` in the value is optional: substituted when present, used
 	// verbatim when not. See docs/white-label.md § Tenant URL.
 	let brandTenantUrlTemplate = $state('');
+	// Deliberately a SEPARATE field from the one above: this value is registered
+	// at the customer's IdP, so changing it is an operator-sequenced migration
+	// (add the new URI at the IdP first, verify a real login, then remove the
+	// old one) rather than a preference. Folding the two would mean fixing
+	// invite links silently breaks SSO.
+	let brandSsoCallbackBaseUrl = $state('');
 	let savingBranding = $state(false);
 
 	// The PLATFORM default (`FEOH_TENANT_URL_TEMPLATE`), read from the public
@@ -731,6 +755,7 @@
 			[m('org.branding.label.supportUrl'), brandSupportUrl],
 			[m('org.branding.label.legalUrl'), brandLegalUrl],
 			[m('org.branding.label.tenantUrl'), brandTenantUrlTemplate],
+			[m('org.branding.label.ssoCallback'), brandSsoCallbackBaseUrl],
 		] as const) {
 			if (val.trim() && !/^https?:\/\//i.test(val.trim())) {
 				toast(m('org.branding.toast.urlInvalid', { label }), 'error');
@@ -747,6 +772,12 @@
 				support_url: brandSupportUrl.trim(),
 				legal_url: brandLegalUrl.trim(),
 				tenant_url_template: brandTenantUrlTemplate.trim(),
+				// Sent explicitly on every save. The backend carries an OMITTED
+				// value forward precisely so a client that doesn't know about this
+				// field can't wipe an IdP-registered callback; since this panel
+				// does know about it, sending the current value keeps "clear the
+				// box and save" working as the documented rollback.
+				sso_callback_base_url: brandSsoCallbackBaseUrl.trim(),
 			});
 			// Refresh the live brand store so the sidebar logo/name + theme update
 			// without a reload.
@@ -1094,6 +1125,147 @@
 			savingChatWebhook = false;
 		}
 	}
+
+	// ── Email intake (per-tenant invoices+<token>@ address) ─────────────
+	// The address is what vendors mail invoices to, and its `+<token>` part is
+	// a BEARER SECRET — anyone holding it can drop a payable into this tenant's
+	// queue, and the inbound webhook answers every outcome with the same opaque
+	// ack precisely so the token can't be ground out from outside. That makes
+	// rotation the only containment for a leak, which is why it ships here
+	// rather than living as an endpoint with no caller.
+	//
+	// `GET` is admin-only, so a non-admin is never asked for it: the panel says
+	// so instead of rendering a load failure the reader can't act on.
+	let intakeAddress = $state<string | null>(null);
+	let intakeEnabled = $state(false);
+	// Operator config, not tenant data: false means NO org on this deployment
+	// can have an intake address, whatever its token says.
+	let intakeDomainConfigured = $state(true);
+	let loadingIntake = $state(true);
+	let intakeError = $state('');
+	let rotatingIntake = $state(false);
+	// Armed two-click on Rotate — the same arm/confirm the domain and chat
+	// panels use, because the confirm IS the whole safety here: rotating is
+	// irreversible and silently breaks every vendor still mailing the old
+	// address.
+	let confirmRotateIntake = $state(false);
+	// The freshly-minted address, shown once through the shared SecretReveal so
+	// the admin gets a copy affordance at the one moment it matters. Unlike an
+	// API key this value IS re-readable from this page — the reveal's copy says
+	// what actually happened (the old address is dead) rather than claiming the
+	// value is unrecoverable.
+	let rotatedIntakeAddress = $state<string | null>(null);
+	let intakeCopied = $state(false);
+
+	$effect(() => {
+		// Deliberately its own effect rather than a line in the page's main
+		// loader: this one depends on the auth store, and folding it in would
+		// make every other panel re-fetch the moment `/me` resolves.
+		if (!userLoaded) return;
+		if (!auth.isAdmin) {
+			loadingIntake = false;
+			return;
+		}
+		loadEmailIntake();
+	});
+
+	async function loadEmailIntake() {
+		loadingIntake = true;
+		intakeError = '';
+		try {
+			const data = await getEmailIntake();
+			intakeAddress = data.address;
+			intakeEnabled = data.enabled;
+			// `?? true` is the documented degradation: an older backend that does
+			// not send the field must leave the panel assuming the deployment is
+			// available, not silently reporting a working one as switched off.
+			intakeDomainConfigured = data.domain_configured ?? true;
+		} catch (err) {
+			intakeError = err instanceof Error ? err.message : m('org.emailIntake.toast.loadFailed');
+		} finally {
+			loadingIntake = false;
+		}
+	}
+
+	/**
+	 * Whether this deployment can serve an intake address at all.
+	 *
+	 * `GET` returns `address: null` for two different reasons — the platform has
+	 * no intake domain (`FEOH_EMAIL_INTAKE_DOMAIN` unset, the committed default,
+	 * so the whole channel is off) or this org simply has no token yet — and
+	 * they call for opposite copy. `domain_configured` answers it on the first
+	 * read; before that field existed the panel could only find out by minting a
+	 * throwaway token, which is a write to answer a question.
+	 *
+	 * `enabled && address === null` is kept as a second, weaker signal: it stays
+	 * true against an older backend that doesn't send the field (the client
+	 * defaults it to `true`, i.e. assume-available), so the panel degrades to
+	 * the previous behaviour rather than mis-reporting a working deployment.
+	 */
+	const intakeUnavailable = $derived(
+		!intakeDomainConfigured || (intakeEnabled && intakeAddress === null)
+	);
+	const intakeUnprovisioned = $derived(
+		intakeDomainConfigured && !intakeEnabled && intakeAddress === null
+	);
+
+	async function copyIntakeAddress() {
+		if (!intakeAddress) return;
+		try {
+			await navigator.clipboard.writeText(intakeAddress);
+			intakeCopied = true;
+			toast(m('org.emailIntake.toast.copied'), 'success');
+		} catch {
+			// Clipboard access can be denied (permissions, insecure context).
+			// The address stays selectable in the DOM, so say so rather than
+			// failing silently.
+			toast(m('org.emailIntake.toast.copyFailed'), 'error');
+		}
+	}
+
+	/** First-time provisioning. Invalidates nothing — there is nothing to invalidate. */
+	async function generateIntakeAddress() {
+		await mintIntakeToken(m('org.emailIntake.toast.created'), false);
+	}
+
+	/** Rotation. Armed two-click: the first click only arms + explains. */
+	async function rotateIntakeAddress() {
+		if (!confirmRotateIntake) {
+			confirmRotateIntake = true;
+			return;
+		}
+		confirmRotateIntake = false;
+		await mintIntakeToken(m('org.emailIntake.toast.rotated'), true);
+	}
+
+	async function mintIntakeToken(successMessage: string, reveal: boolean) {
+		rotatingIntake = true;
+		intakeError = '';
+		try {
+			const data = await rotateEmailIntakeToken();
+			intakeAddress = data.address;
+			// The token is now provisioned and enabled whatever the address came
+			// back as. Recording that is what turns a null address from "unknown"
+			// into the proven "this deployment has no intake domain" state.
+			intakeEnabled = true;
+			intakeCopied = false;
+			if (data.address === null) {
+				// The write succeeded; there is still no address to hand out.
+				// Fall through to the unavailable panel rather than toasting a
+				// success that produced nothing usable.
+				return;
+			}
+			if (reveal) rotatedIntakeAddress = data.address;
+			toast(successMessage, 'success');
+		} catch (err) {
+			toast(
+				err instanceof Error ? err.message : m('org.emailIntake.toast.rotateFailed'),
+				'error'
+			);
+		} finally {
+			rotatingIntake = false;
+		}
+	}
 </script>
 
 <svelte:window
@@ -1109,12 +1281,27 @@
 		) {
 			confirmRemoveChatWebhook = false;
 		}
+		// Same for the email-intake rotate — an armed rotate left behind is a
+		// loaded gun, and this one breaks every vendor's mail path.
+		if (confirmRotateIntake && !(e.target as HTMLElement)?.closest?.('.intake-rotate')) {
+			confirmRotateIntake = false;
+		}
 	}}
 />
 
 <PageHeader title={m('org.title')}>
 	{#if org}
-		<div class="sections">
+		{#if readOnly}
+			<p class="readonly-banner" data-testid="org-readonly-banner">
+				{m('org.readOnly.banner')}
+			</p>
+		{/if}
+		<!-- A single disabled <fieldset> is the whole read-only mode: the
+		     attribute natively disables every descendant control, so a panel
+		     added later is covered without anyone remembering to gate it.
+		     Doing this per-input across ~10 panels is exactly how a gap gets
+		     left behind. The server still enforces admin on every write. -->
+		<fieldset class="sections" disabled={readOnly}>
 			<section class="getting-started card">
 				<h2>{m('org.gettingStarted.title')}</h2>
 				<p class="card-hint">{m('org.gettingStarted.intro')}</p>
@@ -1317,6 +1504,23 @@
 							</span>
 						</p>
 					</div>
+					<div class="full-width">
+						<label>
+							<span>{m('org.branding.ssoCallback')}</span>
+							<input
+								type="text"
+								bind:value={brandSsoCallbackBaseUrl}
+								placeholder={m('org.branding.ssoCallbackPlaceholder')}
+								autocomplete="off"
+								spellcheck="false"
+								aria-describedby="brand-sso-callback-hint"
+							/>
+						</label>
+						<p class="field-hint sso-callback-hint" id="brand-sso-callback-hint">
+							<strong>{m('org.branding.ssoCallbackWarning')}</strong>
+							{m('org.branding.ssoCallbackHint')}
+						</p>
+					</div>
 				</div>
 				<p class="card-hint">
 					{m('org.branding.strongHint')}
@@ -1505,6 +1709,85 @@
 						</button>
 					</form>
 					<p class="card-hint">{m('org.chat.webhook.rotateHint')}</p>
+				{/if}
+			</section>
+
+			<section class="card" id="org-email-intake">
+				<h2>{m('org.section.emailIntake')}</h2>
+				<p class="card-hint">{m('org.emailIntake.hint')}</p>
+
+				{#if !userLoaded || loadingIntake}
+					<p class="card-hint">{m('org.emailIntake.loading')}</p>
+				{:else if readOnly}
+					<!-- GET is admin-only. Say that, rather than firing a request
+					     that 403s and rendering a load failure nobody can act on. -->
+					<p class="card-hint" data-testid="email-intake-admin-only">
+						{m('org.emailIntake.adminOnly')}
+					</p>
+				{:else if intakeError}
+					<p class="domain-error" role="alert" data-testid="email-intake-error">
+						{intakeError}
+					</p>
+				{:else if intakeUnavailable}
+					<!-- Proven: a token exists and the server still renders no
+					     address, which only happens when the platform has no
+					     intake domain. No rotate control here — it would mint
+					     another token that still addresses nothing. -->
+					<p class="intake-unavailable" data-testid="email-intake-unavailable">
+						{m('org.emailIntake.unavailable')}
+					</p>
+				{:else if intakeUnprovisioned}
+					<p class="card-hint" data-testid="email-intake-unprovisioned">
+						{m('org.emailIntake.notProvisioned')}
+					</p>
+					<button
+						type="button"
+						class="btn-save-section"
+						disabled={rotatingIntake}
+						onclick={generateIntakeAddress}
+					>
+						{rotatingIntake
+							? m('org.emailIntake.generating')
+							: m('org.emailIntake.generate')}
+					</button>
+				{:else}
+					<p class="intake-address-label">{m('org.emailIntake.addressLabel')}</p>
+					<div class="intake-address-row">
+						<code class="intake-address mono" data-testid="email-intake-address"
+							>{intakeAddress}</code
+						>
+						<button
+							type="button"
+							class="btn-save-section"
+							aria-label={m('org.emailIntake.copyAria')}
+							onclick={copyIntakeAddress}
+						>
+							{intakeCopied ? m('org.emailIntake.copied') : m('org.emailIntake.copy')}
+						</button>
+					</div>
+					<p class="card-hint">{m('org.emailIntake.secretHint')}</p>
+
+					{#if confirmRotateIntake}
+						<p class="intake-rotate-warning" role="alert" data-testid="email-intake-rotate-warning">
+							{m('org.emailIntake.rotateWarning')}
+						</p>
+					{/if}
+					<span class="intake-rotate">
+						<button
+							type="button"
+							class="btn-remove-domain"
+							class:armed={confirmRotateIntake}
+							disabled={rotatingIntake}
+							aria-label={m('org.emailIntake.rotateAria')}
+							onclick={rotateIntakeAddress}
+						>
+							{rotatingIntake
+								? m('org.emailIntake.rotating')
+								: confirmRotateIntake
+									? m('org.emailIntake.rotateConfirm')
+									: m('org.emailIntake.rotate')}
+						</button>
+					</span>
 				{/if}
 			</section>
 
@@ -2205,18 +2488,107 @@
 					<span class="plan-date">{m('org.plan.created', { date: formatDate(org.created_at, '—', { month: 'long', day: 'numeric', year: 'numeric' }) })}</span>
 				</div>
 			</section>
-		</div>
+		</fieldset>
 	{:else}
 		<div class="loading">{m('org.loading')}</div>
 	{/if}
 </PageHeader>
 
+<!-- The freshly-rotated address, through the same one-time reveal an API-key
+     mint and a webhook secret rotation use. The value is re-readable from the
+     panel above, so the copy says what is actually irreversible — the OLD
+     address is dead — instead of the "shown once" warning those two carry. -->
+<SecretReveal
+	open={rotatedIntakeAddress !== null}
+	ariaLabel={m('org.emailIntake.rotated.aria')}
+	heading={m('org.emailIntake.rotated.heading')}
+	warningStrong={m('org.emailIntake.rotated.warningStrong')}
+	warning={m('org.emailIntake.rotated.warning')}
+	secret={rotatedIntakeAddress ?? ''}
+	testId="email-intake-address-rotated"
+	copyLabel={m('org.emailIntake.copy')}
+	copiedLabel={m('org.emailIntake.copied')}
+	copiedToast={m('org.emailIntake.toast.copied')}
+	copyFailedToast={m('org.emailIntake.toast.copyFailed')}
+	doneLabel={m('org.emailIntake.rotated.done')}
+	onclose={() => (rotatedIntakeAddress = null)}
+/>
+
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
+	/* A <fieldset> for the read-only mode's native `disabled` cascade — the UA
+	   border/padding/margin have to be reset so it lays out exactly as the
+	   <div> it replaced. `min-width: 0` stops the fieldset's default
+	   min-content sizing forcing the page wider than its container. */
 	.sections {
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
+		border: 0;
+		padding: 0;
+		margin: 0;
+		min-width: 0;
+	}
+
+	/* Non-admins get the page read-only rather than a form whose every Save
+	   403s. Informational, not an error — the muted tint, not danger. */
+	.readonly-banner {
+		margin: 0 0 16px;
+		padding: 10px 12px;
+		border-radius: 6px;
+		font-size: 0.85rem;
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
+	}
+
+	.intake-address-label {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin: 0 0 6px;
+	}
+
+	.intake-address-row {
+		display: flex;
+		align-items: stretch;
+		gap: 8px;
+		margin-bottom: 12px;
+	}
+
+	.intake-address {
+		flex: 1;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 8px 12px;
+		font-size: 0.9rem;
+		word-break: break-all;
+		/* One click selects the whole address — it is copied by hand whenever
+		   the clipboard API is unavailable. */
+		user-select: all;
+	}
+
+	/* The armed rotate's explanation. Tinted-badge recipe: the -tint
+	   background with its matching -on-tint text, never the base token. */
+	.intake-rotate-warning {
+		margin: 0 0 10px;
+		padding: 10px 12px;
+		border-radius: 6px;
+		font-size: 0.82rem;
+		background: var(--warning-tint);
+		color: var(--warning-on-tint);
+	}
+
+	/* "This deployment has no intake domain" — a standing fact about the
+	   install, not something the reader did wrong. */
+	.intake-unavailable {
+		margin: 0;
+		padding: 10px 12px;
+		border-radius: 6px;
+		font-size: 0.82rem;
+		background: var(--muted-tint);
+		color: var(--muted-on-tint);
 	}
 
 	.card {

@@ -29,9 +29,9 @@ const _summary = {
   'queue_count': 2,
 };
 
-http.Response _json(Object body) => http.Response(
+http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
-      200,
+      status,
       headers: {'content-type': 'application/json'},
     );
 
@@ -237,6 +237,51 @@ void main() {
 
       expect(executeCalls, 1);
       expect(message, contains('executed'));
+    });
+
+    test('approveRun posts to /approve and returns the message', () async {
+      final approvePaths = <String>[];
+      ApiClient().debugConfigure(
+        client: makeClient(
+          onPost: (req) {
+            if (req.url.path.endsWith('/approve')) {
+              approvePaths.add(req.url.path);
+              return _json({
+                'id': 'run1',
+                'status': 'draft',
+                'cfo_approved_by': 'u1',
+                'cfo_approved_at': '2026-01-11T09:00:00',
+                'message': 'Run approved by CFO',
+              });
+            }
+            return _json({'items': [], 'total': 0});
+          },
+        ),
+      );
+
+      final message = await store.approveRun('run1');
+
+      expect(approvePaths, ['/api/payments/runs/run1/approve']);
+      expect(message, 'Run approved by CFO');
+    });
+
+    test('approveRun surfaces the server sentence on a refusal', () async {
+      ApiClient().debugConfigure(
+        client: makeClient(
+          onPost: (req) {
+            if (req.url.path.endsWith('/approve')) {
+              return _json(
+                {'detail': 'Run is already CFO-approved'},
+                403,
+              );
+            }
+            return _json({'items': [], 'total': 0});
+          },
+        ),
+      );
+
+      expect(await store.approveRun('run1'), isNull);
+      expect(store.error, 'Run is already CFO-approved');
     });
 
     test('cancelRun posts to /cancel and returns the message', () async {

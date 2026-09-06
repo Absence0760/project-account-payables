@@ -59,9 +59,14 @@ A UBL 2.1 or UN/CEFACT CII XML attachment is parsed deterministically by the
 
 ### Admin (JWT + `admin` role)
 
-- `GET /api/organization/email-intake` — current address + enabled flag
+- `GET /api/organization/email-intake` — `{address, enabled}`. `address` is
+  `null` whenever no address can be rendered — see "Two shapes of no address"
+  under "The UI" below.
 - `POST /api/organization/email-intake/rotate-token` — invalidates the
-  old address immediately and returns the new one
+  old address immediately and returns `{address}`. It is also the *only*
+  writer of the token, so it doubles as the first-time provisioning call.
+
+Both are surfaced in the product — see "The UI".
 
 ## What you (the founder) need to do
 
@@ -140,23 +145,92 @@ accept anything (logged as a warning).
 
 ### 5. Provision tokens for each tenant
 
-On tenant signup, call `provision_intake_token(org)` as part of the
-welcome flow. For existing tenants, an admin can hit
-`POST /api/organization/email-intake/rotate-token` to mint one.
+**Nothing provisions a token automatically** —
+`provision_intake_token(org)` has exactly one caller,
+`POST /api/organization/email-intake/rotate-token`. Signup does not run
+it, so every tenant starts with no intake address at all. Calling it as
+part of the welcome flow would change that; until then, minting the
+first address is an admin action taken in the product (the panel labels
+it **Create intake address**, because creating one invalidates nothing).
 
-The tenant's admin sees the address in Organization Settings and tells
-their vendors:
+The tenant's admin reads the address off the **Email Intake** panel in
+Organization Settings and tells their vendors:
 > "Send invoices to `invoices+a1b2c3d4@ap.feohledger.com`."
 
 ### 6. Tell the tenant their address is sensitive
 
 The token is a bearer secret. Anyone who knows it can drop PDFs into
-that tenant's AP queue. Rotating the token via the admin endpoint
-invalidates the old address instantly.
+that tenant's AP queue. Rotating the token invalidates the old address
+instantly — that is the containment control for a leak, and it is
+reachable from the same panel.
 
 Good practice: rotate the token annually, and immediately after a
 suspected leak (e.g. a vendor forwards our intake email to someone
 outside the approved recipient list).
+
+## The UI
+
+`/organization` → the **Email Intake** panel
+(`frontend/src/routes/organization/+page.svelte`, over
+`frontend/src/lib/api/emailIntake.ts`). It is the only place either admin
+endpoint is called from; before it, the whole inbound channel was
+undiscoverable and a leaked token could not be rotated from the product
+at all.
+
+The panel renders the address in a monospace block with a copy control,
+says plainly that it is a bearer secret, and offers **Rotate address**
+as an **armed two-click**: the first click only arms it and reveals the
+consequence ("the current address stops accepting email the moment you
+confirm — anything a vendor sends to it afterwards is dropped, with no
+bounce and no invoice"); the second commits, and the replacement is shown
+through the shared `ui/SecretReveal.svelte` with a copy button. That
+dialog's warning is about the OLD address dying, not about the new value
+being unrecoverable — unlike an API key, this address is re-readable from
+the panel, and the reveal must not claim otherwise. Clicking anywhere
+outside the control un-arms it.
+
+`/organization` is **read-only for a non-admin**: every panel sits inside
+one disabled `<fieldset>` under an explanatory banner. Every mutating
+endpoint behind that page is already `require_roles(ROLE_ADMIN)` and the
+server remains the authority; what was missing was any acknowledgement of
+it client-side, so a clerk got a fully editable form whose every Save
+403'd. `GET /api/organization/email-intake` is admin-only too, so the
+panel says so for a non-admin rather than firing a request that 403s and
+rendering the failure as if something were broken.
+
+### Two shapes of "no address", and why the UI asks before it tells
+
+`GET` answers `address: null` in two different situations, and the
+payload alone cannot tell them apart:
+
+1. `FEOH_EMAIL_INTAKE_DOMAIN` is unset — `intake_address_for` returns
+   `None` before it ever looks at the token, so the whole channel is off
+   for this deployment. This is the committed default, so it is what a
+   fresh clone sees.
+2. This org has no token yet (see §5 — nothing mints one for you).
+
+`enabled` separates them, but only *after* a token exists: provisioning
+is what sets it, so `enabled: true` with a null `address` can only mean
+the platform has no intake domain. Before that the honest answer is "not
+known yet". The panel therefore:
+
+- offers **Create intake address** (non-destructive) in the ambiguous
+  state, which is also how it finds out;
+- renders a standing explanation naming `FEOH_EMAIL_INTAKE_DOMAIN` and
+  the MX step once the server has *proven* the domain is missing, with
+  **no rotate control at all** — another token would still address
+  nothing.
+
+The durable fix is for `GET` to report whether the platform intake domain
+is configured, separately from whether this org has a token; then the
+disabled-feature state would be knowable on the first read instead of
+costing a throwaway token to establish.
+
+E2E: `frontend/tests-e2e/organization/email-intake.spec.ts`. The
+disabled-feature and non-admin cases run against the real backend; the
+configured-deployment states are replayed through `page.route`, because
+the intake domain is a backend env var read at import time and no test
+can turn it on.
 
 ## Local testing
 

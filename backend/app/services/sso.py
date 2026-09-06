@@ -24,6 +24,7 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -32,9 +33,12 @@ import httpx
 from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwk import KeySet
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.redis import get_redis
+from app.schemas.organization import looks_like_http_url
+from app.tenant import resolve_tenant_slug_by_custom_domain
 from app.utils.url_safety import UnsafeUrlError, assert_public_url_async
 
 logger = logging.getLogger(__name__)
@@ -107,6 +111,44 @@ def is_sso_only(org_settings: dict | None) -> bool:
         return False
     sso = org_settings.get("sso") or {}
     return bool(sso.get("enabled") and sso.get("sso_only"))
+
+
+async def resolve_sso_tenant_slug(
+    slug: str | None,
+    host: str | None,
+    db: AsyncSession,
+) -> str | None:
+    """Which tenant is this public SSO entry-point request for?
+
+    Two sources, in order:
+
+    1. an explicit ``?slug=`` — the platform-subdomain path, unchanged; and
+    2. the request ``Host``, matched against the per-org
+       ``settings.brand.custom_domains`` list.
+
+    The second exists because a white-label tenant served on its own vanity
+    hostname has no slug to put in the query string: the SPA there sends no
+    ``X-Tenant-Slug`` at all (that header is what SUPPRESSES the backend's
+    ``Host`` lookup), so before this the SSO and SAML buttons had to be hidden
+    on a vanity host entirely.
+
+    The mapping is the SAME resolver ``app.tenant.get_tenant_slug`` uses —
+    imported, never re-implemented — so a hostname can never resolve one way
+    for a page load and another way for a login. Returns ``None`` when nothing
+    resolves; the caller turns that into the *same* response an unknown
+    ``?slug=`` already produces, so this adds no new distinguishable outcome.
+
+    Unlike the authenticated paths there is no JWT to cross-check here (these
+    endpoints are pre-authentication by definition). That is safe because a
+    forged ``Host`` can only select a tenant that has *registered* that exact
+    hostname — the attacker picks which tenant's own IdP they are bounced to,
+    which is the same choice ``?slug=`` already gives anyone, and the
+    handshake's state/nonce (OIDC) or RelayState (SAML) is minted against that
+    tenant and consumed against it.
+    """
+    if slug:
+        return slug
+    return await resolve_tenant_slug_by_custom_domain(db, host)
 
 
 def _assert_sso_url_shape(url: str, *, what: str) -> None:
@@ -223,18 +265,85 @@ def resolve_sso_config(org_settings: dict | None) -> ResolvedSSOConfig | None:
     )
 
 
-def redirect_uri(tenant_slug: str) -> str:
-    """Build the per-tenant callback URL.
+def _brand_sso_callback_base(org_settings: Mapping[str, Any] | None) -> str:
+    """The per-org SSO callback base URL override, or ``""`` when unset.
+
+    Lives on ``settings.brand.sso_callback_base_url`` (managed by
+    ``PUT /api/organization/branding``). Re-validated here on the way out even
+    though the branding endpoint validates on the way in — a row edited
+    straight in the database has never been through the API, and this value
+    becomes a 302 target and an OIDC ``redirect_uri``. Same shape rule the
+    branding schema enforces, imported rather than restated.
+
+    Anything unusable (missing, wrong type, not an http(s) URL) reads as
+    "unset", so a malformed row degrades to the global template rather than
+    breaking every SSO login for that tenant.
+    """
+    if not isinstance(org_settings, Mapping):
+        return ""
+    brand = org_settings.get("brand")
+    if not isinstance(brand, Mapping):
+        return ""
+    raw = brand.get("sso_callback_base_url")
+    if not isinstance(raw, str):
+        return ""
+    candidate = raw.strip()
+    if not candidate or not looks_like_http_url(candidate):
+        return ""
+    return candidate
+
+
+def sso_callback_base(tenant_slug: str, org_settings: Mapping[str, Any] | None = None) -> str:
+    """Base URL (no trailing slash) that this tenant's SSO callbacks land on.
+
+    Two sources, in order:
+
+    1. the per-org opt-in override ``settings.brand.sso_callback_base_url``, and
+    2. the global ``FEOH_TENANT_URL_TEMPLATE``.
+
+    ``{slug}`` is substituted when present and the value used verbatim when it
+    is not — the same rule ``app/utils/tenant_urls.tenant_base_url`` applies,
+    because a vanity host is a complete base URL with no slug in it while the
+    global template is slug-shaped by construction.
+
+    **Why this is not just a call to that resolver.** The two values built from
+    this base — the OIDC ``redirect_uri`` and the SAML bridge URL — are
+    *registered at the customer's IdP*. Reading the per-org
+    ``tenant_url_template`` (which an admin sets to fix invite and password-reset
+    links) would silently re-point them and break every SSO login until the
+    operator re-registered the app. So SSO gets its own, separately opt-in
+    override; unset means the global template, byte-for-byte as before. See
+    ``docs/decisions.md`` §91 and ``docs/founder-runbooks/custom-domain-provisioning.md``.
+
+    The value reaches a 302/303 ``Location`` (the SAML ACS bridge redirect), so
+    it is admin-only to write and re-validated to an http(s) URL here. That is
+    not a new trust grant: a tenant admin already controls ``sso.idp_sso_url``,
+    which ``saml_login`` 302s to directly, and the handoff code carried to this
+    base is single-use and scoped to that same tenant's own user.
+    """
+    base = _brand_sso_callback_base(org_settings)
+    if not base:
+        base = settings.tenant_url_template or "http://{slug}.localhost:7777"
+    if "{slug}" in base:
+        base = base.replace("{slug}", tenant_slug)
+    return base.rstrip("/")
+
+
+def redirect_uri(tenant_slug: str, org_settings: Mapping[str, Any] | None = None) -> str:
+    """Build the per-tenant OIDC callback URL.
 
     Each tenant registers their Okta/Entra app with *their own* subdomain as
     the redirect URI — e.g. acme.app.com for tenant `acme`. That way the
     callback lands on the tenant origin and our localStorage JWT works
-    without cross-origin hops. The tenant URL template in settings is the
-    single source of truth for what that URL looks like.
+    without cross-origin hops. `sso_callback_base` is the single source of
+    truth for what that URL looks like: the global tenant URL template, or the
+    tenant's own opt-in `settings.brand.sso_callback_base_url` once the
+    operator has re-registered the app at the IdP.
+
+    `org_settings` is optional so the value is identical to the pre-override
+    behaviour when a caller has no org in hand; every live call site passes it.
     """
-    template = settings.tenant_url_template or "http://{slug}.localhost:7777"
-    base = template.replace("{slug}", tenant_slug).rstrip("/")
-    return f"{base}{settings.sso_redirect_path}"
+    return f"{sso_callback_base(tenant_slug, org_settings)}{settings.sso_redirect_path}"
 
 
 # ---------------------------------------------------------------------------
@@ -475,13 +584,15 @@ async def consume_saml_handoff(code: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
-def saml_bridge_url(tenant_slug: str) -> str:
+def saml_bridge_url(tenant_slug: str, org_settings: Mapping[str, Any] | None = None) -> str:
     """Per-tenant SPA bridge route the ACS 303-redirects to after minting the
     one-time handoff code. Lands on the tenant origin so the stored JWT works
-    without a cross-origin hop, exactly like the OIDC callback page."""
-    template = settings.tenant_url_template or "http://{slug}.localhost:7777"
-    base = template.replace("{slug}", tenant_slug).rstrip("/")
-    return f"{base}{settings.saml_acs_path}"
+    without a cross-origin hop, exactly like the OIDC callback page.
+
+    Shares `sso_callback_base` with the OIDC `redirect_uri`, so a tenant that
+    has completed the IdP re-registration gets BOTH protocols landing on its
+    own hostname from the one opt-in setting."""
+    return f"{sso_callback_base(tenant_slug, org_settings)}{settings.saml_acs_path}"
 
 
 # ---------------------------------------------------------------------------
@@ -509,11 +620,14 @@ async def exchange_code_for_tokens(
     client_secret: str,
     code: str,
     tenant_slug: str,
+    org_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """POST to the token endpoint with the auth code. Returns the token bundle.
 
     The redirect_uri here MUST exactly match the one sent during authorize —
     OIDC token exchange validates it as a defence against code-injection attacks.
+    That is why `org_settings` is threaded in: the per-org callback override
+    changes the value, so the two legs have to read the same source.
 
     The endpoint itself is pinned to the discovery document's own issuer host and
     SSRF-guarded before the POST — this request carries the client secret and the
@@ -527,7 +641,7 @@ async def exchange_code_for_tokens(
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": redirect_uri(tenant_slug),
+                "redirect_uri": redirect_uri(tenant_slug, org_settings),
                 "client_id": client_id,
                 "client_secret": client_secret,
             },

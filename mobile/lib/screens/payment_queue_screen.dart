@@ -413,6 +413,14 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
                 child: PopupMenuButton<String>(
                   onSelected: (v) => _runMenuAction(run, v),
                   itemBuilder: (_) => [
+                    // CFO sign-off. Offered only to the one role the backend
+                    // accepts (`require_roles(ROLE_CFO)`) and only while the
+                    // run is actually waiting on it — otherwise the person
+                    // reading "needs CFO approval" is the person who can't
+                    // act on it, which is exactly the gap this closes.
+                    if (_canApproveRun(run))
+                      PopupMenuItem(
+                          value: 'approve', child: Text(l.payRunActionApprove)),
                     PopupMenuItem(
                         value: 'execute', child: Text(l.payRunActionExecute)),
                     PopupMenuItem(
@@ -425,9 +433,37 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     );
   }
 
+  /// Whether the signed-in user can sign this run off. Mirrors the backend
+  /// `require_roles(ROLE_CFO)` on `POST /api/payments/runs/{id}/approve` plus
+  /// its two state guards (draft — already implied by [PaymentRun.isExecutable]
+  /// at the call site — requires sign-off, not yet signed off).
+  bool _canApproveRun(PaymentRun run) =>
+      AuthStore.instance.canApprovePaymentRun &&
+      run.requiresCfoApproval &&
+      !run.cfoApproved;
+
   Future<void> _runMenuAction(PaymentRun run, String action) async {
     final l = AppLocalizations.of(context);
-    if (action == 'execute') {
+    if (action == 'approve') {
+      // Authorizing a payment run is a money-path decision, so it confirms
+      // first and the dialog names the run and its total.
+      final confirmed = await _confirm(
+        l.payRunApproveTitle,
+        l.payRunApproveBody(
+          _dateFormat.format(run.createdAt),
+          run.paymentCount,
+          _money(run.totalAmountDisplay),
+        ),
+        confirmLabel: l.payRunApproveConfirm,
+      );
+      if (confirmed != true) return;
+      final message = await PaymentQueueStore.instance.approveRun(run.id);
+      if (!mounted) return;
+      final text = message ??
+          l.payRunApproveFailed('${PaymentQueueStore.instance.error}');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+      A11y.announce(context, text);
+    } else if (action == 'execute') {
       // CFO approval is a server-side gate; surface it before attempting.
       if (run.requiresCfoApproval && !run.cfoApproved) {
         final text = l.payRunCfoBlocked;
@@ -457,7 +493,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     }
   }
 
-  Future<bool?> _confirm(String title, String body) {
+  Future<bool?> _confirm(String title, String body, {String? confirmLabel}) {
     final l = AppLocalizations.of(context);
     return showDialog<bool>(
       context: context,
@@ -471,7 +507,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
           ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(l.payConfirmExecute),
+            child: Text(confirmLabel ?? l.payConfirmExecute),
           ),
         ],
       ),

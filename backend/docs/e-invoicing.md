@@ -207,15 +207,59 @@ so a real document *can* pass:
   the invoice's single `tax_rate` (an `InvoiceLineItem` has neither column, and
   an `Invoice` carries exactly one rate, so by construction every line is at it).
 
+### The 422 body is structured, not a flattened string
+
+Both refusal paths — `GET /api/invoices/{id}/einvoice` and `POST
+/api/invoices/{id}/peppol-send` — return the errors as a **list**, in FastAPI's
+own validation-error item shape, built by
+`e_invoice.validate.error_payload` (`EInvoiceValidationError.payload` is the
+same thing off an exception):
+
+```json
+{
+  "detail": [
+    {"loc": ["seller.tax_id"], "type": "malformed",
+     "msg": "Seller tax id format is invalid for country"},
+    {"loc": ["tax_inclusive_amount"], "type": "BR-CO-15",
+     "msg": "BR-CO-15: Tax-inclusive total must equal tax-exclusive plus VAT"}
+  ]
+}
+```
+
+- **`loc`** — the dotted field path, as a single element (`taxes[0].category`).
+- **`type`** — `FieldError.code`: a generic kind (`missing` / `malformed` /
+  `inconsistent` / `implausible`) from the structural + tax passes, or the
+  EN 16931 / PEPPOL **rule id** from the conformance pass.
+- **`msg`** — the PII-free sentence. When the code IS a rule id it is folded
+  into the message too, because a client that flattens the list to one string
+  keeps only `loc` + `msg` — and the rule id is exactly what a receiving Access
+  Point's validator names, so it must not be the half that gets dropped.
+
+Why this shape and not the old `"field: code; field: code"` join: `FieldError`
+has always carried a human `message`, and `__str__` threw it away, so every
+client had to keep its own code→prose table to say anything actionable. The
+frontend had one; it is deleted, and the modal renders the server's own
+sentence. The shape is FastAPI's because the app's shared error renderer
+(`frontend/src/lib/utils/apiError.ts::formatApiDetail`) already understands it,
+so nothing on the client special-cases this endpoint.
+
+`str(exc)` is **unchanged** and still the `"field: code"` join — it is the
+LOGGING contract (`services/peppol_receive`, the `einvoice` extraction adapter),
+and moving the HTTP body must not move the logs.
+
+PII invariant is unaffected and tested (`tests/test_e_invoice_error_payload.py`):
+field path, code and message name the FIELD, never its value.
+
+
 #### What `bis3_conformance_errors` evaluates
 
 Three layers, all pure, all over the same normalized model. Every `FieldError`
 added by layers 2 and 3 carries its **rule id as the `code`**, so the PII-free
 `"field: code"` join that `EInvoiceValidationError` renders — and the 422 body
-the export and PEPPOL-send routes return — names the rule a receiver's own
-validator would name (`tax_inclusive_amount: BR-CO-15`). Layer 1 keeps
-`code == "missing"`, which is its established contract; its *messages* name the
-rule instead.
+the export and PEPPOL-send routes return (see § The 422 body below) — names the
+rule a receiver's own validator would name (`tax_inclusive_amount: BR-CO-15`).
+Layer 1 keeps `code == "missing"`, which is its established contract; its
+*messages* name the rule instead.
 
 **1 — mandatory elements** (`bis3.py`). BR-02/03/05 (number, issue date,
 currency), BR-06/07 (party names), PEPPOL-EN16931-R010/R020 (both electronic
@@ -366,7 +410,7 @@ end to end.
 
 | Route | Auth | Behaviour |
 |-------|------|-----------|
-| `GET /api/invoices/{id}/einvoice?format=ubl` | employee JWT + `require_roles(admin, ap_manager, cfo, ap_clerk)`, `get_tenant_db` + `get_tenant` | Maps the tenant invoice → doc, resolves `BuyerIdentity` from `org.settings["company"]` (+ `Entity.name` override when `invoice.entity_id` is set), **asserts tax-valid (422 on failure** — an AP user must not emit a non-compliant invoice; body is the PII-free `field: code` join), then returns the e-invoice as an `application/xml` attachment. Unknown invoice → 404. `format` selects the dialect: `ubl` (default) or `cii` (UN/CEFACT CII) take the **built-in** path (shared normalized model + the same `assert_valid` tax guard, only the generator differs); `fatturapa` (IT) / `cfdi` (MX) / `nfe` (BR) / `dian` (CO) select a **national format** via the country-format registry (see below); an unknown token → 400. The `ubl` download is `einvoice-<n>.xml`; every other dialect is format-tagged (`einvoice-<n>-<format>.xml`) so they don't collide. National exports validate via the format's own `validate(doc)` (422 PII-free on failure). |
+| `GET /api/invoices/{id}/einvoice?format=ubl` | employee JWT + `require_roles(admin, ap_manager, cfo, ap_clerk)`, `get_tenant_db` + `get_tenant` | Maps the tenant invoice → doc, resolves `BuyerIdentity` from `org.settings["company"]` (+ `Entity.name` override when `invoice.entity_id` is set), **asserts tax-valid (422 on failure** — an AP user must not emit a non-compliant invoice; body is the PII-free STRUCTURED error list, see § The 422 body), then returns the e-invoice as an `application/xml` attachment. Unknown invoice → 404. `format` selects the dialect: `ubl` (default) or `cii` (UN/CEFACT CII) take the **built-in** path (shared normalized model + the same `assert_valid` tax guard, only the generator differs); `fatturapa` (IT) / `cfdi` (MX) / `nfe` (BR) / `dian` (CO) select a **national format** via the country-format registry (see below); an unknown token → 400. The `ubl` download is `einvoice-<n>.xml`; every other dialect is format-tagged (`einvoice-<n>-<format>.xml`) so they don't collide. National exports validate via the format's own `validate(doc)` (422 PII-free on failure). |
 | `GET /portal/invoices/{id}/einvoice` | vendor JWT (`get_current_vendor_user`) | **Vendor-scoped**: the query is `WHERE Invoice.id == id AND Invoice.vendor_id == vu.vendor_id` — a foreign or unknown invoice returns 404 (never a foreign document). Resolves the buyer `Organization` via the injected control session (`get_control_db`) by `invoice.organization_id` (same pattern as the remittance route). Does **not** 422 the supplier on a tax soft-warning — the UBL is always returned and any validation issue is logged field-only, never surfaced to the vendor. |
 
 ### Country tax validation (`tax_rules.py`)

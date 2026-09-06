@@ -849,6 +849,31 @@ class AppLocalizationsDe extends AppLocalizations {
   String get payRunActionCancel => 'Stornieren';
 
   @override
+  String get payRunActionApprove => 'Als CFO freigeben';
+
+  @override
+  String get payRunApproveTitle => 'Zahlungslauf freigeben?';
+
+  @override
+  String payRunApproveBody(String date, int count, String amount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Zahlungen',
+      one: '$count Zahlung',
+    );
+    return 'Freigabe des am $date erstellten Laufs — $_temp0 über insgesamt $amount. Dies genehmigt die Ausführung; es wird kein Geld bewegt.';
+  }
+
+  @override
+  String get payRunApproveConfirm => 'Freigeben';
+
+  @override
+  String payRunApproveFailed(String error) {
+    return 'Freigabe fehlgeschlagen: $error';
+  }
+
+  @override
   String get payRunCfoBlocked =>
       'Dieser Lauf benötigt eine CFO-Freigabe, bevor er ausgeführt werden kann.';
 

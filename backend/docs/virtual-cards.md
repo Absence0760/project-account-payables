@@ -178,6 +178,31 @@ money-state transition still lands.
 - **Resend** — resend card details email
 - **View Details** — card number (masked), expiry, linked invoice, charge history
 
+**Rebates (below the card list)** — the `pending` → `confirmed` → `paid_out`
+lifecycle table. See § Rebate status lifecycle → The UI.
+
+> **What actually ships on the `/payments` Cards tab today**: the dashboard
+> KPIs, the card list, **View Details** (the PAN reveal — `GET /api/cards/
+> {id}/details`, `tests-e2e/payments/card-details-reveal.spec.ts`) and the
+> **Rebates** table with its two transitions. *Send to Vendor*, *Resend* and
+> *Cancel* above are design sketch — the frontend calls neither
+> `POST /api/cards/generate` nor `POST /api/cards/{id}/cancel`.
+>
+> **Cancel is deliberately not wired**, and that is not the same gap as the
+> rebate lifecycle was. Every card the app itself can mint comes from the
+> payment run's `virtual_card` leg and therefore has a `Payment` row, and
+> `POST /api/payments/{id}/void` — already on the History tab — is the
+> sanctioned reversal: it cancels the card provider-first *and* reverses the
+> books in one operation (§ Cancel → "Voiding a card payment cancels the card
+> too"). A standalone Cancel button would kill the card while leaving that
+> `Payment` row and its invoice claiming money is in flight on a rail that is
+> now dead — two controls that both close a card but leave the ledger in
+> different states. The residual gap is narrower and is a *visibility* one: the
+> void's card leg is best-effort and its `card_outcome` lands only on the
+> `payment.voided` audit row, never in the response, so an operator cannot tell
+> from the app whether the card was actually closed. Surfacing `card_outcome`
+> on the void response is the durable fix, not a second cancel path.
+
 ### Card Generation in Payment Run
 
 When creating a payment run:
@@ -485,8 +510,53 @@ confirmation/payout when it happens (e.g. reconciling against the processor's
 statement): `confirm` requires `pending`, `mark-paid` requires `confirmed` — a
 rebate can't skip straight to `paid_out`. Both 404 on an unknown rebate, 409
 on a status that isn't the required predecessor, and write an append-only
-`card_rebate.confirmed` / `card_rebate.paid_out` audit row. No frontend surface
-yet — API-only, mirroring `/bank-reconciliation`.
+`card_rebate.confirmed` / `card_rebate.paid_out` audit row.
+
+#### The UI
+
+The `/payments` **Cards** tab is the surface (`frontend/src/routes/payments/
++page.svelte`, over `$lib/api/cards.ts` + `$lib/types/cardRebate.ts`). It
+renders a **Rebates** table — period, card, rate, amount, status — above the
+cards table, and offers **exactly one** transition per row: `Confirm` on a
+`pending` rebate, `Mark paid out` on a `confirmed` one, and nothing at all on
+`paid_out`. The offered step is derived from the row's status
+(`nextRebateTransition`), so the UI never proposes a transition this endpoint
+would 409 — but the backend stays the authority, and a 409 from a row that went
+stale under a concurrent update renders **persistently** in the dialog
+(`[data-testid="rebate-error"]`) rather than fading in a toast.
+
+Both actions are confirm-then-act through the same shared `Modal` the
+compliance-hold and settlement-accept controls use — but deliberately **not**
+armed or danger-tinted, and the dialog copy leads with the fact that **neither
+transition moves money**: it records what the processor already did on its own
+statement. `Mark paid out` is the one control here that is easy to misread as a
+button that pays someone, so it says in the dialog that the payout has *already
+landed* (e.g. as a line on the org's own bank statement) and that this is a
+bookkeeping record of something that happened outside the app.
+
+Read and write share ONE role gate (`admin` / `ap_manager` / `cfo`) — there is
+no role that can see the table without being able to act on it — so the UI
+mirrors it with `auth.hasAnyRole(...)`. `/payments` is nonetheless reachable by
+a custom role holding only `payment.execute` / `payment.void` (see
+`frontend/src/lib/nav.ts`), which is why the check is still made client-side.
+
+**A rebate row carries no currency, and the UI refuses to invent one.**
+`card_rebates` has no currency column and `RebateResponse` reports none — a
+rebate's currency is knowable only through the card that earned it, which is
+why `list_rebates` joins `VirtualCard` to denominate the total. The envelope's
+`currency` + `excluded_rebate_count` are computed over the same filter as
+`items`, so a **zero** exclusion count proves every listed row is in `currency`
+and the row amount renders through the shared money formatter with that code. A
+**non-zero** count means at least one row is not, and nothing on the wire says
+which: those lists render the exact figure the API sent with **no currency
+code**, plus a standing advisory naming the count
+(`rebateAmountCurrency` in `frontend/src/lib/types/cardRebate.ts`, unit-tested
+in `cardRebate.test.ts`). The durable fix is a `currency` field on
+`RebateResponse`, resolved from the joined card.
+
+E2E: `frontend/tests-e2e/payments/rebate-lifecycle.spec.ts` — both transitions,
+the terminal row, the persistent 409, the mixed-currency rendering, the hidden
+control for a clerk, and the real backend's 403 on all three routes.
 
 ### Dashboard "Rebates Earned" is REALIZED money only
 
@@ -501,7 +571,11 @@ surfaced alongside on `rebates_this_month_by_status` /
 computed in the same query via `case()` rather than a second round trip. The
 `/payments` Cards tab renders the realized headline plus a muted "+{amount}
 pending confirmation" hint whenever the pending bucket is non-zero, so a large
-unconfirmed balance is visible rather than silently inflating the headline.
+unconfirmed balance is visible rather than silently inflating the headline —
+and the Rebates table below it is where that pending balance is actually
+advanced (§ Rebate status lifecycle → The UI). Each KPI is denominated in the
+`currency` the response itself declares, not the client's own resolution of the
+org's reporting currency.
 `tests/test_card_dashboard.py` pins the split with a mix of all three
 statuses.
 

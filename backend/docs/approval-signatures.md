@@ -145,6 +145,45 @@ exact `amount`:
   `400`. The sweep is itself audited (`audit.viewed`, `details` = scope +
   counts, PII-free) and reads only the caller's own tenant DB.
 
+## Running the control test — the `/audit` console
+
+Both verification endpoints are reachable from the SOX auditor console
+(`frontend/src/routes/audit/+page.svelte`, admin/CFO — the same gate the
+backend applies), in an **Approval-signature verification** panel below the
+export controls. The typed client is
+`frontend/src/lib/api/auditVerification.ts`.
+
+- **Population sweep** — pick a From/To range and press *Verify signatures*.
+  The result renders as five figures: approvals checked, invoices covered,
+  valid, **invalid**, and **unsigned**.
+- **Drill-down** — each finding's invoice is a control that calls the
+  per-invoice endpoint and lists that invoice's approvals one by one, which is
+  what an auditor opens next once the sweep has named the rows.
+
+Three properties of the rendering are load-bearing, not styling:
+
+1. **`invalid` and `unsigned` are never merged into one "problems" number.**
+   They are separate cards with their own qualifying sub-lines, separate badge
+   tones in the findings table (`danger` vs `muted`), and a paragraph stating
+   that they are different claims. Only `invalid` is tinted as an alarm — an
+   unsigned backlog from a key rollout must not read as fraud.
+2. **An unconfigured key is explained, not shown as a wall of red.** When
+   `signing_configured` is false the panel says so in plain words — signing is
+   off in this deployment, so nothing was ever signed and the `unsigned` count
+   is a configuration fact — before any of the counts are read.
+3. **A corrupt row renders.** A finding whose `details` column was overwritten
+   wholesale comes back with no `signed_at`, no actor and possibly no invoice
+   number; the row renders complete with placeholders rather than blanking the
+   table. That row is the direct-DB tamper this control exists to catch, so it
+   has to be the one thing guaranteed to display.
+
+The panel **never fetches on mount and never polls**: both endpoints write an
+`audit.viewed` access row, so a speculative read would put an access event
+nobody asked for into the auditor's own evidence trail. It loads on an explicit
+click only. `frontend/tests-e2e/audit/signature-verification.spec.ts` covers all
+of the above, plus the clerk RBAC refusal (page-level denial and the backend's
+own 403) and a WCAG 2.2 AA axe pass on the rendered findings state.
+
 ## The signing key (`FEOH_APPROVAL_SIGNING_KEY`)
 
 | | |
@@ -161,6 +200,8 @@ it), so rotate deliberately, not casually.
 
 ## Tests
 
+`frontend/tests-e2e/audit/signature-verification.spec.ts` covers the console
+panel (see above). Backend coverage is
 `backend/tests/test_approval_signatures.py`:
 
 - Pure: sign/verify round-trip, tamper detection (amount / actor / timestamp),

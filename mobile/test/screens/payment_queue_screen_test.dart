@@ -362,4 +362,208 @@ void main() {
       expect(find.textContaining('{"detail"'), findsNothing);
     });
   });
+
+  // CFO sign-off on an over-threshold run. The Pay tab has always been visible
+  // to a CFO and has always rendered "This run needs CFO approval before it can
+  // be executed" — but the one person who could clear that message had no
+  // control to do it with, because the app never called `/approve`.
+  group('CFO run approval', () {
+    Future<void> openRunsTab(WidgetTester tester) async {
+      await _pumpUntil(tester, find.text('Runs'));
+      await tester.tap(find.text('Runs'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    Future<void> openRunMenu(WidgetTester tester) async {
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a CFO can sign a pending run off — confirm names the run and '
+        'its total, then POSTs /approve', (tester) async {
+      final approvePaths = <String>[];
+      await loginThen(
+        ['cfo'],
+        _screenClient(
+          queue: [],
+          runs: [_runResponse(requiresCfoApproval: true)],
+          onPost: (req) {
+            if (req.url.path.endsWith('/approve')) {
+              approvePaths.add(req.url.path);
+              return _json({
+                'id': 'run1',
+                'status': 'draft',
+                'cfo_approved_by': 'u1',
+                'cfo_approved_at': '2026-01-11T09:00:00',
+                'message': 'Run approved by CFO',
+              });
+            }
+            return _json({'message': 'ok'});
+          },
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+      await openRunMenu(tester);
+
+      expect(find.text('Approve as CFO'), findsOneWidget);
+      await tester.tap(find.text('Approve as CFO'));
+      await tester.pumpAndSettle();
+
+      // Money-path authorization: confirm-then-act, and the dialog names the
+      // run (created date + payment count) and its total.
+      expect(find.text('Approve payment run?'), findsOneWidget);
+      expect(
+        find.text(
+          'Sign off the run created Jan 10, 2026 — 2 payments totalling '
+          '\$5,000.00. This authorizes execution; it moves no money.',
+        ),
+        findsOneWidget,
+      );
+      expect(approvePaths, isEmpty, reason: 'nothing sent before confirming');
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(approvePaths, ['/api/payments/runs/run1/approve']);
+      expect(find.text('Run approved by CFO'), findsOneWidget);
+    });
+
+    testWidgets('dismissing the confirm dialog sends nothing', (tester) async {
+      var approveCalls = 0;
+      await loginThen(
+        ['cfo'],
+        _screenClient(
+          queue: [],
+          runs: [_runResponse(requiresCfoApproval: true)],
+          onPost: (req) {
+            if (req.url.path.endsWith('/approve')) approveCalls++;
+            return _json({'message': 'ok'});
+          },
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+      await openRunMenu(tester);
+      await tester.tap(find.text('Approve as CFO'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(approveCalls, 0);
+    });
+
+    testWidgets('an ap_manager never sees the sign-off action', (tester) async {
+      await loginThen(
+        ['ap_manager'],
+        _screenClient(
+          queue: [],
+          runs: [_runResponse(requiresCfoApproval: true)],
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+      await openRunMenu(tester);
+
+      expect(find.text('Approve as CFO'), findsNothing);
+      // The other two run actions are unaffected.
+      expect(find.text('Execute'), findsOneWidget);
+      expect(find.text('Cancel'), findsOneWidget);
+    });
+
+    testWidgets('an admin without the cfo role never sees it either',
+        (tester) async {
+      // The backend gate is `require_roles(ROLE_CFO)`, which does NOT
+      // special-case admin — showing the item to an admin would 403 every tap.
+      await loginThen(
+        ['admin'],
+        _screenClient(
+          queue: [],
+          runs: [_runResponse(requiresCfoApproval: true)],
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+      await openRunMenu(tester);
+
+      expect(find.text('Approve as CFO'), findsNothing);
+    });
+
+    testWidgets('an already signed-off run offers no second sign-off',
+        (tester) async {
+      await loginThen(
+        ['cfo'],
+        _screenClient(
+          queue: [],
+          runs: [
+            _runResponse(
+              requiresCfoApproval: true,
+              cfoApprovedAt: '2026-01-11T09:00:00',
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+      await openRunMenu(tester);
+
+      expect(find.text('Approve as CFO'), findsNothing);
+    });
+
+    testWidgets('a run that needs no sign-off offers none', (tester) async {
+      await loginThen(
+        ['cfo'],
+        _screenClient(queue: [], runs: [_runResponse()]),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+      await openRunMenu(tester);
+
+      expect(find.text('Approve as CFO'), findsNothing);
+    });
+
+    testWidgets('a refusal surfaces the server sentence, not raw JSON',
+        (tester) async {
+      await loginThen(
+        ['cfo'],
+        _screenClient(
+          queue: [],
+          runs: [_runResponse(requiresCfoApproval: true)],
+          onPost: (req) {
+            if (req.url.path.endsWith('/approve')) {
+              return _json(
+                {'detail': 'You cannot approve a run you created.'},
+                403,
+              );
+            }
+            return _json({'message': 'ok'});
+          },
+        ),
+      );
+
+      await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+      await openRunsTab(tester);
+      await openRunMenu(tester);
+      await tester.tap(find.text('Approve as CFO'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(
+        find.text('Failed to approve: You cannot approve a run you created.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('{"detail"'), findsNothing);
+    });
+  });
 }

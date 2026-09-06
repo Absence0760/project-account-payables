@@ -5,6 +5,10 @@ Flow:
     2. Browser hits GET /api/auth/sso/authorize?slug=<tenant>.
        Backend fetches the OIDC discovery doc, mints state + nonce in Redis,
        and 302-redirects the browser to the IdP's authorization endpoint.
+       `slug` is OPTIONAL: on a tenant's white-label vanity host there is no
+       slug anywhere in the URL, so the tenant is resolved from the request
+       `Host` against `settings.brand.custom_domains` instead (the same
+       resolver `app/tenant.py` uses).
     3. User authenticates with the IdP; IdP redirects back to our fixed
        callback path (FEOH_PUBLIC_URL + FEOH_SSO_REDIRECT_PATH) with code + state.
     4. Frontend callback page calls POST /api/auth/sso/callback with code+state.
@@ -13,7 +17,11 @@ Flow:
        and returns our own JWT + the tenant slug to redirect to.
 
 The redirect target (frontend /login/sso-callback) is a static path, not
-per-tenant — IdPs only need one redirect URI registered per app.
+per-tenant — IdPs only need one redirect URI registered per app. Its *origin*
+is the global `FEOH_TENANT_URL_TEMPLATE` unless the tenant has opted into
+`settings.brand.sso_callback_base_url`, which is a value registered at the
+customer's IdP and so is never inferred from a vanity host — see
+`services/sso.sso_callback_base` and `docs/decisions.md` §91.
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlencode, urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +57,7 @@ from app.services.sso import (
     is_sso_only,
     redirect_uri,
     resolve_sso_config,
+    resolve_sso_tenant_slug,
     validate_id_token,
 )
 
@@ -92,11 +101,42 @@ async def _fetch_org_by_slug(slug: str, db: AsyncSession) -> Organization:
     return org
 
 
+async def _resolve_org(
+    slug: str | None, host: str | None, db: AsyncSession
+) -> tuple[Organization, str]:
+    """Resolve the tenant for a PUBLIC SSO entry point, by `?slug=` or `Host`.
+
+    A white-label tenant on its own vanity hostname has no slug to send (the
+    SPA deliberately omits `X-Tenant-Slug` there — that header is what
+    suppresses the backend's `Host` lookup), so `slug` is optional and the
+    request `Host` is matched against `settings.brand.custom_domains` through
+    the shared resolver.
+
+    **The failure posture is deliberately unchanged.** A `Host` that resolves
+    to nothing raises the *identical* 404 `_fetch_org_by_slug` already raises
+    for an unknown `?slug=` — same status, same body — so an attacker probing
+    hostnames learns exactly what probing slugs already told them, and nothing
+    here distinguishes "no such tenant" from "SSO is not configured" (that
+    split is the pre-existing 404-vs-400 on the slug path, untouched).
+    """
+    resolved = await resolve_sso_tenant_slug(slug, host, db)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Unknown tenant.")
+    return await _fetch_org_by_slug(resolved, db), resolved
+
+
 @router.get("/config", response_model=SSOConfigPublic)
-async def sso_config(slug: str, db: AsyncSession = Depends(get_control_db)):
+async def sso_config(
+    slug: str | None = None,
+    host: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_control_db),
+):
     """Public endpoint the login page hits to decide whether to render the
-    SSO button. Returns only the non-secret bits."""
-    org = await _fetch_org_by_slug(slug, db)
+    SSO button. Returns only the non-secret bits.
+
+    `slug` is optional: on a tenant's vanity host the SPA has no slug, so the
+    tenant is resolved from the request `Host` instead."""
+    org, _slug = await _resolve_org(slug, host, db)
     try:
         config = resolve_sso_config(org.settings)
     except SSOConfigError:
@@ -109,11 +149,21 @@ async def sso_config(slug: str, db: AsyncSession = Depends(get_control_db)):
 
 
 @router.get("/authorize")
-async def sso_authorize(slug: str, db: AsyncSession = Depends(get_control_db)):
-    """302 the browser to the IdP's authorization endpoint."""
+async def sso_authorize(
+    slug: str | None = None,
+    host: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """302 the browser to the IdP's authorization endpoint.
+
+    `slug` is optional. When it is absent the tenant is resolved from the
+    request `Host` against its registered custom domains — that is what lets
+    the SSO button work at all on a white-label vanity hostname, which has no
+    slug anywhere in the URL. An unresolvable tenant gets the same 404 an
+    unknown slug has always produced (see `_resolve_org`)."""
     from fastapi.responses import RedirectResponse
 
-    org = await _fetch_org_by_slug(slug, db)
+    org, slug = await _resolve_org(slug, host, db)
     config = resolve_sso_config(org.settings)
     if config is None:
         raise HTTPException(status_code=400, detail="SSO is not configured for this tenant.")
@@ -161,7 +211,7 @@ async def sso_authorize(slug: str, db: AsyncSession = Depends(get_control_db)):
         {
             "response_type": "code",
             "client_id": config.client_id,
-            "redirect_uri": redirect_uri(slug),
+            "redirect_uri": redirect_uri(slug, org.settings),
             "scope": "openid email profile",
             "state": state,
             "nonce": nonce,
@@ -197,7 +247,12 @@ async def sso_callback(
 
     try:
         tokens = await exchange_code_for_tokens(
-            discovery, config.client_id, config.client_secret, body.code, tenant_slug
+            discovery,
+            config.client_id,
+            config.client_secret,
+            body.code,
+            tenant_slug,
+            org.settings,
         )
     except SSOValidationError as exc:
         await dispatch_auth_audit(

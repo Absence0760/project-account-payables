@@ -848,6 +848,31 @@ class AppLocalizationsPt extends AppLocalizations {
   String get payRunActionCancel => 'Cancelar';
 
   @override
+  String get payRunActionApprove => 'Aprovar como CFO';
+
+  @override
+  String get payRunApproveTitle => 'Aprovar o lote de pagamento?';
+
+  @override
+  String payRunApproveBody(String date, int count, String amount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count pagamentos',
+      one: '$count pagamento',
+    );
+    return 'Aprovação do lote criado em $date — $_temp0 num total de $amount. Isto autoriza a execução; não movimenta dinheiro.';
+  }
+
+  @override
+  String get payRunApproveConfirm => 'Aprovar';
+
+  @override
+  String payRunApproveFailed(String error) {
+    return 'Falha ao aprovar: $error';
+  }
+
+  @override
   String get payRunCfoBlocked =>
       'Este lote precisa da aprovação do CFO antes de poder ser executado.';
 
@@ -2537,6 +2562,31 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
 
   @override
   String get payRunActionCancel => 'Cancelar';
+
+  @override
+  String get payRunActionApprove => 'Aprovar como CFO';
+
+  @override
+  String get payRunApproveTitle => 'Aprovar o lote de pagamento?';
+
+  @override
+  String payRunApproveBody(String date, int count, String amount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count pagamentos',
+      one: '$count pagamento',
+    );
+    return 'Aprovação do lote criado em $date — $_temp0 num total de $amount. Isto autoriza a execução; não movimenta dinheiro.';
+  }
+
+  @override
+  String get payRunApproveConfirm => 'Aprovar';
+
+  @override
+  String payRunApproveFailed(String error) {
+    return 'Falha ao aprovar: $error';
+  }
 
   @override
   String get payRunCfoBlocked =>

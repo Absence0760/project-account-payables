@@ -120,6 +120,11 @@ async def test_get_branding_any_authed_role(realdb):
         # The tenant's vanity base URL — empty means "use the platform's
         # `FEOH_TENANT_URL_TEMPLATE`". See `test_branding_tenant_url_template.py`.
         "tenant_url_template",
+        # Where this tenant's SSO callbacks land — a SEPARATE opt-in from the
+        # field above, because it is registered at the customer's IdP and must
+        # not move when an admin re-points outbound links. Empty means the
+        # platform template. See `test_sso_custom_domain.py`.
+        "sso_callback_base_url",
     }
 
 

@@ -29,7 +29,7 @@ from app.config import settings
 from app.database import _make_tenant_url, control_session_factory
 from app.models.organization import Organization
 from app.models.workflow import WorkflowInstance
-from app.services.approval_chain import apply_escalation
+from app.services.approval_chain import CHAIN_STATE_KEY, apply_escalation, get_chain_progress
 from app.services.audit_dispatch import dispatch_audit
 from app.services.sweep_health import SWEEP_APPROVAL_ESCALATION, run_sweep_loop
 
@@ -44,7 +44,7 @@ def _last_escalation_detail(instance: WorkflowInstance) -> dict:
     state_data. Extracts the current level's most-recent escalation (the added
     approver ids + after_hours) for the audit ``details``; PII-free (only user
     ids + hours, never bank/tax data)."""
-    chain = (instance.state_data or {}).get("approval_levels") or {}
+    chain = get_chain_progress(instance)
     levels = chain.get("levels") or []
     idx = chain.get("current_level", 0)
     detail: dict = {"level": idx}
@@ -208,7 +208,10 @@ async def _escalate_tenant(
                         WorkflowInstance.state == "active",
                         # No chain, nothing to escalate — skip it in SQL rather
                         # than paying a lock + a JSON parse to learn that.
-                        WorkflowInstance.state_data["approval_levels"].astext.isnot(None),
+                        # `astext` yields SQL NULL for a JSON `null`, so a
+                        # key present but null is skipped here exactly as
+                        # `chain_state_of` reads it in Python: no chain.
+                        WorkflowInstance.state_data[CHAIN_STATE_KEY].astext.isnot(None),
                     )
                     .order_by(WorkflowInstance.id.asc())
                     .limit(page_size)

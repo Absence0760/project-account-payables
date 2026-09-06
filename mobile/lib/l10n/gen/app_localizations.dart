@@ -1601,6 +1601,36 @@ abstract class AppLocalizations {
   /// **'Cancel'**
   String get payRunActionCancel;
 
+  /// No description provided for @payRunActionApprove.
+  ///
+  /// In en, this message translates to:
+  /// **'Approve as CFO'**
+  String get payRunActionApprove;
+
+  /// No description provided for @payRunApproveTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Approve payment run?'**
+  String get payRunApproveTitle;
+
+  /// No description provided for @payRunApproveBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign off the run created {date} — {count, plural, one {{count} payment} other {{count} payments}} totalling {amount}. This authorizes execution; it moves no money.'**
+  String payRunApproveBody(String date, int count, String amount);
+
+  /// No description provided for @payRunApproveConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Approve'**
+  String get payRunApproveConfirm;
+
+  /// No description provided for @payRunApproveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to approve: {error}'**
+  String payRunApproveFailed(String error);
+
   /// No description provided for @payRunCfoBlocked.
   ///
   /// In en, this message translates to:

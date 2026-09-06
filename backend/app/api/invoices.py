@@ -655,6 +655,7 @@ async def export_einvoice(
     from app.services.e_invoice import (
         EInvoiceValidationError,
         assert_valid,
+        error_payload,
         generate_cii,
         generate_ubl,
         get_country_format,
@@ -706,8 +707,10 @@ async def export_einvoice(
         try:
             assert_valid(doc)
         except EInvoiceValidationError as exc:
-            # str(exc) is a PII-free "field: code" join — safe in the error body.
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            # Structured, PII-free: field path + reason code + the human
+            # sentence, in FastAPI's own validation-error item shape. See
+            # `e_invoice.validate.error_payload`.
+            raise HTTPException(status_code=422, detail=exc.payload) from exc
         xml_bytes = builtin_generators[format](doc)
         media_type = "application/xml"
         tag = "" if format == "ubl" else f"-{format}"
@@ -716,8 +719,8 @@ async def export_einvoice(
         # National format path — validate via the format, then generate.
         errors = country_format.validate(doc)
         if errors:
-            # EInvoiceValidationError renders a PII-free "field: code" join.
-            raise HTTPException(status_code=422, detail=str(EInvoiceValidationError(errors)))
+            # Same PII-free structured body as the built-in path.
+            raise HTTPException(status_code=422, detail=error_payload(errors))
         xml_bytes = country_format.generate(doc)
         media_type = country_format.media_type
         filename = f"einvoice-{base}-{country_format.format_code}.{country_format.file_extension}"
@@ -832,7 +835,11 @@ async def peppol_send(
             peppol_config=peppol_config,
         )
     except EInvoiceValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Structured + PII-free. The BIS Billing 3.0 conformance pass reports
+        # the EN 16931 rule id as the `code` (`due_date: BR-CO-25`) — the same
+        # identifier the receiving Access Point's validator names — so it rides
+        # both `type` and the message.
+        raise HTTPException(status_code=422, detail=exc.payload) from exc
     except PeppolSendError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
 
@@ -842,6 +849,97 @@ async def peppol_send(
         message_id=transmission.message_id,
         direction=transmission.direction,
         already_sent=already_sent,
+    )
+
+
+class PeppolTransmissionSummary(BaseModel):
+    """One `peppol_transmissions` row, PII-free.
+
+    `participant_value` / `sender_value` are the counterparty's and our own
+    org / tax ids — they live legitimately on the row and inside the UBL
+    payload but never leave it (model docstring), so they are deliberately
+    absent here. The schemes are bare registry codes (EAS `9930`), not
+    identifiers of anyone.
+    """
+
+    id: uuid.UUID
+    direction: str  # "outbound" | "inbound"
+    status: str  # "sending" | "sent" | "delivered" | "failed"
+    provider: str
+    participant_scheme: str
+    message_id: str | None
+    failure_reason: str | None  # PII-free reason code only
+    transmitted_at: datetime | None
+    created_at: datetime
+
+
+class PeppolTransmissionListResponse(BaseModel):
+    transmissions: list[PeppolTransmissionSummary]
+
+
+@router.get("/{invoice_id}/peppol-transmissions", response_model=PeppolTransmissionListResponse)
+async def list_peppol_transmissions(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*ALL_ROLES)),
+):
+    """Every PEPPOL transmission recorded for this invoice, newest first.
+
+    A sub-resource rather than a field on the invoice detail: `GET
+    /api/invoices/{id}` is the hottest read in the app (list rows, the modal,
+    every poll) and PEPPOL concerns a minority of tenants, so a second query
+    on every invoice read would be paid by everyone to serve a few. It also
+    matches the shape its siblings already use — `/line-items`, `/summary`,
+    `/einvoice`, `/chat` all hang off the invoice.
+
+    Exists because `POST /peppol-send` reports `already_sent` on the response
+    and nowhere else: the UI could describe the outcome of a send it had just
+    made, but on opening an invoice it could not say whether the invoice had
+    ever been transmitted, and so said nothing at all.
+
+    Read-gated `ALL_ROLES`, matching `GET /{id}/einvoice` — the same subject,
+    read-only, and PII-free. The network-touching `POST /peppol-send` stays
+    narrower (admin / ap_manager / cfo).
+    """
+    invoice = (
+        await db.execute(
+            apply_entity_scope(select(Invoice).where(Invoice.id == invoice_id), Invoice, entity_id)
+        )
+    ).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    rows = (
+        (
+            await db.execute(
+                select(PeppolTransmission)
+                .where(
+                    PeppolTransmission.invoice_id == invoice_id,
+                    PeppolTransmission.organization_id == invoice.organization_id,
+                )
+                .order_by(PeppolTransmission.created_at.desc(), PeppolTransmission.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return PeppolTransmissionListResponse(
+        transmissions=[
+            PeppolTransmissionSummary(
+                id=row.id,
+                direction=row.direction,
+                status=row.status,
+                provider=row.provider,
+                participant_scheme=row.participant_scheme,
+                message_id=row.message_id,
+                failure_reason=row.failure_reason,
+                transmitted_at=row.transmitted_at,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
     )
 
 

@@ -1,4 +1,27 @@
 <script lang="ts">
+	/**
+	 * /goods-receipts — what arrived, and what quality said about it.
+	 *
+	 * Two tabs, because the page answers two questions that share a subject:
+	 *
+	 *   - **Receipts** — the deliveries themselves (the 3-way quantity leg).
+	 *   - **Inspections** — the `QualityInspection` rows that drive the 4-way
+	 *     quality leg of `services/po_matching`. This is the entry surface for
+	 *     them: the invoice warnings panel has always RENDERED
+	 *     `inspection_result`, `inspection_accepted_quantity` and the
+	 *     `quality_hold` exception, so the app showed the consequences of an
+	 *     inspection while offering no way to record one. It also shows what the
+	 *     QMS sync brought in — a synced row often resolves to neither a receipt
+	 *     nor a PO, so it exists nowhere else in the UI.
+	 *
+	 * An inspection is tied to a goods receipt, which is why it lives here and
+	 * not on its own route.
+	 *
+	 * RBAC mirrors `api/inspections.py`: reading the list is open to any
+	 * authenticated user, while recording one and running the QMS sync are
+	 * admin / ap_manager (`auth.isManager`). A clerk sees every inspection and
+	 * no button; `require_roles` refuses the write regardless.
+	 */
 	import { api } from '$lib/api';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
@@ -7,11 +30,24 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
+	import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+	import Tabs from '$lib/components/ui/Tabs.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import type { MessageKey } from '$lib/i18n/messages';
 	import { formatDate } from '$lib/utils/time';
 	import { goodsReceiptTone } from '$lib/types/goodsReceipt';
+	import { auth } from '$lib/stores/auth.svelte';
+	import type { Inspection } from '$lib/api/inspections';
+	import { isInspectionResult, listInspections, syncInspections } from '$lib/api/inspections';
+	import RecordInspectionModal from './RecordInspectionModal.svelte';
+	import type { InspectableReceipt } from './RecordInspectionModal.svelte';
+	import { page as pageStore } from '$app/stores';
+	import { replaceState } from '$app/navigation';
+	import { untrack } from 'svelte';
+
+	const canMutate = $derived(auth.isManager);
 
 	const COLUMNS = $derived([
 		{ label: m('goodsReceipts.col.grNumber') },
@@ -20,6 +56,16 @@
 		{ label: m('goodsReceipts.col.status') },
 		{ label: m('goodsReceipts.col.lines') },
 		{ label: m('goodsReceipts.col.created') }
+	]);
+
+	const INSPECTION_COLUMNS = $derived([
+		{ label: m('goodsReceipts.inspections.col.number') },
+		{ label: m('goodsReceipts.inspections.col.result') },
+		{ label: m('goodsReceipts.inspections.col.receipt') },
+		{ label: m('goodsReceipts.inspections.col.inspected') },
+		{ label: m('goodsReceipts.inspections.col.inspector') },
+		{ label: m('goodsReceipts.inspections.col.quantities') },
+		{ label: m('goodsReceipts.inspections.col.notes') }
 	]);
 
 	interface GRLine {
@@ -44,6 +90,29 @@
 	}
 
 	const PAGE_SIZE = 20;
+	/**
+	 * Page size of the receipts fetch that backs the Inspections tab's "Goods
+	 * receipt" column. `GET /api/inspections` returns `gr_id` only, and there is
+	 * no server-side join, so the numbers have to be resolved locally.
+	 * `MAX_PAGE_SIZE` on the backend is 100, which is the cap here — an
+	 * inspection pointing at a receipt outside that window renders a link that
+	 * opens the receipt (and resolves its number from the API) instead of a
+	 * number, rather than a blank cell implying there is nothing there.
+	 */
+	const RECEIPT_LOOKUP_SIZE = 100;
+
+	type TabKey = 'receipts' | 'inspections';
+
+	function initialTab(): TabKey {
+		return $pageStore.url.searchParams.get('tab') === 'inspections' ? 'inspections' : 'receipts';
+	}
+
+	let tab = $state<TabKey>(initialTab());
+
+	const TABS = $derived([
+		{ key: 'receipts', label: m('goodsReceipts.tabs.receipts') },
+		{ key: 'inspections', label: m('goodsReceipts.tabs.inspections') }
+	]);
 
 	let grs = $state<GRListItem[]>([]);
 	let total = $state(0);
@@ -55,16 +124,46 @@
 	let detail = $state<GRDetail | null>(null);
 	let detailLoading = $state(false);
 
+	let inspections = $state<Inspection[]>([]);
+	let inspectionsLoaded = $state(false);
+	let inspectionsLoading = $state(false);
+	/** Receipts fetched purely to resolve `gr_id` → `gr_number`; kept apart from
+	 *  `grs` so the Load-more pagination of the Receipts tab is untouched. */
+	let lookupReceipts = $state<GRListItem[]>([]);
+	let syncing = $state(false);
+	let recordOpen = $state(false);
+	/** Set when the record form is opened from a receipt's detail — the subject
+	 *  is already decided and the form renders it read-only. */
+	let recordFor = $state<InspectableReceipt | null>(null);
+
 	// Two INDEPENDENT request streams, so two sequencers — a shared counter
 	// would let a detail open mark the list's in-flight response un-committable
-	// and blank the table. Neither loader edits a row in place (there is no
-	// mutation on this page at all), so neither needs `supersedeInFlight()`.
-	// See `frontend/CLAUDE.md` § Sequencing list fetches.
+	// and blank the table. Neither loader edits a row in place, so neither needs
+	// `supersedeInFlight()`. The inspections loader gets its own for the same
+	// reason. See `frontend/CLAUDE.md` § Sequencing list fetches.
 	const listSequence = createRequestSequencer();
 	const detailSequence = createRequestSequencer();
+	const inspectionSequence = createRequestSequencer();
 
 	$effect(() => {
 		void loadGRs();
+	});
+
+	// Reflect the active tab in the URL so a reload / back-button lands on the
+	// same one, and an inspection can be linked to directly.
+	$effect(() => {
+		const active = tab;
+		untrack(() => {
+			const url = new URL($pageStore.url);
+			if (active === 'inspections') url.searchParams.set('tab', active);
+			else url.searchParams.delete('tab');
+			replaceState(`${url.pathname}${url.search}`, {});
+		});
+	});
+
+	$effect(() => {
+		if (tab !== 'inspections') return;
+		untrack(() => void ensureInspections());
 	});
 
 	$effect(() => {
@@ -72,6 +171,9 @@
 			detail = null;
 			return;
 		}
+		// The detail modal renders this receipt's inspections, so it needs the
+		// same list the tab does.
+		untrack(() => void ensureInspections());
 		void loadDetail(detailId);
 	});
 
@@ -132,51 +234,316 @@
 		}
 	}
 
+	/** Load the inspection list once. `GET /api/inspections` is unpaginated by
+	 *  design and has no `gr_id` filter, so both consumers (the tab and the
+	 *  detail modal's panel) read the same fetched set rather than one request
+	 *  per receipt opened. */
+	async function ensureInspections() {
+		if (inspectionsLoaded || inspectionsLoading) return;
+		await refreshInspections();
+	}
+
+	async function refreshInspections() {
+		const token = inspectionSequence.start();
+		inspectionsLoading = true;
+		try {
+			// The receipt lookup rides along: it exists only to label the rows
+			// this fetch returns, so issuing it separately would show a table of
+			// unresolved ids for a frame.
+			const [rows, receiptPage] = await Promise.all([
+				listInspections(),
+				api.get<{ items: GRListItem[] }>(
+					`/api/goods-receipts?page=1&page_size=${RECEIPT_LOOKUP_SIZE}`
+				)
+			]);
+			if (!inspectionSequence.canCommit(token)) return;
+			inspections = rows;
+			lookupReceipts = receiptPage.items;
+			inspectionsLoaded = true;
+		} catch (err) {
+			if (!inspectionSequence.isCurrentRequest(token)) return;
+			toast(
+				err instanceof Error ? err.message : m('goodsReceipts.inspections.toast.loadFailed'),
+				'error'
+			);
+		} finally {
+			if (inspectionSequence.isCurrentRequest(token)) inspectionsLoading = false;
+		}
+	}
+
 	let hasMore = $derived(grs.length < total);
+
+	/** Every receipt the page can name, keyed by id — the paged Receipts tab
+	 *  plus the lookup window plus whichever detail is open. */
+	const receiptIndex = $derived.by(() => {
+		const index = new Map<string, GRListItem>();
+		for (const gr of lookupReceipts) index.set(gr.id, gr);
+		for (const gr of grs) index.set(gr.id, gr);
+		if (detail) index.set(detail.id, detail);
+		return index;
+	});
+
+	/** Receipts the record form may link an inspection to. Deduped and sorted
+	 *  by receipt number so the picker is stable. */
+	const recordableReceipts = $derived.by(() =>
+		[...receiptIndex.values()]
+			.map((gr) => ({
+				id: gr.id,
+				gr_number: gr.gr_number,
+				po_id: gr.po_id,
+				po_number: gr.po_number
+			}))
+			.sort((a, b) => a.gr_number.localeCompare(b.gr_number))
+	);
+
+	const inspectionsByReceipt = $derived.by(() => {
+		const byReceipt = new Map<string, Inspection[]>();
+		for (const ins of inspections) {
+			if (!ins.gr_id) continue;
+			const bucket = byReceipt.get(ins.gr_id);
+			if (bucket) bucket.push(ins);
+			else byReceipt.set(ins.gr_id, [ins]);
+		}
+		return byReceipt;
+	});
+
+	const detailInspections = $derived(detail ? (inspectionsByReceipt.get(detail.id) ?? []) : []);
+
+	const RESULT_LABELS: Record<string, MessageKey> = {
+		pass: 'goodsReceipts.inspections.result.pass',
+		fail: 'goodsReceipts.inspections.result.fail',
+		partial: 'goodsReceipts.inspections.result.partial'
+	};
+
+	function resultLabel(result: string): string {
+		// An unrecognised value is shown verbatim rather than mapped to one of
+		// the three — the column is free-form on the backend and guessing which
+		// outcome an unknown string means is exactly the mistake
+		// `qms_sync.normalize_disposition` refuses to make.
+		return isInspectionResult(result) ? m(RESULT_LABELS[result]) : result;
+	}
+
+	function resultTone(result: string): BadgeTone {
+		if (result === 'pass') return 'success';
+		if (result === 'fail') return 'danger';
+		if (result === 'partial') return 'warning';
+		return 'neutral';
+	}
+
+	/** The accepted / rejected pair as one cell. `—` for a `pass` that recorded
+	 *  neither, which is the normal shape of a clean inspection. */
+	function quantitiesCell(ins: Inspection): string {
+		const accepted = ins.accepted_quantity;
+		const rejected = ins.rejected_quantity;
+		if (accepted === null && rejected === null) return '—';
+		return `${accepted ?? '—'} / ${rejected ?? '—'}`;
+	}
+
+	function openRecordFor(receipt: InspectableReceipt | null) {
+		recordFor = receipt;
+		recordOpen = true;
+	}
+
+	function onRecorded(created: Inspection) {
+		recordOpen = false;
+		recordFor = null;
+		toast(
+			m('goodsReceipts.inspections.toast.recorded', { number: created.inspection_number }),
+			'success'
+		);
+		// Re-read rather than splicing the returned row in: the tab is a plain
+		// list of what the tenant holds, and a re-read is what proves the write
+		// landed where the matcher will look for it.
+		inspectionsLoaded = false;
+		void refreshInspections();
+	}
+
+	async function runSync() {
+		if (syncing) return;
+		syncing = true;
+		try {
+			const res = await syncInspections();
+			// Report what the sync actually DID. A pull that found nothing has to
+			// say so — "0 created" from a provider that returned three records is
+			// a different fact from a provider that returned none, and an
+			// all-quiet success toast would read the same for both.
+			if (res.fetched === 0) {
+				toast(m('goodsReceipts.inspections.toast.syncNone'), 'info');
+			} else if (res.created === 0 && res.updated === 0) {
+				toast(
+					m('goodsReceipts.inspections.toast.syncUpToDate', {
+						fetched: res.fetched,
+						skipped: res.skipped
+					}),
+					'info'
+				);
+			} else {
+				toast(
+					m('goodsReceipts.inspections.toast.synced', {
+						fetched: res.fetched,
+						created: res.created,
+						updated: res.updated,
+						unchanged: res.unchanged,
+						skipped: res.skipped
+					}),
+					'success'
+				);
+			}
+			inspectionsLoaded = false;
+			await refreshInspections();
+		} catch (err) {
+			// The 409s ("no QMS configured", "provider has no adapter") carry the
+			// backend's own explanation, and that explanation IS the outcome —
+			// surface it verbatim rather than a generic failure.
+			toast(
+				err instanceof Error ? err.message : m('goodsReceipts.inspections.toast.syncFailed'),
+				'error'
+			);
+		} finally {
+			syncing = false;
+		}
+	}
 </script>
 
 <PageHeader title={m('goodsReceipts.title')}>
-	<DataTable
-		columns={COLUMNS}
-		isEmpty={grs.length === 0}
-		empty={loading ? m('common.loading') : m('goodsReceipts.empty')}
-		colspan={6}
-	>
-		{#snippet body()}
-			{#each grs as gr (gr.id)}
-				<tr
-					class="clickable"
-					onclick={(e) => {
-						if (isRowOpenClick(e)) detailId = gr.id;
-					}}
-				>
-					<td class="mono">
-						<RowLink
-							onclick={() => (detailId = gr.id)}
-							ariaLabel={m('goodsReceipts.row.view', { number: gr.gr_number })}
-						>
-							{gr.gr_number}
-						</RowLink>
-					</td>
-					<td class="mono">{gr.po_number ?? '—'}</td>
-					<td>{formatDate(gr.received_date)}</td>
-					<td><Badge tone={goodsReceiptTone(gr.status)} variant={gr.status}>{gr.status}</Badge></td>
-					<td class="muted">{gr.line_count}</td>
-					<td class="muted">{formatDate(gr.created_at)}</td>
-				</tr>
-			{/each}
-		{/snippet}
-	</DataTable>
-
-	{#if hasMore}
-		<div class="load-more-row">
-			<button class="btn-load-more" onclick={loadMore} disabled={loadingMore}>
-				{loadingMore ? m('common.loading') : m('goodsReceipts.loadMore', { shown: grs.length, total })}
+	{#snippet actions()}
+		{#if tab === 'inspections' && canMutate}
+			<button
+				class="btn-outline"
+				onclick={runSync}
+				disabled={syncing}
+				data-testid="sync-inspections"
+			>
+				{syncing
+					? m('goodsReceipts.inspections.action.syncing')
+					: m('goodsReceipts.inspections.action.sync')}
 			</button>
+			<button
+				class="btn-primary"
+				onclick={() => openRecordFor(null)}
+				disabled={recordableReceipts.length === 0}
+				title={recordableReceipts.length === 0
+					? m('goodsReceipts.inspections.action.recordUnavailable')
+					: undefined}
+				data-testid="record-inspection"
+			>
+				{m('goodsReceipts.inspections.action.record')}
+			</button>
+		{/if}
+	{/snippet}
+
+	<Tabs tabs={TABS} bind:active={tab} ariaLabel={m('goodsReceipts.title')} idPrefix="goods-receipts" />
+
+	{#if tab === 'receipts'}
+		<div
+			id="goods-receipts-panel-receipts"
+			role="tabpanel"
+			aria-labelledby="goods-receipts-tab-receipts"
+		>
+			<DataTable
+				columns={COLUMNS}
+				isEmpty={grs.length === 0}
+				empty={loading ? m('common.loading') : m('goodsReceipts.empty')}
+				colspan={6}
+			>
+				{#snippet body()}
+					{#each grs as gr (gr.id)}
+						<tr
+							class="clickable"
+							onclick={(e) => {
+								if (isRowOpenClick(e)) detailId = gr.id;
+							}}
+						>
+							<td class="mono">
+								<RowLink
+									onclick={() => (detailId = gr.id)}
+									ariaLabel={m('goodsReceipts.row.view', { number: gr.gr_number })}
+								>
+									{gr.gr_number}
+								</RowLink>
+							</td>
+							<td class="mono">{gr.po_number ?? '—'}</td>
+							<td>{formatDate(gr.received_date)}</td>
+							<td><Badge tone={goodsReceiptTone(gr.status)} variant={gr.status}>{gr.status}</Badge></td>
+							<td class="muted">{gr.line_count}</td>
+							<td class="muted">{formatDate(gr.created_at)}</td>
+						</tr>
+					{/each}
+				{/snippet}
+			</DataTable>
+
+			{#if hasMore}
+				<div class="load-more-row">
+					<button class="btn-load-more" onclick={loadMore} disabled={loadingMore}>
+						{loadingMore
+							? m('common.loading')
+							: m('goodsReceipts.loadMore', { shown: grs.length, total })}
+					</button>
+				</div>
+			{:else if total > 0}
+				<div class="load-more-row">
+					<span class="load-more-end">{m('goodsReceipts.showingAll', { total })}</span>
+				</div>
+			{/if}
 		</div>
-	{:else if total > 0}
-		<div class="load-more-row">
-			<span class="load-more-end">{m('goodsReceipts.showingAll', { total })}</span>
+	{:else}
+		<div
+			id="goods-receipts-panel-inspections"
+			role="tabpanel"
+			aria-labelledby="goods-receipts-tab-inspections"
+		>
+			<!-- Whether an inspection is REQUIRED before payment is resolved per
+			     invoice by `services/matching_rules` (vendor rule → commodity/GL
+			     rule → org default), so this panel must not imply it always is.
+			     Recording one always feeds the 4-way leg either way. -->
+			<p class="panel-hint muted" data-testid="inspections-hint">
+				{m('goodsReceipts.inspections.hint')}
+			</p>
+
+			<DataTable
+				columns={INSPECTION_COLUMNS}
+				isEmpty={inspections.length === 0}
+				empty={inspectionsLoading ? m('common.loading') : m('goodsReceipts.inspections.empty')}
+				colspan={7}
+			>
+				{#snippet body()}
+					{#each inspections as ins (ins.id)}
+						<tr data-testid="inspection-row" data-inspection-number={ins.inspection_number}>
+							<td class="mono">{ins.inspection_number}</td>
+							<td>
+								<Badge tone={resultTone(ins.result)} variant={ins.result}>
+									{resultLabel(ins.result)}
+								</Badge>
+							</td>
+							<td class="mono">
+								{#if ins.gr_id}
+									{@const grId = ins.gr_id}
+									{@const known = receiptIndex.get(grId)}
+									<!-- A receipt outside the lookup window has no number here, so
+									     the link carries a generic name and resolves the number
+									     from the API when opened — better than a blank cell. -->
+									<RowLink
+										onclick={() => (detailId = grId)}
+										ariaLabel={known
+											? m('goodsReceipts.row.view', { number: known.gr_number })
+											: m('goodsReceipts.inspections.viewReceipt')}
+									>
+										{known ? known.gr_number : m('goodsReceipts.inspections.viewReceipt')}
+									</RowLink>
+								{:else}
+									<span class="muted" title={m('goodsReceipts.inspections.unlinkedHint')}>
+										{m('goodsReceipts.inspections.unlinked')}
+									</span>
+								{/if}
+							</td>
+							<td>{formatDate(ins.inspected_date)}</td>
+							<td class="muted">{ins.inspector ?? '—'}</td>
+							<td class="mono">{quantitiesCell(ins)}</td>
+							<td class="notes muted">{ins.deviation_notes ?? '—'}</td>
+						</tr>
+					{/each}
+				{/snippet}
+			</DataTable>
 		</div>
 	{/if}
 </PageHeader>
@@ -223,9 +590,75 @@
 					{/each}
 				</tbody>
 			</table>
+
+			<!-- The 4-way quality leg for THIS delivery. `po_matching` reads the
+			     most recent of these rows (by `created_at`), so the list is
+			     ordered newest-first to match what the matcher would pick. -->
+			<div class="section-head">
+				<h3>{m('goodsReceipts.modal.inspections')}</h3>
+				{#if canMutate}
+					<button
+						class="btn-inline"
+						onclick={() =>
+							openRecordFor({
+								id: detail!.id,
+								gr_number: detail!.gr_number,
+								po_id: detail!.po_id,
+								po_number: detail!.po_number
+							})}
+						data-testid="record-inspection-for-receipt"
+					>
+						{m('goodsReceipts.modal.recordInspection')}
+					</button>
+				{/if}
+			</div>
+			<table class="line-table">
+				<thead>
+					<tr>
+						<th>{m('goodsReceipts.inspections.col.number')}</th>
+						<th>{m('goodsReceipts.inspections.col.result')}</th>
+						<th>{m('goodsReceipts.inspections.col.inspected')}</th>
+						<th class="right">{m('goodsReceipts.inspections.col.quantities')}</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each detailInspections as ins (ins.id)}
+						<tr data-testid="receipt-inspection-row">
+							<td class="mono">{ins.inspection_number}</td>
+							<td>
+								<Badge tone={resultTone(ins.result)} variant={ins.result}>
+									{resultLabel(ins.result)}
+								</Badge>
+							</td>
+							<td>{formatDate(ins.inspected_date)}</td>
+							<td class="right mono">{quantitiesCell(ins)}</td>
+						</tr>
+					{:else}
+						<tr>
+							<td colspan="4" class="empty">
+								{inspectionsLoading
+									? m('common.loading')
+									: m('goodsReceipts.modal.noInspections')}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		{/if}
 	</div>
 </Modal>
+
+{#if recordOpen}
+	<RecordInspectionModal
+		receipts={recordableReceipts}
+		fixedReceipt={recordFor}
+		onclose={() => {
+			recordOpen = false;
+			recordFor = null;
+		}}
+		onrecorded={onRecorded}
+	/>
+{/if}
 
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
@@ -283,6 +716,56 @@
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
 	}
+	.section-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+	}
+	.btn-inline {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 4px 10px;
+		font-size: 0.78rem;
+		font-family: inherit;
+		color: var(--text);
+		cursor: pointer;
+	}
+	.btn-inline:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	/* Secondary header action (Sync from QMS), matching /vendors' ERP-sync
+	   button — the primary action beside it is recording an inspection. */
+	.btn-outline {
+		display: inline-flex;
+		align-items: center;
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+	.btn-outline:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.btn-outline:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.panel-hint {
+		margin: 12px 0;
+		font-size: 0.8rem;
+		line-height: 1.5;
+		max-width: 78ch;
+	}
 	dl.meta {
 		display: grid;
 		grid-template-columns: 90px 1fr 90px 1fr;
@@ -331,6 +814,12 @@
 		text-align: center;
 		padding: 40px;
 		color: var(--text-muted);
+	}
+	.notes {
+		max-width: 32ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.loading {
 		padding: 40px;

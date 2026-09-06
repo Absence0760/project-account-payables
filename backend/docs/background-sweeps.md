@@ -187,6 +187,29 @@ crosses the boundary — the actionable number, and zero on a healthy platform.
 The full counters stay in the registry and in the logs, where the reader is a
 platform operator who is already trusted with them.
 
+### The UI: `/admin/health`
+
+`frontend/src/routes/admin/health/+page.svelte` (admin only, matching
+`require_roles(ROLE_ADMIN)`; typed client
+`frontend/src/lib/api/sweepHealth.ts`) is the operator view of this payload.
+Because the public probe deliberately reports nothing (see below), this page is
+the only place a dead, stalled or repeatedly-failing sweep is visible at all.
+
+It renders the aggregate `state`, the configured `failure_alert_streak`, how
+many sweeps are reporting, and a count of the ones **needing attention** —
+`died` / `not_started` / `stalled`, or past the streak. `disabled` is
+deliberately excluded from that count: an off flag is an expected state, not a
+fault, and it is chipped `neutral` rather than alarm-toned. Each row shows the
+sweep's state, last run, last outcome, consecutive failures and run totals; a
+failure carries only the exception **class**, exactly as the payload does.
+
+It loads once on mount and is **not polled** — the read is admin-gated but
+writes no audit row and touches no tenant DB, so an on-mount load is safe, while
+polling a process-local registry would just add noise. An operator presses
+*Refresh* for a newer sample. `frontend/tests-e2e/admin/sweep-health.spec.ts`
+covers the live roster, a mocked `died` sweep, the error/retry state, the clerk
+refusal (redirect plus the backend's 403) and a WCAG 2.2 AA axe pass.
+
 ### `GET /api/health` is unchanged
 
 It stays the public, unauthenticated, static `{"status": "ok"}` liveness probe,

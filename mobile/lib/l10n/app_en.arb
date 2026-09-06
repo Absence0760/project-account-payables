@@ -383,6 +383,23 @@
   "payRunActions": "Run actions",
   "payRunActionExecute": "Execute",
   "payRunActionCancel": "Cancel",
+  "payRunActionApprove": "Approve as CFO",
+  "payRunApproveTitle": "Approve payment run?",
+  "payRunApproveBody": "Sign off the run created {date} — {count, plural, one {{count} payment} other {{count} payments}} totalling {amount}. This authorizes execution; it moves no money.",
+  "@payRunApproveBody": {
+    "placeholders": {
+      "date": { "type": "String" },
+      "count": { "type": "int" },
+      "amount": { "type": "String" }
+    }
+  },
+  "payRunApproveConfirm": "Approve",
+  "payRunApproveFailed": "Failed to approve: {error}",
+  "@payRunApproveFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
   "payRunCfoBlocked": "This run needs CFO approval before it can be executed.",
   "payRunExecuteTitle": "Execute payment run?",
   "payRunExecuteBody": "This sends {amount} via the configured payment processor.",

@@ -34,11 +34,18 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-05 (round 21) — a ten-agent round: five fix
-agents on the white-label vanity-domain epic plus e-invoice conformance, two
-read-only sweeps (backend reachability, frontend/mobile parity), and three more
-fix agents on what the parity sweep found. **Five entries closed, one narrowed,
-seventeen opened**, 22 → 33.
+**Last reconciled:** 2026-09-05 (round 22) — a ten-agent round spent entirely
+on this file's own round-21 remainder: capabilities that ship, are tested, are
+documented, and could not be reached from the product. **Eleven entries closed,
+one narrowed, ten opened**, 33 → 32.
+
+Three of the closures found something the entry had not predicted, which is the
+argument for working this file rather than around it: the two `approval_levels`
+spellings were a latent `AttributeError` on the approval path rather than style
+debt ([decisions.md](decisions.md) §93); a routine branding save would have
+silently wiped an IdP-registered SSO callback and taken every SSO login with it
+(§92); and one endpoint had to perform a write to establish a read-only fact
+(§94).
 
 The count grew on purpose. The two sweeps found substantially more real,
 verified work than a ten-agent budget could land; everything with a **live
@@ -617,151 +624,122 @@ decide.
       **Trigger:** the next Dependabot npm PR. Recipe in
       [frontend/CLAUDE.md](../frontend/CLAUDE.md) § The lockfile.
 
-### Surfaced by the round-21 parallel sweeps (2026-09-05)
+### Surfaced by the round-21 parallel sweeps — mostly CLOSED (round 22)
 
-Two read-only sweeps ran alongside the round-21 fix agents: a backend
-reachability pass (the same shape as the round-7 "no production caller" sweep)
-and a frontend/mobile parity pass (backend capabilities with no UI). Between
-them they found more than the ten-agent budget could land. **Everything with a
-live defect behind it was fixed in round 21** — the ERP retry divergence
-([decisions.md](decisions.md) §88), the half-validated UK bank pair (§89), the
-unpinned SSO authorize helper, and the SCIM digest's missing owner. What is
-below is the verified remainder: real, reproducible, and none of it a defect
-that can bite today.
+The round-21 sweeps found more verified work than that round's agent budget
+could land, and it was recorded here rather than dropped. Round 22 spent ten
+agents on it. **Closed:** the email-intake panel + token rotation, `/admin/entities`,
+the `/api/adaptive` router's UI, the `/api/inspections` UI, the
+approval-signature verification panel, `/health/sweeps`, the card-rebate
+lifecycle, mobile CFO run approval, the `approval_chain` ownership + drift guard,
+the PEPPOL transmission read path, and the e-invoice structured error contract.
 
-**Backend capabilities with no production caller:**
+Three of those turned up something the entry had not predicted, recorded in
+[decisions.md](decisions.md): the two `approval_levels` spellings were not a
+style difference but a latent `AttributeError` on the approval path (§93); a
+routine branding save would have silently wiped an IdP-registered SSO callback
+(§92); and `GET /organization/email-intake` had to perform a write to establish
+a read-only fact (§94).
 
-- [ ] **(c) `approval_chain.get_chain_progress` has no caller, and eight sites
-      read its JSONB path by hand.** `services/approval_chain.py` (×2),
-      `services/review.py` (×4, two of them re-deriving the same expression on
-      adjacent lines) and `services/approval_escalation.py` (×2) each reach into
-      `state_data["approval_levels"]` themselves, in **two spellings** —
-      `.get("approval_levels", {})` and `.get("approval_levels") or {}` — which
-      differ when the key is present but `null`. No behavioural bug found today;
-      the risk is the next schema move having to find eight sites.
-      **Durable fix:** route all eight through the existing helper and add the
-      drift guard this repo already uses elsewhere (a source scan asserting no
-      module outside `approval_chain.py` string-matches `"approval_levels"`),
-      exactly as `payment_methods` and `utc_today` are guarded.
-      **Trigger:** the next change to the approval-chain state shape.
+What remains from those sweeps:
 
 - [ ] **(c) `workflow_step_types.is_canonical_step_type` is unused and
-      untested.** `workflow_builder` asks the inverse question via
-      `BUILDER_STEP_TYPES` and handles aliases correctly, so this is a
-      convenience wrapper nothing needs. **Durable fix:** delete it, or give it
-      a caller and coverage — an untested helper in the module that gates a
-      financial control ([decisions.md](decisions.md) §32) should not be a third
-      spelling of the question. **Trigger:** the next workflow-step-type change.
+      untested.** Unchanged from round 21 — `workflow_builder` asks the inverse
+      question via `BUILDER_STEP_TYPES` and handles aliases correctly.
+      **Durable fix:** delete it, or give it a caller and coverage; an untested
+      third spelling in the module that gates a financial control
+      ([decisions.md](decisions.md) §32) is the wrong kind of spare part.
+      **Trigger:** the next workflow-step-type change.
 
-- [ ] **(c) `scheduled_reports.compute_next_run`'s docstring is now false.** It
-      says "used when seeding a brand-new schedule", but `api/scheduled_reports`
+- [ ] **(c) `scheduled_reports.compute_next_run`'s docstring is false.** It
+      claims to be "used when seeding a brand-new schedule", but the API
       deliberately seeds `next_run_at = body.next_run_at or now()` so an
-      operator can watch the first run happen. A doc fix, not a wiring fix —
-      recorded so the next sweep does not re-derive it as a gap.
-      **Trigger:** any edit to the scheduled-report runner.
+      operator can watch the first run happen. A doc fix. **Trigger:** any edit
+      to the scheduled-report runner.
 
-**Backend capabilities the product cannot reach (no UI):**
-
-- [ ] **(c) The per-tenant email-intake address has no UI, and the docs claim it
-      does.** `GET /api/organization/email-intake` + `POST .../rotate-token`
-      have no frontend caller, while
-      [email-intake.md](../backend/docs/email-intake.md) asserts "the tenant's
-      admin sees the address in Organization Settings and tells their vendors."
-      Two consequences: the whole inbound-email ingestion channel is
-      undiscoverable, and — the sharper one — **a leaked intake token cannot be
-      rotated from the product**, though the same doc calls that token a bearer
-      secret that lets anyone drop PDFs into the tenant's AP queue.
-      **Durable fix:** one `/organization` panel beside Custom Domains; the
-      rotate control is the armed two-click + `ui/SecretReveal.svelte` pattern
-      `/admin/webhooks` already uses for `rotate-secret`. Fix the doc in the
-      same change.
-      **Trigger:** next `/organization` slice — this is the highest-value item
-      in this list.
-
-- [ ] **(c) `POST /api/entities` and `PATCH /api/entities/{id}` have no UI, so
-      multi-entity is effectively unstartable.** The sidebar switcher reads
-      `GET /api/entities` and hides itself below two entities, so a tenant can
-      only ever have the one entity created at provisioning. Multi-entity is
-      documented as complete (Phases 1–4) and scored a competitive "Have".
-      **Durable fix:** an `/admin/entities` page (list + create modal + edit +
-      set-default) matching the existing `/admin/*` shape.
-      **Trigger:** the first tenant with a subsidiary. Note
-      `POST /api/invoices/{id}/route-intercompany` is also caller-less and stays
-      moot until this lands.
-
-- [ ] **(c) The whole `/api/adaptive` router (9 endpoints) and `/api/inspections`
-      (4) have no route.** Adaptive covers approval-pattern learning, anomalies,
-      advisory suggestions + dismiss, smart-routing recommend/apply, threshold
-      recommend/apply and the feedback loop — two of them *write* surfaces with
-      full RBAC and audit stories, and one of its own guards is described as
-      protecting "against applying a stale **UI** value". Inspections is sharper
-      than it looks: the invoice warnings panel **renders** `inspection_result`,
-      `inspection_accepted_quantity` and `quality_hold`, so the UI shows the
-      consequences of an inspection while offering no way to enter one (the
-      4-way-match e2e spec creates them via `page.request.post`, bypassing the
-      app). Both are scored competitive "Have"s.
-      **Durable fix:** an `/adaptive` page shaped like `/experiments`; an
-      Inspections tab or modal on `/goods-receipts` plus a sync action.
-      **Trigger:** a decision to market either capability.
-
-- [ ] **(c) Smaller caller-less surfaces, verified.** `GET /api/audit/verify-signatures`
-      + the per-invoice variant (an auditor cannot run the approval-signature
-      HMAC check from the console built for auditors); the card-rebate
-      lifecycle (`GET /api/cards/rebates`, `confirm`, `mark-paid`, `cancel`,
-      `generate` — the Cards tab renders a "pending confirmation" hint for a
-      status it gives no way to advance, and the recorded reason "API-only,
-      mirroring `/bank-reconciliation`" is stale now that page shipped);
-      `POST /api/payments/corridor-quotes`; `POST /api/exceptions/{id}/agent-resolve`
-      (the agent dashboard reports on activity it cannot trigger);
-      `POST /api/discounts/bulk-negotiate`; the two `/api/enrichment` read
-      endpoints; and `GET /api/health/sweeps`.
+- [ ] **(c) Smaller caller-less surfaces, still verified open.**
+      `POST /api/payments/corridor-quotes`;
+      `POST /api/exceptions/{id}/agent-resolve` (the agent dashboard reports on
+      activity it cannot trigger); `POST /api/discounts/bulk-negotiate`; the two
+      `/api/enrichment` read endpoints. Round 22 closed the audit-verification,
+      sweep-health and card-rebate members of this group.
       **Durable fix:** each is a small addition to a page that already exists.
-      **Trigger:** take them opportunistically when next in the relevant page.
-
-- [ ] **(c) Mobile: the CFO cannot approve a payment run.** The Pay tab is
-      visible to a CFO and a gated run renders "This run needs CFO approval
-      before it can be executed", but `endpoints.dart` calls only `execute` and
-      `cancel` — `/approve` is absent. The one person who can unblock the run is
-      the person reading the message. **Durable fix:** one menu item in the
-      existing `_runMenuAction` popup, gated on `AuthStore` CFO.
-      **Trigger:** next mobile slice. (Also: Contracts ships on mobile —
-      `contracts_screen.dart` + detail + localized — but appears in neither the
-      screens→API table nor the feature-status list in `mobile/CLAUDE.md`.
-      Shipped and undocumented, the inverse of the usual problem.)
-
-**Frontend consistency:**
+      **Trigger:** take them opportunistically when next in that page.
 
 - [ ] **(c) `INTAKE_STATUS_LABELS` / `REQUISITION_STATUS_LABELS` are hardcoded
-      English.** In `src/lib/types/*.ts` and not routed through i18n, so a
-      German user now sees a translated Reopen confirm ("Zurück auf „Entwurf“")
-      next to an untranslated `DRAFT` badge. Pre-existing; surfaced by the
-      round-21 reopen work rather than caused by it.
-      **Durable fix:** move both maps behind `MessageKey`s like the other status
-      label sets. **Trigger:** the next i18n or procurement slice.
+      English.** Unchanged. In `src/lib/types/*.ts` and not routed through i18n,
+      so a German user sees a translated Reopen confirm next to an untranslated
+      `DRAFT` badge. **Durable fix:** move both maps behind `MessageKey`s like
+      the other status-label sets. **Trigger:** the next i18n or procurement
+      slice.
 
-- [ ] **(c) `/organization` has no client-side admin gate on any panel.** A
-      non-admin who navigates directly gets a fully editable form whose every
-      Save 403s. Pre-existing and consistent across ~10 panels, which is why the
-      round-21 branding work did not add one for a single field.
-      **Durable fix:** a page-level `auth.isAdmin` read-only mode for the whole
-      route. **Trigger:** next `/organization` slice.
+- [ ] **(c) `POST /api/invoices/{id}/route-intercompany` still has no UI.**
+      Inter-company mirror generation, documented and scored a competitive
+      "Have". It was moot while a tenant could not create a second entity;
+      `/admin/entities` (round 22) removes that excuse, so this is now a real
+      gap rather than a blocked one. **Durable fix:** an action on the invoice
+      detail modal, gated admin/ap_manager and on the tenant having ≥2 entities.
+      **Trigger:** the first multi-entity tenant.
 
-**Backend ergonomics the e-invoice UI work surfaced:**
+### Surfaced by the round-22 parallel round (2026-09-05)
 
-- [ ] **(c) No read path for an invoice's PEPPOL transmission state.**
-      `PeppolTransmission` is referenced only for delete-cascade; nothing exposes
-      whether an invoice has already been transmitted. The send response carries
-      `already_sent`, so the UI can report the outcome truthfully but cannot show
-      the state on open, and deliberately makes no "not yet sent" claim.
-      **Durable fix:** `GET /api/invoices/{id}/peppol-transmissions`, or a field
-      on the invoice detail. **Trigger:** the `as4_gateway` slice.
+Found while closing the above. None is a defect that can bite today.
 
-- [ ] **(c) The e-invoice 422 drops the human half of its own error.**
-      `FieldError` carries a PII-free `message` ("FatturaPA requires a Partita
-      IVA…"), but `EInvoiceValidationError.__str__` emits only `field: code`, so
-      every client must maintain its own code→prose map — the frontend now has
-      one. **Durable fix:** return the structured errors and delete the client
-      map. **Trigger:** the next e-invoicing slice.
+- [ ] **(b) The two `/organization` follow-ups the SSO agent correctly stopped
+      at are DONE, but a third remains: the void's card-cancel outcome is
+      invisible.** `_cancel_card_for_void` is best-effort and its `card_outcome`
+      lands only on the `payment.voided` audit row, never in the response — so
+      after voiding a card payment an operator cannot tell whether the card was
+      actually closed at the provider, and a failed leg leaves a live,
+      bearer-spendable card with no reachable remedy. This is why round 22
+      declined to ship a standalone card-cancel control
+      ([decisions.md](decisions.md) §96) — the remedy belongs on the void, not
+      beside it. **Durable fix:** surface `card_outcome` on `PaymentResponse`
+      and in the void dialog, with a retry when the provider leg failed.
+      **Trigger:** the next virtual-card slice.
+
+- [ ] **(c) `RebateResponse` carries no currency.** `card_rebates` has no
+      currency column; a rebate's currency is knowable only through its card.
+      The list envelope's `excluded_rebate_count` lets the UI prove the common
+      case (zero ⇒ every row is in the declared currency), but on a
+      mixed-currency programme the remaining rows render **bare figures with no
+      code**, which is the honest rendering and not a good one.
+      **Durable fix:** resolve `currency` from the joined card onto
+      `RebateResponse`. **Trigger:** the first tenant running cards in two
+      currencies.
+
+- [ ] **(c) `GET /api/cards/rebates` and `GET /api/inspections` are
+      unpaginated.** Both are fine at current volumes and both back a table that
+      will grow monotonically. `GET /api/inspections` additionally returns
+      `gr_id` with no `gr_number` and no `?gr_id=` filter, so the UI carries a
+      `page_size=100` receipts fetch purely to label a column.
+      **Durable fix:** the Load-More footer + `/ids` resolver pattern the
+      invoice, vendor and payment-queue lists already use; plus a `gr_id` filter.
+      **Trigger:** either list passing a few hundred rows.
+
+- [ ] **(c) `nav.ts` hides `/goods-receipts` from an `ap_clerk` whose backend
+      reads are open to all four roles.** The receipts *and* inspections list
+      endpoints are `get_current_user`-gated, but the whole Procurement nav
+      group is restricted to admin/ap_manager/cfo, so a clerk has no link to a
+      page they are allowed to read. Pre-existing and about the group, not about
+      inspections — which is why round 22 left the shared file alone rather than
+      widening it as a side effect. **Durable fix:** a product call on whether
+      clerks see Procurement, then align `nav.ts` with the route gates either
+      way. **Trigger:** a product decision.
+
+- [ ] **(c) Refusal sentences from the e-invoice validator are no longer
+      localized.** Deliberate, and a net gain — the deleted client map covered 4
+      codes and 12 field paths out of dozens, so most rows previously rendered a
+      bare rule id with no explanation ([decisions.md](decisions.md) §95). The
+      wrapper copy stays localized. **Durable fix:** a code→`MessageKey` map
+      generated from the backend's own rule set, so the catalogue cannot drift
+      from the validator. **Trigger:** a localization pass on error content.
+
+- [ ] **(c) The `/adaptive` and inspections surfaces have no mobile
+      counterpart.** Recorded so the docs stop claiming "no UI" generally when
+      what they mean is "no mobile UI".
+      **Durable fix:** mobile screens if either capability is marketed on
+      mobile. **Trigger:** a mobile scope decision.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 

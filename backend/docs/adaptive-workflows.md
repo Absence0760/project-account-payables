@@ -583,6 +583,61 @@ JSON configs), and per-row start / stop / conclude / delete actions gated by
 status + role. Over `$lib/api/experiments.ts` (types in
 `$lib/types/experiments.ts`).
 
+### Frontend — `/adaptive`
+
+An `/adaptive` route under the **Settings** nav group, over
+`$lib/api/adaptive.ts` (types live in that module — it is the only consumer,
+and every money field on the wire is an exact decimal string). Read is
+admin / ap_manager / cfo, matching `_READ_ROLES`; a clerk is redirected, since
+every route here would 403 them.
+
+Six `Tabs` panels, each with its own loading / error / empty state and its own
+lazy load, so a reader pays for the panel they opened:
+
+| Tab | Endpoint(s) | Act |
+|---|---|---|
+| Suggestions | `GET /suggestions` | `POST /suggestions/{id}/dismiss`, armed two-click, ap_manager+ |
+| Auto-approve threshold | `GET /threshold-recommendation` | `POST .../apply`, **admin only** |
+| Smart routing | `GET /routing-suggestion` (+ `GET /api/invoices?status=ready_for_review` for the picker) | `POST /routing-suggestion/apply`, ap_manager+ |
+| Approval patterns | `GET /approval-patterns` | — |
+| Anomalies | `GET /anomalies` | — |
+| Feedback loop | `GET /feedback` | — |
+
+Four contracts the page encodes, each of which is easy to get wrong:
+
+- **Advisory is stated, not implied.** A standing line under the page title says
+  nothing here has changed a workflow, and each of the three acts is a separate,
+  explicitly role-gated control. The two read-only panels (anomalies, patterns)
+  say in their own intro that flagging raises nothing and blocks nothing.
+- **The threshold apply sends `expected_recommended_threshold`** — the exact
+  figure that was rendered. The 409 it can provoke is *the guard working*, not a
+  failure, so it renders as its own persistent amber
+  `[data-testid="adaptive-threshold-stale"]` region naming **both** figures (what
+  was on screen, what it became), with the recommendation re-read underneath so
+  the button now offers the current number. It is deliberately not routed into
+  the panel's error state: "apply failed" would misdescribe both what happened
+  (nothing was applied, and nothing is broken) and what to do next.
+- **`GET /feedback` writes an `adaptive_feedback.viewed` access-audit row**, so
+  the page never polls it and never fetches it speculatively — it loads on the
+  explicit act of opening the Feedback tab (once) and on an explicit Refresh.
+  `tests-e2e/adaptive/adaptive.spec.ts` asserts the request count is zero until
+  the tab is opened.
+- **The insufficient-data state renders as itself.** Below `_FEEDBACK_MIN_SAMPLE`
+  the backend returns `value_pct: null`, and the UI renders "Not yet measurable"
+  plus the backend's own explanatory `label` — never a `0%` that would read as
+  "the automation is never overruled" on a two-invoice sample. The overturn-rate
+  KPI shows an em dash in the same state.
+
+Smart routing ranks *people*, so each candidate carries its `base_score`, the
+`outcome_penalty` with the `overturn_rate_pct` and `outcome_sample_size` it was
+read over, and the backend's own `reasons` list — an unexplained ranking of
+colleagues is worse than none, and the "no down-weight (N decisions on record)"
+line is rendered explicitly so a thin record can't be mistaken for a clean one.
+
+E2E: `frontend/tests-e2e/adaptive/adaptive.spec.ts` (role gate both ways,
+section-bar reachability, dismiss, apply, the stale-guard state, the audited-read
+timing, and both feedback metric states).
+
 ## Tunables — `Organization.settings.adaptive`
 
 Partial override (omit a key to inherit; unknown keys dropped — mirrors
@@ -804,4 +859,5 @@ not apply.
 - **LLM phrasing** of suggestion text — if added, must fail soft to the template
   with no key (mirror `services/audit_summary.py`).
 - Business-day-weighted time-to-approve (currently simple elapsed days).
-- No frontend/mobile UI yet.
+- **Web UI** — ✅ **Shipped** as `/adaptive`; see § Frontend — `/adaptive` above.
+  No **mobile** (Flutter) surface yet.

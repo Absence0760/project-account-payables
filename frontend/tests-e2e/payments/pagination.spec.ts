@@ -48,8 +48,17 @@ test.describe('/payments pagination', () => {
 
 		await page.goto('/payments');
 		await page.waitForLoadState('networkidle');
+		// The wait is armed BEFORE the click, not after it. `waitForResponse`
+		// only observes responses that arrive after it is called, so awaiting it
+		// afterwards loses a race the local dev stack wins routinely — the fetch
+		// completes before the listener attaches and the test times out having
+		// missed the very response it was waiting for. The Load-more step below
+		// already used this shape; the tab click did not.
+		const firstPage = page.waitForResponse(
+			(r) => r.url().includes('/api/payments') && r.url().includes('page=1')
+		);
 		await page.getByRole('button', { name: /History/ }).click();
-		await page.waitForResponse((r) => r.url().includes('/api/payments') && r.url().includes('page=1'));
+		await firstPage;
 
 		const firstPageRows = await page.locator('table tbody tr').count();
 		expect(firstPageRows).toBeLessThanOrEqual(20);

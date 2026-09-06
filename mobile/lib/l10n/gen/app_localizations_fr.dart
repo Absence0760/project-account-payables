@@ -851,6 +851,31 @@ class AppLocalizationsFr extends AppLocalizations {
   String get payRunActionCancel => 'Annuler';
 
   @override
+  String get payRunActionApprove => 'Approuver en tant que directeur financier';
+
+  @override
+  String get payRunApproveTitle => 'Approuver le lot de paiement ?';
+
+  @override
+  String payRunApproveBody(String date, int count, String amount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count paiements',
+      one: '$count paiement',
+    );
+    return 'Validation du lot créé le $date — $_temp0 pour un total de $amount. Cela autorise l’exécution ; aucun fonds n’est déplacé.';
+  }
+
+  @override
+  String get payRunApproveConfirm => 'Approuver';
+
+  @override
+  String payRunApproveFailed(String error) {
+    return 'Échec de l’approbation : $error';
+  }
+
+  @override
   String get payRunCfoBlocked =>
       'Ce lot nécessite l\'approbation du directeur financier avant de pouvoir être exécuté.';
 

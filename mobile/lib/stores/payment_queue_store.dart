@@ -157,6 +157,25 @@ class PaymentQueueStore extends ChangeNotifier {
     }
   }
 
+  /// CFO sign-off on a draft run that trips the org's approval threshold.
+  /// Returns the server message, or null on failure with [error] set.
+  ///
+  /// This authorizes execution; it moves no money. Refusals are routine — 409
+  /// (not a draft / doesn't need sign-off / already signed off) and 403 (the
+  /// maker-checker check: the run's creator can't approve their own run) — so
+  /// [error] carries the server's own `detail` sentence via [describeApiError].
+  Future<String?> approveRun(String runId) async {
+    try {
+      final result = await PaymentApi.approveRun(runId);
+      await fetchRuns();
+      return result['message'] as String? ?? 'Run approved by CFO';
+    } catch (e) {
+      _error = describeApiError(e);
+      notifyListeners();
+      return null;
+    }
+  }
+
   /// Execute a draft run. Returns the server message, or null on failure.
   ///
   /// A refusal here is routine, not exceptional — the CFO-approval gate and the

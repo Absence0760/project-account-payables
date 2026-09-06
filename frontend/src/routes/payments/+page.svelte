@@ -40,6 +40,20 @@
 		retryRunErpSync,
 		type RunErpSyncResult
 	} from '$lib/api/payments';
+	import {
+		confirmCardRebate,
+		listCardRebates,
+		markCardRebatePaid
+	} from '$lib/api/cards';
+	import {
+		formatRebateRate,
+		nextRebateTransition,
+		rebateAmountCurrency,
+		rebateTone,
+		type CardRebate,
+		type RebateListResponse,
+		type RebateTransition
+	} from '$lib/types/cardRebate';
 	import { m } from '$lib/i18n/store.svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/stores';
@@ -67,6 +81,17 @@
 		{ label: m('payments.col.charged'), class: 'right' },
 		{ label: m('payments.col.status') },
 		{ label: m('payments.col.expires') },
+		{ class: 'actions-col' }
+	]);
+
+	let REBATES_COLUMNS = $derived([
+		{ label: m('payments.rebates.col.period') },
+		{ label: m('payments.rebates.col.card') },
+		{ label: m('payments.rebates.col.rate'), class: 'right' },
+		{ label: m('payments.rebates.col.amount'), class: 'right' },
+		{ label: m('payments.rebates.col.status') },
+		// Actions column: the one available lifecycle step. Always rendered so
+		// the table keeps its shape for a terminal (`paid_out`) row.
 		{ class: 'actions-col' }
 	]);
 
@@ -926,6 +951,7 @@
 			loadRuns();
 		} else if (activeTab === 'cards') {
 			loadCards();
+			loadRebates();
 		}
 	});
 
@@ -947,6 +973,7 @@
 	const queueSequence = createRequestSequencer();
 	const runsSequence = createRequestSequencer();
 	const cardsSequence = createRequestSequencer();
+	const rebatesSequence = createRequestSequencer();
 
 	async function loadSummary() {
 		const token = summarySequence.start();
@@ -1099,6 +1126,12 @@
 		projected_annual_rebates: number;
 		rebates_this_month_by_status: RebateStatusBreakdown;
 		rebates_ytd_by_status: RebateStatusBreakdown;
+		// The single currency every figure above is denominated in — the org's
+		// REPORTING currency, resolved server-side. Read it off the response
+		// rather than falling back to the `orgCurrency` store: the store
+		// resolves the same order client-side, but the response is the one that
+		// actually denominates these numbers.
+		currency: string;
 	}
 	let cardDashboard = $state<CardDashboard | null>(null);
 
@@ -1173,6 +1206,126 @@
 			};
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Card not viewable', 'error');
+		}
+	}
+
+	// --- Card-rebate lifecycle (`pending` → `confirmed` → `paid_out`) --------
+	// The Cards tab rendered a muted "+{amount} pending confirmation" hint for a
+	// status the product gave no way to advance: `GET /api/cards/rebates` and
+	// its two transitions shipped API-only, so the pending bucket could only
+	// ever grow and the realized headline beside it could never catch up.
+	//
+	// A transition here is a HUMAN-DRIVEN RECORD of something the processor did
+	// out-of-band — Lithic/Nium confirm and pay rebates on a periodic statement,
+	// not on a webhook we ingest. Neither call requests a payout and neither
+	// moves money; the dialog copy says so, because a "Mark paid out" button is
+	// otherwise very easy to read as one that pays someone.
+	//
+	// Read and write share ONE role gate server-side (admin/ap_manager/cfo), so
+	// there is no role that can see this table without being able to act on it;
+	// the check is still made, because `/payments` is reachable by a custom role
+	// holding only `payment.execute` / `payment.void` (see `lib/nav.ts`).
+	let rebates = $state<CardRebate[]>([]);
+	let rebateTotal = $state<RebateListResponse['total']>(null);
+	// `null` until a list has loaded. `rebateAmountCurrency` returns `null` when
+	// the wire cannot support a per-row currency claim — see its docstring.
+	let rebateListCurrency = $state<string | null>(null);
+	let rebateRowCurrency = $state<string | null>(null);
+	let rebateExcludedCount = $state(0);
+	let loadingRebates = $state(false);
+	let rebatesErrored = $state(false);
+
+	// `RebateResponse.status` is a bare string, so the label is looked up rather
+	// than interpolated into a message key: an unrecognised status renders
+	// verbatim instead of the raw key (or a blank cell), the same way
+	// `rebateTone` falls back to a flat pill.
+	const REBATE_STATUS_LABEL_KEYS = {
+		pending: 'payments.rebates.status.pending',
+		confirmed: 'payments.rebates.status.confirmed',
+		paid_out: 'payments.rebates.status.paidOut'
+	} as const;
+
+	function rebateStatusLabel(status: string): string {
+		const key = REBATE_STATUS_LABEL_KEYS[status as keyof typeof REBATE_STATUS_LABEL_KEYS];
+		return key ? m(key) : status;
+	}
+
+	function canManageRebates(): boolean {
+		return !!auth.user && auth.hasAnyRole('admin', 'ap_manager', 'cfo');
+	}
+
+	async function loadRebates() {
+		const token = rebatesSequence.start();
+		loadingRebates = true;
+		try {
+			const list = await listCardRebates();
+			if (!rebatesSequence.canCommit(token)) return; // superseded
+			rebates = list.items;
+			rebateTotal = list.total;
+			rebateListCurrency = list.currency;
+			rebateRowCurrency = rebateAmountCurrency(list);
+			rebateExcludedCount = list.excluded_rebate_count ?? 0;
+			rebatesErrored = false;
+		} catch (err) {
+			// Three distinct states, never one: "no rebates yet" is a claim about
+			// the card programme's earnings and must not be rendered over a
+			// failed read (mirrors `/exceptions`, `frontend/CLAUDE.md`).
+			if (rebatesSequence.isCurrentRequest(token)) {
+				rebatesErrored = true;
+				rebates = [];
+				toast(
+					err instanceof Error ? err.message : m('payments.rebates.errored'),
+					'error'
+				);
+			}
+		} finally {
+			if (rebatesSequence.isCurrentRequest(token)) loadingRebates = false;
+		}
+	}
+
+	let rebateTarget = $state<CardRebate | null>(null);
+	let rebateMode = $state<RebateTransition>('confirm');
+	let rebateBusy = $state(false);
+	let rebateError = $state<string | null>(null);
+
+	function openRebate(r: CardRebate, mode: RebateTransition) {
+		rebateTarget = r;
+		rebateMode = mode;
+		rebateError = null;
+	}
+
+	function closeRebate() {
+		rebateTarget = null;
+		rebateError = null;
+	}
+
+	async function commitRebate() {
+		if (!rebateTarget) return;
+		const id = rebateTarget.id;
+		const mode = rebateMode;
+		rebateBusy = true;
+		rebateError = null;
+		try {
+			if (mode === 'confirm') await confirmCardRebate(id);
+			else await markCardRebatePaid(id);
+			toast(
+				mode === 'confirm'
+					? m('payments.rebates.confirmed')
+					: m('payments.rebates.markedPaid'),
+				'success'
+			);
+			closeRebate();
+			// The dashboard's realized headline is `confirmed + paid_out`, so it
+			// moves on a confirm — reload both rather than patching the row.
+			await loadCards();
+			await loadRebates();
+		} catch (err) {
+			// Persistent, not a toast that fades: a 409 ("Cannot confirm a rebate
+			// in 'confirmed' status") is what an operator whose row went stale
+			// under a concurrent update needs to read while the dialog is open.
+			rebateError = err instanceof Error ? err.message : m('payments.rebates.failed');
+		} finally {
+			rebateBusy = false;
 		}
 	}
 
@@ -1760,43 +1913,136 @@
 			<div class="rebate-grid">
 				<div class="rebate-card">
 					<span class="rebate-label">{m('payments.cards.rebatesThisMonth')}</span>
-					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_this_month)}</span>
+					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_this_month, cardDashboard.currency)}</span>
 					<span class="rebate-hint">{m('payments.cards.rebatesRealizedHint')}</span>
 					{#if cardDashboard.rebates_this_month_by_status.pending_total > 0}
 						<span class="rebate-hint">
 							{m('payments.cards.rebatesPendingHint', {
-								amount: formatCurrency(cardDashboard.rebates_this_month_by_status.pending_total)
+								amount: formatCurrency(cardDashboard.rebates_this_month_by_status.pending_total, cardDashboard.currency)
 							})}
 						</span>
 					{/if}
 				</div>
 				<div class="rebate-card">
 					<span class="rebate-label">{m('payments.cards.rebatesYtd')}</span>
-					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_ytd)}</span>
+					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_ytd, cardDashboard.currency)}</span>
 					<span class="rebate-hint">{m('payments.cards.rebatesRealizedHint')}</span>
 					{#if cardDashboard.rebates_ytd_by_status.pending_total > 0}
 						<span class="rebate-hint">
 							{m('payments.cards.rebatesPendingHint', {
-								amount: formatCurrency(cardDashboard.rebates_ytd_by_status.pending_total)
+								amount: formatCurrency(cardDashboard.rebates_ytd_by_status.pending_total, cardDashboard.currency)
 							})}
 						</span>
 					{/if}
 				</div>
 				<div class="rebate-card highlight">
 					<span class="rebate-label">{m('payments.cards.projectedAnnual')}</span>
-					<span class="rebate-value">{formatCurrency(cardDashboard.projected_annual_rebates)}</span>
+					<span class="rebate-value">{formatCurrency(cardDashboard.projected_annual_rebates, cardDashboard.currency)}</span>
 					<span class="rebate-hint">{m('payments.cards.atRunRate')}</span>
 				</div>
 				<div class="rebate-card">
 					<span class="rebate-label">{m('payments.cards.activeCards')}</span>
 					<span class="rebate-value">
 						{cardDashboard.active_cards}
-						<span class="rebate-sub">{formatCurrency(cardDashboard.active_cards_value)}</span>
+						<span class="rebate-sub">{formatCurrency(cardDashboard.active_cards_value, cardDashboard.currency)}</span>
 					</span>
 				</div>
 			</div>
 		{/if}
 
+		<!-- Card-rebate lifecycle. The KPI cards above render a muted
+		     "+{amount} pending confirmation" hint; until now nothing on this
+		     page could advance that status, so the pending bucket only ever
+		     grew. Advancing a rebate RECORDS what the processor already did on
+		     its own statement — it never moves money, which is why the dialog
+		     says so before either action can be taken. -->
+		<h2 class="section-heading">{m('payments.rebates.title')}</h2>
+		<p class="section-note">{m('payments.rebates.subtitle')}</p>
+
+		{#if rebateExcludedCount > 0}
+			<!-- A rebate carries no currency of its own on the wire (see
+			     `rebateAmountCurrency`). When the list is not homogeneous we say
+			     so instead of stamping the reporting code onto every row. -->
+			<p class="fx-skipped" role="alert" data-testid="rebate-mixed-currency">
+				{m('payments.rebates.mixedCurrency', { n: rebateExcludedCount })}
+			</p>
+		{/if}
+
+		<DataTable
+			columns={REBATES_COLUMNS}
+			isEmpty={rebates.length === 0}
+			empty={loadingRebates
+				? m('payments.rebates.loading')
+				: rebatesErrored
+					? m('payments.rebates.errored')
+					: m('payments.rebates.empty')}
+			colspan={6}
+		>
+			{#snippet body()}
+				{#each rebates as rebate (rebate.id)}
+					<tr>
+						<td class="mono">{rebate.period ?? '\u2014'}</td>
+						<td class="mono muted">{rebate.virtual_card_id.slice(0, 8)}</td>
+						<td class="right mono">{formatRebateRate(rebate.rate)}</td>
+						<td class="right mono" data-testid="rebate-amount">
+							{#if rebateRowCurrency}
+								{formatCurrency(rebate.amount, rebateRowCurrency)}
+							{:else}
+								<!-- Currency unknowable per row: render the exact figure the
+								     API sent, with no code, rather than a symbol that may be
+								     wrong. The advisory above names how many rows this hits. -->
+								<span data-testid="rebate-amount-bare">{rebate.amount}</span>
+							{/if}
+						</td>
+						<td>
+							<Badge tone={rebateTone(rebate.status)}>
+								{rebateStatusLabel(rebate.status)}
+							</Badge>
+						</td>
+						<td class="actions">
+							{#if canManageRebates()}
+								{@const step = nextRebateTransition(rebate.status)}
+								{#if step === 'confirm'}
+									<RowAction
+										onclick={() => openRebate(rebate, 'confirm')}
+										ariaLabel={m('payments.rebates.confirmAria', {
+											rebate: rebate.id.slice(0, 8)
+										})}
+									>
+										{m('payments.rebates.confirm')}
+									</RowAction>
+								{:else if step === 'mark-paid'}
+									<RowAction
+										onclick={() => openRebate(rebate, 'mark-paid')}
+										ariaLabel={m('payments.rebates.markPaidAria', {
+											rebate: rebate.id.slice(0, 8)
+										})}
+									>
+										{m('payments.rebates.markPaid')}
+									</RowAction>
+								{/if}
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			{/snippet}
+		</DataTable>
+
+		{#if rebates.length > 0 && rebateListCurrency}
+			<p class="rebate-total" data-testid="rebate-total">
+				{m('payments.rebates.total')}
+				<strong class="mono">{formatCurrency(rebateTotal, rebateListCurrency)}</strong>
+			</p>
+		{/if}
+
+		<h2 class="section-heading">{m('payments.rebates.cardsTitle')}</h2>
+
+		<!-- The Cards tab stacks TWO tables (rebates above, cards here), so a
+		     page-wide `table tbody tr` count reads both. This wrapper is the
+		     scope the cards-pagination spec measures its page size against —
+		     a real API, not scaffolding: without it the assertion silently
+		     starts counting a sibling table's rows. -->
+		<div data-testid="cards-table">
 		<DataTable
 			columns={CARDS_COLUMNS}
 			isEmpty={cards.length === 0}
@@ -1833,6 +2079,7 @@
 				{/each}
 			{/snippet}
 		</DataTable>
+		</div>
 
 		{#if hasMoreCards}
 			<div class="load-more-row">
@@ -1883,6 +2130,67 @@
 		<div class="modal-footer">
 			<button type="button" class="btn-cancel" onclick={() => (revealedCard = null)}>
 				{m('payments.cardDetails.close')}
+			</button>
+		</div>
+	{/if}
+</Modal>
+
+<!-- Advance one card rebate along `pending` → `confirmed` → `paid_out`.
+     Confirm-then-act, like the compliance-hold and settlement dialogs beside
+     it — but deliberately NOT armed/destructive-tinted: this records what the
+     processor already did on its own statement. It requests no payout and pays
+     no one, and the copy leads with that so "Mark paid out" cannot be read as a
+     button that moves money. -->
+<Modal
+	open={rebateTarget !== null}
+	ariaLabel="Advance card rebate"
+	title={rebateMode === 'confirm'
+		? m('payments.rebates.dialog.confirmTitle')
+		: m('payments.rebates.dialog.markPaidTitle')}
+	onclose={closeRebate}
+>
+	{#if rebateTarget}
+		<p class="modal-hint">
+			<strong class="mono">{rebateTarget.id.slice(0, 8)}</strong>
+			{#if rebateTarget.period}· {rebateTarget.period}{/if}
+			· {formatRebateRate(rebateTarget.rate)}
+		</p>
+		<!-- The figure being recorded, rendered the same way the table renders
+		     it — with a currency code only where the wire supports the claim. -->
+		<p class="rebate-dialog-amount mono" data-testid="rebate-dialog-amount">
+			{#if rebateRowCurrency}
+				{formatCurrency(rebateTarget.amount, rebateRowCurrency)}
+			{:else}
+				{rebateTarget.amount}
+			{/if}
+		</p>
+
+		<p class="modal-note" data-testid="rebate-warning">
+			{rebateMode === 'confirm'
+				? m('payments.rebates.dialog.confirmWarning')
+				: m('payments.rebates.dialog.markPaidWarning')}
+		</p>
+
+		{#if rebateError}
+			<p class="state error" role="alert" data-testid="rebate-error">{rebateError}</p>
+		{/if}
+
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={closeRebate}>
+				{m('common.cancel')}
+			</button>
+			<button
+				type="button"
+				class="btn-primary"
+				data-testid="rebate-confirm"
+				disabled={rebateBusy}
+				onclick={commitRebate}
+			>
+				{rebateBusy
+					? m('payments.rebates.dialog.busy')
+					: rebateMode === 'confirm'
+						? m('payments.rebates.dialog.confirmCta')
+						: m('payments.rebates.dialog.markPaidCta')}
 			</button>
 		</div>
 	{/if}
@@ -2773,6 +3081,50 @@
 	.rebate-hint {
 		font-size: 0.7rem;
 		color: var(--text-muted);
+	}
+
+	/* Cards-tab section structure. The tab stacks two tables (rebates, then
+	   the cards themselves) under one `<h1>`, so each gets a real `<h2>` —
+	   heading structure, not bold text (WCAG 1.3.1). */
+	.section-heading {
+		font-size: 0.95rem;
+		font-weight: 600;
+		color: var(--text);
+		margin: 24px 0 4px;
+	}
+
+	.section-note {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		margin: 0 0 12px;
+		max-width: 78ch;
+	}
+
+	.rebate-total {
+		font-size: 0.85rem;
+		color: var(--text-muted);
+		margin: 8px 0 0;
+		text-align: right;
+	}
+
+	.rebate-dialog-amount {
+		font-size: 1.35rem;
+		font-weight: 600;
+		color: var(--text);
+		margin: 0 0 14px;
+	}
+
+	/* Neutral sibling of `.modal-warn`. Deliberately NOT the red tint: this
+	   dialog records a processor statement, it does not move money, and a
+	   danger-coloured box would say the opposite of the sentence inside it. */
+	.modal-note {
+		font-size: 0.82rem;
+		color: var(--text);
+		margin: 0 0 14px;
+		padding: 10px 12px;
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		border-radius: 4px;
 	}
 
 	/* Same reasoning as `.discount-pct`: this sub-label renders INSIDE a

@@ -54,10 +54,12 @@ export function einvoiceFilename(format: EInvoiceFormat, invoiceRef: string): st
 /** Generate + download one dialect for `invoiceId`.
  *
  * Throws `ApiError` on failure — notably **422** when the invoice is not valid
- * for the requested dialect, whose `detail` is the backend's PII-free
- * `"field: code; field: code"` join. `api.downloadBlob` already runs that
- * detail through `formatApiDetail`, so the thrown message IS the explanation;
- * `parseEInvoiceIssues` turns it back into per-field rows for rendering.
+ * for the requested dialect. That body is the backend's PII-free STRUCTURED
+ * error list (`{loc, type, msg}` per field — FastAPI's own validation-error
+ * shape), so `api.downloadBlob`'s shared `formatApiDetail` renders it as
+ * `"field: message; field: message"` with no special-casing; the thrown
+ * message IS the explanation, and `parseEInvoiceIssues` splits it back into
+ * per-field rows for rendering.
  */
 export function downloadEInvoice(invoiceId: string, format: EInvoiceFormat): Promise<Blob> {
 	return api.downloadBlob(
@@ -96,24 +98,29 @@ export function sendInvoiceOverPeppol(
 export interface EInvoiceValidationIssue {
 	/** Dotted field path, e.g. `seller.tax_id`, `lines`, `taxes[0].rate`. */
 	field: string;
-	/** `missing` | `malformed` | `inconsistent` | `implausible` from the
-	 *  structural + tax pass, or an EN 16931 rule id (`BR-CO-25`) from the
-	 *  PEPPOL BIS Billing 3.0 conformance pass. */
-	code: string;
+	/** The backend's own PII-free sentence for this field. Where the failure is
+	 *  an EN 16931 / PEPPOL rule the message leads with the rule id
+	 *  (`BR-CO-25: …`) — the identifier a receiving Access Point's validator
+	 *  names — so nothing here needs a code→prose map on the client. */
+	message: string;
 }
 
-// A field path is a dotted/indexed identifier and a code is a bare token —
-// anything else means the detail is not the validation join (a different 4xx,
-// a proxy's HTML error page), and the caller must render it verbatim instead
-// of pretending it parsed. The code alphabet allows upper case, digits and
-// hyphens because the PEPPOL/EN 16931 conformance pass reports the rule id
-// itself (`BR-CO-25`) where the structural pass reports a word (`missing`).
+// A field path is a dotted/indexed identifier — anything else means the detail
+// is not the validation rendering (a different 4xx, a proxy's HTML error page),
+// and the caller must render it verbatim instead of pretending it parsed.
 const FIELD_PATH = /^[A-Za-z0-9_]+(?:\[\d+\])?(?:\.[A-Za-z0-9_]+(?:\[\d+\])?)*$/;
-const ISSUE_CODE = /^[A-Za-z0-9_-]+$/;
 
 /**
- * Split the 422 detail (`"issue_date: missing; lines: missing"`) into its
- * per-field parts so the UI can say *why* the dialect refused the invoice.
+ * Split the rendered 422 detail into its per-field parts so the UI can list
+ * *why* the dialect refused the invoice, one row per field.
+ *
+ * The backend returns the errors STRUCTURED — `[{loc, type, msg}]` — and the
+ * shared `formatApiDetail` (in `utils/apiError.ts`, which every response in the
+ * app already goes through) flattens exactly that shape to
+ * `"issue_date: Issue date is required; lines: At least one invoice line is
+ * required"`. `ApiError` carries only a message, so this re-splits that one
+ * rendering rather than duplicating the transport. The message is the SERVER's
+ * wording — there is deliberately no code→prose table here.
  *
  * Returns `[]` when the string is not that shape — the caller then shows the
  * raw message. Never throws, never guesses: a partially-parseable detail is
@@ -121,22 +128,63 @@ const ISSUE_CODE = /^[A-Za-z0-9_-]+$/;
  * than showing the backend's own wording.
  */
 export function parseEInvoiceIssues(detail: string): EInvoiceValidationIssue[] {
-	const parts = detail.split(';').map((p) => p.trim()).filter(Boolean);
+	// `formatApiDetail` joins with exactly `'; '`. Splitting on the bare `;`
+	// would cut a message that legitimately contains one.
+	const parts = detail
+		.split('; ')
+		.map((p) => p.trim())
+		.filter(Boolean);
 	if (parts.length === 0) return [];
 	const issues: EInvoiceValidationIssue[] = [];
 	for (const part of parts) {
-		const at = part.indexOf(':');
+		// First `': '` only: a rule-id message carries its own colon
+		// (`due_date: BR-CO-25: an invoice needs a due date`).
+		const at = part.indexOf(': ');
 		if (at < 0) return [];
 		const field = part.slice(0, at).trim();
-		const code = part.slice(at + 1).trim();
-		if (!FIELD_PATH.test(field) || !ISSUE_CODE.test(code)) return [];
-		issues.push({ field, code });
+		const message = part.slice(at + 2).trim();
+		if (!FIELD_PATH.test(field) || !message) return [];
+		issues.push({ field, message });
 	}
 	return issues;
 }
 
-/** Collapse an indexed path (`taxes[0].rate`) onto its label key shape
- *  (`taxes[].rate`) — the index identifies which line, not which rule. */
-export function einvoiceIssueFieldKey(field: string): string {
-	return field.replace(/\[\d+\]/g, '[]');
+/** One row of `GET /api/invoices/{id}/peppol-transmissions` — PII-free by
+ *  construction: the counterparty's and our own registered participant ids
+ *  live on the backend row and inside the UBL, and never in this response. */
+export interface PeppolTransmissionSummary {
+	id: string;
+	/** "outbound" | "inbound". */
+	direction: string;
+	/** "sending" | "sent" | "delivered" | "failed". */
+	status: string;
+	provider: string;
+	/** EAS registry code of the counterparty id (e.g. `9930`), never its value. */
+	participant_scheme: string;
+	message_id: string | null;
+	/** PII-free reason code only. */
+	failure_reason: string | null;
+	transmitted_at: string | null;
+	created_at: string;
+}
+
+/** Every PEPPOL transmission recorded for the invoice, newest first.
+ *
+ * The send response's `already_sent` only describes a send the user just made,
+ * so without this the UI could report an outcome but could never state the
+ * state on OPEN — and deliberately made no "not yet sent" claim it could not
+ * support. Read-gated to all four roles, like the e-invoice download. */
+export function listPeppolTransmissions(invoiceId: string): Promise<{
+	transmissions: PeppolTransmissionSummary[];
+}> {
+	return api.get(`/api/invoices/${invoiceId}/peppol-transmissions`);
+}
+
+/** A transmission still standing on the network — the backend's own
+ *  idempotency predicate (`status <> 'failed'` in the partial unique index), so
+ *  the UI can't disagree with what a repeat send would do. */
+export function livePeppolTransmission(
+	rows: PeppolTransmissionSummary[]
+): PeppolTransmissionSummary | null {
+	return rows.find((r) => r.direction === 'outbound' && r.status !== 'failed') ?? null;
 }

@@ -147,11 +147,24 @@ async function stripBlockedFields(page: import('@playwright/test').Page): Promis
 		const response = await route.fetch();
 		const body = (await response.json()) as {
 			items?: { blocked?: boolean; blocked_reason?: string }[];
+			blocked_total?: number;
+			selectable_total?: number;
 		};
 		for (const item of body.items ?? []) {
 			delete item.blocked;
 			delete item.blocked_reason;
 		}
+		// The ENVELOPE carries the feature too — `blocked_total` is what drives
+		// the banner (`selectable_total` is derived from it in the same handler,
+		// `api/payments.py`: `blocked_total = rollup.total - selectable_total`).
+		// Stripping only the per-row pair left the banner rendering from a count
+		// no visible row explained, so this helper's own promise — "assert no
+		// chip anywhere, on ANY tenant" — held only on a freshly-seeded one and
+		// failed on a worker whose tenant had picked up a blocking exception.
+		// The sibling `markSomeBlocked` above keeps both in step for exactly
+		// this reason; this one has to remove both for the same reason.
+		delete body.blocked_total;
+		delete body.selectable_total;
 		await route.fulfill({ response, json: body });
 	});
 }

@@ -86,23 +86,29 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		);
 	});
 
-	test('manager: + Payments/Vendors/Exceptions; full Procurement tabs; Settings = Experiments only', async ({
+	test('manager: + Payments/Vendors/Exceptions; full Procurement tabs; Settings = Adaptive + Experiments', async ({
 		page,
 		tenantManager
 	}) => {
 		await signInAndWait(page, tenantManager);
-		// Experiments is manager-readable and lives in Settings, so a manager now
-		// gets the Settings group landing (→ /experiments, its only Settings child).
+		// Experiments and Adaptive Workflows are both manager-readable and both
+		// live in Settings, so a manager gets the Settings group landing.
+		// `/adaptive` matches its backend gate: `api/adaptive._READ_ROLES` is
+		// admin/ap_manager/cfo, so a manager can read every panel on it (the
+		// write surfaces gate themselves separately, and threshold-apply is
+		// admin-only).
 		expect(await sidebarHrefs(page)).toEqual(
 			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/vendors/change-requests', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/experiments'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/purchase-orders')).toEqual(
 			['/purchase-orders', '/goods-receipts', '/requisitions', '/intake', '/catalogs', '/budgets'].sort()
 		);
-		// Experiments is the lone Settings tab a manager can see → bar suppressed.
-		await page.goto('/experiments');
-		await expect(page.locator('aside.sidebar')).toBeVisible();
-		await expect(page.locator('.section-tabs')).toHaveCount(0);
+		// Two Settings tabs now, so the section bar renders instead of being
+		// suppressed as it was when Experiments stood alone. The group landing
+		// is still /experiments — the first child a manager can see in nav order.
+		expect(await sectionTabHrefs(page, '/experiments')).toEqual(
+			['/adaptive', '/experiments'].sort()
+		);
 	});
 
 	test('cfo: gains Settings (Audit landing); Audit + Experiments tabs', async ({
@@ -113,10 +119,10 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		expect(await sidebarHrefs(page)).toEqual(
 			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/purchase-orders', '/contracts', '/assistant', '/audit'].sort()
 		);
-		// cfo sees Audit Trail + Experiments in Settings, plus Access Review
-		// (roles: ['admin', 'cfo']) → the section bar renders all three.
+		// cfo sees Audit Trail + Experiments + Adaptive Workflows in Settings,
+		// plus Access Review (roles: ['admin', 'cfo']) → the bar renders all four.
 		expect(await sectionTabHrefs(page, '/audit')).toEqual(
-			['/audit', '/experiments', '/admin/access-review'].sort()
+			['/audit', '/experiments', '/adaptive', '/admin/access-review'].sort()
 		);
 	});
 });
@@ -136,6 +142,9 @@ test.describe('RBAC — admin (cached session, no extra login)', () => {
 				'/audit',
 				'/workflows',
 				'/experiments',
+				'/adaptive',
+				'/admin/entities',
+				'/admin/health',
 				'/admin/api-keys',
 				'/admin/webhooks',
 				'/admin/partner',

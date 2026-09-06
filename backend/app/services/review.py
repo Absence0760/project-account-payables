@@ -252,6 +252,7 @@ async def approve_invoice(
         advance_approval_chain,
         check_level_approver,
         check_segregation,
+        get_chain_progress,
     )
 
     # Read the approval config: the invoice's frozen snapshot, falling back —
@@ -379,7 +380,9 @@ async def approve_invoice(
         instance = locked_result.scalar_one()
 
         # Initialize chain state on first approval if not yet initialized
-        if not (instance.state_data or {}).get("approval_levels"):
+        # `get_chain_progress` owns the read (and the "a stored `null` means
+        # no chain" coercion) — see `approval_chain.chain_state_of`.
+        if not get_chain_progress(instance):
             from app.services.approval_chain import invoice_routing_attrs, reporting_gate_amount
 
             applicable = resolve_applicable_levels(
@@ -403,10 +406,9 @@ async def approve_invoice(
         # The level index this approval is being recorded against — read BEFORE
         # advancing (advance_approval_chain bumps current_level once the level
         # is satisfied). Used for the partial-approval audit row below.
-        chain_levels = ((instance.state_data or {}).get("approval_levels") or {}).get("levels", [])
-        approved_level = ((instance.state_data or {}).get("approval_levels") or {}).get(
-            "current_level", 0
-        )
+        chain_state = get_chain_progress(instance)
+        chain_levels = chain_state.get("levels", [])
+        approved_level = chain_state.get("current_level", 0)
 
         # Named-approver gate for this level. Without it, any actor holding
         # the coarse role-based RBAC permission can clear a level meant for a
@@ -533,9 +535,11 @@ async def reject_invoice(
         # (a manager→CFO chain rejected at L0 would then need only the CFO). A
         # reworked invoice must re-run the whole chain, so clear it here (the
         # single reject chokepoint) and let the next approval re-initialise.
+        from app.services.approval_chain import clear_chain_state
+
         state_data = dict(instance.state_data or {})
         state_data["rejection_count"] = state_data.get("rejection_count", 0) + 1
-        state_data.pop("approval_levels", None)
+        clear_chain_state(state_data)
         instance.state_data = state_data
 
     return invoice

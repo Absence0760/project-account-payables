@@ -3568,3 +3568,189 @@ tenant claim a hostname another tenant's slug owns or takes at the next signup.
 new field would have published a staged, not-yet-cut-over vanity hostname to
 anyone who asked. It is blanked there explicitly. The general rule this records:
 a new `BrandConfig` field needs a publish / don't-publish call, not a default.
+
+---
+
+## 92. Two URL fields, because one of them is registered somewhere we don't control
+
+**Decided:** 2026-09-05 · `backend/app/services/sso.py`, `backend/app/api/{auth_sso,auth_saml,organization}.py`
+
+§91 left the OIDC `redirect_uri` and the SAML bridge URL on the global template
+while the other eight call sites moved per-tenant, and named the reason: they
+are registered at the customer's IdP. Closing that gap did **not** mean folding
+them into `tenant_url_template`. It meant a second field.
+
+`tenant_url_template` is admin-flippable with no external dependency — worst
+case an invite link points somewhere odd. `sso_callback_base_url` is half of a
+handshake with a system we do not administer: changing it without adding the new
+URI at the IdP first breaks every SSO login for that tenant. One field would mean
+an admin fixing invite links silently takes SSO down. So they are separate, the
+callback is opt-in, unset is byte-for-byte the old behaviour, and the runbook
+carries the ordered migration (add at the IdP → verify a real login → set this →
+only then remove the old URI).
+
+Two smaller calls under it.
+
+**The `Host` fallback needs no JWT cross-check here**, unlike `get_tenant`. These
+entry points are public and pre-authentication, and a forged `Host` can only
+select a tenant that *registered that exact hostname* — the same choice `?slug=`
+already gave anyone. The state/nonce (OIDC) and RelayState (SAML) are then minted
+and consumed against that tenant. An unresolvable host reuses the **existing**
+404 verbatim rather than inventing a response, so the change adds no enumeration
+surface.
+
+**The wipe hazard is the part that would have bitten.** Unlike `custom_domains`,
+which is protected by not being a `BrandConfig` field at all, this one is — so
+`model_dump()` emits it as `""` whenever a caller never mentioned it, and the
+`/organization` panel PUTs the whole config. An admin editing the product name
+would have silently cleared an IdP-registered callback and taken SSO with it,
+with nothing on screen suggesting it. The fix is `model_fields_set`: an omitted
+value is carried forward, an explicit empty string still clears it (that is the
+documented rollback), and the response echoes what was **stored** rather than
+what was sent, so a caller is never told the field is empty when it isn't.
+
+---
+
+## 93. `.get(k, {})` and `.get(k) or {}` were not two styles
+
+**Decided:** 2026-09-05 · `backend/app/services/approval_chain.py`
+
+Eight sites read `state_data["approval_levels"]` by hand in two spellings. The
+follow-up filed it as ownership debt with "no behavioural bug found today", and
+the instruction was to route them all through the existing, uncalled
+`get_chain_progress`. Both halves of that turned out to be wrong.
+
+The spellings differ on a stored `null`: `.get(k, {})` returns `None`, and every
+consumer immediately calls `.get("levels", …)` on the result. That is an
+`AttributeError` on the approval path, not a routing difference. The two sites
+using it survived only because their callers happened to test truthiness before
+subscripting — reordering one line would have made it live. `or {}` is correct
+and is now the owner's behaviour.
+
+And the uncalled helper fitted only three of the eight sites. Two of the others
+read the chain out of a **deep copy** of `state_data` and mutate it in place;
+the copy is what makes SQLAlchemy's dirty check see the write, so an
+instance-shaped reader would have handed back the un-copied object and broken
+the persistence. A function written without callers is not automatically the
+right abstraction — ownership was reshaped around what the call sites actually
+do (a raw-mapping reader, a thin instance front door, a writer, a clearer).
+
+A *truthy* wrong-shaped value (a list, a string) is deliberately passed through
+rather than coerced to `{}`. That is corrupt state, and the escalation sweep's
+per-instance `try` is built to count it as a failed instance; coercing would
+silently drop a real chain's requirement out of an approval path.
+
+---
+
+## 94. A read should not need a write to answer its own question
+
+**Decided:** 2026-09-05 · `backend/app/api/email_intake.py`
+
+`GET /api/organization/email-intake` returned `address: null` for two unrelated
+reasons — the platform has no `FEOH_EMAIL_INTAKE_DOMAIN` (the committed default),
+or this org has no token yet — and those call for opposite copy: "email intake
+isn't available on this deployment" versus "click to create your address". The
+payload could not tell them apart, and `enabled` only disambiguated *after* a
+token existed, because provisioning is what sets it.
+
+The UI's honest workaround was to offer a non-destructive "create" in the
+ambiguous state and only claim the deployment was unconfigured once the server
+had proven it — i.e. establish a read-only fact by performing a write. That is
+the wrong shape even when the write is harmless. `domain_configured` is an
+operator-config boolean, PII-free, no migration, and it answers on the first
+read.
+
+The client reads it as `?? true`. An older backend that doesn't send the field
+degrades to assume-available, which is the safe direction: reporting a working
+deployment as switched off is worse than the pre-existing ambiguity.
+
+---
+
+## 95. The 422 stopped being a string, and the client's translation table went with it
+
+**Decided:** 2026-09-05 · `backend/app/services/e_invoice/validate.py`
+
+`EInvoiceValidationError.__str__` emitted `field: code`, so `FieldError`'s
+PII-free `message` ("FatturaPA requires a Partita IVA…") never left the server
+and every client had to maintain its own code→prose map. The frontend had one.
+It covered 4 codes and 12 field paths out of dozens, so most rows already fell
+through to a bare `"was rejected (BR-CO-09)"`.
+
+The body now uses FastAPI's own `[{loc, type, msg}]` validation-error shape,
+chosen because the app's shared `formatApiDetail` **already** flattens exactly
+that — so no endpoint-specific client handling was needed and `api.ts` did not
+have to change. `__str__` is deliberately untouched: two services log it, and
+only the HTTP body moved.
+
+The rule id rides on **two** channels — `type`, and folded into `msg` — because
+a client that flattens keeps only `loc` and `msg`, and the rule id is precisely
+the half a receiving Access Point's own validator will name.
+
+The trade-off, stated rather than hidden: those refusal sentences are now the
+server's English instead of localized strings. It is still a net gain — most
+rows previously had no explanation at all — and the wrapper copy stays
+localized. Doing it properly means a code→key map generated from the backend's
+rule set, which is its own slice.
+
+---
+
+## 96. A capability with a second, divergent path is worse than one with none
+
+**Decided:** 2026-09-05 · `frontend/src/routes/payments/+page.svelte`
+
+This round's premise was that a shipped, tested, documented capability with no
+UI is a defect. Two endpoints were nonetheless left unwired on purpose, and the
+distinction is worth keeping.
+
+`POST /api/cards/{id}/cancel` exists and works. But every card this app mints
+comes from a payment run's `virtual_card` leg and therefore has a `Payment` row,
+and `POST /api/payments/{id}/void` — already on the History tab — cancels the
+card at the provider *and* reverses the books in one operation. A standalone
+Cancel would kill the card while leaving that `Payment` row and its invoice
+claiming money is in flight on a now-dead rail: two controls that both close a
+card and leave the ledger in different states. `POST /api/cards/generate` books
+no `Payment` row at all — it is a card-issuance decision competing with the
+payment run, not a rebate control.
+
+So "unreachable" is not the test. The test is whether reaching it leaves the
+system in a state the rest of the app can still reason about. The rebate
+lifecycle passed that and shipped; these two did not.
+
+The same reasoning shaped the inspections form: `POST /api/inspections` accepts
+a body with neither `gr_id` nor `po_id`, but the matcher only ever reads an
+inspection through a matched goods receipt or a PO-level row. An unlinked row is
+invisible to the very match it was recorded for, so the form requires a receipt
+rather than faithfully exposing what the endpoint tolerates.
+
+---
+
+## 97. Rendering "we cannot tell" is a feature, not an omission
+
+**Decided:** 2026-09-05 · `frontend/src/routes/{audit,adaptive}/+page.svelte`
+
+Three surfaces landed this round whose whole value is in *not* stating more than
+the data supports, which is the same principle §34 recorded for the residency
+alignment verdict and §84 for forecast variance.
+
+**`unsigned` is not a smaller `invalid`.** The approval-signature sweep counts
+them separately because a key rollout produces unsigned rows in bulk, and a UI
+that merged them into one "problem" figure would report a configuration fact as
+suspected tampering. They get separate cards, separate qualifying copy, distinct
+badge tones, and only `invalid` is alarm-tinted. An unset signing key renders a
+warning-toned notice *before* the counts, not a scary all-unsigned result.
+
+**A threshold recommendation that moved is not an error.** The backend's stale
+guard exists for this UI, so the rendered figure is always sent back as
+`expected_recommended_threshold` — a guard the client doesn't feed is no guard —
+and a 409 gets its own "the recommendation changed, nothing was applied" state
+naming both figures, with the current one re-read underneath. "Apply failed"
+would misstate both what happened and what to do next.
+
+**Below the minimum sample, the feedback metric renders "not yet measurable".**
+`0%` on a two-invoice sample reads as "the automation is never overruled" — the
+most reassuring statement available, from the row carrying the least
+information.
+
+And the reads that write audit rows are loaded on an explicit act, never polled
+or prefetched: a surface that logs the auditor looking at it must not log them
+looking at it every thirty seconds.

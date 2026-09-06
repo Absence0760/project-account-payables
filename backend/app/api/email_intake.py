@@ -189,9 +189,18 @@ async def get_intake_address(
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     org = await _get_org_or_404(ctrl_db, org_id)
+    # `address` is None for TWO different reasons — the platform has no
+    # `FEOH_EMAIL_INTAKE_DOMAIN` (the committed default), or this org has no
+    # token yet — and the two call for opposite things in the UI: "email intake
+    # isn't available on this deployment" versus "click to create your address".
+    # `domain_configured` separates them, so the admin panel can render the
+    # unavailable state on its FIRST read instead of having to mint a throwaway
+    # token to find out. It is an operator-config boolean, not tenant data, so
+    # it is PII-free and needs no migration.
     return {
         "address": intake_address_for(org),
         "enabled": bool(((org.settings or {}).get("email_intake") or {}).get("enabled")),
+        "domain_configured": bool(settings.email_intake_domain),
     }
 
 
