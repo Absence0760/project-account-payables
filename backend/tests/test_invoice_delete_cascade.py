@@ -37,6 +37,7 @@ from app.models.supplier_chat import (
 )
 from app.models.vendor import Vendor
 from app.models.virtual_card import CardRebate, CardRevealToken, VirtualCard
+from app.models.workflow import AuditLog
 
 pytestmark = pytest.mark.asyncio
 
@@ -203,3 +204,92 @@ async def test_delete_invoice_with_supplier_chat_thread_succeeds(realdb):
                 select(SupplierChatMessage).where(SupplierChatMessage.thread_id == thread_id)
             )
         ).first() is None
+
+
+# ---------------------------------------------------------------------------
+# A hard delete is a tenant mutation, and it was the one leaving no record.
+#
+# `_delete_invoice_cascade` removes the invoice plus its exceptions, payments,
+# payment schedules, workflow instances/steps, extraction results, line items,
+# agent decisions, PEPPOL transmissions, credit memos, discount offers, chat
+# threads and virtual cards. It deliberately does NOT touch `audit_log`, which
+# is what lets a terminal `invoice.deleted` row survive the delete and keeps the
+# invoice's whole prior trail readable afterwards.
+#
+# The audit sweep in `test_audit_append_only.py` did not catch this: it asks
+# whether the string `dispatch_audit` appears anywhere in the MODULE, and
+# `api/invoices.py` has 21 tenant-mutating routes, so one auditing handler
+# exempted the other twenty.
+# ---------------------------------------------------------------------------
+
+
+async def _deletion_rows(mk, invoice_id: str) -> list[AuditLog]:
+    async with mk() as s:
+        rows = (
+            await s.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_id == uuid.UUID(invoice_id),
+                    AuditLog.action == "invoice.deleted",
+                )
+            )
+        ).scalars()
+        return list(rows)
+
+
+async def test_deleting_an_invoice_writes_a_surviving_audit_row(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    invoice_id = await _seed_invoice(mk, org_id, number="DELAUDIT-1")
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        resp = await c.delete(f"/api/invoices/{invoice_id}")
+    assert resp.status_code == 204
+
+    # The invoice is gone...
+    async with mk() as s:
+        assert (
+            await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(invoice_id)))
+        ).scalar_one_or_none() is None
+
+    # ...and the record of who removed it is not.
+    rows = await _deletion_rows(mk, invoice_id)
+    assert len(rows) == 1, "a hard delete must leave exactly one terminal audit row"
+    row = rows[0]
+    assert row.actor_id is not None
+    assert row.details["invoice_number"] == "DELAUDIT-1"
+    assert row.details["bulk"] is False
+    # PII-free: the business reference and the status, nothing about the payee.
+    assert "vendor_name" not in row.details
+    assert "remit_to_address" not in row.details
+
+
+async def test_bulk_delete_audits_each_invoice_it_actually_deletes(realdb):
+    """And only those — a skipped (immutable-status) invoice must not be
+    recorded as deleted, or the trail asserts a deletion that never happened."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    deletable = await _seed_invoice(mk, org_id, number="DELAUDIT-BULK-OK")
+
+    async with mk() as s:
+        blocked = Invoice(
+            organization_id=org_id,
+            invoice_number="DELAUDIT-BULK-SKIP",
+            vendor_name="Delete Cascade Vendor",
+            amount=Decimal("500.00"),
+            currency="USD",
+            status=InvoiceStatus.paid,  # in IMMUTABLE_STATUSES
+        )
+        s.add(blocked)
+        await s.commit()
+        await s.refresh(blocked)
+        blocked_id = str(blocked.id)
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        resp = await c.post("/api/invoices/bulk/delete", json={"ids": [deletable, blocked_id]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted"] == 1
+    assert body["skipped"] == [blocked_id]
+
+    assert len(await _deletion_rows(mk, deletable)) == 1
+    assert await _deletion_rows(mk, blocked_id) == []

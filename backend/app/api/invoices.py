@@ -2153,8 +2153,41 @@ async def delete_invoice(
         raise HTTPException(status_code=404, detail="Invoice not found")
     if invoice.status in IMMUTABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot delete invoice in this status")
+    # Audit BEFORE the cascade: afterwards there is no row left to describe.
+    # `_delete_invoice_cascade` deliberately does not touch `audit_log`, so this
+    # row (and the invoice's whole prior trail) survives the delete — which is
+    # the point. A hard delete that cascades exceptions, payments, workflow
+    # instances, extraction results, chat threads and virtual cards was the one
+    # destructive tenant operation leaving no record of who did it.
+    await _audit_invoice_deleted(db, invoice, actor_id=user.id, bulk=False)
     await _delete_invoice_cascade(db, invoice_id)
     await db.commit()
+
+
+async def _audit_invoice_deleted(
+    db: AsyncSession, invoice: Invoice, *, actor_id: uuid.UUID, bulk: bool
+) -> None:
+    """PII-free terminal record for a hard invoice delete.
+
+    Carries the invoice NUMBER and status — the business reference an auditor
+    needs to tie the deletion to the document — and nothing else. No vendor
+    address, no tax id, no bank details; the same posture as the chat and
+    approval rows above.
+    """
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        actor_id=actor_id,
+        action="invoice.deleted",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={
+            "invoice_number": invoice.invoice_number,
+            "status": getattr(invoice.status, "value", str(invoice.status)),
+            "bulk": bulk,
+        },
+    )
 
 
 # ---------- Helpers ----------
@@ -2309,6 +2342,7 @@ async def bulk_delete(
         if inv.status in IMMUTABLE_STATUSES:
             skipped.append(str(inv.id))
         else:
+            await _audit_invoice_deleted(db, inv, actor_id=user.id, bulk=True)
             await _delete_invoice_cascade(db, inv.id)
             deleted += 1
 

@@ -759,3 +759,52 @@ async def test_new_entity_inherits_the_org_default_instead_of_minting_a_stub(rea
         )
     # Exactly one is_default row org-wide — the invariant globalSetup guards.
     assert len(defaults) == 1, [(d.name, str(d.entity_id)) for d in defaults]
+
+
+async def test_deleting_a_workflow_writes_an_audit_row_naming_the_versions_it_took(realdb):
+    """Deleting a definition also removes every `WorkflowVersion` under it —
+    the change history of how invoices were routed for approval, which is
+    exactly what a SOX auditor reaches for. That removal cannot be the one
+    tenant mutation with no record of who did it.
+
+    The version count is recorded because it is the size of what went with the
+    definition; the row is keyed on the definition and carries its name only.
+    """
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        created = await _create_workflow(c, name="Doomed WF")
+        assert created.status_code == 201, created.text
+        wf_id = created.json()["id"]
+        # A STEPS change is what snapshots a version (a name-only PATCH
+        # deliberately doesn't, so no-op edits don't pile up empty history).
+        # This leaves real routing history for the delete to destroy.
+        changed_steps = [{**_STEPS[0], "name": "Renamed step"}, *_STEPS[1:]]
+        patched = await c.patch(f"/api/workflows/{wf_id}", json={"steps": changed_steps})
+        assert patched.status_code == 200, patched.text
+
+        resp = await c.delete(f"/api/workflows/{wf_id}")
+    assert resp.status_code == 204, resp.text
+
+    async with mk() as s:
+        rows = list(
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "workflow.deleted",
+                        AuditLog.entity_id == uuid.UUID(wf_id),
+                    )
+                )
+            ).scalars()
+        )
+    assert len(rows) == 1, "a workflow delete must leave exactly one terminal audit row"
+    row = rows[0]
+    assert row.actor_id is not None
+    assert row.details["name"] == "Doomed WF"
+    assert row.details["bulk"] is False
+    # The PATCH above snapshotted the prior config, so history really was taken.
+    assert row.details["versions_deleted"] >= 1
