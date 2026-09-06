@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,6 +10,18 @@ from app.models.base import Base, EntityMixin, TimestampMixin
 
 class Exception(Base, EntityMixin, TimestampMixin):
     __tablename__ = "exceptions"
+
+    # `GET /api/exceptions`'s default order + its status chips. Same shape and
+    # same reasoning as `ix_invoices_created_at_id` — see migration 0092.
+    __table_args__ = (
+        Index("ix_exceptions_created_at_id", text("created_at DESC"), text("id DESC")),
+        Index(
+            "ix_exceptions_status_created_at_id",
+            "status",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # Nullable: nearly every exception is invoice-scoped, but a few fraud signals

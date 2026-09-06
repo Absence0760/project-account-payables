@@ -114,6 +114,38 @@ class WorkflowStep(Base, TimestampMixin):
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
+    # The fastest-growing table in the schema, and until migration 0092 the ORM
+    # declared no index on it beyond `correlation_id` / `organization_id` — so
+    # the SOX signature sweep, the auditor export, the dashboard's
+    # approval-timing leg, the adaptive feedback reads and the retention sweep
+    # were each a full sequential scan. See migration 0092 for the measurements.
+    __table_args__ = (
+        # `services/audit_log_shipper._ship_tenant`, verbatim: `WHERE shipped_at
+        # IS NULL ORDER BY created_at ASC LIMIT n`, per tenant every 60 s. The
+        # partial predicate is what keeps this to the unshipped tail (8 KB on a
+        # caught-up 1.2 M-row trail) rather than a full timestamp copy. Also
+        # serves `retention_sweep`'s `created_at < cutoff AND shipped_at IS NULL`.
+        #
+        # The NAME is migration 0010's, and so is the index: 0010 has created it
+        # on every MIGRATED tenant since audit shipping shipped. It was never
+        # declared here, and fresh tenants are built by `create_all` in
+        # `tenant_provisioning` rather than by Alembic — so a
+        # freshly-provisioned tenant had no index at all behind the shipper's
+        # 60-second sweep. Declaring it here is the fix; do not rename it, or a
+        # migrated tenant gains a second, identical partial index.
+        Index(
+            "ix_audit_log_shipped_at_null",
+            "created_at",
+            postgresql_where=text("shipped_at IS NULL"),
+        ),
+        # Every `action` consumer filters it to equality (or a short IN list)
+        # and then ranges/orders on `created_at`.
+        Index("ix_audit_log_action_created_at", "action", "created_at"),
+        # The auditor's date-range export has no `action` predicate, so it
+        # cannot use the composite above.
+        Index("ix_audit_log_created_at", "created_at"),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     organization_id: Mapped[uuid.UUID] = mapped_column(
