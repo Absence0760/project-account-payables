@@ -315,8 +315,10 @@ installs a pair of `BEFORE` triggers on `audit_log`:
   than `shipped_at`**.
 
 This is the durable SOX control: the app already exposes no PATCH/DELETE route
-(`tests/test_audit_append_only.py`), but a rogue ORM call or a direct `psql`
-session would bypass that — the trigger does not.
+(`tests/test_audit_append_only.py` — see [The audit-coverage
+guard](#the-audit-coverage-guard-teststest_audit_append_onlypy) below), but a
+rogue ORM call or a direct `psql` session would bypass that — the trigger does
+not.
 
 **The `shipped_at` carve-out is load-bearing for this shipper.** The trigger
 function compares all non-`shipped_at` columns between OLD and NEW; a pure
@@ -332,6 +334,83 @@ provisioned tenants (which are created via `create_all`, not Alembic).
 Idempotent (`CREATE OR REPLACE` / `DROP ... IF EXISTS`), guarded by
 `_has_table("audit_log")`. Covered by `tests/test_audit_immutable.py`,
 including an assertion that the shipper's stamp still succeeds.
+
+## The audit-coverage guard (`tests/test_audit_append_only.py`)
+
+The triggers above make the trail **tamper-proof**. They say nothing about
+whether a mutation produced a row in the first place — that is what
+`tests/test_audit_append_only.py` enforces, and invariant #3 is the rule it
+encodes.
+
+### The unit is the HANDLER, not the module
+
+`test_every_tenant_mutating_handler_writes_an_audit_row` sweeps every route
+whose handler takes `Depends(get_tenant_db)` and responds to
+`POST`/`PATCH`/`PUT`/`DELETE` — the precise marker for "this writes tenant
+state" — and requires `dispatch_audit` to be reachable from **that handler's own
+source**:
+
+1. `inspect.getsource(endpoint)` contains `dispatch_audit`; or
+2. the handler calls a function defined in the **same module** whose source
+   does (followed up to `_AUDIT_HELPER_MAX_DEPTH`, so a handler delegating to a
+   local `_audit(...)` / `_transition(...)` helper still counts); or
+3. `(module, handler)` carries a written-down reason in
+   `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`.
+
+It used to require `dispatch_audit` anywhere in the **module**, which meant one
+auditing handler vouched for every unaudited handler beside it —
+`app/api/invoices.py` alone has 21 tenant-mutating routes behind that single
+grep, and that is how three unaudited DELETE handlers shipped there and had to
+be found by hand.
+
+Calls **out of** the handler's module are deliberately not followed. "That other
+file audits" is a design claim about a chokepoint (`workflow_engine.transition_invoice`,
+`services/review`, `exception_lifecycle.record_decision`, `services/qms_sync`,
+…), and a claim belongs somewhere a reader can re-check it, not inferred by a
+source scan that would quietly absorb the day the chokepoint stops auditing. So
+those handlers are exemptions with the chokepoint named in the reason.
+
+### Adding a justified exemption
+
+Add one entry to `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`, keyed
+`("app.api.<module>", "<handler function name>")`, whose value states **why the
+mutation is already covered**. The three shapes that hold up today:
+
+| Shape | Example reason |
+|---|---|
+| Verb is a POST but nothing is persisted | `"CSV export — reads, never writes"` |
+| Writes only the caller's own record / a derived cache | `"read receipt on the caller's own notification"` |
+| Audits through a named cross-module chokepoint | `"audits via services/review.approve_invoice"` |
+
+A bare or empty reason fails the suite. So does a stale one:
+`test_audit_exemption_list_has_no_stale_entries` re-derives the route map and
+fails when an exempted handler no longer has a tenant-mutating route (renamed,
+deleted, or its dependency changed) or has since started auditing — an
+exemption that has stopped being true is worse than none.
+
+### `_OPEN_AUDIT_HOLES` — not exemptions
+
+When the per-handler unit first landed it exposed handlers that genuinely mutate
+tenant business state with no audit row anywhere on the path. Those are listed
+in a **separate** `_OPEN_AUDIT_HOLES` dict, every reason prefixed
+`OPEN HOLE — …, not a justified exemption`, so the suite is green on a known,
+enumerated set rather than by widening the real exemption dict. Each entry is
+work still to do; fixing one makes its entry stale, which is the prompt to
+delete it. **Do not add to that dict** — a newly-surfaced unaudited mutating
+handler is a bug to fix.
+
+### Route discovery has a floor
+
+FastAPI 0.138+ keeps nested `_IncludedRouter` objects in `app.routes` instead of
+flattening sub-routes, so the historical
+`[r for r in app.routes if isinstance(r, APIRoute)]` sees **1** route out of 564
+— and every filter built on it yields an empty set, i.e. a guard that passes
+having examined nothing. Every sweep in the file now goes through one
+`_flat_routes()` helper (`fastapi.routing.iter_route_contexts`, with the flat
+list as an older-FastAPI fallback) and asserts `len(routes) >=
+_MIN_EXPECTED_ROUTES`. That floor is the real fix: the flattening can move
+again, and when it does the suite fails loudly instead of reporting green on an
+empty scan. `test_route_flattener_sees_the_whole_app` pins it on its own.
 
 ## Operational notes
 
