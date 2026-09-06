@@ -56,7 +56,7 @@ async def list_agent_decisions(
         q = q.where(AgentDecision.action_taken == action_taken)
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
     q = (
-        q.order_by(AgentDecision.created_at.desc())
+        q.order_by(AgentDecision.created_at.desc(), AgentDecision.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

@@ -831,7 +831,7 @@ async def list_change_requests(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
-        query.order_by(VendorChangeRequest.created_at.desc())
+        query.order_by(VendorChangeRequest.created_at.desc(), VendorChangeRequest.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

@@ -217,7 +217,7 @@ async def list_card_transactions(
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
-        base.order_by(CorporateCardTransaction.txn_date.desc())
+        base.order_by(CorporateCardTransaction.txn_date.desc(), CorporateCardTransaction.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )
