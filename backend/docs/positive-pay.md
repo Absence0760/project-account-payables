@@ -87,6 +87,28 @@ back and returns the winner. ACH-authorization files are run-less
 (`payment_run_id IS NULL`), so the partial predicate exempts them — you can
 generate as many as you like.
 
+**The index IS the concurrency control — the handler has no other one.** The
+endpoint is a read-then-insert: it SELECTs an existing file for
+`(run, bank_format)`, returns it if found, and otherwise renders, uploads and
+inserts. Two concurrent calls (a double-clicked button, a client retry after a
+timeout) both find nothing, so the only thing that stops both inserting is this
+index turning the loser into the `IntegrityError` the handler catches. Without
+it the run ends up with **two** Positive Pay files — two MinIO objects carrying
+full account/routing numbers — and the handler's own `scalar_one_or_none()`
+idempotency lookup then raises `MultipleResultsFound` on every later call: a
+permanent 500 on that run, recoverable only by deleting a row.
+
+That mattered in practice, because until migration 0093 the index existed
+**only in migration 0048 and not on the model** — so every tenant provisioned by
+`create_all` (i.e. every NEW tenant) ran this endpoint with no backstop at all,
+while migrated tenants had one. `PositivePayFile.__table_args__` now declares it
+and `tests/test_migration_model_index_parity.py` is the guard on the whole
+class. If 0093 refuses to apply with a "duplicate Positive Pay check-issue
+file(s)" message, that tenant already accumulated the duplicates this index
+prevents: decide which file was actually sent to the bank, `DELETE
+/api/positive-pay/{id}` the others (which also removes the stored object), and
+re-run.
+
 ## Formatter adapters (`services/positive_pay_adapters/`)
 
 The rendering layer mirrors `payment_adapters/`: a pluggable, per-bank
@@ -407,10 +429,17 @@ Typed client `$lib/api/positivePay.ts` over the shared `api` object; types in
   `invoices` table → no-ops on the control plane, fans out via
   `scripts/migrate_all_tenants.py`). Idempotent (`CREATE TABLE/INDEX IF NOT
   EXISTS`, the partial unique index via raw SQL `CREATE UNIQUE INDEX IF NOT
-  EXISTS ... WHERE payment_run_id IS NOT NULL`). Mirrors
-  `app.models.positive_pay` exactly so a fresh tenant built by
-  `tenant_provisioning._create_tenant_tables` (`create_all`) matches a migrated
-  one. The FKs (payment_runs, entities) exist by earlier migrations.
+  EXISTS ... WHERE payment_run_id IS NOT NULL`). The FKs (payment_runs,
+  entities) exist by earlier migrations.
+- **0093_migration_only_indexes** — restates that `CREATE UNIQUE INDEX` so an
+  already-provisioned tenant picks it up, and ships the matching
+  `PositivePayFile.__table_args__` declaration that `create_all` needs. 0048
+  claimed to mirror `app.models.positive_pay` exactly; for
+  `uq_positive_pay_run_format` it did not, and only migrated tenants ever had
+  the index. 0093 pre-flights for existing duplicate `(run, bank_format)` rows
+  and refuses with an actionable, PII-free message rather than failing on the
+  `CREATE UNIQUE INDEX` itself. See `docs/database.md` § Index parity between
+  the two provisioning paths.
 
 ## Local-first
 
