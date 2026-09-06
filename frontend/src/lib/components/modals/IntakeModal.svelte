@@ -2,8 +2,8 @@
 	import type { IntakeRequest, IntakeType } from '$lib/types/intake';
 	import {
 		INTAKE_TYPES,
-		INTAKE_TYPE_LABELS,
-		INTAKE_STATUS_LABELS,
+		intakeTypeLabelKey,
+		intakeStatusLabelKey,
 		intakeStatusTone,
 		INTAKE_FORM_FIELDS
 	} from '$lib/types/intake';
@@ -28,6 +28,17 @@
 	} = $props();
 
 	const isCreate = $derived(intake === null);
+
+	// Status / type names are message keys, not English literals — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = intakeStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+	const typeLabel = (t: string) => {
+		const key = intakeTypeLabelKey(t);
+		return key ? m(key) : t;
+	};
 	// Anyone in the org can raise / edit their own open intake.
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk', 'cfo'));
 	// Edits are only allowed while the intake is `open`.
@@ -138,7 +149,7 @@
 			<div class="status-row">
 				<span class="number">{intake!.request_number}</span>
 				<Badge tone={intakeStatusTone(status)} variant={status}>
-					{INTAKE_STATUS_LABELS[status as keyof typeof INTAKE_STATUS_LABELS] ?? status}
+					{statusLabel(status)}
 				</Badge>
 				{#if intake!.converted_requisition_id}
 					<span class="converted-note">{m('intake.modal.requisitionCreatedNote')}</span>
@@ -155,7 +166,7 @@
 				<span>{m('intake.modal.field.type')}</span>
 				<select bind:value={request_type} disabled={!canEdit}>
 					{#each INTAKE_TYPES as t}
-						<option value={t}>{INTAKE_TYPE_LABELS[t]}</option>
+						<option value={t}>{typeLabel(t)}</option>
 					{/each}
 				</select>
 			</label>
@@ -194,11 +205,11 @@
 
 		<!-- Flexible questionnaire — fields vary by request type. -->
 		<div class="questionnaire">
-			<span class="section-title">{m('intake.modal.questionnaire', { type: INTAKE_TYPE_LABELS[request_type] })}</span>
+			<span class="section-title">{m('intake.modal.questionnaire', { type: typeLabel(request_type) })}</span>
 			<div class="form-grid">
 				{#each fields as f (f.key)}
 					<label>
-						<span>{f.label}</span>
+						<span>{m(f.labelKey)}</span>
 						<input type="text" bind:value={formData[f.key]} disabled={!canEdit} />
 					</label>
 				{/each}

@@ -30,12 +30,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.schemas.workflow import WorkflowStepConfig
-from app.services import workflow_builder, workflow_engine
+from app.services import workflow_builder, workflow_engine, workflow_step_types
 from app.services.workflow_engine import advance_workflow, create_workflow_step
 from app.services.workflow_step_types import (
     BUILDER_STEP_TYPES,
     CANONICAL_STEP_TYPES,
     KNOWN_STEP_TYPES,
+    STEP_TYPE_ALIASES,
     NonCanonicalStepTypeError,
     UnknownStepTypeError,
     canonical_step_index,
@@ -136,6 +137,53 @@ def test_canonical_step_index_refuses_a_builder_type_and_an_unknown_type():
     # Both stay ValueErrors so an existing `except ValueError` still catches.
     assert issubclass(NonCanonicalStepTypeError, ValueError)
     assert issubclass(UnknownStepTypeError, ValueError)
+
+
+def test_no_boolean_canonical_predicate_is_exported():
+    """`is_canonical_step_type` was deleted, and must not come back.
+
+    It had no caller and no test, and it answered a strictly worse version of
+    the question this module already answers: `False` for BOTH ``"condition"``
+    (a recognised builder type in the wrong place) and ``"aproval"`` (not a step
+    type at all). Collapsing those two into one bare boolean is precisely the
+    silent coercion the module docstring refuses — `canonical_step_index`
+    distinguishes them by name (`NonCanonicalStepTypeError` vs
+    `UnknownStepTypeError`), and losing that is how a typo'd approval step gets
+    read as "no approval step configured".
+    """
+    assert not hasattr(workflow_step_types, "is_canonical_step_type")
+
+
+def test_not_in_builder_types_is_exactly_canonical_for_every_known_name():
+    """The equivalence the deletion rests on.
+
+    ``workflow_builder.validate_builder_steps`` splits canonical from builder
+    steps with ``step_type not in BUILDER_STEP_TYPES``, but only AFTER
+    ``is_known_step_type`` has passed. Within that guarded set the shorthand is
+    exactly "resolves into CANONICAL_STEP_TYPES" — including for the legacy
+    aliases, which are canonical under another name.
+
+    If a future alias or builder type ever made the two disagree, the builder
+    would validate a canonical step with a builder validator (or skip the money
+    thresholds on an ``approval`` step) — so this pins it rather than leaving it
+    to be rediscovered.
+    """
+    known_names = (
+        *CANONICAL_STEP_TYPES,
+        *BUILDER_STEP_TYPES,
+        *STEP_TYPE_ALIASES,
+    )
+    for name in known_names:
+        assert is_known_step_type(name) is True, name
+        shorthand = name not in BUILDER_STEP_TYPES
+        resolves_canonical = resolve_step_type(name) in CANONICAL_STEP_TYPES
+        assert shorthand is resolves_canonical, name
+
+    # And the shorthand is only ever consulted behind that gate: an unknown
+    # name would satisfy it while resolving to nothing, which is why
+    # `validate_builder_steps` refuses first and this test asserts second.
+    assert is_known_step_type("aproval") is False
+    assert resolve_step_type("aproval") not in CANONICAL_STEP_TYPES
 
 
 # ---------------------------------------------------------------------------

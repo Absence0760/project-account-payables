@@ -5,7 +5,7 @@
 		RequisitionStatus
 	} from '$lib/types/requisition';
 	import {
-		REQUISITION_STATUS_LABELS,
+		requisitionStatusLabelKey,
 		REQUISITION_STATUS_TONES
 	} from '$lib/types/requisition';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -39,6 +39,12 @@
 	// are `?? fallback` — a status this build doesn't know renders its raw
 	// value in a flat chip rather than blank.
 	const statusKey = $derived(status as RequisitionStatus);
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = $derived.by(() => {
+		const key = requisitionStatusLabelKey(status);
+		return key ? m(key) : status;
+	});
 	// Header fields + line items are only editable while the requisition is a
 	// draft (or being created) — a submitted/approved requisition is locked.
 	const editable = $derived(canEdit && (isCreate || status === 'draft'));
@@ -190,7 +196,7 @@
 		{#if !isCreate}
 			<div class="status-row">
 				<Badge tone={REQUISITION_STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
-					{REQUISITION_STATUS_LABELS[statusKey] ?? status}
+					{statusLabel}
 				</Badge>
 				{#if requisition?.converted_po_id}
 					<span class="muted">{m('requisitions.modal.poCreatedNote')}</span>

@@ -1,4 +1,5 @@
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount } from '$lib/utils/money';
 
 // Types for the Procurement / Requisitions surface. Mirrors the JSON returned
@@ -62,22 +63,46 @@ const UNREACHABLE_REQUISITION_STATUSES: RequisitionStatus[] = ['submitted'];
 // mirror, so a genuinely new status added above joins the chips by default and
 // only a deliberate, justified entry in UNREACHABLE_REQUISITION_STATUSES keeps
 // one out. The excluded value still lives in the union and in
-// REQUISITION_STATUS_LABELS (a legacy row must still render its badge and still
+// REQUISITION_STATUS_LABEL_KEYS (a legacy row must still render its badge and still
 // offer Cancel), and the page appends whatever status is *actively* filtered to
 // the chip row, so an explicit `?status=submitted` is never an invisible filter.
 export const REQUISITION_FILTER_STATUSES: RequisitionStatus[] = REQUISITION_STATUSES.filter(
 	(s) => !UNREACHABLE_REQUISITION_STATUSES.includes(s)
 );
 
-export const REQUISITION_STATUS_LABELS: Record<RequisitionStatus, string> = {
-	draft: 'Draft',
-	submitted: 'Submitted',
-	pending_approval: 'Pending Approval',
-	approved: 'Approved',
-	rejected: 'Rejected',
-	converted: 'Converted',
-	cancelled: 'Cancelled'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * Both surfaces that render a requisition status (the `/requisitions` list page
+ * and `RequisitionModal`) are inside the i18n extraction slice, so a hardcoded
+ * English map here put a translated Reopen confirm ("Zurück auf „Entwurf“")
+ * directly beside an untranslated `Draft` badge. Keyed the same way
+ * `notification.ts::EVENT_LABEL_KEYS` is; `Record<RequisitionStatus,
+ * MessageKey>` makes a new status a compile error rather than a blank badge,
+ * and `requisition.test.ts` proves every key exists in the catalogue.
+ *
+ * Kept COMPLETE for the same reason `REQUISITION_STATUSES` is — an unreachable
+ * `submitted` legacy row must still render a badge (see the note above it).
+ */
+export const REQUISITION_STATUS_LABEL_KEYS: Record<RequisitionStatus, MessageKey> = {
+	draft: 'requisitions.status.draft',
+	submitted: 'requisitions.status.submitted',
+	pending_approval: 'requisitions.status.pendingApproval',
+	approved: 'requisitions.status.approved',
+	rejected: 'requisitions.status.rejected',
+	converted: 'requisitions.status.converted',
+	cancelled: 'requisitions.status.cancelled'
 };
+
+/**
+ * The message key for a status, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank badge). `Requisition.status` is typed `string` because the API is the
+ * source of truth.
+ */
+export function requisitionStatusLabelKey(status: string): MessageKey | null {
+	return REQUISITION_STATUS_LABEL_KEYS[status as RequisitionStatus] ?? null;
+}
 
 /**
  * Badge tone per requisition status. Hoisted out of `RequisitionModal`, which
