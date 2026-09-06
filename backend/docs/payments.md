@@ -1276,12 +1276,18 @@ Execute Payment Run (response sent immediately)
   marking the in-flight one's invoice `paid` would claim money moved before
   the rail confirmed it (and pre-empt the webhook's own `paid` transition).
   The webhook handler re-dispatches the sync once the in-flight payment settles.
-- **This is the only code path that flips `payment_scheduled → paid`**, and
+- **This is the primary code path that flips `payment_scheduled → paid`**, and
   nothing re-invokes it once every payment in the run is terminal. Anything
   that wants to defer that transition therefore needs its own release
   mechanism first — the settlement hold has two (accept / void); see
   § Settlement-amount verification → An under-settlement holds the invoice
-  short of `paid`.
+  short of `paid`. The **inbound ERP webhook** (`api/erp_webhook.py`) is the
+  other writer: the tenant's own ERP legitimately reports `Paid` once a bill
+  payment is applied there. It runs the **same `settlement_coverage` check off
+  the same `Payment.settled_amount`** before transitioning, and on a
+  non-covering verdict opens an `erp_reconciliation` exception and leaves the
+  invoice at `payment_scheduled` (silent 204) rather than flipping a
+  short-paid invoice to `paid` and stranding `/settlement/accept` behind a 409.
 - **A completed payment whose settlement doesn't cover the invoice is held
   here**, not marked `paid`, and counted separately in the sync's log line.
 - Sync runs async — **doesn't block** the payment run response

@@ -63,16 +63,22 @@ def _ctrl_session_for_org(org):
     return factory
 
 
-def _fake_tenant_session_factory(invoice, *, existing_recon_count: int = 0):
+def _fake_tenant_session_factory(invoice, *, existing_recon_count: int = 0, settling_payment=None):
     """Fake tenant session. The handler's first TWO ``execute`` calls resolve
     the invoice — an id lookup by ``correlation_id``, then the row-locked
     re-fetch via ``get_invoice_for_update`` (issue #141) — both returning the
-    same invoice; the reconciliation path issues a THIRD ``execute`` — the
-    open-``erp_reconciliation``-exception dedup count — which returns
+    same invoice.
+
+    On the ``payment_scheduled → paid`` edge the handler then issues one more
+    ``execute`` — the settling-payment lookup that feeds ``settlement_coverage``
+    — which returns ``settling_payment`` (``None`` = no completed payment, so
+    the coverage check is skipped and the transition applies). If the coverage
+    verdict is non-covering it issues a FURTHER ``execute`` — the
+    open-``erp_reconciliation``-exception dedup count — returning
     ``existing_recon_count``.
 
     The ``side_effect`` list is exact, so a stand-in invoice that omits a field
-    a real ``Invoice`` always carries can silently add a fourth ``execute`` and
+    a real ``Invoice`` always carries can silently add an extra ``execute`` and
     exhaust it — the handler swallows the resulting error and the test fails on
     a missing commit rather than on the real cause. Every invoice stand-in in
     this file therefore carries ``correlation_id``: it is what the exception's
@@ -81,12 +87,19 @@ def _fake_tenant_session_factory(invoice, *, existing_recon_count: int = 0):
     """
     invoice_result = MagicMock()
     invoice_result.scalar_one_or_none = MagicMock(return_value=invoice)
-    count_result = MagicMock()
-    count_result.scalar = MagicMock(return_value=existing_recon_count)
+    # One flexible result for BOTH follow-on queries: the settling-payment
+    # lookup (`.scalar_one_or_none()`, only on the `payment_scheduled → paid`
+    # edge) and the open-`erp_reconciliation`-exception dedup count
+    # (`.scalar()`). Serving both off one object keeps the exact `side_effect`
+    # sequence path-independent — the void and the short-settlement paths make
+    # a different number of queries.
+    flex_result = MagicMock()
+    flex_result.scalar_one_or_none = MagicMock(return_value=settling_payment)
+    flex_result.scalar = MagicMock(return_value=existing_recon_count)
 
     db = AsyncMock()
     db.add = MagicMock()
-    db.execute = AsyncMock(side_effect=[invoice_result, invoice_result, count_result])
+    db.execute = AsyncMock(side_effect=[invoice_result, invoice_result, flex_result, flex_result])
     db.flush = AsyncMock()
     db.commit = AsyncMock()
     db.rollback = AsyncMock()
@@ -136,12 +149,21 @@ def fake_redis(monkeypatch):
 
 
 async def _post(
-    *, org, invoice, status_value, event_id, secret="erp-secret", existing_recon_count=0
+    *,
+    org,
+    invoice,
+    status_value,
+    event_id,
+    secret="erp-secret",
+    existing_recon_count=0,
+    settling_payment=None,
 ):
     """Drive `erp_webhook` with a correctly-signed body for `status_value`.
 
     `existing_recon_count` seeds the open-`erp_reconciliation`-exception dedup
-    count the reconciliation path reads.
+    count the reconciliation path reads; `settling_payment` is the completed
+    `Payment` the `payment_scheduled → paid` settlement-coverage check finds
+    (default `None` = no completed payment, check skipped).
 
     Returns (result, tenant_db, transition_calls) where transition_calls records
     the args every `transition_invoice` invocation received (empty if the guard
@@ -160,7 +182,9 @@ async def _post(
     sig = _sign(secret, body_bytes)
 
     tenant_factory, db = _fake_tenant_session_factory(
-        invoice, existing_recon_count=existing_recon_count
+        invoice,
+        existing_recon_count=existing_recon_count,
+        settling_payment=settling_payment,
     )
     transition_calls: list[dict] = []
 
@@ -325,12 +349,34 @@ async def test_permitted_transition_sent_to_posted_applies_and_audits(fake_redis
     db.commit.assert_awaited()
 
 
+def _payment(*, settled_amount, amount="1000.00", settled_currency="USD"):
+    """A completed `Payment` stand-in for the settlement-coverage check."""
+    from decimal import Decimal
+
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        status="completed",
+        amount=Decimal(amount),
+        settled_amount=None if settled_amount is None else Decimal(settled_amount),
+        settled_currency=settled_currency,
+        settled_amount_unstorable=False,
+        source_amount=None,
+        source_currency=None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_permitted_transition_scheduled_to_paid_applies(fake_redis):
-    """`payment_scheduled → paid` is a canonical edge (ERP reports paid). Still
-    applies + commits after the guard change."""
+    """`payment_scheduled → paid` is a canonical edge (ERP reports paid). With no
+    completed payment on file the settlement-coverage check is skipped and the
+    transition applies + commits as before."""
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(status=InvoiceStatus.payment_scheduled)
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        currency="USD",
+        status=InvoiceStatus.payment_scheduled,
+    )
 
     result, db, transition_calls = await _post(
         org=org, invoice=invoice, status_value="paid", event_id="ev_paid2"
@@ -340,6 +386,102 @@ async def test_permitted_transition_scheduled_to_paid_applies(fake_redis):
     assert len(transition_calls) == 1
     assert transition_calls[0]["target"] is InvoiceStatus.paid
     assert invoice.status is InvoiceStatus.paid
+
+
+@pytest.mark.asyncio
+async def test_scheduled_to_paid_applies_when_settlement_covers(fake_redis):
+    """A completed payment whose rail settled in full → the ERP's `paid` still
+    applies. The coverage check runs but does not hold."""
+    org = _org_with_erp_secret("erp-secret")
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        currency="USD",
+        status=InvoiceStatus.payment_scheduled,
+    )
+
+    result, db, transition_calls = await _post(
+        org=org,
+        invoice=invoice,
+        status_value="paid",
+        event_id="ev_paid_covered",
+        settling_payment=_payment(settled_amount="1000.00", amount="1000.00"),
+    )
+
+    assert result is None
+    assert len(transition_calls) == 1
+    assert invoice.status is InvoiceStatus.paid
+
+
+@pytest.mark.asyncio
+async def test_scheduled_to_paid_is_held_when_the_rail_settled_short(fake_redis):
+    """The bug: a validly-signed ERP `{"status":"Paid"}` for an invoice whose
+    payment settled SHORT of what AP authorized must NOT flip it to `paid` —
+    `payment_erp_sync` holds it at `payment_scheduled`, and this must too. It
+    opens exactly one `erp_reconciliation` exception and does not transition."""
+    from app.api.erp_webhook import ERP_RECONCILIATION_EXCEPTION_TYPE
+    from app.models.exception import Exception as APException
+
+    org = _org_with_erp_secret("erp-secret")
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        currency="USD",
+        status=InvoiceStatus.payment_scheduled,
+    )
+
+    result, db, transition_calls = await _post(
+        org=org,
+        invoice=invoice,
+        status_value="paid",
+        event_id="ev_paid_short",
+        # Authorized $1000, rail moved $250 — a clear shortfall.
+        settling_payment=_payment(settled_amount="250.00", amount="1000.00"),
+    )
+
+    assert result is None
+    assert transition_calls == []  # NOT transitioned
+    assert invoice.status is InvoiceStatus.payment_scheduled
+    # Exactly one Exception row, of the reconciliation type, open, PII-free.
+    added = [a.args[0] for a in db.add.call_args_list if isinstance(a.args[0], APException)]
+    assert len(added) == 1
+    exc = added[0]
+    assert exc.exception_type == ERP_RECONCILIATION_EXCEPTION_TYPE
+    assert exc.status == "open"
+    assert exc.invoice_id == invoice.id
+    assert "settled" in exc.description and "payment_scheduled" in exc.description
+    db.commit.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_to_paid_short_does_not_pile_up_a_second_exception(fake_redis):
+    """If an open `erp_reconciliation` exception already exists for the invoice,
+    a redelivered short-settlement `paid` must not open a second one."""
+    from app.models.exception import Exception as APException
+
+    org = _org_with_erp_secret("erp-secret")
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        currency="USD",
+        status=InvoiceStatus.payment_scheduled,
+    )
+
+    result, db, transition_calls = await _post(
+        org=org,
+        invoice=invoice,
+        status_value="paid",
+        event_id="ev_paid_short_dup",
+        settling_payment=_payment(settled_amount="250.00", amount="1000.00"),
+        existing_recon_count=1,
+    )
+
+    assert result is None
+    assert transition_calls == []
+    assert invoice.status is InvoiceStatus.payment_scheduled
+    # dedup — no second Exception row
+    added = [a.args[0] for a in db.add.call_args_list if isinstance(a.args[0], APException)]
+    assert added == []
     db.commit.assert_awaited()
 
 
