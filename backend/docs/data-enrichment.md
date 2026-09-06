@@ -272,6 +272,37 @@ Roles: `admin`, `ap_manager`, `ap_clerk`, `cfo` (clerks review drafts).
 }
 ```
 
+#### Frontend UI
+
+The **auto-fill suggestions ship on the invoice detail modal**
+(`$lib/components/modals/InvoiceModal.svelte`), immediately below the coding
+fields they apply to. Advisory here means the *user* applies it, so the surface
+is built around that:
+
+* nothing is auto-filled — the field stays empty while the suggestion sits
+  beside it, and **Apply** only writes into the form. The existing Save (with its
+  audit row and `expected_updated_at` concurrency token) remains the only writer,
+  and the panel says so ("Applied to … — not saved yet") until it runs.
+* every row carries its provenance, rebuilt from the response's own
+  `occurrences` / `sample_size` / `confidence` rather than restating the
+  backend's `evidence` string — so it localizes across the six catalogues. The
+  `runner_up`, when present, is shown too.
+* only fields the form can actually fill are rendered. `payment_terms` was a
+  suggestion with nowhere to land until this change added its input to the modal
+  (it was already accepted by `InvoiceUpdate` and is not a `_FINANCIAL_FIELDS`
+  member, so it stays editable after approval like the rest of the coding).
+* applying a GL account the tenant's catalog no longer carries used to render a
+  blank `<select>` — the value sat in the form while the control read as unset.
+  The select now emits an option for its own current value when the catalog
+  lacks it.
+
+Price variances are **not** rendered here: `invoice_warnings.refresh_warnings`
+already persists them as invoice warnings + a `price_variance` exception, and the
+modal renders those. A second, differently-timed copy of the same finding beside
+the first would be the drift. API client + types: `$lib/api/enrichment.ts`
+(`getInvoiceSuggestions`). e2e:
+`frontend/tests-e2e/invoices/coding-suggestions.spec.ts`.
+
 ### `GET /api/enrichment/vendors/{vendor_id}/score`
 Roles: `admin`, `ap_manager`, `cfo` (managerial — clerk excluded).
 
@@ -289,6 +320,41 @@ Roles: `admin`, `ap_manager`, `cfo` (managerial — clerk excluded).
   "computed_at": "2026-06-13T…Z"
 }
 ```
+
+#### Frontend UI
+
+The **score panel ships on the vendor detail modal**
+(`$lib/components/modals/VendorModal.svelte`, reached from `/vendors`), gated
+`auth.isManager || auth.isCfo` — the frontend mirror of `_SCORE_ROLES`. It loads
+on open like the screening history (compute-on-read, nothing persisted).
+
+The panel deliberately renders **the inputs, not just the number**: the composite
+sits above a table of the three sub-scores, each row carrying its `sample_size`
+and its `detail` sentence. That sentence is the backend's own PII-free evidence
+(counts only) and is rendered verbatim, because it breaks out numerators the rest
+of the response does not carry (`22 of 25`, where the response only exposes the
+25 as `sample_size`). It is therefore backend-generated **English** and does not
+follow the UI locale — the sub-score names, column headers and the N/A / no-history
+states are localized, the evidence sentence is not. Localizing it would mean
+either moving the numerator onto the response or restating the sentence in six
+catalogues, and the second is a copy of a formula that would drift.
+
+Two states are kept apart on purpose:
+
+* `composite: null` → "No history to score this vendor on yet". Rendering `0`
+  here would read as a damning judgement on a vendor we simply have no data for.
+* a failed read → its own message saying the score could not be loaded. Falling
+  through to the no-history copy would report a clean record we never computed.
+
+A sub-score whose `score` is `null` renders `N/A` **beside its own reason** (e.g.
+"No POs with an expected delivery date and a goods receipt to compare"), so the
+composite's renormalization is visible rather than implied.
+
+Not carried on the response, and so not shown: the per-sub-score **weights**
+behind the composite. The panel says the composite is weighted across the signals
+below without asserting a split it cannot prove. API client + types:
+`$lib/api/enrichment.ts` (`getVendorScore`). e2e:
+`frontend/tests-e2e/vendors/performance-score.spec.ts`.
 
 ### `GET /api/enrichment/vendors/consolidation-suggestions`
 Roles: `admin`, `ap_manager`, `cfo` (managerial data-stewardship view — clerk

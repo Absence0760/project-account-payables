@@ -69,6 +69,43 @@ async function getInvoice(
 }
 
 /**
+ * Candidate invoice ids in one of `statuses` that THIS admin can legitimately
+ * approve.
+ *
+ * Two filters, both load-bearing:
+ *
+ *  - `uploaded_by_id IS NULL` — segregation of duties refuses an approval by
+ *    the invoice's own uploader (403). Sibling specs create invoices through
+ *    the UI as the same worker admin (`invoices/create-manual`,
+ *    `invoices/file-management`) and do not delete them, so the tenant
+ *    accumulates rows this admin uploaded. Picking one made the approve 403,
+ *    and — because the pick had already been promoted — left it sitting in
+ *    `ready_for_review` where the "prefer an existing one" branch re-selected
+ *    it on every later run. One poisoned row, permanently red. Seed rows carry
+ *    no uploader, which is exactly the set that is approvable here.
+ *  - a non-empty `invoice_number` — the spec locates the row by its number via
+ *    the RowLink, and a blank number makes the selectors ambiguous.
+ *
+ * The uploader is only visible in SQL (`InvoiceResponse` deliberately doesn't
+ * carry it), so the candidate set is resolved there rather than from the list
+ * endpoint.
+ */
+function approvableIds(statuses: string[]): string[] {
+	const list = statuses.map((s) => `'${s}'`).join(',');
+	return tenantPsql(
+		`SELECT id FROM invoices
+		  WHERE status IN (${list})
+		    AND uploaded_by_id IS NULL
+		    AND COALESCE(invoice_number, '') <> ''
+		  ORDER BY created_at, id`
+	)
+		.trim()
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean);
+}
+
+/**
  * Promote a non-immutable invoice into ready_for_review and return it.
  * Prefers an existing ready_for_review row; otherwise promotes a
  * mutable one (PATCH doesn't enforce VALID_TRANSITIONS). Mirrors the
@@ -77,25 +114,20 @@ async function getInvoice(
 async function ensureReadyForReview(
 	page: import('@playwright/test').Page
 ): Promise<Inv> {
-	const existing = (await listInvoices(page, '&status=ready_for_review')).find(
-		(i) => i.status === 'ready_for_review'
-	);
-	if (existing) return existing;
+	const existing = approvableIds(['ready_for_review']);
+	if (existing.length > 0) return await getInvoice(page, existing[0]);
 
-	// Only promote rows with a non-empty invoice_number — the spec locates
-	// the row by its number via the RowLink, and a blank number would make
-	// the `hasText` / ariaLabel selectors ambiguous (some seed rows have no
-	// number).
-	const all = (await listInvoices(page)).filter((i) => (i.invoice_number ?? '').trim() !== '');
+	// Same preference order as before: sacrifice a rejected row first, then an
+	// un-reviewed one, and only fall back to an approved row.
 	const promotable =
-		all.find((i) => i.status === 'rejected') ||
-		all.find((i) => ['new', 'pending', 'failed'].includes(i.status)) ||
-		all.find((i) => i.status === 'approved');
+		approvableIds(['rejected'])[0] ??
+		approvableIds(['new', 'pending', 'failed'])[0] ??
+		approvableIds(['approved'])[0];
 	if (!promotable) {
 		throw new Error('No mutable invoice to promote into ready_for_review — seed exhausted?');
 	}
-	forceStatus(promotable.id, 'ready_for_review');
-	return { ...promotable, status: 'ready_for_review' };
+	forceStatus(promotable, 'ready_for_review');
+	return { ...(await getInvoice(page, promotable)), status: 'ready_for_review' };
 }
 
 /**

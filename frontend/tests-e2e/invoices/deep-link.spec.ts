@@ -45,6 +45,13 @@ test.describe('/invoices?id deep-link', () => {
 		await modal.getByRole('button', { name: 'Close' }).click();
 		await expect(modal).toBeHidden();
 		await expect(page).toHaveURL(/\/invoices$/);
+		// ...and it STAYS closed. The deep-link effect re-arms off the scrubbed
+		// URL; when the close handler cleared its marker itself, an effect run
+		// that landed before the `$page` store caught up read the still-present
+		// `id` against a null marker and re-opened the modal the user had just
+		// dismissed. Re-asserting after the URL has settled covers that window
+		// without a sleep.
+		await expect(modal).toBeHidden();
 	});
 
 	test('a non-existent id does not strand a stuck modal', async ({ page }) => {

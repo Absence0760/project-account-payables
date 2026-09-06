@@ -19,6 +19,12 @@
 
 	import type { AuditEntry, AuditFieldChange } from '$lib/types/audit';
 	import { getInvoiceAuditLog } from '$lib/api/audit';
+	import {
+		getInvoiceSuggestions,
+		type FieldSuggestion,
+	} from '$lib/api/enrichment';
+	import { routeIntercompany } from '$lib/api/invoices';
+	import { entityStore } from '$lib/stores/entity.svelte';
 
 	/**
 	 * Badge tone per quality-inspection verdict (the 4-way match's gate).
@@ -208,6 +214,7 @@
 	let payment_method = $state(invoice.payment_method ?? '');
 	let gl_account = $state(invoice.gl_account ?? '');
 	let cost_center = $state(invoice.cost_center ?? '');
+	let payment_terms = $state(invoice.payment_terms ?? '');
 	let department = $state(invoice.department ?? '');
 	let project = $state(invoice.project ?? '');
 
@@ -222,6 +229,148 @@
 		try {
 			glAccounts = await api.get<GLAccountOption[]>('/api/gl-accounts');
 		} catch { /* non-critical */ }
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Advisory coding suggestions (GET /api/enrichment/invoices/{id}/suggestions)
+	 *
+	 * Deterministic auto-fill derived from THIS vendor's approved history — the
+	 * dominant historical GL account / cost center / payment terms. Advisory
+	 * means the user applies it: nothing here writes to the invoice, and even
+	 * "Apply" only fills the form field, leaving the existing Save (and its
+	 * audit row + optimistic-concurrency check) as the only writer.
+	 *
+	 * The backend suppresses a suggestion for any field the invoice already
+	 * populates, so an applied suggestion can never overwrite a human's coding
+	 * — but we drop the row locally on apply anyway, because the response is a
+	 * snapshot and re-offering a value already sitting in the field is noise.
+	 * ------------------------------------------------------------------- */
+	let codingSuggestions = $state<FieldSuggestion[]>([]);
+	let appliedSuggestionFields = $state<string[]>([]);
+
+	/** Form fields a suggestion can be applied into. `payment_terms` is on this
+	 *  list because the modal now edits it — a suggestion with nowhere to land
+	 *  would be advice the user cannot take. */
+	const SUGGESTION_FIELD_LABEL_KEYS: Record<string, MessageKey> = {
+		gl_account: 'invoices.modal.field.glAccount',
+		cost_center: 'invoices.modal.field.costCenter',
+		payment_terms: 'invoices.modal.field.paymentTerms',
+	};
+	function suggestionFieldLabel(field: string): string {
+		const key = SUGGESTION_FIELD_LABEL_KEYS[field];
+		return key ? m(key) : field;
+	}
+
+	function applySuggestion(s: FieldSuggestion) {
+		if (s.field === 'gl_account') gl_account = s.value;
+		else if (s.field === 'cost_center') cost_center = s.value;
+		else if (s.field === 'payment_terms') payment_terms = s.value;
+		else return; // Unknown field — nothing to fill; leave the row in place.
+		appliedSuggestionFields = [...appliedSuggestionFields, s.field];
+		codingSuggestions = codingSuggestions.filter((x) => x.field !== s.field);
+	}
+
+	$effect(() => {
+		const id = invoice.id;
+		getInvoiceSuggestions(id)
+			.then((res) => {
+				// Only fields this form can actually fill. A suggestion for a
+				// field with no input would be advice with no way to act on it.
+				codingSuggestions = res.field_suggestions.filter(
+					(x) => x.field in SUGGESTION_FIELD_LABEL_KEYS
+				);
+			})
+			.catch(() => {
+				// Advisory: a failed read is simply no panel, never an error the
+				// user has to dismiss on top of the invoice they came to work on.
+				codingSuggestions = [];
+			});
+	});
+
+	/* ---------------------------------------------------------------------
+	 * Inter-company routing (POST /api/invoices/{id}/route-intercompany)
+	 *
+	 * Generates the mirror PAYABLE under another entity of this same tenant, so
+	 * it is a two-step confirm whose second label names the counterparty — the
+	 * action creates a liability under books the user may not be looking at.
+	 *
+	 * Gated three ways, all of them real:
+	 *   - role: admin / ap_manager, exactly what the router's require_roles says;
+	 *   - tenancy: `entityStore.multiEntity` (>1 entity), the SAME signal the
+	 *     sidebar switcher renders on — a single-entity tenant has no possible
+	 *     counterparty, and the endpoint could only ever 400 ("an entity cannot
+	 *     bill itself");
+	 *   - state: once `intercompany_mirror_id` is set the pairing is settled.
+	 *     The backend stamps a counterparty only while unrouted and returns the
+	 *     SAME mirror on a repeat call, so re-offering the action would be a
+	 *     control that cannot change anything. Show the routed state instead.
+	 * ------------------------------------------------------------------- */
+	const canRouteIntercompany = $derived(auth.isManager);
+	let mirrorInvoiceId = $state<string | null>(invoice.intercompany_mirror_id);
+	let counterpartyEntityId = $state<string | null>(invoice.counterparty_entity_id);
+	let selectedCounterparty = $state('');
+	let icArmed = $state(false);
+	let icBusy = $state(false);
+	let icError = $state('');
+
+	$effect(() => {
+		if (canRouteIntercompany) entityStore.ensureLoaded();
+	});
+
+	/**
+	 * Candidate counterparties: this tenant's other ACTIVE entities.
+	 *
+	 * When the entity switcher has a specific entity selected, that IS this
+	 * invoice's entity (the list it was opened from was scoped by the same
+	 * `X-Entity-ID`), so it is excluded — a subsidiary cannot bill itself. Under
+	 * the consolidated "All entities" view the invoice's own entity is not
+	 * knowable client-side (`InvoiceResponse` carries no `entity_id`), so every
+	 * active entity is offered and the backend's own 400 is surfaced verbatim
+	 * rather than guessed at here.
+	 */
+	let counterpartyOptions = $derived(
+		entityStore.entities.filter(
+			(e) => e.is_active && e.id !== entityStore.selected?.id
+		)
+	);
+	function entityName(id: string | null): string {
+		if (!id) return '';
+		return entityStore.entities.find((e) => e.id === id)?.name ?? id;
+	}
+
+	async function handleRouteIntercompany() {
+		if (!selectedCounterparty) return;
+		if (!icArmed) {
+			icArmed = true;
+			return;
+		}
+		icBusy = true;
+		icError = '';
+		try {
+			// The response is the MIRROR, not the origin — the origin's own
+			// `intercompany_mirror_id` was set by the same call, so the routed
+			// state is recorded from the mirror's id and the host list refreshed.
+			const mirror = await routeIntercompany(invoice.id, selectedCounterparty);
+			mirrorInvoiceId = mirror.id;
+			counterpartyEntityId = selectedCounterparty;
+			icArmed = false;
+			toast(
+				m('invoices.modal.intercompany.routedToast', {
+					entity: entityName(selectedCounterparty),
+				}),
+				'success'
+			);
+			await refreshList();
+			await loadAuditLog();
+		} catch (e) {
+			// The backend's detail is PII-free and specific (self-billing,
+			// unknown entity, already routed) — render it rather than inventing
+			// copy that would be less accurate.
+			icError = e instanceof ApiError ? e.message : m('invoices.modal.intercompany.failed');
+			icArmed = false;
+		} finally {
+			icBusy = false;
+		}
 	}
 	let reference_number = $state(invoice.reference_number ?? '');
 	/* eslint-enable svelte/state-referenced-locally */
@@ -490,6 +639,7 @@
 			reference_number: reference_number || null,
 			gl_account: gl_account || null,
 			cost_center: cost_center || null,
+			payment_terms: payment_terms || null,
 			department: department || null,
 			project: project || null,
 			// Optimistic-concurrency token: the `updated_at` this modal loaded
@@ -708,6 +858,7 @@
 					reference_number = updated.reference_number ?? reference_number;
 					gl_account = updated.gl_account ?? gl_account;
 					cost_center = updated.cost_center ?? cost_center;
+					payment_terms = updated.payment_terms ?? payment_terms;
 					department = updated.department ?? department;
 					project = updated.project ?? project;
 
@@ -1649,6 +1800,14 @@
 							{#if glAccounts.length > 0}
 								<select bind:value={gl_account}>
 									<option value="">{m('invoices.modal.field.glSelect')}</option>
+									<!-- A value the catalog doesn't carry (an older code, or an
+									     applied history suggestion coded before the account was
+									     retired) still has to be visible: without its own option
+									     the select renders blank and the field silently reads as
+									     unset while the form still holds it. -->
+									{#if gl_account && !glAccounts.some((a) => a.code === gl_account)}
+										<option value={gl_account}>{gl_account}</option>
+									{/if}
 									{#each glAccounts as acct}
 										<option value={acct.code}>{acct.code} — {acct.name}</option>
 									{/each}
@@ -1662,6 +1821,10 @@
 							<input type="text" bind:value={cost_center} placeholder={m('invoices.modal.field.costCenterPlaceholder')} />
 						</label>
 						<label>
+							<span>{m('invoices.modal.field.paymentTerms')}</span>
+							<input type="text" bind:value={payment_terms} placeholder={m('invoices.modal.field.paymentTermsPlaceholder')} />
+						</label>
+						<label>
 							<span>{m('invoices.modal.field.department')}</span>
 							<input type="text" bind:value={department} placeholder={m('invoices.modal.field.departmentPlaceholder')} />
 						</label>
@@ -1670,6 +1833,53 @@
 							<input type="text" bind:value={project} placeholder={m('invoices.modal.field.projectPlaceholder')} />
 						</label>
 					</div>
+
+					{#if codingSuggestions.length > 0 || appliedSuggestionFields.length > 0}
+						<section class="coding-suggestions" data-testid="coding-suggestions" aria-label={m('invoices.modal.suggestions.aria')}>
+							<div class="coding-suggestions-head">
+								<span class="coding-suggestions-title">{m('invoices.modal.suggestions.title')}</span>
+							</div>
+							<p class="coding-suggestions-hint">{m('invoices.modal.suggestions.hint')}</p>
+							{#each codingSuggestions as s (s.field)}
+								<div class="coding-suggestion" data-testid="coding-suggestion-{s.field}">
+									<div class="coding-suggestion-main">
+										<span class="coding-suggestion-field">{suggestionFieldLabel(s.field)}</span>
+										<span class="coding-suggestion-value">{s.value}</span>
+									</div>
+									<!-- Provenance, built from the response's own counts rather
+									     than restating the backend's English sentence, so it
+									     localizes. Without it this is an unexplained value
+									     asking to be trusted. -->
+									<p class="coding-suggestion-why">
+										{m('invoices.modal.suggestions.provenance', {
+											occurrences: s.occurrences,
+											sample: s.sample_size,
+											confidence: s.confidence,
+										})}
+										{#if s.runner_up}
+											<span class="coding-suggestion-runner">
+												{m('invoices.modal.suggestions.runnerUp', { value: s.runner_up })}
+											</span>
+										{/if}
+									</p>
+									<button
+										type="button"
+										class="coding-suggestion-apply"
+										onclick={() => applySuggestion(s)}
+									>
+										{m('invoices.modal.suggestions.apply')}
+									</button>
+								</div>
+							{/each}
+							{#if appliedSuggestionFields.length > 0}
+								<p class="coding-suggestion-applied" data-testid="coding-suggestion-applied">
+									{m('invoices.modal.suggestions.appliedNotSaved', {
+										fields: appliedSuggestionFields.map(suggestionFieldLabel).join(', '),
+									})}
+								</p>
+							{/if}
+						</section>
+					{/if}
 
 					<div class="line-items-section">
 						<div class="line-items-header">
@@ -1939,6 +2149,68 @@
 								</button>
 							{/if}
 						</div>
+					{/if}
+
+					{#if canRouteIntercompany && entityStore.multiEntity}
+						<section class="ic-section" data-testid="intercompany">
+							<div class="ic-title">{m('invoices.modal.intercompany.title')}</div>
+							{#if mirrorInvoiceId}
+								<!-- Already routed. The pairing is settled: the backend only
+								     stamps a counterparty while unrouted and returns the same
+								     mirror on a repeat call, so there is no action left to
+								     offer here — only the state. -->
+								<p class="ic-routed" data-testid="intercompany-routed">
+									{m('invoices.modal.intercompany.routed', {
+										entity: entityName(counterpartyEntityId),
+									})}
+								</p>
+								<p class="ic-mirror">
+									{m('invoices.modal.intercompany.mirrorId')}
+									<code class="ic-mirror-id" data-testid="intercompany-mirror-id">{mirrorInvoiceId}</code>
+								</p>
+							{:else}
+								<p class="ic-hint">{m('invoices.modal.intercompany.hint')}</p>
+								<label class="ic-picker">
+									<span>{m('invoices.modal.intercompany.counterparty')}</span>
+									<select
+										bind:value={selectedCounterparty}
+										onchange={() => { icArmed = false; icError = ''; }}
+										data-testid="intercompany-counterparty"
+									>
+										<option value="">{m('invoices.modal.intercompany.selectEntity')}</option>
+										{#each counterpartyOptions as e (e.id)}
+											<option value={e.id}>{e.name}</option>
+										{/each}
+									</select>
+								</label>
+								<div class="ic-actions">
+									<RowAction
+										variant="danger"
+										armed={icArmed}
+										disabled={icBusy || !selectedCounterparty}
+										onclick={handleRouteIntercompany}
+									>
+										{#if icBusy}
+											{m('invoices.modal.intercompany.routing')}
+										{:else if icArmed}
+											{m('invoices.modal.intercompany.confirm', {
+												entity: entityName(selectedCounterparty),
+											})}
+										{:else}
+											{m('invoices.modal.intercompany.route')}
+										{/if}
+									</RowAction>
+									{#if icArmed}
+										<button type="button" class="ic-cancel" onclick={() => (icArmed = false)}>
+											{m('common.cancel')}
+										</button>
+									{/if}
+								</div>
+								{#if icError}
+									<p class="ic-error" data-testid="intercompany-error">{icError}</p>
+								{/if}
+							{/if}
+						</section>
 					{/if}
 
 					{#if priors.vendor_cache_applied.length > 0 || priors.rag_neighbors.length > 0}
@@ -3397,6 +3669,154 @@
 	.warning-item.info {
 		background: rgba(99, 140, 255, 0.1);
 		color: #638cff;
+	}
+
+	.coding-suggestions {
+		margin-top: 14px;
+		padding: 12px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--surface);
+	}
+	.coding-suggestions-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+	.coding-suggestions-title {
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+	.coding-suggestions-hint {
+		margin: 6px 0 10px;
+		font-size: 0.78rem;
+		line-height: 1.4;
+		color: var(--text-muted);
+	}
+	.coding-suggestion {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		grid-template-areas: 'main action' 'why action';
+		gap: 2px 10px;
+		align-items: center;
+		padding: 8px 0;
+		border-top: 1px solid var(--border);
+	}
+	.coding-suggestion-main {
+		grid-area: main;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 8px;
+	}
+	.coding-suggestion-field {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+	}
+	.coding-suggestion-value {
+		font-size: 0.88rem;
+		font-weight: 600;
+	}
+	.coding-suggestion-why {
+		grid-area: why;
+		margin: 0;
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: var(--text-muted);
+	}
+	.coding-suggestion-runner {
+		margin-left: 6px;
+	}
+	.coding-suggestion-apply {
+		grid-area: action;
+		align-self: center;
+		padding: 4px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--accent);
+		background: var(--surface);
+		color: var(--accent);
+		font-family: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.coding-suggestion-apply:hover {
+		background: rgba(99, 140, 255, 0.08);
+	}
+	.coding-suggestion-applied {
+		margin: 10px 0 0;
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: var(--text-muted);
+	}
+
+	.ic-section {
+		margin-top: 14px;
+		padding: 12px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--surface);
+	}
+	.ic-title {
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+	.ic-hint,
+	.ic-routed,
+	.ic-mirror {
+		margin: 8px 0 0;
+		font-size: 0.8rem;
+		line-height: 1.4;
+	}
+	.ic-hint,
+	.ic-mirror {
+		color: var(--text-muted);
+	}
+	.ic-routed {
+		font-weight: 500;
+	}
+	.ic-mirror-id {
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+	}
+	.ic-picker {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-top: 10px;
+	}
+	.ic-picker > span {
+		font-size: 0.74rem;
+		color: var(--text-muted);
+	}
+	.ic-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+		margin-top: 10px;
+	}
+	.ic-cancel {
+		border: none;
+		background: none;
+		padding: 4px 6px;
+		color: var(--text-muted);
+		font-family: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+		text-decoration: underline;
+	}
+	.ic-error {
+		margin: 8px 0 0;
+		font-size: 0.8rem;
+		line-height: 1.4;
+		color: var(--danger);
 	}
 
 	.po-match {
