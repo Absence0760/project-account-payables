@@ -48,6 +48,14 @@ What this file pins:
    pick it", which at the harness's handful of rows would be a fiction (the
    real-volume choice is the measurement above).
 
+`ix_audit_log_shipped_at_null` turned out to be one instance of a class of 20.
+The rest are closed by migration 0093, and
+`tests/test_migration_model_index_parity.py` is the systemic guard that now
+covers EVERY `CREATE INDEX` in EVERY revision — opt-out, so a new migration-only
+index fails on the day it lands. This file stays the per-index guard for 0092's
+own sixteen (including that each actually serves its caller's query, which the
+systemic one does not assert).
+
 Real-Postgres harness (`realdb`).
 """
 
