@@ -838,7 +838,7 @@ CISO / Security Analyst before acting.**
       and take the existing `_raise_erp_reconciliation_exception` path on a
       non-covering verdict. **Trigger:** next ERP or settlement slice.
 
-- [x] **DONE.** `derive_run_status` failed open — a run of voided
+- [x] **DONE (PR #373).** `derive_run_status` failed open — a run of voided
       payments reported `completed`. `voided` matched none of the four bucket
       tuples so it bumped `total` only and every branch fell through to
       `return "completed"` (with `payments_completed: 0` beside the full
