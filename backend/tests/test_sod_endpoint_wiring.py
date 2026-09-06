@@ -11,7 +11,18 @@ future refactor can't quietly drop a route back onto `require_roles`.
 We resolve each route's `require_permission` checker out of its FastAPI
 dependency tree and exercise it directly with a user holding / lacking the
 permission — so the test covers BOTH "this route is permission-gated" and "it
-gates on the RIGHT permission," with no DB.
+gates on the RIGHT permission set," with no DB.
+
+**The pin is inverted, not hand-maintained.** `CASES` used to be a hand-written
+list, and a hand-written list omits things: the eight routes that actually move
+money (`execute`, `void`, `settlement/accept`, `compliance/release`,
+`compliance/dismiss`, `resume`, `sync-erp`, `retry-failed`) were all missing from
+it, on the one class of route where the SoD layer existing at all is the point,
+and two of the eight catalogue permissions were never imported here.
+`test_every_permission_gated_route_is_pinned` closes that for good: it derives the
+set of permission-gated routes from the running app and fails if any of them is
+absent from `CASES`. Adding a `require_permission` route now REQUIRES adding it
+here, with the exact permission set it gates on.
 """
 
 from __future__ import annotations
@@ -23,9 +34,12 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.permissions import (
+    ALL_PERMISSIONS,
     PERM_INVOICE_APPROVE,
     PERM_PAYMENT_EXECUTE,
     PERM_PAYMENT_RUN_APPROVE,
+    PERM_PAYMENT_VOID,
+    PERM_USER_MANAGE,
     PERM_VENDOR_BANK_CHANGE_APPROVE,
     PERM_VENDOR_BLOCK,
     PERM_VENDOR_MANAGE,
@@ -81,6 +95,26 @@ def _permission_checkers(route):
     return found
 
 
+def _permission_gated_routes() -> dict[tuple[str, str], list[frozenset[str]]]:
+    """Every (path, method) in the app that goes through `require_permission`.
+
+    Derived from the live app — this is the ground truth `CASES` is checked
+    against, so a new permission-gated route cannot escape the pin.
+    """
+    out: dict[tuple[str, str], list[frozenset[str]]] = {}
+    for path, methods, route in _iter_app_routes():
+        if not hasattr(route, "dependant"):
+            continue
+        captured = _permission_checkers(route)
+        if not captured:
+            continue
+        for method in methods:
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            out[(path, method)] = captured
+    return out
+
+
 def _user_with(perms: set[str]):
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -113,42 +147,103 @@ def _iter_deps(dep):
         yield from _iter_deps(sub)
 
 
-# --- which permission each splittable route must gate on ----------------------
+# --- which permission set each splittable route must gate on -------------------
+#
+# The third element is the EXACT any-of set the route's `require_permission(...)`
+# was constructed with — not merely "one permission it must include". Pinning the
+# exact set catches a widening (someone quietly adding `payment.void` to the
+# `/execute` gate) as well as a narrowing, and both are SoD failures.
+#
+# Every entry here is checked against the live app by
+# `test_every_permission_gated_route_is_pinned`, in both directions.
+
+_EXECUTE = frozenset({PERM_PAYMENT_EXECUTE})
+_VOID = frozenset({PERM_PAYMENT_VOID})
+_EXECUTE_OR_VOID = frozenset({PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID})
+_RUN_APPROVE = frozenset({PERM_PAYMENT_RUN_APPROVE})
+_INVOICE_APPROVE = frozenset({PERM_INVOICE_APPROVE})
+_VENDOR_MANAGE = frozenset({PERM_VENDOR_MANAGE})
+_VENDOR_BLOCK = frozenset({PERM_VENDOR_BLOCK})
+_BANK_CHANGE_APPROVE = frozenset({PERM_VENDOR_BANK_CHANGE_APPROVE})
+_USER_MANAGE = frozenset({PERM_USER_MANAGE})
 
 CASES = [
-    ("/api/invoices/{invoice_id}/approve", "POST", PERM_INVOICE_APPROVE),
+    ("/api/invoices/{invoice_id}/approve", "POST", _INVOICE_APPROVE),
     # Reject is the other half of the approve duty: an approver must be able to
     # reject, and a custom role from which `invoice.approve` was stripped must
     # not be able to reject through the back door. Same permission as approve.
-    ("/api/invoices/{invoice_id}/reject", "POST", PERM_INVOICE_APPROVE),
-    ("/api/payments", "POST", PERM_PAYMENT_EXECUTE),
-    ("/api/payments/runs", "POST", PERM_PAYMENT_RUN_APPROVE),
-    # Supporting reads a `payment.execute`/`payment.void` custom-role holder
+    ("/api/invoices/{invoice_id}/reject", "POST", _INVOICE_APPROVE),
+    # --- payment.execute: the routes that actually move money, or that decide
+    # an already-moved payment's fate in AP's favour. These are the reason the
+    # SoD layer exists at all, so they are pinned individually rather than left
+    # to the payments router's read surface. ---
+    #
+    # `POST /payments` books a single ad-hoc payment; `runs/{id}/execute` funds
+    # a whole draft run. Both call the payment adapter — real money leaves.
+    ("/api/payments", "POST", _EXECUTE),
+    ("/api/payments/runs/{run_id}/execute", "POST", _EXECUTE),
+    # `resume` picks an interrupted run back up and keeps dispatching its
+    # remaining payments — the same adapter call as `execute`, so the same gate.
+    ("/api/payments/runs/{run_id}/resume", "POST", _EXECUTE),
+    # `retry-failed` books a NEW attempt row per failed payment and dispatches
+    # it. A retry is a fresh outbound payment, not a bookkeeping correction.
+    ("/api/payments/runs/{run_id}/retry-failed", "POST", _EXECUTE),
+    # `compliance/release` re-runs the SAME compliance-then-adapter path on a
+    # payment the sanctions/KYC gate held, so a release that clears dispatches
+    # the money. `payment.execute`, never `payment.void` — see below.
+    ("/api/payments/{payment_id}/compliance/release", "POST", _EXECUTE),
+    # `settlement/accept` declares an under-settlement final and releases the
+    # invoice to `paid`. It moves no new money, but it is the affirmative
+    # "this payment stands" call — the execute side of the split, not the
+    # give-up side; `/void` is the give-up exit and gates on `payment.void`.
+    ("/api/payments/{payment_id}/settlement/accept", "POST", _EXECUTE),
+    # `sync-erp` re-runs the ERP sync-back pass for a run whose legs failed.
+    # It moves no money (that already happened) but it is the exit that
+    # transitions invoices to `paid`, so it sits with the execute duty.
+    ("/api/payments/runs/{run_id}/sync-erp", "POST", _EXECUTE),
+    # --- payment.void: giving up on / reversing money. Deliberately the OTHER
+    # half of the split — by default `cfo` holds both but `ap_manager` holds
+    # only `payment.execute`, so an org that splits them keeps reversal away
+    # from whoever initiates. ---
+    ("/api/payments/{payment_id}/void", "POST", _VOID),
+    # `compliance/dismiss` gives up on a held payment and flips it to `failed`.
+    # Its sibling `/release` gates on `payment.execute`: the two halves of the
+    # compliance-hold exit are deliberately on opposite sides of the split.
+    ("/api/payments/{payment_id}/compliance/dismiss", "POST", _VOID),
+    # --- payment_run.approve: staging a draft run (choosing which invoices get
+    # paid) is a separate duty from funding it. NOT the CFO sign-off route
+    # `POST /runs/{id}/approve`, which stays on `require_roles(ROLE_CFO)` — see
+    # `app/api/permissions.py` and that route's own docstring. ---
+    ("/api/payments/runs", "POST", _RUN_APPROVE),
+    # --- Supporting reads a `payment.execute`/`payment.void` custom-role holder
     # needs to REACH the money-moving action through the app, not just call it
-    # directly. `list_payments`/`get_payment` gate on `require_permission(
-    # PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)` (any-of) — checking
-    # PERM_PAYMENT_EXECUTE here is sufficient to prove they're
-    # permission-gated at all; `test_permissions.py` covers the PERM_PAYMENT_VOID
-    # leg and the exact-match-to-the-prior-role-set reasoning.
-    ("/api/payments", "GET", PERM_PAYMENT_EXECUTE),
-    ("/api/payments/{payment_id}", "GET", PERM_PAYMENT_EXECUTE),
-    ("/api/payments/runs/", "GET", PERM_PAYMENT_EXECUTE),
-    ("/api/payments/runs/{run_id}", "GET", PERM_PAYMENT_EXECUTE),
+    # directly. The any-of set reproduces the prior `require_roles(ADMIN,
+    # AP_MANAGER, CFO)` exactly for the four system roles. ---
+    ("/api/payments", "GET", _EXECUTE_OR_VOID),
+    ("/api/payments/counts", "GET", _EXECUTE_OR_VOID),
+    ("/api/payments/{payment_id}", "GET", _EXECUTE_OR_VOID),
+    # The run reads gate on `payment.execute` alone: a void-only role acts on
+    # individual payments, not on runs.
+    ("/api/payments/runs/", "GET", _EXECUTE),
+    ("/api/payments/runs/{run_id}", "GET", _EXECUTE),
     # --- vendor.manage: create / edit / verify / reject / delete a vendor, and
     # the bulk-import paths that do the same thing at volume. ---
-    ("/api/vendors", "POST", PERM_VENDOR_MANAGE),
-    ("/api/vendors/{vendor_id}", "PATCH", PERM_VENDOR_MANAGE),
-    ("/api/vendors/{vendor_id}", "DELETE", PERM_VENDOR_MANAGE),
-    ("/api/vendors/{vendor_id}/bank-change", "POST", PERM_VENDOR_MANAGE),
-    ("/api/vendors/{vendor_id}/verify", "POST", PERM_VENDOR_MANAGE),
-    ("/api/vendors/{vendor_id}/reject", "POST", PERM_VENDOR_MANAGE),
-    ("/api/vendors/{vendor_id}/screen", "POST", PERM_VENDOR_MANAGE),
-    ("/api/vendors/sync-erp", "POST", PERM_VENDOR_MANAGE),
-    ("/api/vendors/import-csv", "POST", PERM_VENDOR_MANAGE),
-    ("/api/enrichment/vendors/consolidation/merge", "POST", PERM_VENDOR_MANAGE),
+    ("/api/vendors", "POST", _VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}", "PATCH", _VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}", "DELETE", _VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/bank-change", "POST", _VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/verify", "POST", _VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/reject", "POST", _VENDOR_MANAGE),
+    ("/api/vendors/{vendor_id}/screen", "POST", _VENDOR_MANAGE),
+    ("/api/vendors/sync-erp", "POST", _VENDOR_MANAGE),
+    ("/api/vendors/import-csv", "POST", _VENDOR_MANAGE),
+    # Bulk verify/reject is the single-row verify/reject at volume — same gate,
+    # or the bulk endpoint becomes the way around it.
+    ("/api/vendors/bulk/status", "POST", _VENDOR_MANAGE),
+    ("/api/enrichment/vendors/consolidation/merge", "POST", _VENDOR_MANAGE),
     # --- vendor.block: sticky payment block/unblock. ---
-    ("/api/vendors/{vendor_id}/block", "POST", PERM_VENDOR_BLOCK),
-    ("/api/vendors/{vendor_id}/unblock", "POST", PERM_VENDOR_BLOCK),
+    ("/api/vendors/{vendor_id}/block", "POST", _VENDOR_BLOCK),
+    ("/api/vendors/{vendor_id}/unblock", "POST", _VENDOR_BLOCK),
     # --- vendor.bank_change.approve: the BEC / bank-redirect dual-control gate.
     # Its sibling `POST /change-requests/{id}/reject` is deliberately NOT here —
     # reject never touches the vendor row (it can't redirect a payment), so it
@@ -156,31 +251,98 @@ CASES = [
     # money-authorizing permission. See the route's own comment in
     # app/api/vendors.py and docs/authentication.md § "Approve and reject are
     # not always the same role set".
-    ("/api/vendors/change-requests/{request_id}/approve", "POST", PERM_VENDOR_BANK_CHANGE_APPROVE),
+    ("/api/vendors/change-requests/{request_id}/approve", "POST", _BANK_CHANGE_APPROVE),
+    # --- user.manage: who exists and what they can do. The role CRUD routes
+    # (`POST/PATCH/DELETE /admin/roles`) deliberately stay on
+    # `require_roles(ROLE_ADMIN)` and are therefore absent here — role CRUD is
+    # the meta-layer that DEFINES permissions, so gating it on a permission a
+    # custom role could itself be granted would let that role mint itself
+    # everything. ---
+    ("/api/admin/users", "GET", _USER_MANAGE),
+    ("/api/admin/users", "POST", _USER_MANAGE),
+    ("/api/admin/users/{user_id}", "PATCH", _USER_MANAGE),
+    ("/api/admin/users/{user_id}", "DELETE", _USER_MANAGE),
+    ("/api/admin/users/bulk-delete", "POST", _USER_MANAGE),
+    ("/api/admin/users/{user_id}/revoke-sessions", "POST", _USER_MANAGE),
+    # The role list + permission catalog are the role editor's data source —
+    # readable by whoever may assign roles, i.e. the same duty.
+    ("/api/admin/roles", "GET", _USER_MANAGE),
+    ("/api/admin/permissions", "GET", _USER_MANAGE),
 ]
 
+PINNED = {(path, method) for path, method, _ in CASES}
 
-@pytest.mark.parametrize("path,method,perm", CASES)
-def test_route_gates_on_expected_permission(path, method, perm):
+
+@pytest.mark.parametrize("path,method,expected", CASES)
+def test_route_gates_on_expected_permission(path, method, expected):
     route = _find_route(path, method)
     captured = _permission_checkers(route)
     assert captured, f"{method} {path} is not permission-gated (still on require_roles?)"
-    assert any(perm in s for s in captured), (
-        f"{method} {path} must gate on {perm}; captured {captured}"
+    assert captured == [expected], (
+        f"{method} {path} must gate on exactly {sorted(expected)}; "
+        f"captured {[sorted(s) for s in captured]}"
     )
 
 
-@pytest.mark.parametrize("path,method,perm", CASES)
+@pytest.mark.parametrize("path,method,expected", CASES)
 @pytest.mark.asyncio
-async def test_holder_allowed_nonholder_denied(path, method, perm):
+async def test_holder_allowed_nonholder_denied(path, method, expected):
     route = _find_route(path, method)
 
-    # A user holding the required permission passes.
-    allowed = await _call_checker(route, _user_with({perm}))
-    assert allowed is not None
+    # Every leg of the any-of set independently grants access — so an org that
+    # splits the duties doesn't lose the route for one half of the split.
+    for perm in sorted(expected):
+        allowed = await _call_checker(route, _user_with({perm}))
+        assert allowed is not None, f"{method} {path} denied a holder of {perm}"
 
     # A user with no permissions (e.g. a custom role with the duty stripped) is
     # rejected with 403 — the back door is closed.
     with pytest.raises(HTTPException) as exc:
         await _call_checker(route, _user_with(set()))
     assert exc.value.status_code == 403
+
+
+def test_every_permission_gated_route_is_pinned():
+    """The pin is complete: `CASES` covers EVERY `require_permission` route.
+
+    This is the guard that makes the hand-list safe. A hand-list is exactly what
+    let the eight money-moving payment routes go unpinned; deriving the set from
+    the app means a new `require_permission` route fails the suite until it is
+    pinned here with the permission set it gates on.
+    """
+    live = set(_permission_gated_routes())
+
+    unpinned = live - PINNED
+    assert not unpinned, (
+        "these routes go through require_permission but are not pinned in CASES — "
+        "add each with the exact permission set it gates on: " + str(sorted(unpinned))
+    )
+
+    stale = PINNED - live
+    assert not stale, (
+        "these routes are pinned in CASES but no longer go through "
+        "require_permission (moved, renamed, or downgraded to require_roles): " + str(sorted(stale))
+    )
+
+
+def test_every_catalogue_permission_is_exercised():
+    """Every permission in the catalogue gates at least one pinned route.
+
+    `payment.void` and `user.manage` were in the catalogue but never imported by
+    this module, so nothing here proved either was wired to anything. A catalogue
+    entry that gates no route is dead config — an org can grant it to a custom
+    role and get nothing.
+    """
+    exercised: set[str] = set()
+    for _path, _method, expected in CASES:
+        exercised |= set(expected)
+
+    missing = set(ALL_PERMISSIONS) - exercised
+    assert not missing, (
+        "these catalogue permissions gate no pinned route: "
+        + str(sorted(missing))
+        + " — either pin the route that uses one, or remove it from ALL_PERMISSIONS"
+    )
+
+    unknown = exercised - set(ALL_PERMISSIONS)
+    assert not unknown, f"CASES names permissions outside the catalogue: {sorted(unknown)}"
