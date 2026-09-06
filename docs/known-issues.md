@@ -5,10 +5,15 @@ names the root cause, the evidence, blast radius, and a recommended fix
 approach — this is a staging area for real problems, not a place to let them
 go stale. See root `CLAUDE.md` guard rail 6 (no dangling deferred findings).
 
-**No entries are currently open.** Everything below is a `~~struck-through~~`
-resolved stub, kept because the *diagnosis* is the expensive part and is worth
-not re-deriving. Add a new entry at the top when a defect is diagnosed but
-can't be fixed in the same session.
+**One entry is open** — the `queue-blocked` e2e cases at the bottom. The other
+nine are `~~struck-through~~` resolved stubs, kept because the *diagnosis* is
+the expensive part and is worth not re-deriving. Add a new entry at the top when
+a defect is diagnosed but can't be fixed in the same session.
+
+(This header said "no entries are currently open" while the file carried ten
+`##` headings and only nine struck. Root `CLAUDE.md` repeated the claim. Both
+are corrected as of 2026-09-06 — a known-issues file that under-reports itself
+is worse than one with an entry in it.)
 
 **Scope:** *diagnosed defects* only. A deferral that isn't a defect — blocked on
 a credential, an operator step on merged code, or sized-but-unstarted work —

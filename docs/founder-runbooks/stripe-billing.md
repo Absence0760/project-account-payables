@@ -4,11 +4,34 @@
 provider. Stripe is the default; Chargebee / Orb / Metronome come later
 if you need complex metering.
 
-## What's NOT in code yet
+## What IS in code
 
-Nothing. There is no billing adapter, no subscription model, no
-webhook handler. This is a future engineering task, tracked in
-`docs/roadmap.md`.
+**Corrected 2026-09-06.** This section previously read "Nothing. There is no
+billing adapter, no subscription model, no webhook handler." All three shipped;
+`docs/roadmap_shipped.md` records the section as Done. What exists today:
+
+- **Adapters** — `backend/app/services/billing_adapters/`: `mock` (in-process,
+  deterministic, the local-first default) and `stripe_billing` (live REST, fails
+  closed without `FEOH_BILLING_STRIPE_API_KEY`).
+- **Models** — control-plane `Plan` / `Subscription` (`app/models/billing.py`,
+  migration 0056).
+- **Webhook** — `POST /api/billing/webhook/{provider}`
+  (`app/api/billing_webhook.py`), HMAC-verified, deduped by `event_id`, with a
+  replay window on the `Stripe-Signature` timestamp, behind
+  `FEOH_BILLING_WEBHOOK_ENABLED`.
+- **API + UI** — `/api/billing` (subscription, plans, change-plan with
+  Decimal-exact proration, invoices, payment-method SetupIntent) and the
+  `/billing` page.
+
+What remains is the **operator** step this runbook is for: a provisioned Stripe
+account, real price ids, and the secrets in sops — tracked in
+`docs/followups.md` § (a). See `backend/docs/billing.md` for the engineering
+detail.
+
+Three endpoint/module names elsewhere in this file do not exist and are kept
+only as historical sketch: `POST /api/billing/subscribe`,
+`POST /api/billing/portal`, and `services/billing_gate.py` (the real entitlement
+gate is `app/services/billing/entitlements.py::require_entitlement`).
 
 ## What to decide first (before writing code)
 

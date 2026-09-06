@@ -616,8 +616,9 @@ later roadmap work:
   changelog, API-key self-service from the docs) is later work.
 - **Write scopes + endpoints** — only `read` is minted today. The scope plumbing
   (`scopes` column + `require_api_scope`) is in place for it.
-- **Frontend key-management UI** — the API-key mint / list / revoke / **usage**
-  surface is fully built on the backend (`/api/api-keys/*`, admin-gated), but the
-  SvelteKit admin screen to drive it (show the per-key usage chart from
-  `GET /api/api-keys/{id}/usage`) is owned by the frontend track and not built
-  here. Tracked as frontend roadmap work; the read API it will call is stable.
+- ~~**Frontend key-management UI**~~ — **shipped** (corrected 2026-09-06; this
+  entry claimed the SvelteKit screen was "not built here" long after it landed).
+  `frontend/src/routes/admin/api-keys/+page.svelte` drives mint / list / revoke
+  and the per-key usage view off `GET /api/api-keys/{id}/usage`, via
+  `frontend/src/lib/api/apiKeys.ts`. The one-time plaintext reveal goes through
+  the shared `ui/SecretReveal.svelte`.

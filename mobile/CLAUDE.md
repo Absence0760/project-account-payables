@@ -392,7 +392,7 @@ everyone else.
   email + system-role pick → `POST /api/admin/users`; the server-generated
   one-time temporary password is surfaced in a dialog for the admin to hand
   over, then the list refreshes), edit a user's roles (system roles only —
-  custom roles confer no access today), activate/deactivate, and **delete a
+  the mobile role editor offers only the four SYSTEM roles — custom roles are created and granted on the web (`/admin?tab=roles`). Custom roles DO confer access: effective permissions are the union over a user's roles, custom ones via the `roles.permissions` JSONB column (migration 0062) — see `backend/app/api/permissions.py`), activate/deactivate, and **delete a
   user** (an armed/confirmed destructive action in the per-user sheet →
   `DELETE /api/admin/users/{id}`; self-delete is disabled client-side and the
   backend's 409 — self / still-referenced-by-in-flight-work — surfaces in the
