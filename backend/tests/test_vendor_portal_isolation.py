@@ -176,7 +176,7 @@ async def test_portal_endpoint_dep_rejects_employee_token():
 
     from app.api import portal
 
-    # Intentionally no-auth portal routes (mirrors test_rbac.NO_AUTH_REQUIRED):
+    # Intentionally no-auth portal routes (mirrors test_rbac.PUBLIC_BY_DESIGN / ALTERNATE_AUTH):
     #   - `/portal/cards/{token}` — the single-use card-reveal token IS the
     #     credential (no JWT, no vendor auth).
     #   - `/portal/branding` — public-by-design white-label brand read for the

@@ -117,7 +117,7 @@ blocker**, not a live violation.
 4. **Subject identification → auth.** JWT for the SPA (`typ=vendor` for the
    portal), `X-API-Key` for `/api/v1`, HMAC for every webhook. Public-by-design
    routes are enumerated in the root `CLAUDE.md` and in
-   `tests/test_rbac.NO_AUTH_REQUIRED` — treat that list as the allowlist and
+   `tests/test_rbac.PUBLIC_BY_DESIGN` / `.ALTERNATE_AUTH` — treat those as the allowlists and
    flag anything reachable that is not on it.
 
 ## Audit areas you handle

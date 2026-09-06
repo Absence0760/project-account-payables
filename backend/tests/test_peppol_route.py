@@ -3,7 +3,7 @@
 Covers the happy path, the idempotent re-send (already_sent + no double
 transmit), 404 / 400 / 422 error mapping with PII-free bodies, and RBAC
 (ap_clerk is rejected). Auth-gating itself is covered by test_rbac.py — this
-route is NOT in NO_AUTH_REQUIRED.
+route is on neither PUBLIC_BY_DESIGN nor ALTERNATE_AUTH.
 """
 
 from __future__ import annotations

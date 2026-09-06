@@ -15,7 +15,7 @@ Covers (per the slice test plan):
   - boot guard refuses without the signing secret when not in debug;
   - mock adapter parse_inbound returns a populated message / None.
 
-Auth-gating itself is covered by test_rbac.py (the route IS in NO_AUTH_REQUIRED).
+Auth-gating itself is covered by test_rbac.py (the route IS in ALTERNATE_AUTH).
 """
 
 from __future__ import annotations

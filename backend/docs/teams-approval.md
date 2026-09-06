@@ -133,7 +133,7 @@ POST /api/approvals/teams/interactivity   — PUBLIC, no JWT
 ```
 
 `app/api/teams_approvals.py`. Public-by-design (Teams POSTs it; the signature +
-the token are the gates) and listed in `NO_AUTH_REQUIRED` in `tests/test_rbac.py`,
+the token are the gates) and listed in `ALTERNATE_AUTH` in `tests/test_rbac.py`,
 exactly like the PEPPOL-inbound, email-approval, and Slack routes.
 
 Two gates, layered, both fail closed:
@@ -259,7 +259,7 @@ correctly-signed interactivity requests in-process.
   on `Authorization`; and Approve's signature over Reject's body is refused with
   the same opaque ack.
 - Auth-gating is covered by `tests/test_rbac.py` (the route is in
-  `NO_AUTH_REQUIRED`).
+  `ALTERNATE_AUTH`).
 
 ## Deferred
 

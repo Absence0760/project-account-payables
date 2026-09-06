@@ -1073,7 +1073,11 @@ user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
 - 403 with `{"detail": "Your role does not permit this action."}` on miss.
 - Denials log at WARN level for monitoring.
 - New endpoints without an auth dependency fail `tests/test_rbac.py` — coverage gate.
-- Public endpoints (login, MFA challenge, OIDC, signup, webhooks, SCIM) live in `NO_AUTH_REQUIRED` in the same test file.
+- Routes with no JWT dependency live in one of two allowlists in the same test file:
+  `PUBLIC_BY_DESIGN` (genuinely credential-free — health, public-config, `/portal/branding`,
+  SSO/SAML config, signup start; each is DRIVEN with a real credential-free request) or
+  `ALTERNATE_AUTH` (gated by something other than the JWT — login, MFA challenge, webhooks,
+  SCIM bearer, signed action tokens; each names its gate). Listing a route no longer exempts it.
 - Full permission matrix: `../docs/authentication.md` § RBAC.
 
 ### MFA (`services/mfa.py`, `services/webauthn.py`)

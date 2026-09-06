@@ -3,7 +3,8 @@
 Covers dormant detection against the threshold, that acknowledge writes the
 audit row + stamps the org settings, and the sensitive-read audit row. RBAC
 gating itself is covered by test_rbac.py (both routes carry require_roles and are
-not in NO_AUTH_REQUIRED). The pure dormancy logic is unit-tested directly against
+on neither PUBLIC_BY_DESIGN nor ALTERNATE_AUTH). The pure dormancy logic is
+unit-tested directly against
 ``compute_access_review`` with a controlled ``now``.
 """
 
