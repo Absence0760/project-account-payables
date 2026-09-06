@@ -121,13 +121,21 @@ jobs:
   backend-test:
     name: Backend (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    # A shard is ~7 min; every sibling matrix job in this file caps itself at
-    # 20-25. This one didn't, so it inherited GitHub's 360-minute default and a
-    # hung shard sat on a runner for six hours instead of failing. Observed on
-    # PR #366, where shards 1-3 finished in ~14 min and shard 4 was still
-    # "in_progress" 40 minutes in with no output. 25 leaves generous headroom
-    # over the whole serial suite (~27 min) while making a hang terminate.
-    timeout-minutes: 25
+    # This job had no timeout, so it inherited GitHub's 360-minute default and a
+    # hung shard sat on a runner for six hours instead of failing (PR #366:
+    # shards 1-3 finished in ~14 min, shard 4 was still "in_progress" at 40).
+    #
+    # First set to 25, which was too tight and cancelled a healthy run on #371:
+    # that shard reached 71% in 25 minutes where the same shard finished in
+    # 12-13 on #370's two runs. Nothing hung — the runner was simply ~2x slow,
+    # which happens. 25 gave only ~1.9x headroom over a 13-minute norm, while
+    # the e2e shards next door run ~4 min against a 20-minute cap (~5x).
+    #
+    # 40 restores roughly 3x headroom: a degraded runner still finishes, a real
+    # hang still dies in 40 minutes instead of six hours. Raise this if the
+    # SHARD's own median approaches ~20 min; do not raise it for a one-off slow
+    # run, which is what it is meant to survive.
+    timeout-minutes: 40
 
     strategy:
       # One shard failing shouldn't cancel the others — mirrors the e2e matrix
