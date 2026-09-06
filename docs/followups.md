@@ -34,8 +34,19 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-06 (round 23) — ten agents: four closing this
-file's actionable remainder, six hunting. **31 → 56.**
+**Last reconciled:** 2026-09-06 (round 23, PR #372 merged) — ten agents: four
+closing this file's actionable remainder, six hunting. **31 → 50.**
+
+The first pass of this reconciliation recorded 56, because the six entries round
+23's own fix agents closed were left standing while the hunt's findings were
+appended. They have since been verified against merged `main` and pruned:
+`is_canonical_step_type` (deleted, with a guard test asserting it stays deleted),
+the false `compute_next_run` docstring, the `corridor-quotes` /
+`agent-resolve` / `/api/enrichment` caller-less surfaces, the intake +
+requisition status-label maps, `route-intercompany`'s missing UI, the missing
+`RebateResponse.currency`, and the unpaginated rebate + inspection lists.
+Pruning a landed item is this file's own rule, and the count is load-bearing —
+the tracker issue mirrors it.
 
 The growth is the finding, not a failure of the round. The hunters were pointed
 at areas the last two rounds had already swept, and still returned 34 verified
@@ -609,8 +620,8 @@ decide.
       which carries the same untested shape and was deliberately left alone.
       **Trigger:** next Monday's Dependabot run.
 
-- [ ] **Confirm the `packageManager` pin stopped Dependabot dropping the pnpm
-      overrides.** Two npm PRs in one day (#344, #351) arrived with the whole
+- [ ] **(b) Confirm the `packageManager` pin stopped Dependabot dropping the
+      pnpm overrides.** Two npm PRs in one day (#344, #351) arrived with the whole
       `overrides:` block deleted from `frontend/pnpm-lock.yaml` while
       `package.json` still declared `pnpm.overrides` for `cookie@<0.7.0` and
       `undici@<7.28.0`, red on every job that installs. Root cause was that
@@ -649,47 +660,26 @@ a read-only fact (§94).
 
 What remains from those sweeps:
 
-- [ ] **(c) `workflow_step_types.is_canonical_step_type` is unused and
-      untested.** Unchanged from round 21 — `workflow_builder` asks the inverse
-      question via `BUILDER_STEP_TYPES` and handles aliases correctly.
-      **Durable fix:** delete it, or give it a caller and coverage; an untested
-      third spelling in the module that gates a financial control
-      ([decisions.md](decisions.md) §32) is the wrong kind of spare part.
-      **Trigger:** the next workflow-step-type change.
-
-- [ ] **(c) `scheduled_reports.compute_next_run`'s docstring is false.** It
-      claims to be "used when seeding a brand-new schedule", but the API
-      deliberately seeds `next_run_at = body.next_run_at or now()` so an
-      operator can watch the first run happen. A doc fix. **Trigger:** any edit
-      to the scheduled-report runner.
-
-- [ ] **(c) Smaller caller-less surfaces, still verified open.**
-      `POST /api/payments/corridor-quotes`;
-      `POST /api/exceptions/{id}/agent-resolve` (the agent dashboard reports on
-      activity it cannot trigger); `POST /api/discounts/bulk-negotiate`; the two
-      `/api/enrichment` read endpoints. Round 22 closed the audit-verification,
-      sweep-health and card-rebate members of this group.
-      **Durable fix:** each is a small addition to a page that already exists.
-      **Trigger:** take them opportunistically when next in that page.
-
-- [ ] **(c) `INTAKE_STATUS_LABELS` / `REQUISITION_STATUS_LABELS` are hardcoded
-      English.** Unchanged. In `src/lib/types/*.ts` and not routed through i18n,
-      so a German user sees a translated Reopen confirm next to an untranslated
-      `DRAFT` badge. **Durable fix:** move both maps behind `MessageKey`s like
-      the other status-label sets. **Trigger:** the next i18n or procurement
-      slice.
-
-- [ ] **(c) `POST /api/invoices/{id}/route-intercompany` still has no UI.**
-      Inter-company mirror generation, documented and scored a competitive
-      "Have". It was moot while a tenant could not create a second entity;
-      `/admin/entities` (round 22) removes that excuse, so this is now a real
-      gap rather than a blocked one. **Durable fix:** an action on the invoice
-      detail modal, gated admin/ap_manager and on the tenant having ≥2 entities.
-      **Trigger:** the first multi-entity tenant.
+- [ ] **(c) `POST /api/discounts/bulk-negotiate` has no caller.** The last
+      member of the round-21 caller-less group. Round 22 closed the
+      audit-verification, sweep-health and card-rebate members; round 23 closed
+      `POST /api/payments/corridor-quotes` (the `/payments` advisory quote
+      panel), `POST /api/exceptions/{id}/agent-resolve` (a runner on the agent
+      dashboard that used to only report on activity it could not trigger) and
+      both `/api/enrichment` read endpoints (vendor score in `VendorModal`,
+      coding suggestions in `InvoiceModal`).
+      **Durable fix:** a small addition to `/discounts`, which already exists.
+      **Trigger:** take it opportunistically when next in that page.
 
 ### Surfaced by the round-22 parallel round (2026-09-05)
 
 Found while closing the above. None is a defect that can bite today.
+
+**Closed in round 23:** `RebateResponse` now resolves each row's `currency`
+from its joined card, and `GET /api/cards/rebates` / `GET /api/inspections`
+are both on the canonical `page` / `page_size` contract — `/inspections` also
+returns `gr_number` and takes a `?gr_id=` filter, so the UI no longer fetches
+a 100-row page of receipts purely to label a column.
 
 - [ ] **(b) The two `/organization` follow-ups the SSO agent correctly stopped
       at are DONE, but a third remains: the void's card-cancel outcome is
@@ -703,25 +693,6 @@ Found while closing the above. None is a defect that can bite today.
       beside it. **Durable fix:** surface `card_outcome` on `PaymentResponse`
       and in the void dialog, with a retry when the provider leg failed.
       **Trigger:** the next virtual-card slice.
-
-- [ ] **(c) `RebateResponse` carries no currency.** `card_rebates` has no
-      currency column; a rebate's currency is knowable only through its card.
-      The list envelope's `excluded_rebate_count` lets the UI prove the common
-      case (zero ⇒ every row is in the declared currency), but on a
-      mixed-currency programme the remaining rows render **bare figures with no
-      code**, which is the honest rendering and not a good one.
-      **Durable fix:** resolve `currency` from the joined card onto
-      `RebateResponse`. **Trigger:** the first tenant running cards in two
-      currencies.
-
-- [ ] **(c) `GET /api/cards/rebates` and `GET /api/inspections` are
-      unpaginated.** Both are fine at current volumes and both back a table that
-      will grow monotonically. `GET /api/inspections` additionally returns
-      `gr_id` with no `gr_number` and no `?gr_id=` filter, so the UI carries a
-      `page_size=100` receipts fetch purely to label a column.
-      **Durable fix:** the Load-More footer + `/ids` resolver pattern the
-      invoice, vendor and payment-queue lists already use; plus a `gr_id` filter.
-      **Trigger:** either list passing a few hundred rows.
 
 - [ ] **(c) `nav.ts` hides `/goods-receipts` from an `ap_clerk` whose backend
       reads are open to all four roles.** The receipts *and* inspections list
