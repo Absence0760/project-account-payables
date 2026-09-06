@@ -305,6 +305,68 @@ Migration `0010_audit_log_shipping`:
   query stays cheap as the audit log grows.
 - Guarded by `_has_table("audit_log")` — no-op on the control plane.
 
+## The auditor export reads the same table, and must page it too
+
+The shipper is not the only thing that walks `audit_log` at volume. The
+SOX evidence surface — `GET /api/audit/export` (`app/api/audit.py`) — reads the
+same table over a caller-chosen range, and the range that matters is an annual
+one: a scratch tenant carries ~41 600 rows in a single 30-day window.
+
+It is subject to the same "bounded, not whole-table" rule as the shipper, and
+for the same reason, but it reaches it differently — the shipper takes a
+`FEOH_AUDIT_SHIPPING_BATCH_SIZE` batch per tick and comes back next tick,
+whereas an export has to deliver every row of its range in one response:
+
+* rows are read through a server-side cursor (`yield_per`, the mechanism
+  `GET /audit/verify-signatures` in the same module already used) selecting
+  plain columns rather than the `AuditLog` entity, so nothing accumulates in the
+  session's identity map;
+* JSON and CSV bodies are emitted in bounded chunks as rows arrive, so peak
+  server memory is a page rather than a period. Measured with the body
+  discarded as it is sent (so the number is the server's, not a test client's
+  copy of the response): peak allocation went from 18.0 MiB at 5 000 rows and
+  70.6 MiB at 20 000 — **linear in the range** — to a flat **1.5 MiB at both**.
+  JSON also got faster (3 244 ms → 1 573 ms at 20 000 rows); CSV traded about
+  20% wall clock (1 340 ms → 1 611 ms) for 48× less peak memory, which is the
+  right way round for a report an auditor runs occasionally on a shared worker.
+
+**Do not "simplify" it back to a `LIMIT`.** A capped export is a silently short
+one, and a short export is evidence somebody signs off on — strictly worse than
+a slow one. Nothing in that path truncates, and a run that dies part-way cannot
+pass for a complete one either: the response is chunked (no `Content-Length`),
+so an aborted body has no terminating chunk and any conforming client raises,
+and the JSON dialect additionally never emits its closing `]`.
+
+Two consequences of streaming are worth knowing before editing that route:
+
+* The `audit.exported` row is committed **before** the cursor opens (the access
+  has happened by the time bytes leave, so an aborted download must still be on
+  the trail). The export is therefore pinned to a snapshot — `created_at <`
+  Postgres' own `now()`, read before anything is written — or the body would
+  carry the record of itself, and rows a concurrent request committed meanwhile,
+  neither of which the row's own `count` includes.
+* That `count` is a real `COUNT(*)` over the same predicate, folded into one
+  aggregate alongside the `DISTINCT actor_id` the actor-name lookup needs, so
+  the range is scanned once and the query count stays fixed no matter how large
+  it is.
+
+The trade-off streaming buys this with, stated plainly: the request holds its
+tenant DB connection checked out for the **whole** response, transmission
+included, where the buffered version released it as soon as the rows were read.
+The per-tenant pool is `pool_size=5, max_overflow=10`, so several concurrent
+annual exports over slow client links can hold connections far longer than
+before. That is the right way round — the alternative was gigabytes of server
+memory — but it is the thing to look at first if pool exhaustion ever shows up
+alongside export activity.
+
+Streaming also rests on FastAPI keeping its `yield`-dependency teardown *after*
+the response body drains, which is internal ordering rather than a documented
+contract. `tests/test_audit_export_streaming.py` drives the raw ASGI app against
+a real database, so a future FastAPI bump that reordered it fails loudly there
+rather than silently handing the generator a closed session.
+
+That file guards both halves — that it streams, and that it returns every row.
+
 ## DB-level immutability (SOX) and the `shipped_at` carve-out
 
 Migration `0022_sox_audit_immutable` (DDL in `app/services/audit_immutability.py`)
