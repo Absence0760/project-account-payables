@@ -239,6 +239,21 @@ class Invoice(Base, EntityMixin, TimestampMixin):
             "ix_invoices_invoice_number_norm",
             text("lower(trim(invoice_number))"),
         ),
+        # `GET /api/invoices`'s own default order (`created_at DESC, id DESC`).
+        # Without it page 1 of the list was a whole-table Parallel Seq Scan plus
+        # a top-N heapsort — 15.8 ms / 4 952 buffers at 200k invoices, growing
+        # with the table while the page stays at 20 rows. See migration 0092.
+        Index("ix_invoices_created_at_id", text("created_at DESC"), text("id DESC")),
+        # The same order under a status chip. Not redundant with the index
+        # above: for a RARE, scattered status Postgres otherwise walks the plain
+        # ordering index discarding non-matching rows until it has 20 (18 928
+        # discarded for one page at 200k), and that count grows with the table.
+        Index(
+            "ix_invoices_status_created_at_id",
+            "status",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
     )
 
     vendor_rel: Mapped["Vendor | None"] = relationship(back_populates="invoices")  # noqa: F821

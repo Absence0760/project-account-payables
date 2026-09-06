@@ -305,6 +305,33 @@ Migration `0010_audit_log_shipping`:
   query stays cheap as the audit log grows.
 - Guarded by `_has_table("audit_log")` — no-op on the control plane.
 
+### The index was only ever on MIGRATED tenants
+
+For 82 revisions that index existed in the migration and nowhere else, and a
+tenant only gets it if Alembic ran against it. Fresh tenants don't: they are
+built by `Base.metadata.create_all` in
+`services/tenant_provisioning._create_tenant_tables`, which produces exactly the
+indexes the ORM declares — and `AuditLog` declared none. So every
+freshly-provisioned tenant ran this 60-second sweep as a full sequential scan of
+its largest table, forever, while a migrated tenant did not. Measured at 1.2 M
+audit rows: **39.740 ms / 30 003 buffers → 0.040 ms / 1 buffer** for a
+caught-up tick that returns no rows at all.
+
+`0092_list_and_audit_indexes` closes it by declaring the index on
+`AuditLog.__table_args__` — under **0010's name**, deliberately, because a second
+identical partial index would be pure write overhead on every audit row for the
+rest of the platform's life. 0092 also restates the `CREATE INDEX IF NOT EXISTS`
+so an already-provisioned tenant picks it up when it reaches that revision, but
+does not list it in its downgrade: reverting 0092 must not remove revision
+0010's index. `tests/test_list_and_audit_indexes.py` pins all three properties.
+
+Two more `audit_log` indexes land in the same revision — `(action, created_at)`
+for the SOX signature sweep, the dashboard's approval-timing leg and the adaptive
+feedback reads, and `(created_at)` for the auditor's date-range export (which has
+no `action` predicate and so cannot use the composite). Both are also what the
+retention sweep's overdue-row count reads. Sizes and before/after numbers are in
+[`database.md`](database.md) § Index coverage on list + audit reads.
+
 ## DB-level immutability (SOX) and the `shipped_at` carve-out
 
 Migration `0022_sox_audit_immutable` (DDL in `app/services/audit_immutability.py`)
