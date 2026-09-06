@@ -4094,3 +4094,42 @@ so `$500.00` and `€500.00` were indistinguishable to it and this shipped unsee
 The payments specs now assert the currency **symbol**, and the settlement fixture
 is EUR rather than the tenant's own currency — a same-currency fixture makes the
 wrong rendering look right.
+
+---
+
+## 108. OFFSET paging needs a total order, and the guard for it is a source guard
+
+**Decided:** 2026-09-06 · `backend/app/api/`, `backend/tests/test_pagination_total_order.py`
+
+`OFFSET`/`LIMIT` paging is only coherent if the `ORDER BY` is a total order.
+`created_at` is not one: it defaults to the transaction timestamp, so every row
+written by a single transaction — an ERP sync page, a CSV import, one sweep tick
+— shares it *exactly*. Postgres is then free to order the tied rows differently
+between the two queries that fetch page 1 and page 2, so a row can be handed to
+the caller twice or skipped altogether.
+
+Two endpoints were reported (`api/exceptions.py`, `api/purchase_orders.py`,
+found while indexing their tables in §104). Sweeping for the shape found **26**,
+including four supplier-portal lists, the notification centre, credit memos,
+cards and the SCIM user list. `exceptions.py` was the clearest case: its own
+`/ids` select-all resolver three lines below the list already tie-broke on `id`,
+so the list disagreed with the resolver it exists to feed. All 26 now append the
+primary key.
+
+**The guard is a source guard, deliberately, and that decision was forced by a
+failed attempt at the obvious one.** A runtime test — write N rows in one
+transaction so their timestamps tie, page through them, assert each appears once
+— was written first and **passed without the fix**. At fixture scale Postgres
+returns a stable scan order, so the test proved nothing and would have shipped as
+a guard that never fails: precisely the vacuity §100 and §101 were about, and it
+was discarded rather than tuned until it happened to go red. The manifestation is
+planner-dependent; the *property* the correctness argument rests on is not. So
+the guard asserts the property — an AST scan for `.offset(...)` chained to an
+`.order_by(...)` whose keys are all timestamp-ish — and says in its own docstring
+why it is not a runtime test.
+
+It keys on `.offset(...)` rather than on `order_by` alone because a bare
+`ORDER BY created_at` is perfectly correct on a `LIMIT 1` lookup, an aggregate,
+or a whole-set fetch — nothing splits tied rows across two requests there. The
+unnarrowed version flagged 62 sites, most of them fine; a guard that cries wolf
+gets its exemption list padded until it means nothing.
