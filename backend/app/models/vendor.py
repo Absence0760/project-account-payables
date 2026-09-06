@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Numeric, String
+from sqlalchemy import Date, DateTime, Index, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,6 +11,21 @@ from app.models.base import Base, EntityMixin, TimestampMixin
 
 class Vendor(Base, EntityMixin, TimestampMixin):
     __tablename__ = "vendors"
+
+    # The screening review queue (`screening_status`), the periodic re-screen
+    # sweep's "last screened before X" scan (`last_screened_at`), and the
+    # blocked-vendor surface — partial, because a blocked vendor is rare and the
+    # index then holds only them. All three are migration 0042's; declared here
+    # so `create_all` builds them too.
+    __table_args__ = (
+        Index("ix_vendors_screening_status", "screening_status"),
+        Index("ix_vendors_last_screened_at", "last_screened_at"),
+        Index(
+            "ix_vendors_payments_blocked",
+            "payments_blocked",
+            postgresql_where=text("payments_blocked"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)

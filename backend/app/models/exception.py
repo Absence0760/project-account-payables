@@ -21,6 +21,14 @@ class Exception(Base, EntityMixin, TimestampMixin):
             text("created_at DESC"),
             text("id DESC"),
         ),
+        # The SLA sweep asks "what is overdue and still live?" — partial, so the
+        # index only holds the open tail rather than every exception ever
+        # resolved. Migration 0013's; declared here so `create_all` builds it too.
+        Index(
+            "ix_exceptions_due_at",
+            "due_at",
+            postgresql_where=text("status IN ('open', 'escalated')"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

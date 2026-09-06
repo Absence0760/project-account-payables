@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,14 @@ class QualityInspection(Base, EntityMixin, TimestampMixin):
     """
 
     __tablename__ = "quality_inspections"
+
+    # The 4-way match looks an inspection up by receipt first, then by PO —
+    # both on every matched invoice. Migration 0033's; declared here so
+    # `create_all` builds them too.
+    __table_args__ = (
+        Index("ix_quality_inspections_po_id", "po_id"),
+        Index("ix_quality_inspections_gr_id", "gr_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     inspection_number: Mapped[str] = mapped_column(String(100), nullable=False)
