@@ -344,6 +344,7 @@ export const messages = {
 	'payments.cards.activeCards': 'Cartes actives',
 	'payments.cards.loading': 'Chargement des cartes…',
 	'payments.cards.empty': 'Aucune carte virtuelle émise pour le moment.',
+	'payments.cards.errored': 'Impossible de charger les cartes virtuelles.',
 	'payments.cards.reveal': 'Afficher',
 	'payments.cards.loadMore': 'Charger plus ({shown} sur {total})',
 	'payments.cards.showingAll': '{total, plural, one {Affichage de la # carte} other {Affichage des # cartes}}',

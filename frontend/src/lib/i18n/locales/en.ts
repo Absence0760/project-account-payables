@@ -367,6 +367,7 @@ export const en = {
 	'payments.cards.activeCards': 'Active cards',
 	'payments.cards.loading': 'Loading cards…',
 	'payments.cards.empty': 'No virtual cards issued yet.',
+	'payments.cards.errored': 'Could not load virtual cards.',
 	'payments.cards.reveal': 'Reveal',
 	'payments.cards.loadMore': 'Load more ({shown} of {total})',
 	'payments.cards.showingAll': '{total, plural, one {Showing all # card} other {Showing all # cards}}',

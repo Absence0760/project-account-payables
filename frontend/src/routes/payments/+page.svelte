@@ -24,6 +24,11 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { formatMoney, isPositiveAmount, type MoneyAmount } from '$lib/utils/money';
+	// The bare (no-symbol) rendering `formatRowMoney` falls back to when the
+	// server could not establish a figure's currency. Shared with `/discounts`,
+	// which has the same unprovable-currency case — one primitive, so a tweak to
+	// rounding or locale can't land in one and not the other.
+	import { formatAmountWithoutCurrency } from '$lib/utils/discountRecommendation';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import { compareCorridorQuotes } from '$lib/api/corridorQuotes';
 	import {
@@ -881,6 +886,10 @@
 		id: string;
 		status: string;
 		total_amount: number | null;
+		/** What `total_amount` is denominated in, off `PaymentRunResponse`.
+		 *  `null` when the server could not prove one — see
+		 *  `$lib/types/payment.ts::PaymentRun.currency`. */
+		currency: string | null;
 		executed_at: string | null;
 		created_at: string;
 		payment_count: number;
@@ -1119,6 +1128,13 @@
 	let cardsPage = $state(1);
 	let loadingCards = $state(false);
 	let loadingMoreCards = $state(false);
+	// Three states, not two — the rule the Queue, History, Runs and Rebates
+	// lists on this same page already follow. "No virtual cards issued yet." is
+	// a claim about whether this tenant has ever issued a card; rendered over a
+	// failed read it answers "we could not look" with "there is nothing", and
+	// the toast that reported the failure has already faded. The Cards table
+	// was the last list here with no error flag at all.
+	let cardsErrored = $state(false);
 	let hasMoreCards = $derived(cards.length < cardsTotal);
 
 	interface RebateStatusBreakdown {
@@ -1168,9 +1184,15 @@
 			cardsTotal = list.total;
 			cardsPage = nextPage;
 			cardDashboard = dash;
+			cardsErrored = false;
 		} catch (err) {
+			// Mirrors `loadRebates` (the sibling list on this same tab): flag the
+			// failure, clear the rows on a fresh load so a stale page can't be
+			// read as current, and let the table render the errored copy.
 			if (cardsSequence.isCurrentRequest(token)) {
-				toast(err instanceof Error ? err.message : 'Failed to load cards', 'error');
+				cardsErrored = true;
+				if (!opts.append) cards = [];
+				toast(err instanceof Error ? err.message : m('payments.cards.errored'), 'error');
 			}
 		} finally {
 			// NOT canCommit — reading it here would leave the spinner stuck on
@@ -1537,6 +1559,35 @@
 		return formatMoney(amount, { currency: currency ?? orgCurrency.currency });
 	}
 
+	/** Render money under the currency the SERVER stated, honestly.
+	 *
+	 *  The one call every `/payments` money cell whose currency comes off a
+	 *  `Payment` / `PaymentRun` row goes through: a stated code formats
+	 *  normally, an unstated one renders BARE rather than borrowing the org
+	 *  default. Six call sites used to omit the currency entirely and take
+	 *  `orgCurrency` for every row — see `$lib/types/payment.ts`.
+	 *
+	 *  `PaymentResponse.currency` / `PaymentRunResponse.currency` are `null`
+	 *  exactly when the backend refused to guess — a run whose legs disagree,
+	 *  or a row with nothing recorded. Falling back to `orgCurrency` there would
+	 *  reinstate the fabrication the wire field exists to end: a code the reader
+	 *  takes as established fact when nobody established it
+	 *  (`docs/decisions.md` §79/§82 — no code rather than a wrong code).
+	 *
+	 *  The bare rendering reuses `formatAmountWithoutCurrency`, the same
+	 *  primitive `/discounts` uses for its own unprovable-currency case: it is
+	 *  not a hand-rolled *currency* format (the `frontend/CLAUDE.md` ban), it is
+	 *  the deliberate absence of one, and it follows the same active locale so
+	 *  grouping matches every labelled figure beside it. Nothing here adds,
+	 *  compares or converts — the value passes through untouched.
+	 */
+	function formatRowMoney(
+		amount: number | string | null | undefined,
+		currency: string | null | undefined
+	): string {
+		return currency ? formatCurrency(amount, currency) : formatAmountWithoutCurrency(amount);
+	}
+
 
 	function methodLabel(method: string | null): string {
 		if (!method) return '—';
@@ -1717,7 +1768,10 @@
 							<tr>
 								<td class="mono">{item.invoice_number}</td>
 								<td>{item.vendor_name}</td>
-								<td class="right mono">{formatCurrency(item.amount)}</td>
+								<!-- The queue row above this panel already renders `item.currency`;
+								     dropping it here made the review step — the last screen before a
+								     run is staged — the one place the figure lost its code. -->
+								<td class="right mono">{formatRowMoney(item.amount, item.currency)}</td>
 								<td>
 									<select class="method-select" aria-label={`Payment method for ${item.invoice_number}`} value={paymentMethods[item.id] || 'ach'} onchange={(e) => (paymentMethods[item.id] = e.currentTarget.value)}>
 										<option value="ach">ACH</option>
@@ -1940,7 +1994,7 @@
 							</Badge>
 						</td>
 						<td class="right mono">
-							{formatCurrency(p.amount)}
+							{formatRowMoney(p.amount, p.currency)}
 							{#if p.settled_amount !== null && p.settled_amount !== undefined}
 								<!-- What the RAIL says it settled, beside what AP authorized.
 								     Both figures are rendered; no delta is computed here — the
@@ -1948,7 +2002,11 @@
 								     line an invoice held for an under-settlement was invisible. -->
 								<span class="settled-line" data-testid="payment-settled-amount">
 									{m('payments.history.settled', {
-										amount: formatCurrency(p.settled_amount, p.settled_currency)
+										// `settled_currency` is NULL for a rail that reported an
+										// amount but no code — the same unprovable case as an
+										// unstated authorized currency, and it takes the same
+										// honest bare rendering rather than the org default.
+										amount: formatRowMoney(p.settled_amount, p.settled_currency)
 									})}
 								</span>
 							{/if}
@@ -2048,7 +2106,9 @@
 							</RowLink>
 						</td>
 						<td><Badge tone={runStatusTone(run.status)} variant={run.status}>{run.status}</Badge></td>
-						<td class="right mono">{run.total_amount ? formatCurrency(run.total_amount) : '—'}</td>
+						<td class="right mono">
+							{run.total_amount ? formatRowMoney(run.total_amount, run.currency) : '—'}
+						</td>
 						<td>{run.payment_count}</td>
 						<td class="muted">{formatDate(run.executed_at)}</td>
 						<td class="muted">{formatDate(run.created_at)}</td>
@@ -2226,7 +2286,11 @@
 		<DataTable
 			columns={CARDS_COLUMNS}
 			isEmpty={cards.length === 0}
-			empty={loadingCards ? m('payments.cards.loading') : m('payments.cards.empty')}
+			empty={loadingCards
+				? m('payments.cards.loading')
+				: cardsErrored
+					? m('payments.cards.errored')
+					: m('payments.cards.empty')}
 			colspan={8}
 		>
 			{#snippet body()}
@@ -2382,7 +2446,7 @@
 		<p class="modal-hint">
 			<strong>{voidTarget.invoice_number ?? voidTarget.id.slice(0, 8)}</strong>
 			{#if voidTarget.vendor_name}· {voidTarget.vendor_name}{/if}
-			· {formatCurrency(voidTarget.amount)}
+			· {formatRowMoney(voidTarget.amount, voidTarget.currency)}
 		</p>
 		<p class="modal-warn">
 			{m('payments.void.warning')}
@@ -2429,7 +2493,7 @@
 		<p class="modal-hint">
 			<strong>{complianceTarget.invoice_number ?? complianceTarget.id.slice(0, 8)}</strong>
 			{#if complianceTarget.vendor_name}· {complianceTarget.vendor_name}{/if}
-			· {formatCurrency(complianceTarget.amount)}
+			· {formatRowMoney(complianceTarget.amount, complianceTarget.currency)}
 		</p>
 		<p class="modal-warn">
 			{complianceMode === 'release'
@@ -2490,16 +2554,24 @@
 			<strong>{settlementTarget.invoice_number ?? settlementTarget.id.slice(0, 8)}</strong>
 			{#if settlementTarget.vendor_name}· {settlementTarget.vendor_name}{/if}
 		</p>
-		<!-- Both figures side by side, neither derived from the other. -->
+		<!-- Both figures side by side, neither derived from the other — and each
+		     under the currency the SERVER stated for it. The authorized half used
+		     to fall back to the org default while the settled half rendered
+		     `settled_currency`, so a EUR payment read "Authorized $1,200.00"
+		     above "Settled €1,150.00": a fabricated code, on the one screen whose
+		     entire job is to let a human compare these two figures, and which
+		     exists because a rail can settle in a currency we never authorized. -->
 		<dl class="settlement-figures" data-testid="settlement-figures">
 			<div>
 				<dt>{m('payments.settlement.authorized')}</dt>
-				<dd class="mono">{formatCurrency(settlementTarget.amount)}</dd>
+				<dd class="mono" data-testid="settlement-authorized-figure">
+					{formatRowMoney(settlementTarget.amount, settlementTarget.currency)}
+				</dd>
 			</div>
 			<div>
 				<dt>{m('payments.settlement.settled')}</dt>
 				<dd class="mono" data-testid="settlement-settled-figure">
-					{formatCurrency(settlementTarget.settled_amount, settlementTarget.settled_currency)}
+					{formatRowMoney(settlementTarget.settled_amount, settlementTarget.settled_currency)}
 				</dd>
 			</div>
 		</dl>
@@ -2576,7 +2648,8 @@
 			<strong class="mono">{erpSyncTarget.id.slice(0, 8)}</strong>
 			· {erpSyncTarget.payment_count}
 			{m('payments.summary.payments')}
-			{#if erpSyncTarget.total_amount}· {formatCurrency(erpSyncTarget.total_amount)}{/if}
+			{#if erpSyncTarget.total_amount}·
+				{formatRowMoney(erpSyncTarget.total_amount, erpSyncTarget.currency)}{/if}
 		</p>
 
 		{#if erpSyncResult}

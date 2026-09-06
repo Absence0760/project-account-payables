@@ -345,6 +345,7 @@ export const messages = {
 	'payments.cards.activeCards': 'Aktive Karten',
 	'payments.cards.loading': 'Karten werden geladen …',
 	'payments.cards.empty': 'Noch keine virtuellen Karten ausgegeben.',
+	'payments.cards.errored': 'Virtuelle Karten konnten nicht geladen werden.',
 	'payments.cards.reveal': 'Anzeigen',
 	'payments.cards.loadMore': 'Mehr laden ({shown} von {total})',
 	'payments.cards.showingAll': '{total, plural, one {Alle # Karte werden angezeigt} other {Alle # Karten werden angezeigt}}',
