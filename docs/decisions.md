@@ -4133,3 +4133,53 @@ It keys on `.offset(...)` rather than on `order_by` alone because a bare
 or a whole-set fetch — nothing splits tied rows across two requests there. The
 unnarrowed version flagged 62 sites, most of them fine; a guard that cries wolf
 gets its exemption list padded until it means nothing.
+
+---
+
+## 109. A migration-only index is invisible to half the fleet, so parity is a test, not a habit
+
+**Decided:** 2026-09-06 · `backend/alembic/versions/0093_migration_only_indexes.py`, `backend/tests/test_migration_model_index_parity.py`
+
+§104 fixed one instance of this; an audit of all 216 `CREATE INDEX` statements
+found **twenty**. A database here is built two ways and only one runs Alembic, so
+an index written into a migration and never declared on its model reaches
+migrated databases and silently never reaches a freshly-provisioned one. Nothing
+notices — the reads still return correct rows, just by sequential scan — and
+where the index is UNIQUE, the invariant it enforces is simply absent on half the
+fleet. Verified against a tenant with no `alembic_version` row at all, and
+against one stamped at head that was nonetheless missing every one: **"at head"
+is not evidence the indexes exist.**
+
+**Two were correctness, not performance.** `uq_positive_pay_run_format` is the
+*only* concurrency control under the check-issue endpoint's read-then-insert —
+without it the handler's `except IntegrityError` branch is dead code, two
+concurrent calls both insert, and its own `scalar_one_or_none()` idempotency
+lookup then raises `MultipleResultsFound` on **every later call**: a permanent
+500 on that run, plus a second MinIO object carrying full account and routing
+numbers. `uq_subscription_one_live_per_org` is the one-live-subscription-per-org
+billing invariant that `uq_subscription_org_plan` does not bound, since two rows
+for two different plans satisfy it.
+
+**Two were not defects and are resolved the other way**, because declaring them
+would build a genuine duplicate: `ix_bank_transactions_matched_payment` is the
+exact column and predicate of the UNIQUE index 0081 added (which never dropped
+it, so migrated tenants carried pure write overhead on a hot table), so 0093
+drops it; `ix_vendor_change_requests_org_id` is the model's
+`ix_vendor_change_requests_organization_id` under another name, so 0093 converges
+on the model's spelling, creating before dropping so the column is never briefly
+unindexed. Rejected: declaring both spellings, and `ALTER INDEX … RENAME`, which
+is correct only on the one database shape that has the source and not the target.
+
+0093 **ensures, it does not own** — restating an earlier revision's CREATE is a
+catch-up for an already-provisioned database, so its downgrade drops none of the
+eighteen (§104's `_ADOPTED` semantics). Where a UNIQUE index is involved it
+**pre-flights and refuses** with a counts-only, PII-free message rather than
+failing mid-revision: choosing which of two Positive Pay files went to the bank
+is an operator's judgement, not a silent `DELETE` in a migration — the call §72
+made for duplicate GL codes.
+
+The durable half is the guard, not the migration. New tenants keep being
+provisioned by `create_all`, so a migration alone would leave the *next* tenant
+in the state being repaired. The parity test is opt-out — every
+`CREATE [UNIQUE] INDEX` in every revision, checked against the models, with
+exemptions needing a written reason that is itself re-checked so it cannot rot.
