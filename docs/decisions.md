@@ -4178,6 +4178,15 @@ failing mid-revision: choosing which of two Positive Pay files went to the bank
 is an operator's judgement, not a silent `DELETE` in a migration — the call §72
 made for duplicate GL codes.
 
+**Two test fixtures were themselves relying on the missing index** and only
+surfaced once it existed: `test_dunning_sweep_resilience.py` seeded two or three
+`past_due` subscriptions under one org, and `tests-e2e/billing/billing.spec.ts`
+seeded a second `active` subscription for an org that already holds the `free`
+one `tenant_provisioning` gives every org. Neither shape is constructible in
+production, and with two live rows the endpoint under test picked one
+arbitrarily — so those assertions had been passing by luck. Both now seed the
+state the app actually supports.
+
 The durable half is the guard, not the migration. New tenants keep being
 provisioned by `create_all`, so a migration alone would leave the *next* tenant
 in the state being repaired. The parity test is opt-out — every
