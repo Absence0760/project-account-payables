@@ -852,7 +852,7 @@ CISO / Security Analyst before acting.**
       recognise can't report success either. Parametrized cases for both in
       `test_payment_run_status_derivation.py`.
 
-- [x] **DONE (PR #376).** The payment queue offered — and counted as "ready to
+- [x] **DONE (PR #377).** The payment queue offered — and counted as "ready to
       pay" — rows the run builder hard-409s. The three queue queries excluded
       only `Payment.status == "completed"`, so an invoice with a `submitted` /
       `processing` / `pending` / `pending_compliance` payment (every real rail —
