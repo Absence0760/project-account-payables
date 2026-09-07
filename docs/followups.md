@@ -1171,12 +1171,35 @@ the thing that quietly launders away the guard that caught #344/#351. That check
 was extracted and run against the real files: passing intact, failing on a
 deleted block, a dropped key and a weakened value.
 
-**Two things remain unverified and are not claimed.** Whether the trigger fires
-and whether the token's push to a Dependabot branch is accepted both need a real
-Dependabot run. And a `GITHUB_TOKEN` push starts no new workflow run, so the
-synced commit is *unverified rather than green* — closing that needs the same
-PAT/GitHub-App operator step, which this design deliberately does not depend on.
-The manual recipe in [backend/CLAUDE.md](../backend/CLAUDE.md) § Dependency lock
-stays the documented fallback.
-**Trigger for the remaining verification:** the next Dependabot manifest bump.
+**Both open verifications closed on 2026-09-07** by PRs #379 (ruff) and #381
+(boto3), the first real Dependabot manifest bumps to reach this workflow. The
+trigger fired on both, the resolver jobs produced correct locks, and the push
+job's `GITHUB_TOKEN` commit onto the Dependabot branch was accepted
+(`ruff==0.16.6`, `boto3==1.43.89` — the two pins
+`tests/test_dependency_lock_sync.py` had just failed the PRs on).
+
+**What the run corrected in this entry's own description**, and it changes the
+operator instruction: a `GITHUB_TOKEN` push does not start a workflow run
+*unattended*, but it does not leave the head uncovered either. The
+`synchronize` event created the CI / Security / gitleaks runs against the synced
+commit and parked all six in `action_required`, awaiting a maintainer's
+approval — which is why both PRs still read red after a successful sync. One
+approval per run (`gh api -X POST
+repos/<owner>/<repo>/actions/runs/<run_id>/approve`, or the checks tab's
+"Approve and run") verifies the new head; the empty-commit / "Update branch"
+advice this entry used to give is heavier than approving runs already queued
+against the right SHA. The four places that restated the old claim
+(`.github/workflows/dependabot-lockfile.yml` header + push-job step summary,
+`backend/CLAUDE.md` § Dependency lock, `frontend/CLAUDE.md` § The lockfile) were
+corrected in the same change.
+
+**Still open — category (b), an operator step on merged code.** Removing the
+approval click needs a credential whose pushes retrigger workflows unattended: a
+fine-grained PAT with `Contents: Write` in the **Dependabot** secret store, or
+(sturdier — no expiry, not bound to one person) a GitHub App token via
+`actions/create-github-app-token`. Until then every synced Dependabot PR costs
+one approval, and a PR left unapproved reads red for a reason that is not a test
+failure. The manual recipe in [backend/CLAUDE.md](../backend/CLAUDE.md)
+§ Dependency lock stays the documented fallback.
+**Trigger:** an operator provisioning either credential.
 

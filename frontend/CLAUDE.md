@@ -95,10 +95,13 @@ above and confirm the block survived** — the same fallback as before, and the
 same one `backend/CLAUDE.md` § Dependency lock describes for the pip locks.
 Never "fix" it by relaxing the check or the install flag.
 
-Two limits worth knowing: a `GITHUB_TOKEN` push does not start a new workflow
-run, so CI does not re-verify the synced commit (re-run it before merging — do
-not `@dependabot rebase`, which drops the commit); and the workflow only fires
-for `dependabot[bot]`, so a human-pushed lockfile bump is still yours to
+Two limits worth knowing: a `GITHUB_TOKEN` push cannot start a workflow run
+unattended, so the synced commit's CI is *created but parked* in
+`action_required` and the PR keeps reading red until someone approves those runs
+(checks tab → "Approve and run", or
+`gh api -X POST repos/<owner>/<repo>/actions/runs/<run_id>/approve`; do not
+`@dependabot rebase`, which drops the commit); and the workflow only fires for
+`dependabot[bot]`, so a human-pushed lockfile bump is still yours to
 regenerate.
 
 ## The Node floor: 24, and the dependency that sets it
