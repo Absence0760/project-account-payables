@@ -1731,8 +1731,25 @@ flag releases it there too.
 
 #### The queue says which rows the gate would refuse
 
-A gate the operator can't see is a gate they walk into. `GET /api/payments/queue`
-used to offer blocked rows indistinguishably from payable ones, so selecting one
+A gate the operator can't see is a gate they walk into. There are two of them.
+
+**A live payment already claims the invoice.** `_queue_base_where()` excludes
+any invoice with a **live** payment — `Payment.status NOT IN
+LIVE_PAYMENT_TERMINAL_STATUSES`, the SAME definition the run builder's
+`_live_payment_invoice_numbers` guard (and `uq_payments_one_live_per_invoice`)
+uses. It used to exclude only `Payment.status == "completed"`, so an invoice
+with a `submitted` / `processing` / `pending` payment — every real rail, ACH
+settles in 1-3 days — was a selectable queue row (and counted in
+`selectable_total` and `/summary`'s `queue_count`) that a run then hard-409'd on
+the unique index, taking the whole select-all batch down with no way to bisect.
+A **terminal** (`failed` / `voided` / `cancelled`) payment leaves the invoice
+offered again — re-pay after a failure. `test_payment_queue_blocked.py` carries
+the non-tautological drift guard: the offered set is checked against BOTH
+run-builder refusal predicates (`blocked_invoice_ids` **and**
+`_live_payment_invoice_numbers`).
+
+**An unresolved payment-blocking exception.** `GET /api/payments/queue`
+used to offer these rows indistinguishably from payable ones, so selecting one
 took the **whole** draft down with a 409 and nothing on screen said which row did
 it. Every queue row now carries:
 

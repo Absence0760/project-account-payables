@@ -26,6 +26,7 @@ import pytest
 
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceStatus
+from app.models.payment import Payment
 
 pytestmark = pytest.mark.asyncio
 
@@ -95,14 +96,32 @@ async def _add_exception(
         await s.commit()
 
 
-async def _queue(realdb, mk):
+async def _book_payment(mk, invoice_id: uuid.UUID, *, status: str = "submitted") -> None:
+    async with mk() as s:
+        s.add(
+            Payment(
+                invoice_id=invoice_id,
+                amount=Decimal("500.00"),
+                method="ach",
+                status=status,
+                correlation_id=uuid.uuid4(),
+            )
+        )
+        await s.commit()
+
+
+async def _queue_result(realdb, mk):
     from app.api.payments import payment_queue
 
     info = realdb.info(TENANT)
     async with mk() as db:
-        result = await payment_queue(
+        return await payment_queue(
             db=db, org=_org(info.org_id), user=_user(info.users["admin"]), entity_id=None
         )
+
+
+async def _queue(realdb, mk):
+    result = await _queue_result(realdb, mk)
     return {item["invoice_number"]: item for item in result["items"]}
 
 
@@ -268,3 +287,83 @@ async def test_queue_blocked_set_matches_the_run_builders_own_verdict(realdb):
 
     queue_verdict = {uuid.UUID(i["id"]) for i in result["items"] if i["blocked"]}
     assert queue_verdict == builder_verdict == {blocked_id}
+
+
+@pytest.mark.parametrize(
+    "live_status", ["submitted", "processing", "pending", "pending_compliance"]
+)
+async def test_an_invoice_with_a_live_payment_is_excluded_not_offered(realdb, live_status):
+    """The queue used to exclude only `completed` payments, so an invoice with a
+    `submitted` payment (any real rail — ACH settles in 1-3 days) was a
+    selectable queue row. `create_payment_run_for_invoices` then hard-409s it on
+    `uq_payments_one_live_per_invoice`, taking the whole select-all batch down.
+    It must not appear in the queue, `/queue/ids`, or the selectable count."""
+    from app.api.payments import payment_queue_ids
+
+    mk = realdb.sessionmaker(TENANT)
+    info = realdb.info(TENANT)
+    live_id = await _seed_invoice(mk, info.org_id, number=f"Q-LIVE-{live_status}")
+    clean_id = await _seed_invoice(mk, info.org_id, number=f"Q-FREE-{live_status}")
+    await _book_payment(mk, live_id, status=live_status)
+
+    result = await _queue_result(realdb, mk)
+    offered = {i["invoice_number"] for i in result["items"]}
+    assert f"Q-LIVE-{live_status}" not in offered
+    assert f"Q-FREE-{live_status}" in offered
+
+    async with mk() as db:
+        ids_resp = await payment_queue_ids(
+            db=db, org=_org(info.org_id), user=_user(info.users["admin"]), entity_id=None
+        )
+    resolved = set(ids_resp["ids"])
+    assert str(live_id) not in resolved
+    assert str(clean_id) in resolved
+
+
+async def test_a_terminal_failed_payment_does_not_exclude_the_invoice(realdb):
+    """The exclusion is LIVE payments only — a `failed` / `voided` / `cancelled`
+    payment is outside `uq_payments_one_live_per_invoice`, so the run builder
+    accepts the invoice and the queue must keep offering it (re-pay after a
+    failure)."""
+    mk = realdb.sessionmaker(TENANT)
+    info = realdb.info(TENANT)
+    inv_id = await _seed_invoice(mk, info.org_id, number="Q-RETRY")
+    await _book_payment(mk, inv_id, status="failed")
+
+    rows = await _queue(realdb, mk)
+    assert "Q-RETRY" in rows
+
+
+async def test_queue_offered_set_carries_nothing_the_run_builder_would_refuse(realdb):
+    """The invariant: the SELECTABLE set the queue resolves for "select all N"
+    carries nothing either of the run builder's own refusal predicates would
+    reject — `blocked_invoice_ids` (blocking exceptions) and
+    `_live_payment_invoice_numbers` (the `uq_payments_one_live_per_invoice`
+    guard). Seeds a clean invoice, a blocked-by-exception one and a
+    live-payment one."""
+    from app.api.payments import payment_queue_ids
+    from app.services.payment_runs import _live_payment_invoice_numbers, blocked_invoice_ids
+
+    mk = realdb.sessionmaker(TENANT)
+    info = realdb.info(TENANT)
+    clean_id = await _seed_invoice(mk, info.org_id, number="Q-INV-CLEAN")
+    exc_id = await _seed_invoice(mk, info.org_id, number="Q-INV-EXC")
+    live_id = await _seed_invoice(mk, info.org_id, number="Q-INV-LIVE")
+    await _add_exception(mk, info.org_id, exc_id, exception_type="fraud_flag")
+    await _book_payment(mk, live_id, status="submitted")
+
+    all_three = [clean_id, exc_id, live_id]
+    async with mk() as db:
+        ids_resp = await payment_queue_ids(
+            db=db, org=_org(info.org_id), user=_user(info.users["admin"]), entity_id=None
+        )
+        offered = {uuid.UUID(i) for i in ids_resp["ids"]}
+        refused_by_exception = await blocked_invoice_ids(db, all_three)
+        refused_for_live_payment = set(await _live_payment_invoice_numbers(db, all_three))
+
+    # The run builder would refuse exactly exc_id (exception) and live_id (live
+    # payment); the queue offers neither, and offers the clean one.
+    assert refused_by_exception == {exc_id}
+    assert refused_for_live_payment == {"Q-INV-LIVE"}
+    assert clean_id in offered
+    assert exc_id not in offered and live_id not in offered
