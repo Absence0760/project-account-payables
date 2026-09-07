@@ -852,21 +852,21 @@ CISO / Security Analyst before acting.**
       recognise can't report success either. Parametrized cases for both in
       `test_payment_run_status_derivation.py`.
 
-- [ ] **(c) The payment queue offers, and counts, rows the run builder hard-409s.**
-      `paid_ids` filters on `Payment.status == "completed"` only, so an invoice
-      with a **`submitted`** payment (any real rail — ACH is 1-3 days) is a
-      selectable queue row with `blocked: False`, is returned by `/queue/ids`,
-      and its money is added to "ready to pay" while `/summary` reports the same
-      money as committed. Select-all then 409s the whole batch on
-      `uq_payments_one_live_per_invoice` with no way to bisect.
-      `services/payment_runs.py` asserts the invariant this breaks (*"the queue
-      can never offer a row the run builder then refuses"*), and the existing
-      test is tautological — it compares the queue against the exception
-      predicate the queue already uses. Invisible in tests because the `mock`
-      adapter returns `completed` synchronously.
-      **Durable fix:** widen the queue's exclusion to any live payment, and make
-      the guard compare the queue against the RUN BUILDER's refusal set.
-      **Trigger:** the first tenant on a real rail.
+- [x] **DONE (PR #376).** The payment queue offered — and counted as "ready to
+      pay" — rows the run builder hard-409s. The three queue queries excluded
+      only `Payment.status == "completed"`, so an invoice with a `submitted` /
+      `processing` / `pending` / `pending_compliance` payment (every real rail —
+      ACH settles in 1-3 days) was a selectable queue row that
+      `create_payment_run_for_invoices` then 409'd on
+      `uq_payments_one_live_per_invoice`, taking the whole select-all batch down
+      with no way to bisect. The queue's `_queue_base_where()` now excludes any
+      invoice with a **LIVE** payment via `_live_payment_invoice_ids()` — the
+      SAME `Payment.status NOT IN LIVE_PAYMENT_TERMINAL_STATUSES` definition the
+      run builder's `_live_payment_invoice_numbers` guard uses — applied to
+      `/queue`, `/queue/ids`, the rollup KPIs and `/summary`'s `queue_count`. A
+      terminal (`failed` / `voided`) payment still leaves the invoice offered
+      (re-pay after a failure). New non-tautological drift guard compares the
+      offered set against BOTH run-builder refusal predicates.
 
 - [ ] **(c) Four smaller money-reporting defects, each verified.** (a) Discount
       **expiry** is gated behind the auto-capture kill switch (default off), so

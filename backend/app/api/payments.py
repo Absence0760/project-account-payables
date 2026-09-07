@@ -456,8 +456,32 @@ def _queue_blocking_exists():
     )
 
 
-def _queue_base_where(paid_ids) -> list:
-    return [Invoice.status.in_(PAYABLE_INVOICE_STATUSES), Invoice.id.notin_(paid_ids)]
+def _live_payment_invoice_ids():
+    """Sub-query: invoice ids already claimed by a LIVE payment — anything not
+    in ``LIVE_PAYMENT_TERMINAL_STATUSES``, the SAME definition the run builder's
+    ``uq_payments_one_live_per_invoice`` guard (``_live_payment_invoice_numbers``)
+    uses.
+
+    The queue used to exclude only ``Payment.status == "completed"``, so an
+    invoice with a ``submitted`` / ``processing`` / ``pending`` payment (every
+    real rail — ACH settles in 1-3 days) was a selectable queue row that
+    ``create_payment_run_for_invoices`` then hard-409'd on the unique index,
+    taking the whole select-all batch down with no way to bisect. The queue's
+    invariant — *"the queue can never offer a row the run builder then
+    refuses"* — requires the two use one predicate.
+    """
+    return (
+        select(Payment.invoice_id)
+        .where(Payment.status.notin_(LIVE_PAYMENT_TERMINAL_STATUSES))
+        .scalar_subquery()
+    )
+
+
+def _queue_base_where() -> list:
+    return [
+        Invoice.status.in_(PAYABLE_INVOICE_STATUSES),
+        Invoice.id.notin_(_live_payment_invoice_ids()),
+    ]
 
 
 async def _payment_queue_rollup(
@@ -478,7 +502,6 @@ async def _payment_queue_rollup(
     excludes rows a payment run would refuse (the set "select all matching"
     resolves).
     """
-    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
     tgt = reporting_currency.upper()
     cur_key = func.upper(func.coalesce(Invoice.currency, tgt))
     has_lock = and_(
@@ -488,7 +511,7 @@ async def _payment_queue_rollup(
     rep_expr = case((has_lock, Invoice.reporting_amount), else_=Invoice.amount)
     unconv_expr = case((and_(not_(has_lock), cur_key != tgt), 1), else_=0)
 
-    where = _queue_base_where(paid_ids)
+    where = _queue_base_where()
     if selectable_only:
         where.append(not_(_queue_blocking_exists()))
 
@@ -597,7 +620,6 @@ async def payment_queue(
     if not isinstance(pagination, PaginationParams):
         pagination = PaginationParams(page=1, page_size=DEFAULT_PAGE_SIZE)
 
-    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
     reporting_currency = resolve_reporting_currency(org.settings)
     # UTC, not the host's local date — the same calendar question
     # `services/analytics`, `discount_optimizer` and `cash_flow_alerts` answer.
@@ -607,7 +629,7 @@ async def payment_queue(
         apply_entity_scope(
             select(Invoice, PaymentSchedule)
             .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
-            .where(*_queue_base_where(paid_ids)),
+            .where(*_queue_base_where()),
             Invoice,
             entity_id,
         )
@@ -679,7 +701,7 @@ async def payment_queue(
             apply_entity_scope(
                 select(func.count(Invoice.id))
                 .select_from(Invoice)
-                .where(*_queue_base_where(paid_ids), not_(_queue_blocking_exists())),
+                .where(*_queue_base_where(), not_(_queue_blocking_exists())),
                 Invoice,
                 entity_id,
             )
@@ -719,7 +741,6 @@ async def payment_queue_ids(
     its single-currency-per-run guard stay honest for a selection the client
     never loaded row-by-row.
     """
-    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
     today = utc_today()
 
     total = (
@@ -727,7 +748,7 @@ async def payment_queue_ids(
             apply_entity_scope(
                 select(func.count(Invoice.id))
                 .select_from(Invoice)
-                .where(*_queue_base_where(paid_ids), not_(_queue_blocking_exists())),
+                .where(*_queue_base_where(), not_(_queue_blocking_exists())),
                 Invoice,
                 entity_id,
             )
@@ -736,7 +757,7 @@ async def payment_queue_ids(
 
     ids_q = (
         apply_entity_scope(
-            select(Invoice.id).where(*_queue_base_where(paid_ids), not_(_queue_blocking_exists())),
+            select(Invoice.id).where(*_queue_base_where(), not_(_queue_blocking_exists())),
             Invoice,
             entity_id,
         )
@@ -861,21 +882,13 @@ async def payment_summary(
     rebate_amount, rebates_excluded = (await db.execute(rebate_q)).one()
     total_rebates = str(Decimal(str(rebate_amount or 0)))
 
-    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
-    # Match the workflow state machine: only statuses that can directly
-    # transition to ``payment_scheduled`` belong here. ``sent_to_erp``
-    # is excluded — that row is mid-flight in the ERP push and must
-    # advance to ``posted_in_erp`` (via the ERP-confirmation webhook)
-    # before a payment can be scheduled against it. Including it would
-    # let the UI offer "Pay" on a row whose execute call fails the
-    # transition with 409, surfacing as a stuck queue row to the
-    # operator.
-    payable_statuses = PAYABLE_INVOICE_STATUSES
+    # `queue_count` MUST describe the same set the queue endpoint offers, or the
+    # summary card and the table below it disagree. Same `_queue_base_where()`:
+    # a payable status the state machine can advance to `payment_scheduled`
+    # (`sent_to_erp` is excluded — it must reach `posted_in_erp` via the ERP
+    # webhook first) AND no live payment already claiming the invoice.
     queue_inner = apply_entity_scope(
-        select(Invoice.id).where(
-            Invoice.status.in_(payable_statuses),
-            Invoice.id.notin_(paid_ids),
-        ),
+        select(Invoice.id).where(*_queue_base_where()),
         Invoice,
         entity_id,
     )
