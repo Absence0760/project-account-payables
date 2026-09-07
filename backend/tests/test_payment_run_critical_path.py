@@ -47,6 +47,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.invoice import InvoiceStatus
+from app.models.payment import PaymentRun
 from app.services.payment_adapters import PaymentStatus
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,9 @@ def _create_run_db(
     same `invoices` list) → `.scalar_one()`. It then `db.add(run)`,
     `db.flush()`, `db.add(payment)` per item, and `db.commit()`. We
     capture every added object so a test can inspect the created run +
-    payment rows.
+    payment rows. Finally, AFTER the commit, (5) `_run_currencies` reads the
+    one currency the run's invoices share → `.all()` of `(run_id, code)` — the
+    handler names it on the response instead of stamping a `$` on the total.
 
     The sequence is positional (`side_effect` is a list), so a NEW query in
     the handler shifts every later result and fails these tests loudly —
@@ -168,7 +171,25 @@ def _create_run_db(
         credit_results.append(credit_sel)
 
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[sel, block_sel, card_sel, *credit_results])
+
+    # (5) `_run_currencies`, after the commit. Resolved lazily off `db.added`
+    # because the run's id is minted by the handler, not by this builder — a
+    # fixed row would key against a run that doesn't exist and the currency
+    # would read `None` for the wrong reason.
+    currency_sel = MagicMock()
+    currency_sel.all = MagicMock(
+        side_effect=lambda: (
+            [
+                (obj.id, (invoices[0].currency or "").upper() or None)
+                for obj in db.added
+                if isinstance(obj, PaymentRun)
+            ]
+            if invoices
+            else []
+        )
+    )
+
+    db.execute = AsyncMock(side_effect=[sel, block_sel, card_sel, *credit_results, currency_sel])
     db.commit = AsyncMock()
     db.flush = AsyncMock()
     db.added = []

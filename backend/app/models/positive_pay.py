@@ -30,7 +30,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Integer, Numeric, String
+from sqlalchemy import ForeignKey, Index, Integer, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
@@ -50,6 +50,26 @@ STATUSES = (STATUS_GENERATED, STATUS_RETURNED_PROCESSED)
 
 class PositivePayFile(Base, EntityMixin, TimestampMixin):
     __tablename__ = "positive_pay_files"
+
+    # THE idempotency backstop for `POST /payment-runs/{id}/check-issue`, which
+    # is a read-then-insert: two concurrent requests both find no existing row
+    # and both insert, and only this index turns the loser into the
+    # `IntegrityError` the handler catches. Without it the run ends up with two
+    # files (two MinIO objects carrying full account numbers) AND the
+    # `scalar_one_or_none()` idempotency lookup then raises
+    # `MultipleResultsFound` on every later call — a permanent 500 on that run.
+    # Migration 0048 created it; nothing declared it, so every
+    # `create_all`-provisioned tenant ran without it. Partial because an
+    # `ach_authorization` file is org-wide and run-less (NULL never collides).
+    __table_args__ = (
+        Index(
+            "uq_positive_pay_run_format",
+            "payment_run_id",
+            "bank_format",
+            unique=True,
+            postgresql_where=text("payment_run_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id: Mapped[uuid.UUID] = mapped_column(

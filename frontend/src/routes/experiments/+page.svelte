@@ -31,6 +31,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 	const canMutate = $derived(auth.isAdmin);
 
@@ -78,6 +79,12 @@
 	let results = $state<ExperimentResults | null>(null);
 	let resultsLoading = $state(false);
 	let resultsError = $state<string | null>(null);
+
+	// The results readout is a re-issuable fetch keyed on which experiment was
+	// clicked, so it takes a request-identity guard (`frontend/CLAUDE.md`
+	// § Sequencing list fetches). Its own sequencer — the experiment LIST above
+	// is an independent request stream, and every mutation re-fetches it.
+	const resultsSequence = createRequestSequencer();
 
 	const filtered = $derived(
 		statusFilter === 'all'
@@ -251,16 +258,24 @@
 	}
 
 	async function openResults(exp: Experiment) {
+		const token = resultsSequence.start();
 		resultsFor = exp;
 		results = null;
 		resultsError = null;
 		resultsLoading = true;
 		try {
-			results = await getExperimentResults(exp.id);
+			const res = await getExperimentResults(exp.id);
+			// Open one experiment's results, close it, open another: the first
+			// response must not land under the second's name — a winner call
+			// attributed to the wrong experiment is worse than no readout.
+			if (!resultsSequence.canCommit(token)) return;
+			results = res;
 		} catch {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!resultsSequence.isCurrentRequest(token)) return;
 			resultsError = m('experiments.error.results');
 		} finally {
-			resultsLoading = false;
+			if (resultsSequence.isCurrentRequest(token)) resultsLoading = false;
 		}
 	}
 
@@ -414,7 +429,12 @@
 	{:else if resultsError}
 		<p class="error-banner">{resultsError}</p>
 	{:else if results}
-		<div class="readout">
+		<div
+			class="readout"
+			data-testid="experiment-results"
+			data-experiment-id={resultsFor?.id}
+			data-results-for={results.experiment_id}
+		>
 			{#if results.enough_data}
 				<div class="winner" class:tie={results.winner === 'tie'}>
 					{#if results.winner === 'tie'}

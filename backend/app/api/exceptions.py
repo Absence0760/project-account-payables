@@ -145,7 +145,12 @@ async def list_exceptions(
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
     query = (
-        query.order_by(APException.created_at.desc())
+        # `created_at` alone is not a total order — two exceptions raised by the
+        # same sweep tick share a timestamp, and OFFSET/LIMIT over a non-total
+        # order can hand the same row to two pages or skip it entirely. The
+        # `/ids` resolver below already tie-breaks on `id`; the list it is meant
+        # to agree with did not.
+        query.order_by(APException.created_at.desc(), APException.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

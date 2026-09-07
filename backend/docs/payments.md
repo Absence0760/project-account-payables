@@ -141,7 +141,24 @@ Search and status filter chips available on this tab.
 
 ### Runs Tab
 
-Payment batch history — each run shows status, total, payment count, and execution date.
+Payment batch history — each run shows status, total (under the run's own
+currency — see *A payment states what its money is denominated in*), payment
+count, and execution date.
+
+### Every list here separates "empty" from "we could not look"
+
+All five lists on this page — Queue, History, Runs, and the Rebates + Cards
+tables stacked on the Cards tab — carry a `*Errored` flag alongside their
+loading flag, so a failed read renders its own copy instead of the empty claim.
+It matters here because each empty message is a **substantive claim**: "No
+virtual cards issued yet." says this tenant has never issued a card, and
+rendered over a 500 (with the toast that reported it already faded) it answers
+"we could not look" with "there is nothing".
+
+The Cards table was the last one without it. `/exceptions` states the rule
+verbatim: *never reintroduce an empty message that outranks "we could not
+look"*. Guards: `tests-e2e/payments/cards-load-states.spec.ts`,
+`tests-e2e/payments/runs-load-states.spec.ts`.
 
 ### Summary Bar
 
@@ -1123,6 +1140,68 @@ whose reporting-currency figure could not be ESTABLISHED (a missing rate), the
 other a rebate whose currency is perfectly well known and simply is not this
 one. A single combined number would describe neither, and the two have
 different remedies — book the missing rate, versus nothing to fix.
+
+### A payment states what its money is denominated in
+
+The section above is about *rollups*. This one is about a single row, and it
+was the older hole: `PaymentResponse` and `PaymentRunResponse` joined the
+invoice for `vendor_name` and `invoice_number` but never carried
+`invoice.currency`, so every `/payments` reader rendered a per-row figure under
+the **org's default** currency — a code nobody had established.
+
+`payments` has no currency column by design: a payment settles in its invoice's
+currency (`_execute_single_payment` reads `invoice.currency` per leg), and
+`payment_runs.total_amount` is one bare `Numeric` kept meaningful by
+`create_payment_run_for_invoices` refusing a run whose invoices span more than
+one currency. Both responses now carry the code off rows they already joined:
+
+| Field | Source | `None` when |
+|---|---|---|
+| `PaymentResponse.currency` | the joined `Invoice.currency` | no invoice joined (`invoices.currency` is NOT NULL, so this is defensive) |
+| `PaymentRunResponse.currency` | `api/payments._run_currencies` — one grouped query over the run's legs' invoices | the run has no payments, or a legacy run predating the single-currency guard whose legs disagree |
+| `GET /runs/{id}` `currency` + per-payment `currency` | the same rows the detail already loads | as above |
+| `POST /runs` `currency` | `_run_currencies` on the just-created run | as above |
+
+**Where it cannot be PROVEN the answer is `None`, never a substituted default**
+(`docs/decisions.md` §79/§82). The mixed-legacy-run case is the sharp one: that
+run's `total_amount` is a sum across currencies, denominated in nothing real, so
+stamping a code on it would dress a meaningless figure up as a genuine one. The
+shared rule is the pure `api/payments._one_currency`, so the list, the detail
+and the create response cannot disagree about it. `POST /runs`' confirmation
+message also stopped hardcoding a `$` in front of the total.
+
+**Why this mattered most in one place.** `POST /payments/{id}/settlement/accept`
+exists because a rail can settle a different amount — or a different currency —
+than AP authorized, and its dialog puts "Authorized" beside "Settled". The
+settled half had `settled_currency` on the wire and the authorized half had
+nothing, so a EUR payment rendered a fabricated `$1,200.00` directly above a
+real `€1,150.00`: the two figures that screen exists to compare, on the screen
+built to catch `currency_mismatch`. The `/payments` create-run **review panel**
+had the same class one screen earlier, dropping the `currency` the queue row
+directly above it renders.
+
+The client renders an unprovable currency as a **bare grouped figure** — no
+symbol, no code — rather than borrowing the org default
+(`routes/payments/+page.svelte::formatRowMoney`, which falls back to the shared
+`utils/discountRecommendation::formatAmountWithoutCurrency` — the same primitive
+`/discounts` uses for its own unprovable-currency case).
+
+**Tests:** `tests/test_payment_response_currency.py` (DB-backed, plus the pure
+`_one_currency` refusal cases). The e2e assertions deliberately match the
+currency **symbol**, not just the digits — `$500.00` and `€500.00` are
+indistinguishable to a digits-only check, which is why the suite could not see
+this: `tests-e2e/payments/recovery-exits.spec.ts` (whose fixture is EUR on
+purpose, so a fixture in the tenant's own currency can't make the wrong
+rendering look right) and `tests-e2e/payments/queue-multi-currency.spec.ts`.
+
+**Still open (tracked in `docs/followups.md`):** `RunDetailModal.svelte` formats
+its five money cells via `fmt(x)` with the `currency` argument omitted, which
+resolves through `money.ts`'s `resolveCurrency` to `DEFAULT_CURRENCY` (USD)
+regardless of the org — the same fabrication, one click away, and worse than the
+list was (it ignores the tenant's default too). The backend half is done: the
+`GET /runs/{id}` response this modal already consumes now carries `currency` on
+the run AND on each payment, so closing it is passing those through the five
+existing `fmt()` calls.
 
 ### The payment queue is paginated
 

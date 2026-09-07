@@ -175,7 +175,9 @@ async def list_conversations(
     convs = (
         (
             await tenant_db.execute(
-                base.order_by(Conversation.updated_at.desc()).limit(limit).offset(offset)
+                base.order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+                .limit(limit)
+                .offset(offset)
             )
         )
         .scalars()

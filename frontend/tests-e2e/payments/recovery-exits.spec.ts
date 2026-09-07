@@ -42,7 +42,17 @@ const HELD_PAYMENT_ID = '11111111-1111-1111-1111-111111111111';
 const HELD_INVOICE_ID = '22222222-2222-2222-2222-222222222222';
 const RUN_ID = '33333333-3333-3333-3333-333333333333';
 
-/** A `completed` payment whose rail reported LESS than AP authorized. */
+/**
+ * A `completed` payment whose rail reported LESS than AP authorized.
+ *
+ * Denominated in **EUR on purpose**, not the tenant's USD default. This dialog
+ * is the one screen whose whole job is to put "Authorized" beside "Settled",
+ * and it exists because a rail can settle in a currency AP never authorized —
+ * so a fixture in the org's own currency makes every rendering of it look
+ * correct, including the wrong one. `PaymentResponse` carries no currency at
+ * all before this change, so the authorized figure fell back to the org default
+ * and rendered `$500.00` directly above the real `€450.00`.
+ */
 function heldPayment() {
 	return {
 		id: HELD_PAYMENT_ID,
@@ -56,7 +66,9 @@ function heldPayment() {
 		created_at: '2026-06-01T00:00:00Z',
 		updated_at: null,
 		settled_amount: '450.00',
-		settled_currency: 'USD',
+		settled_currency: 'EUR',
+		// What `amount` is denominated in — the invoice's own currency.
+		currency: 'EUR',
 		vendor_name: 'E2E Settlement Vendor',
 		invoice_number: 'E2E-SETTLE-001',
 		card_last_four: null,
@@ -70,6 +82,7 @@ function runRow(status = 'completed') {
 		id: RUN_ID,
 		status,
 		total_amount: 500,
+		currency: 'EUR',
 		initiated_by: null,
 		executed_at: '2026-06-01T00:00:00Z',
 		created_at: '2026-06-01T00:00:00Z',
@@ -171,6 +184,45 @@ test.describe('/payments — settlement acceptance (the under-settlement hold ex
 		await expect(confirm).toBeDisabled();
 		await page.getByTestId('settlement-reason').fill('e2e: shortfall agreed with the vendor');
 		await expect(confirm).toBeEnabled();
+	});
+
+	test('both figures render under the currency the SERVER stated, not the org default', async ({
+		page
+	}) => {
+		// The regression this file could not previously see. Every assertion
+		// above matches on DIGITS only, so "Authorized $500.00" and
+		// "Authorized €500.00" are indistinguishable to them — and a fabricated
+		// symbol above a real one is precisely the failure on a screen built to
+		// catch a `currency_mismatch`.
+		//
+		// Before the fix `PaymentResponse` carried no `currency`, the authorized
+		// half fell back to `orgCurrency` (USD on the e2e tenant), and this test
+		// fails on the `$` exclusion below while the settled half already passed.
+		await mockHistory(page, 'payment_scheduled');
+		await openHistory(page);
+		await acceptAction(page).click();
+
+		const authorized = page.getByTestId('settlement-authorized-figure');
+		const settled = page.getByTestId('settlement-settled-figure');
+
+		await expect(authorized).toContainText('€');
+		await expect(settled).toContainText('€');
+		// The two figures this dialog exists to compare must not be denominated
+		// differently by the UI — a dollar sign here is invented, not reported.
+		await expect(authorized).not.toContainText('$');
+		await expect(page.getByTestId('settlement-figures')).not.toContainText('$');
+	});
+
+	test('the History row states the authorized currency too', async ({ page }) => {
+		// The same fabrication one screen earlier: the row's authorized amount
+		// used to borrow the org default while the settled sub-line beneath it
+		// rendered `settled_currency`.
+		await mockHistory(page, 'payment_scheduled');
+		await openHistory(page);
+
+		const row = page.locator('table tbody tr', { hasText: 'E2E-SETTLE-001' });
+		await expect(row).toContainText('€500.00');
+		await expect(row).not.toContainText('$');
 	});
 
 	test('confirming posts the reason to the accept endpoint', async ({ page }) => {

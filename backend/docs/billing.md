@@ -183,7 +183,7 @@ config.
 ## Inbound webhook route (`app/api/billing_webhook.py`)
 
 `POST /api/billing/webhook/{provider}` — **PUBLIC, no JWT** (the provider HMAC is
-the gate; the route is in `NO_AUTH_REQUIRED`). The billing provider POSTs here
+the gate; the route is in `ALTERNATE_AUTH`). The billing provider POSTs here
 when a subscription's lifecycle changes (trial ends, payment fails → `past_due`,
 dunning exhausts → `canceled`).
 
@@ -751,7 +751,7 @@ signature → 204 no change, dedupe-by-event-id → one effect, idempotent same-
 status → no audit, unknown subscription → 204, disabled switch → 204, provider
 mismatch → 204); and the dunning sweep (cancels overdue `past_due` + audit +
 idempotent re-run, spares within grace). Route auth-gating is in
-`tests/test_rbac.py` (the route is in `NO_AUTH_REQUIRED`).
+`tests/test_rbac.py` (the route is in `ALTERNATE_AUTH`).
 
 `backend/tests/test_dunning_sweep_resilience.py` — the dunning sweep's per-row
 isolation and failure accounting: one poisoned row still lets the rest of the

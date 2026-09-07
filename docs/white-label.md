@@ -136,7 +136,7 @@ available to theme the portal. The portal therefore reads a dedicated,
 
 `GET /api/portal/branding` (`app/api/portal.py`) — returns the resolved tenant's
 `BrandConfig`. Documented public (like the SSO `GET /api/auth/sso/config`
-endpoint, and listed in `tests/test_rbac.py::NO_AUTH_REQUIRED`):
+endpoint, and listed in `tests/test_rbac.py::PUBLIC_BY_DESIGN`):
 
 - **Tenant resolution rides the existing chokepoint.** It depends on
   `app.tenant.get_tenant` — the same `X-Tenant-Slug` header / custom-domain

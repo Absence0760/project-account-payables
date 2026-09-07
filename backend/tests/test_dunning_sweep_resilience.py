@@ -28,6 +28,7 @@ from sqlalchemy import delete, select
 
 from app.config import settings
 from app.models.billing import Plan, Subscription
+from app.models.organization import Organization
 from app.models.workflow import AuditLog
 from app.services import sweep_health
 from app.services.billing import dunning_sweep
@@ -66,7 +67,34 @@ async def _clear_subscriptions(realdb):
     async with realdb.control_sessionmaker()() as s:
         await s.execute(delete(Subscription))
         await s.execute(delete(Plan).where(Plan.code.like(f"{_PLAN_PREFIX}%")))
+        await s.execute(delete(Organization).where(Organization.slug.like(f"{_PLAN_PREFIX}%")))
         await s.commit()
+
+
+async def _scratch_org(realdb) -> uuid.UUID:
+    """A throwaway control-plane org with NO tenant database behind it.
+
+    `uq_subscription_one_live_per_org` (migration 0056, declared on the model
+    since 0093) allows at most ONE non-canceled subscription per org, so a tick
+    with three overdue rows is three ORGS — which is also the only shape
+    production ever has. Two come from the harness's own tenants; this is the
+    third. It deliberately has no tenant DB: the only row seeded under it is the
+    one the test poisons, whose audit write never runs, so the row exercises the
+    failure path without needing a trail to write into. Removed by
+    `_clear_subscriptions` via the shared slug prefix.
+    """
+    org_id = uuid.uuid4()
+    async with realdb.control_sessionmaker()() as s:
+        s.add(
+            Organization(
+                id=org_id,
+                name="Dunning Resilience Scratch",
+                slug=f"{_PLAN_PREFIX}{org_id.hex[:12]}",
+                db_name=f"feoh_{_PLAN_PREFIX}{org_id.hex[:12]}",
+            )
+        )
+        await s.commit()
+    return org_id
 
 
 async def _seed_past_due(realdb, org_id, *, sub_id, external_id, period_end) -> uuid.UUID:
@@ -105,8 +133,8 @@ async def _statuses(realdb, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
     return {rid: status for rid, status in rows}
 
 
-async def _audit_actions(realdb, sub_id) -> list[str]:
-    async with realdb.sessionmaker("a")() as s:
+async def _audit_actions(realdb, sub_id, tenant: str = "a") -> list[str]:
+    async with realdb.sessionmaker(tenant)() as s:
         return list(
             (
                 await s.execute(
@@ -161,15 +189,22 @@ def test_failures_reach_sweep_health_and_degrade_the_sweep(monkeypatch):
 async def test_one_poisoned_row_does_not_abort_the_tick(realdb, monkeypatch, _audit_engine_on_loop):
     """The other overdue subscriptions still cancel, and the failure is counted."""
     monkeypatch.setattr(settings, "billing_dunning_grace_days", 14)
-    org_id = realdb.info("a").org_id
     now = datetime.now(UTC)
     await _clear_subscriptions(realdb)
     try:
+        # Three overdue rows are three ORGS, not three rows on one org:
+        # `uq_subscription_one_live_per_org` allows at most one non-canceled
+        # subscription per org, which is also the only shape production has.
         # Rows are processed in id order; poison the MIDDLE one so the test
         # proves both that an earlier commit survived and that a later row still
-        # ran (pre-fix, the raise ended the loop).
+        # ran (pre-fix, the raise ended the loop). The middle one is the
+        # tenant-less scratch org precisely because its audit write never runs.
         ids = sorted(uuid.uuid4() for _ in range(3))
-        for i, sub_id in enumerate(ids):
+        tenants = ["a", None, "b"]
+        org_ids = [
+            realdb.info(key).org_id if key else await _scratch_org(realdb) for key in tenants
+        ]
+        for i, (sub_id, org_id) in enumerate(zip(ids, org_ids, strict=True)):
             await _seed_past_due(
                 realdb,
                 org_id,
@@ -200,10 +235,12 @@ async def test_one_poisoned_row_does_not_abort_the_tick(realdb, monkeypatch, _au
         assert statuses[ids[1]] == "past_due"  # rolled back, retried next tick
         assert statuses[ids[2]] == "canceled"  # ran despite the poison before it
 
-        # The two real cancellations left their trail; the failed one did not.
-        assert "billing.subscription_canceled" in await _audit_actions(realdb, ids[0])
-        assert "billing.subscription_canceled" in await _audit_actions(realdb, ids[2])
-        assert await _audit_actions(realdb, ids[1]) == []
+        # The two real cancellations left their trail, each in its own tenant;
+        # the failed one did not.
+        assert "billing.subscription_canceled" in await _audit_actions(realdb, ids[0], "a")
+        assert "billing.subscription_canceled" in await _audit_actions(realdb, ids[2], "b")
+        assert await _audit_actions(realdb, ids[1], "a") == []
+        assert await _audit_actions(realdb, ids[1], "b") == []
     finally:
         await _clear_subscriptions(realdb)
 
@@ -252,21 +289,21 @@ async def test_row_within_grace_is_neither_canceled_nor_a_failure(
 ):
     """The spare path is still a clean no-op — it must not read as a failure."""
     monkeypatch.setattr(settings, "billing_dunning_grace_days", 14)
-    org_id = realdb.info("a").org_id
     now = datetime.now(UTC)
     await _clear_subscriptions(realdb)
     try:
+        # One org, one live subscription — see `_scratch_org`.
         spared, overdue = uuid.uuid4(), uuid.uuid4()
         await _seed_past_due(
             realdb,
-            org_id,
+            realdb.info("a").org_id,
             sub_id=spared,
             external_id="sub_res_grace",
             period_end=now - timedelta(days=3),
         )
         await _seed_past_due(
             realdb,
-            org_id,
+            realdb.info("b").org_id,
             sub_id=overdue,
             external_id="sub_res_overdue",
             period_end=now - timedelta(days=30),

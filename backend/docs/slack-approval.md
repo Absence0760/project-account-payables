@@ -52,7 +52,7 @@ POST /api/approvals/slack/interactivity   — PUBLIC, no JWT
 ```
 
 `app/api/slack_approvals.py`. Public-by-design (Slack POSTs it; the signature +
-the token are the gates) and listed in `NO_AUTH_REQUIRED` in `tests/test_rbac.py`,
+the token are the gates) and listed in `ALTERNATE_AUTH` in `tests/test_rbac.py`,
 exactly like the PEPPOL-inbound and email-approval routes.
 
 Two gates, layered, both fail closed:
@@ -149,7 +149,7 @@ correctly-signed interactivity requests in-process.
   channel-binding (a slack token is rejected at the email expectation and vice
   versa), and the adapter's interactive Block Kit button rendering.
 - Auth-gating is covered by `tests/test_rbac.py` (the route is in
-  `NO_AUTH_REQUIRED`).
+  `ALTERNATE_AUTH`).
 
 ## Deferred
 

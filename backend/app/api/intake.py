@@ -221,7 +221,7 @@ async def list_intake(
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
-        base.order_by(IntakeRequest.created_at.desc())
+        base.order_by(IntakeRequest.created_at.desc(), IntakeRequest.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

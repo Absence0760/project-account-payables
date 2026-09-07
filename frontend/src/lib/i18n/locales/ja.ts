@@ -345,6 +345,7 @@ export const messages = {
 	'payments.cards.activeCards': '有効なカード',
 	'payments.cards.loading': 'カードを読み込み中…',
 	'payments.cards.empty': 'まだ発行されたバーチャルカードはありません。',
+	'payments.cards.errored': 'バーチャルカードを読み込めませんでした。',
 	'payments.cards.reveal': '表示',
 	'payments.cards.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'payments.cards.showingAll': '{total, plural, other {#件すべてのカードを表示中}}',

@@ -108,7 +108,7 @@ async def list_credit_memos(
         select(CreditMemo, Vendor.name, Invoice.invoice_number)
         .outerjoin(Vendor, CreditMemo.vendor_id == Vendor.id)
         .outerjoin(Invoice, CreditMemo.invoice_id == Invoice.id)
-        .order_by(CreditMemo.created_at.desc())
+        .order_by(CreditMemo.created_at.desc(), CreditMemo.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit),
         CreditMemo,

@@ -206,7 +206,7 @@ async def list_requisitions(
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
         base.options(selectinload(PurchaseRequisition.line_items))
-        .order_by(PurchaseRequisition.created_at.desc())
+        .order_by(PurchaseRequisition.created_at.desc(), PurchaseRequisition.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

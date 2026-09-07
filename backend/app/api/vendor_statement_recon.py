@@ -632,7 +632,9 @@ async def list_reconciliations(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
-        query.order_by(VendorStatementReconciliation.created_at.desc())
+        query.order_by(
+            VendorStatementReconciliation.created_at.desc(), VendorStatementReconciliation.id.desc()
+        )
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

@@ -6,10 +6,11 @@ vendor to gate payments; auditors read the full history to trace
 every decision back to the screening that justified it.
 
 Append-only by convention — there are no UPDATE or DELETE call sites
-in the codebase. The migration creates indexes for the two read
-patterns: (vendor_id, checked_at DESC) for the "most recent check"
-lookup, and (result) partial for the "review queue" UI that surfaces
-matches and review-required rows.
+in the codebase. Two read patterns are indexed below: (vendor_id,
+checked_at DESC) for the "most recent check" lookup, and (result)
+partial for the "review queue" UI that surfaces matches and
+review-required rows. They are declared on the model AND restated in
+migration 0018, because a tenant is provisioned either way.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +28,15 @@ from app.models.base import Base
 
 class SanctionsCheck(Base):
     __tablename__ = "sanctions_checks"
+
+    __table_args__ = (
+        Index("ix_sanctions_checks_vendor_id", "vendor_id", text("checked_at DESC")),
+        Index(
+            "ix_sanctions_checks_result",
+            "result",
+            postgresql_where=text("result IN ('match', 'review_required')"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     vendor_id: Mapped[uuid.UUID] = mapped_column(

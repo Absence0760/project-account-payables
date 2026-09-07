@@ -128,6 +128,25 @@ class PaymentResponse(BaseModel):
     vendor_name: str | None = None
     invoice_number: str | None = None
 
+    # What `amount` (the AUTHORIZATION) is DENOMINATED in. `payments` has no
+    # currency column of its own — a payment settles in its invoice's currency
+    # (`_execute_single_payment` reads `invoice.currency` per leg) — so the
+    # figure only means something beside the code the invoice carries. The
+    # invoice row is already joined for `vendor_name`; this rides along it at
+    # no extra cost.
+    #
+    # Without it every `/payments` reader had to fall back to the org's default
+    # currency, which is a GUESS: the Accept-settlement dialog rendered
+    # "Authorized $1,200.00" directly above "Settled EUR 1,150.00" — the two
+    # figures that dialog exists to compare, on the screen built to catch a
+    # `currency_mismatch`, one of them wearing a symbol nobody had established.
+    #
+    # `None` is deliberate and is NOT a licence to substitute a default: it
+    # means the invoice carries no currency (a legacy row) or no invoice was
+    # joined. Render the bare figure rather than a code that cannot be proven —
+    # `docs/decisions.md` §79/§82.
+    currency: str | None = None
+
     # Card metadata: surfaced when method=virtual_card so the History row
     # can show "•••• 1234 · lithic" without an extra request.
     card_last_four: str | None = None
@@ -157,6 +176,12 @@ class PaymentResponse(BaseModel):
             settled_currency=p.settled_currency,
             vendor_name=invoice.vendor_name if invoice else None,
             invoice_number=invoice.invoice_number if invoice else None,
+            # Never `or "USD"`: an unset invoice currency is unknown, and a
+            # substituted default is exactly the fabrication this field exists
+            # to stop.
+            currency=(
+                invoice.currency.upper() if invoice is not None and invoice.currency else None
+            ),
             card_last_four=card.last_four if card else None,
             card_provider=card.card_provider if card else None,
             card_id=str(card.id) if card else None,
@@ -203,6 +228,21 @@ class PaymentRunResponse(BaseModel):
     requires_cfo_approval: bool = False
     cfo_approved_at: str | None = None
 
+    # What `total_amount` is DENOMINATED in. `payment_runs` has no currency
+    # column either — the total is one bare `Numeric`, and what keeps it
+    # meaningful is the guard in
+    # `services/payment_runs.create_payment_run_for_invoices`, which 422s a run
+    # spanning more than one currency. So a run HAS exactly one currency; it
+    # simply had no way to say so, and the Runs tab rendered every total under
+    # the org default.
+    #
+    # `None` where it cannot be PROVEN — a run with no payments, a run whose
+    # invoices carry no currency, or a legacy run predating the single-currency
+    # guard whose legs disagree. In that last case `total_amount` is itself
+    # denominated in nothing real, so a code would be worse than none: render
+    # the bare figure (`docs/decisions.md` §79/§82).
+    currency: str | None = None
+
     model_config = {"from_attributes": True}
 
     @classmethod
@@ -215,6 +255,7 @@ class PaymentRunResponse(BaseModel):
         failed: int = 0,
         in_flight: int = 0,
         pending: int = 0,
+        currency: str | None = None,
     ) -> "PaymentRunResponse":
         return cls(
             id=str(pr.id),
@@ -228,6 +269,7 @@ class PaymentRunResponse(BaseModel):
             payments_failed=failed,
             payments_in_flight=in_flight,
             payments_pending=pending,
+            currency=currency,
             requires_cfo_approval=bool(getattr(pr, "requires_cfo_approval", False)),
             cfo_approved_at=(
                 pr.cfo_approved_at.isoformat() if getattr(pr, "cfo_approved_at", None) else None

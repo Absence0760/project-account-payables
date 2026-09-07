@@ -305,6 +305,106 @@ Migration `0010_audit_log_shipping`:
   query stays cheap as the audit log grows.
 - Guarded by `_has_table("audit_log")` — no-op on the control plane.
 
+### The index was only ever on MIGRATED tenants
+
+For 82 revisions that index existed in the migration and nowhere else, and a
+tenant only gets it if Alembic ran against it. Fresh tenants don't: they are
+built by `Base.metadata.create_all` in
+`services/tenant_provisioning._create_tenant_tables`, which produces exactly the
+indexes the ORM declares — and `AuditLog` declared none. So every
+freshly-provisioned tenant ran this 60-second sweep as a full sequential scan of
+its largest table, forever, while a migrated tenant did not. Measured at 1.2 M
+audit rows: **39.740 ms / 30 003 buffers → 0.040 ms / 1 buffer** for a
+caught-up tick that returns no rows at all.
+
+`0092_list_and_audit_indexes` closes it by declaring the index on
+`AuditLog.__table_args__` — under **0010's name**, deliberately, because a second
+identical partial index would be pure write overhead on every audit row for the
+rest of the platform's life. 0092 also restates the `CREATE INDEX IF NOT EXISTS`
+so an already-provisioned tenant picks it up when it reaches that revision, but
+does not list it in its downgrade: reverting 0092 must not remove revision
+0010's index. `tests/test_list_and_audit_indexes.py` pins all three properties.
+
+Two more `audit_log` indexes land in the same revision — `(action, created_at)`
+for the SOX signature sweep, the dashboard's approval-timing leg and the adaptive
+feedback reads, and `(created_at)` for the auditor's date-range export (which has
+no `action` predicate and so cannot use the composite). Both are also what the
+retention sweep's overdue-row count reads. Sizes and before/after numbers are in
+[`database.md`](database.md) § Index coverage on list + audit reads.
+
+## The auditor export reads the same table, and must page it too
+
+The shipper is not the only thing that walks `audit_log` at volume. The
+SOX evidence surface — `GET /api/audit/export` (`app/api/audit.py`) — reads the
+same table over a caller-chosen range, and the range that matters is an annual
+one: a scratch tenant carries ~41 600 rows in a single 30-day window.
+
+It is subject to the same "bounded, not whole-table" rule as the shipper, and
+for the same reason, but it reaches it differently — the shipper takes a
+`FEOH_AUDIT_SHIPPING_BATCH_SIZE` batch per tick and comes back next tick,
+whereas an export has to deliver every row of its range in one response:
+
+* rows are read through a server-side cursor (`yield_per`, the mechanism
+  `GET /audit/verify-signatures` in the same module already used) selecting
+  plain columns rather than the `AuditLog` entity, so nothing accumulates in the
+  session's identity map;
+* JSON and CSV bodies are emitted in bounded chunks as rows arrive, so peak
+  server memory is a page rather than a period. Measured with the body
+  discarded as it is sent (so the number is the server's, not a test client's
+  copy of the response): peak allocation went from 18.0 MiB at 5 000 rows and
+  70.6 MiB at 20 000 — **linear in the range** — to a flat **1.5 MiB at both**.
+  JSON also got faster (3 244 ms → 1 573 ms at 20 000 rows); CSV traded about
+  20% wall clock (1 340 ms → 1 611 ms) for 48× less peak memory, which is the
+  right way round for a report an auditor runs occasionally on a shared worker.
+
+  That CSV regression was a *database* cost, not an application one, and it is
+  addressed in the same round. Streaming bounds what the app holds, but the
+  export's `ORDER BY created_at` had no index to read, so Postgres sorted the
+  whole range first — `EXPLAIN (ANALYZE)` showed an `external merge` spilling
+  4 392 kB to a temp file before the cursor could emit row 1, which is the
+  opposite of incremental. `ix_audit_log_created_at` (added by
+  `0092_list_and_audit_indexes`, above) removes the sort node entirely: the plan
+  becomes a plain index scan and the export is genuinely incremental end to end.
+  The two changes were found independently — one by measuring the export, one by
+  reading the shipper — and land together.
+
+**Do not "simplify" it back to a `LIMIT`.** A capped export is a silently short
+one, and a short export is evidence somebody signs off on — strictly worse than
+a slow one. Nothing in that path truncates, and a run that dies part-way cannot
+pass for a complete one either: the response is chunked (no `Content-Length`),
+so an aborted body has no terminating chunk and any conforming client raises,
+and the JSON dialect additionally never emits its closing `]`.
+
+Two consequences of streaming are worth knowing before editing that route:
+
+* The `audit.exported` row is committed **before** the cursor opens (the access
+  has happened by the time bytes leave, so an aborted download must still be on
+  the trail). The export is therefore pinned to a snapshot — `created_at <`
+  Postgres' own `now()`, read before anything is written — or the body would
+  carry the record of itself, and rows a concurrent request committed meanwhile,
+  neither of which the row's own `count` includes.
+* That `count` is a real `COUNT(*)` over the same predicate, folded into one
+  aggregate alongside the `DISTINCT actor_id` the actor-name lookup needs, so
+  the range is scanned once and the query count stays fixed no matter how large
+  it is.
+
+The trade-off streaming buys this with, stated plainly: the request holds its
+tenant DB connection checked out for the **whole** response, transmission
+included, where the buffered version released it as soon as the rows were read.
+The per-tenant pool is `pool_size=5, max_overflow=10`, so several concurrent
+annual exports over slow client links can hold connections far longer than
+before. That is the right way round — the alternative was gigabytes of server
+memory — but it is the thing to look at first if pool exhaustion ever shows up
+alongside export activity.
+
+Streaming also rests on FastAPI keeping its `yield`-dependency teardown *after*
+the response body drains, which is internal ordering rather than a documented
+contract. `tests/test_audit_export_streaming.py` drives the raw ASGI app against
+a real database, so a future FastAPI bump that reordered it fails loudly there
+rather than silently handing the generator a closed session.
+
+That file guards both halves — that it streams, and that it returns every row.
+
 ## DB-level immutability (SOX) and the `shipped_at` carve-out
 
 Migration `0022_sox_audit_immutable` (DDL in `app/services/audit_immutability.py`)
@@ -315,8 +415,10 @@ installs a pair of `BEFORE` triggers on `audit_log`:
   than `shipped_at`**.
 
 This is the durable SOX control: the app already exposes no PATCH/DELETE route
-(`tests/test_audit_append_only.py`), but a rogue ORM call or a direct `psql`
-session would bypass that — the trigger does not.
+(`tests/test_audit_append_only.py` — see [The audit-coverage
+guard](#the-audit-coverage-guard-teststest_audit_append_onlypy) below), but a
+rogue ORM call or a direct `psql` session would bypass that — the trigger does
+not.
 
 **The `shipped_at` carve-out is load-bearing for this shipper.** The trigger
 function compares all non-`shipped_at` columns between OLD and NEW; a pure
@@ -332,6 +434,83 @@ provisioned tenants (which are created via `create_all`, not Alembic).
 Idempotent (`CREATE OR REPLACE` / `DROP ... IF EXISTS`), guarded by
 `_has_table("audit_log")`. Covered by `tests/test_audit_immutable.py`,
 including an assertion that the shipper's stamp still succeeds.
+
+## The audit-coverage guard (`tests/test_audit_append_only.py`)
+
+The triggers above make the trail **tamper-proof**. They say nothing about
+whether a mutation produced a row in the first place — that is what
+`tests/test_audit_append_only.py` enforces, and invariant #3 is the rule it
+encodes.
+
+### The unit is the HANDLER, not the module
+
+`test_every_tenant_mutating_handler_writes_an_audit_row` sweeps every route
+whose handler takes `Depends(get_tenant_db)` and responds to
+`POST`/`PATCH`/`PUT`/`DELETE` — the precise marker for "this writes tenant
+state" — and requires `dispatch_audit` to be reachable from **that handler's own
+source**:
+
+1. `inspect.getsource(endpoint)` contains `dispatch_audit`; or
+2. the handler calls a function defined in the **same module** whose source
+   does (followed up to `_AUDIT_HELPER_MAX_DEPTH`, so a handler delegating to a
+   local `_audit(...)` / `_transition(...)` helper still counts); or
+3. `(module, handler)` carries a written-down reason in
+   `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`.
+
+It used to require `dispatch_audit` anywhere in the **module**, which meant one
+auditing handler vouched for every unaudited handler beside it —
+`app/api/invoices.py` alone has 21 tenant-mutating routes behind that single
+grep, and that is how three unaudited DELETE handlers shipped there and had to
+be found by hand.
+
+Calls **out of** the handler's module are deliberately not followed. "That other
+file audits" is a design claim about a chokepoint (`workflow_engine.transition_invoice`,
+`services/review`, `exception_lifecycle.record_decision`, `services/qms_sync`,
+…), and a claim belongs somewhere a reader can re-check it, not inferred by a
+source scan that would quietly absorb the day the chokepoint stops auditing. So
+those handlers are exemptions with the chokepoint named in the reason.
+
+### Adding a justified exemption
+
+Add one entry to `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`, keyed
+`("app.api.<module>", "<handler function name>")`, whose value states **why the
+mutation is already covered**. The three shapes that hold up today:
+
+| Shape | Example reason |
+|---|---|
+| Verb is a POST but nothing is persisted | `"CSV export — reads, never writes"` |
+| Writes only the caller's own record / a derived cache | `"read receipt on the caller's own notification"` |
+| Audits through a named cross-module chokepoint | `"audits via services/review.approve_invoice"` |
+
+A bare or empty reason fails the suite. So does a stale one:
+`test_audit_exemption_list_has_no_stale_entries` re-derives the route map and
+fails when an exempted handler no longer has a tenant-mutating route (renamed,
+deleted, or its dependency changed) or has since started auditing — an
+exemption that has stopped being true is worse than none.
+
+### `_OPEN_AUDIT_HOLES` — not exemptions
+
+When the per-handler unit first landed it exposed handlers that genuinely mutate
+tenant business state with no audit row anywhere on the path. Those are listed
+in a **separate** `_OPEN_AUDIT_HOLES` dict, every reason prefixed
+`OPEN HOLE — …, not a justified exemption`, so the suite is green on a known,
+enumerated set rather than by widening the real exemption dict. Each entry is
+work still to do; fixing one makes its entry stale, which is the prompt to
+delete it. **Do not add to that dict** — a newly-surfaced unaudited mutating
+handler is a bug to fix.
+
+### Route discovery has a floor
+
+FastAPI 0.138+ keeps nested `_IncludedRouter` objects in `app.routes` instead of
+flattening sub-routes, so the historical
+`[r for r in app.routes if isinstance(r, APIRoute)]` sees **1** route out of 564
+— and every filter built on it yields an empty set, i.e. a guard that passes
+having examined nothing. Every sweep in the file now goes through one
+`_flat_routes()` helper (`fastapi.routing.iter_route_contexts`, with the flat
+list as an older-FastAPI fallback) and asserts `len(routes) >=
+_MIN_EXPECTED_ROUTES`. That floor is the real fix: the flattening can move
+again, and when it does the suite fails loudly instead of reporting green on an
+empty scan. `test_route_flattener_sees_the_whole_app` pins it on its own.
 
 ## Operational notes
 

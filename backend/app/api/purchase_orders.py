@@ -99,7 +99,11 @@ async def list_purchase_orders(
 
     paged = (
         base.options(selectinload(PurchaseOrder.line_items))
-        .order_by(PurchaseOrder.created_at.desc())
+        # `created_at` alone is not a total order — see the same fix in
+        # `api/exceptions.py`. Two POs created in the same request share a
+        # timestamp, and OFFSET paging over a non-total order can duplicate or
+        # drop one.
+        .order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

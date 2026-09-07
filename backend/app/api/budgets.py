@@ -145,7 +145,9 @@ async def list_budgets(
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
-        base.order_by(Budget.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
+        base.order_by(Budget.created_at.desc(), Budget.id.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     rows = (await db.execute(paged)).scalars().all()
     return BudgetListResponse(

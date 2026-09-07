@@ -16,7 +16,7 @@ Two layers:
         even an otherwise auto-resolvable in-band variance.
 
 Auth/RBAC for the new routes is auto-covered by ``test_rbac.py`` (the routes
-carry ``require_roles(...)`` and aren't in ``NO_AUTH_REQUIRED``).
+carry ``require_roles(...)`` and are on neither ``PUBLIC_BY_DESIGN`` nor ``ALTERNATE_AUTH``).
 """
 
 from __future__ import annotations

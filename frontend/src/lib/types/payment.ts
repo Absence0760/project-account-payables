@@ -171,6 +171,23 @@ export interface Payment {
 	 */
 	settled_amount?: MoneyAmount;
 	settled_currency?: string | null;
+	/**
+	 * What `amount` — the AUTHORIZED figure — is denominated in
+	 * (`schemas/payment.py::PaymentResponse.currency`), off the invoice row the
+	 * response already joins. `payments` has no currency column; a payment
+	 * settles in its invoice's currency.
+	 *
+	 * Without it, six `/payments` call sites rendered the authorized amount
+	 * under the ORG's default code. The sharpest was the Accept-settlement
+	 * dialog, whose whole job is to put "Authorized" beside "Settled": the
+	 * settled half had `settled_currency` and the authorized half had nothing,
+	 * so a EUR payment showed a fabricated `$1,200.00` above a real `€1,150.00`
+	 * on the screen built to catch a `currency_mismatch`.
+	 *
+	 * `null` means the server could not establish it — render the bare figure,
+	 * never a substituted default (`docs/decisions.md` §79/§82).
+	 */
+	currency?: string | null;
 	vendor_name: string | null;
 	invoice_number: string | null;
 	card_last_four: string | null;
@@ -182,6 +199,19 @@ export interface PaymentRun {
 	id: string;
 	status: string;
 	total_amount: MoneyAmount;
+	/**
+	 * What `total_amount` is denominated in
+	 * (`schemas/payment.py::PaymentRunResponse.currency`). `payment_runs` has no
+	 * currency column either — the total is one bare `Numeric`, kept meaningful
+	 * by `create_payment_run_for_invoices` refusing a run whose invoices span
+	 * more than one currency.
+	 *
+	 * `null` when the server could not PROVE one: a run with no payments, or a
+	 * legacy run predating that guard whose legs disagree — in which case the
+	 * total is denominated in nothing real and a code would be worse than none.
+	 * Render the bare figure (`docs/decisions.md` §79/§82).
+	 */
+	currency?: string | null;
 	initiated_by: string | null;
 	executed_at: string | null;
 	created_at: string;

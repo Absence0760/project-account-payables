@@ -507,7 +507,7 @@ async def list_files(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
-        query.order_by(PositivePayFile.created_at.desc())
+        query.order_by(PositivePayFile.created_at.desc(), PositivePayFile.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

@@ -103,7 +103,7 @@ async def list_users(
 
     paged = (
         base.options(selectinload(User.roles))
-        .order_by(User.created_at.desc())
+        .order_by(User.created_at.desc(), User.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

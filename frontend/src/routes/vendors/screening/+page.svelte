@@ -71,9 +71,28 @@
 	// Detail modal — the selected vendor + its screening history.
 	let selected = $state<ScreeningReviewItem | null>(null);
 	let history = $state<SanctionsCheck[]>([]);
+	// The vendor the loaded `history` actually describes. The timeline is the
+	// evidence the Block/Unblock decision rests on, so it is rendered only while
+	// this matches the open vendor — the sequencer below already discards a
+	// superseded response, and this is the assertion that the two agree.
+	let historyVendorId = $state<string | null>(null);
 	let historyLoading = $state(false);
-	let busy = $state<'block' | 'rescreen' | null>(null);
+	// Distinct from "the timeline is empty": see the render block.
+	let historyError = $state(false);
+	// Keyed to the vendor the action was fired for, not a bare flag. Opening a
+	// second vendor while a block is in flight used to leave ITS buttons
+	// disabled, and the spinner label sat on a row the action never touched.
+	let busy = $state<{ vendorId: string; action: 'block' | 'rescreen' } | null>(null);
 	let blockReason = $state('');
+
+	// What the OPEN vendor is busy with — `null` for an action running against
+	// some other vendor, so this modal's controls stay live and honest.
+	const selectedBusy = $derived(
+		selected && busy && busy.vendorId === selected.vendor_id ? busy.action : null
+	);
+	const historyIsForSelected = $derived(
+		selected !== null && historyVendorId === selected.vendor_id
+	);
 
 	const COLUMNS = [
 		{ label: 'Vendor' },
@@ -119,6 +138,16 @@
 	// after every block / unblock / re-screen, so two can be in flight and
 	// resolve out of order exactly like the queue fetch can.
 	const countsSequence = createRequestSequencer();
+
+	// The modal's screening-history fetch gets a third sequencer — one per
+	// independent request stream, never a shared counter
+	// (`frontend/CLAUDE.md` § Sequencing list fetches). It is the one on this
+	// page whose staleness is not merely cosmetic: open vendor A, close, open
+	// vendor B, and A's late response landed in B's modal, so the reviewer read
+	// A's sanctions timeline while Block/Unblock — bound to `selected` — acted
+	// on B. Nothing edits the timeline in place, so it needs no
+	// `supersedeInFlight()`.
+	const historySequence = createRequestSequencer();
 
 	/**
 	 * The "Payments blocked" KPI, from a query that asks the KPI's own question.
@@ -205,23 +234,46 @@
 		await loadQueue({ append: true, nextPage: page + 1 });
 	}
 
-	async function openDetail(item: ScreeningReviewItem) {
+	function openDetail(item: ScreeningReviewItem) {
 		selected = item;
 		blockReason = '';
 		history = [];
+		historyVendorId = null;
+		historyError = false;
+		void loadHistory(item.vendor_id);
+	}
+
+	/** This vendor's screening trail. Always called with an explicit vendor id
+	 *  rather than reading `selected`: `rescreen()` calls it after an await, by
+	 *  which point `selected` may be a different vendor entirely. */
+	async function loadHistory(vendorId: string) {
+		const token = historySequence.start();
 		historyLoading = true;
+		historyError = false;
 		try {
-			history = await getScreeningHistory(item.vendor_id);
+			const rows = await getScreeningHistory(vendorId);
+			// Superseded by a newer open — discard rather than render one vendor's
+			// sanctions trail under another vendor's name.
+			if (!historySequence.canCommit(token)) return;
+			history = rows;
+			historyVendorId = vendorId;
 		} catch {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!historySequence.isCurrentRequest(token)) return;
+			history = [];
+			historyVendorId = vendorId;
+			historyError = true;
 			toast('Failed to load screening history', 'error');
 		} finally {
-			historyLoading = false;
+			if (historySequence.isCurrentRequest(token)) historyLoading = false;
 		}
 	}
 
 	function closeDetail() {
 		selected = null;
 		history = [];
+		historyVendorId = null;
+		historyError = false;
 		blockReason = '';
 	}
 
@@ -262,46 +314,50 @@
 
 	async function toggleBlock() {
 		if (!selected) return;
-		busy = 'block';
+		// Bind the action to the vendor that was on screen when it was fired.
+		// Everything after the first await must read THIS, never `selected` —
+		// the modal can be closed and re-opened on another vendor mid-flight.
+		const target = selected;
+		busy = { vendorId: target.vendor_id, action: 'block' };
 		try {
-			const updated = selected.payments_blocked
-				? await unblockVendor(selected.vendor_id)
-				: await blockVendor(selected.vendor_id, blockReason.trim() || undefined);
+			const updated = target.payments_blocked
+				? await unblockVendor(target.vendor_id)
+				: await blockVendor(target.vendor_id, blockReason.trim() || undefined);
 			applyVendorUpdate(updated);
 			// The tally is whole-set, so it can't be adjusted locally — a vendor
 			// outside this queue may have been blocked meanwhile. Re-ask.
 			loadCounts();
 			toast(updated.payments_blocked ? 'Payments blocked' : 'Payments unblocked', 'success');
-			blockReason = '';
+			// Only clear the field the user is actually looking at — a reason
+			// typed for a vendor opened meanwhile is not this action's to wipe.
+			if (selected?.vendor_id === target.vendor_id) blockReason = '';
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
 			toast(e?.detail ?? e?.message ?? 'Action failed', 'error');
 		} finally {
-			busy = null;
+			if (busy?.vendorId === target.vendor_id) busy = null;
 		}
 	}
 
 	async function rescreen() {
 		if (!selected) return;
-		busy = 'rescreen';
+		const target = selected;
+		busy = { vendorId: target.vendor_id, action: 'rescreen' };
 		try {
-			const updated = await screenVendor(selected.vendor_id);
+			const updated = await screenVendor(target.vendor_id);
 			applyVendorUpdate(updated);
 			// A `match` verdict auto-blocks the vendor, so the tally can move.
 			loadCounts();
 			toast('Vendor re-screened', 'success');
-			// Refresh the history so the new screen appears at the top.
-			historyLoading = true;
-			try {
-				history = await getScreeningHistory(selected.vendor_id);
-			} finally {
-				historyLoading = false;
-			}
+			// Refresh the history so the new screen appears at the top — for the
+			// vendor that was re-screened, through the sequencer, so it can't
+			// overwrite the timeline of a vendor opened meanwhile.
+			await loadHistory(target.vendor_id);
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
 			toast(e?.detail ?? e?.message ?? 'Re-screen failed', 'error');
 		} finally {
-			busy = null;
+			if (busy?.vendorId === target.vendor_id) busy = null;
 		}
 	}
 </script>
@@ -465,10 +521,12 @@
 		</dl>
 
 		{#if canBlock || canRescreen}
-			<div class="review-actions">
+			<!-- `data-vendor-id`: the identity these controls act on, asserted by
+			     `tests-e2e/vendors/screening-modal-identity.spec.ts`. -->
+			<div class="review-actions" data-testid="screening-actions" data-vendor-id={selected.vendor_id}>
 				{#if canRescreen}
-					<button class="btn-outline" onclick={rescreen} disabled={busy !== null}>
-						{busy === 'rescreen' ? 'Re-screening…' : 'Re-screen now'}
+					<button class="btn-outline" onclick={rescreen} disabled={selectedBusy !== null}>
+						{selectedBusy === 'rescreen' ? 'Re-screening…' : 'Re-screen now'}
 					</button>
 				{/if}
 				{#if canBlock}
@@ -486,9 +544,9 @@
 						class="btn-block"
 						class:unblock={selected.payments_blocked}
 						onclick={toggleBlock}
-						disabled={busy !== null}
+						disabled={selectedBusy !== null}
 					>
-						{#if busy === 'block'}
+						{#if selectedBusy === 'block'}
 							Working…
 						{:else}
 							{selected.payments_blocked ? 'Unblock payments' : 'Block payments'}
@@ -501,12 +559,32 @@
 		{/if}
 
 		<h3>Screening history</h3>
-		{#if historyLoading}
-			<p class="muted">Loading…</p>
+		<!-- Three states, not two, and the order is load-bearing. "No screening
+		     history yet." is a claim that this vendor has never been screened,
+		     sitting directly above the Block/Unblock control whose decision rests
+		     on that timeline — rendering it on a FAILED fetch tells the reviewer
+		     there is nothing to see when the truth is that we could not look.
+		     The same rule `/exceptions` states verbatim. The identity guard
+		     (`historyIsForSelected`) resolves to the loading state, never to the
+		     empty claim, so a timeline in flight for the open vendor can't be
+		     read as an answer about it either. -->
+		{#if historyError}
+			<p class="history-error" role="alert" data-testid="screening-history-error">
+				Could not load the screening history.
+				<button
+					type="button"
+					class="btn-retry"
+					onclick={() => selected && loadHistory(selected.vendor_id)}
+				>
+					Retry
+				</button>
+			</p>
+		{:else if historyLoading || !historyIsForSelected}
+			<p class="muted" data-testid="screening-history-loading">Loading…</p>
 		{:else if history.length === 0}
-			<p class="muted">No screening history yet.</p>
+			<p class="muted" data-testid="screening-history-empty">No screening history yet.</p>
 		{:else}
-			<ul class="history">
+			<ul class="history" data-testid="screening-history" data-vendor-id={historyVendorId}>
 				{#each history as h (h.id)}
 					<li>
 						<span class="history-result {h.result}">{h.result.replace(/_/g, ' ')}</span>
@@ -652,6 +730,24 @@
 	h3 {
 		font-size: 0.95rem;
 		margin: 0 0 8px;
+	}
+	.history-error {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		flex-wrap: wrap;
+		font-size: 0.85rem;
+		color: var(--danger);
+		margin: 0 0 8px;
+	}
+	.btn-retry {
+		border: none;
+		background: none;
+		padding: 0;
+		font: inherit;
+		color: var(--accent-strong);
+		text-decoration: underline;
+		cursor: pointer;
 	}
 	.history {
 		list-style: none;

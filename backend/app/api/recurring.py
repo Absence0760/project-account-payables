@@ -163,7 +163,9 @@ async def list_templates(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
-        query.order_by(RecurringInvoiceTemplate.created_at.desc())
+        query.order_by(
+            RecurringInvoiceTemplate.created_at.desc(), RecurringInvoiceTemplate.id.desc()
+        )
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

@@ -5,7 +5,7 @@
 
 The single-action token (built in :mod:`app.services.email_action_token`) IS the
 credential — there is no JWT and no session, so both routes are public-by-design
-and live in ``NO_AUTH_REQUIRED``. The token is HMAC-signed over the tenant +
+and live in ``ALTERNATE_AUTH``. The token is HMAC-signed over the tenant +
 invoice + reviewer + action + expiry, so it can't be forged or have its action
 flipped.
 

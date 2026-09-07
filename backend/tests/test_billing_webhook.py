@@ -12,7 +12,7 @@ Three groups:
 
 Control-plane Plan/Subscription rows are NOT truncated between tests, so every
 real-DB test cleans up in a ``finally`` keyed to its org. Auth-gating of the
-route itself is covered by ``test_rbac.py`` (it's in ``NO_AUTH_REQUIRED``).
+route itself is covered by ``test_rbac.py`` (it's in ``ALTERNATE_AUTH``).
 """
 
 from __future__ import annotations

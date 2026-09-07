@@ -426,12 +426,32 @@ async def list_vendors(
     result = await db.execute(query)
     vendors = result.scalars().all()
 
-    # Get invoice counts per vendor
-    items = []
-    for v in vendors:
-        count_result = await db.execute(select(func.count()).where(Invoice.vendor_id == v.id))
-        inv_count = count_result.scalar() or 0
-        items.append(VendorResponse.from_db(v, inv_count))
+    # Invoice tallies for the whole page in ONE grouped query, not a
+    # `COUNT(*)` per vendor. The per-row version was index-only and cheap on
+    # the database — which is exactly why it never surfaced as a slow query:
+    # the cost is one network round trip per row, so a `page_size=100` read
+    # paid ~100 RTTs that no index can remove. Only asking once can.
+    #
+    # Scoped by `vendor_id` alone, deliberately: the per-row query this
+    # replaces applied NO entity filter, and adding one here would silently
+    # change the number every multi-entity tenant already sees. A vendor with
+    # no invoices produces no group row, so `.get(..., 0)` is what keeps it on
+    # the page reporting 0 rather than dropping out.
+    vendor_ids = [v.id for v in vendors]
+    invoice_counts: dict[uuid.UUID, int] = {}
+    if vendor_ids:
+        invoice_counts = {
+            vendor_id: int(n)
+            for vendor_id, n in (
+                await db.execute(
+                    select(Invoice.vendor_id, func.count())
+                    .where(Invoice.vendor_id.in_(vendor_ids))
+                    .group_by(Invoice.vendor_id)
+                )
+            ).all()
+        }
+
+    items = [VendorResponse.from_db(v, invoice_counts.get(v.id, 0)) for v in vendors]
 
     return paginated(items, total, pagination)
 
@@ -730,6 +750,20 @@ async def _vendor_name(db: AsyncSession, vendor_id: uuid.UUID) -> str | None:
     ).scalar_one_or_none()
 
 
+async def _vendor_names(db: AsyncSession, vendor_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Batched sibling of ``_vendor_name`` for the list paths.
+
+    Same lookup, asked once for the whole page instead of once per row — an
+    empty id list issues no query at all. Callers still `.get()` the mapping,
+    so a request whose vendor row has since been deleted keeps the `None` the
+    per-row version returned rather than raising.
+    """
+    if not vendor_ids:
+        return {}
+    rows = (await db.execute(select(Vendor.id, Vendor.name).where(Vendor.id.in_(vendor_ids)))).all()
+    return {vendor_id: name for vendor_id, name in rows}
+
+
 # Registered BEFORE the parametric `/{vendor_id}` route so the literal
 # `/change-requests` path isn't swallowed by `vendor_id` (which would 422 on
 # the non-UUID segment). FastAPI matches routes in declaration order. The
@@ -797,19 +831,18 @@ async def list_change_requests(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
-        query.order_by(VendorChangeRequest.created_at.desc())
+        query.order_by(VendorChangeRequest.created_at.desc(), VendorChangeRequest.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )
     rows = (await db.execute(query)).scalars().all()
 
-    items = []
-    for r in rows:
-        items.append(
-            VendorChangeRequestResponse.from_db(
-                r, vendor_name=await _vendor_name(db, r.vendor_id), reveal=False
-            )
-        )
+    # One batched name lookup for the page, not one per staged request.
+    names = await _vendor_names(db, [r.vendor_id for r in rows])
+    items = [
+        VendorChangeRequestResponse.from_db(r, vendor_name=names.get(r.vendor_id), reveal=False)
+        for r in rows
+    ]
     return paginated(items, total, pagination)
 
 
@@ -880,16 +913,38 @@ async def screening_review_queue(
     )
     vendors = (await db.execute(query)).scalars().all()
 
+    # The newest `sanctions_checks` row for every vendor on the page in ONE
+    # query. `DISTINCT ON (vendor_id)` with a matching leading `ORDER BY` is
+    # Postgres' own "first row per group", so it returns exactly what the
+    # per-vendor `ORDER BY checked_at DESC LIMIT 1` did — asked once instead of
+    # once per row. `.id DESC` is appended purely as a tie-break: a bulk
+    # re-screen stamps a whole batch inside one transaction, and without it
+    # Postgres may pick a different row of that batch between two identical
+    # reads (the per-vendor `LIMIT 1` had the same latitude — this narrows it).
+    vendor_ids = [v.id for v in vendors]
+    latest_by_vendor: dict[uuid.UUID, SanctionsCheck] = {}
+    if vendor_ids:
+        latest_rows = (
+            (
+                await db.execute(
+                    select(SanctionsCheck)
+                    .where(SanctionsCheck.vendor_id.in_(vendor_ids))
+                    .distinct(SanctionsCheck.vendor_id)
+                    .order_by(
+                        SanctionsCheck.vendor_id,
+                        SanctionsCheck.checked_at.desc(),
+                        SanctionsCheck.id.desc(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        latest_by_vendor = {c.vendor_id: c for c in latest_rows}
+
     items: list[ScreeningReviewItem] = []
     for v in vendors:
-        latest = (
-            await db.execute(
-                select(SanctionsCheck)
-                .where(SanctionsCheck.vendor_id == v.id)
-                .order_by(SanctionsCheck.checked_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        latest = latest_by_vendor.get(v.id)
         categories = categories_from_raw_response(latest.raw_response) if latest else ()
         items.append(
             ScreeningReviewItem(

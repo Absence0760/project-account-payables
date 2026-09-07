@@ -15,7 +15,7 @@ extension (created by services.tenant_provisioning._create_tenant_tables).
 import uuid
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, Index
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +27,20 @@ EMBEDDING_DIMENSIONS = 1536
 
 class InvoiceEmbedding(Base, TimestampMixin):
     __tablename__ = "invoice_embeddings"
+
+    # Approximate nearest-neighbour index for the RAG similarity search
+    # (`embedding <=> :query` — cosine distance). Migration 0003 spells it
+    # `USING hnsw (embedding vector_cosine_ops)`; SQLAlchemy expresses exactly
+    # that through the dialect kwargs below, so `create_all` and Alembic build
+    # the same index rather than the fresh tenant getting none.
+    __table_args__ = (
+        Index(
+            "ix_invoice_embeddings_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(

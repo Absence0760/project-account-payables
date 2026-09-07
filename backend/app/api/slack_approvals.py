@@ -8,7 +8,7 @@ approval message carries Block Kit Approve / Reject buttons (rendered by
 signed, single-use **action token** — the same primitive the email-approval link
 uses (:mod:`app.services.email_action_token`), bound to the ``slack`` channel and
 to the intended approver. The token IS the credential; there is no JWT, no
-session, so this endpoint is public-by-design and lives in ``NO_AUTH_REQUIRED``.
+session, so this endpoint is public-by-design and lives in ``ALTERNATE_AUTH``.
 
 Two gates, layered, both fail closed:
 
@@ -140,7 +140,7 @@ async def slack_interactivity(
     PUBLIC-BY-DESIGN, no JWT — the Slack signature + the action token are the
     gates. Returns an opaque 200 ack on every path (success AND rejection) so the
     response can't enumerate. ``get_control_db`` is a plain DB session, not an
-    auth dependency (keeps the route in ``NO_AUTH_REQUIRED``); the tenant comes
+    auth dependency (keeps the route in ``ALTERNATE_AUTH``); the tenant comes
     from the action token, never a header.
     """
     # Bound the body before buffering (public route).

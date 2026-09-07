@@ -24,10 +24,11 @@ isolation this project relies on. Find both classes of bug in one pass.
    - Every route inside an included router declares
      `user: User = Depends(get_current_user)` (or `Depends(require_roles(...))`,
      which transitively depends on `get_current_user`).
-   - Public-by-design routes live in `NO_AUTH_REQUIRED` inside
+   - Public-by-design routes live in `PUBLIC_BY_DESIGN` (credential-free, driven
+     by the test) or `ALTERNATE_AUTH` (gated by a non-JWT mechanism) inside
      `backend/tests/test_rbac.py`. That set is the explicit allowlist;
      any new route mounted without an auth dep that is *not* in
-     `NO_AUTH_REQUIRED` fails the test gate.
+     either allowlist fails the test gate.
 
    The legitimate public routes today: `/api/health`, `/api/public-config`,
    `/api/auth/login`, `/api/auth/sso/*`, `/api/auth/mfa/challenge/*`,
@@ -134,7 +135,7 @@ Group findings by severity:
 - **Medium** — new control-plane query inside a tenant-data route
   without a comment explaining why; a per-route auth check that
   duplicates (and could drift from) the central deps.
-- **Low** — public route in `NO_AUTH_REQUIRED` missing a comment
+- **Low** — public route in either allowlist missing a reason
   explaining why it's public.
 
 For each: file:line, the concrete fix, the worst-case blast radius.
@@ -147,7 +148,7 @@ For each: file:line, the concrete fix, the worst-case blast radius.
   `get_org_id`, `require_roles`, `ROLE_*` constants.
 - `backend/app/tenant.py` — `get_tenant`, `get_tenant_db`, the
   cross-tenant guard the latter relies on.
-- `backend/tests/test_rbac.py` — the `NO_AUTH_REQUIRED` allowlist and
+- `backend/tests/test_rbac.py` — the `PUBLIC_BY_DESIGN` / `ALTERNATE_AUTH` allowlists and
   the gate that fails on any unlisted unauthenticated route.
 - The four webhook handlers — see `/audit-webhooks` for the deeper
   signature / dedup audit.

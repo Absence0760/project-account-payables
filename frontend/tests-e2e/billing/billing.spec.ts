@@ -42,12 +42,70 @@ function controlPsql(query: string): string {
 		.filter((l) => l.length > 0 && !/^INSERT \d+ \d+$/.test(l))[0] ?? '';
 }
 
+/** Like `controlPsql` but returns EVERY output row, not just the first. */
+function controlPsqlAll(query: string): string[] {
+	const out = execFileSync(
+		'psql',
+		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', CONTROL_DB, '-tAc', query],
+		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
+	);
+	return out
+		.toString()
+		.split('\n')
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0 && !/^(INSERT|UPDATE|DELETE) \d+( \d+)?$/.test(l));
+}
+
 /** The control-plane org id for the current worker's tenant slug. */
 function currentOrgId(): string {
 	const slug = currentTenantSlug();
 	const id = controlPsql(`SELECT id FROM organizations WHERE slug='${slug}'`);
 	expect(id, `no control-plane org for slug ${slug}`).toMatch(/[0-9a-f-]{36}/);
 	return id;
+}
+
+/**
+ * Park (cancel) whatever live subscription the org already has, and hand back
+ * the ids so the test's `finally` can put them back.
+ *
+ * `tenant_provisioning` calls `ensure_subscription(plan_code="free")` for every
+ * org, so an e2e tenant already holds a live subscription before any test runs.
+ * These tests then seeded a SECOND `active` row for the same org — a state
+ * `uq_subscription_one_live_per_org` (migration 0093) correctly forbids, and
+ * which only worked previously because that index lived in a migration and was
+ * never declared on the model, so a `create_all`-built database silently lacked
+ * it (`docs/decisions.md` §109). With two live rows the endpoint under test
+ * picked one arbitrarily, so these assertions passed by luck.
+ *
+ * Seed the state the app actually supports instead: park what is live, run as
+ * the sole live subscription, then restore exactly the parked ids — **after**
+ * the test's own row is deleted, or the restore would recreate the collision.
+ * Restoring by captured id rather than re-provisioning a `free` row leaves the
+ * tenant byte-identical for whatever runs next in this worker.
+ */
+function parkLiveSubscriptions(orgId: string): string[] {
+	const parked = controlPsqlAll(
+		`SELECT id FROM subscriptions WHERE organization_id='${orgId}' AND status <> 'canceled'`
+	);
+	if (parked.length) {
+		controlPsql(
+			`UPDATE subscriptions SET status='canceled' WHERE id IN (${parked
+				.map((id) => `'${id}'`)
+				.join(',')})`
+		);
+	}
+	return parked;
+}
+
+/** Undo `parkLiveSubscriptions`. Call only once the test's own subscription
+ *  rows are gone — two live rows for one org is the very thing being avoided. */
+function restoreLiveSubscriptions(parked: string[]): void {
+	if (!parked.length) return;
+	controlPsql(
+		`UPDATE subscriptions SET status='active' WHERE id IN (${parked
+			.map((id) => `'${id}'`)
+			.join(',')})`
+	);
 }
 
 test.describe('/billing (admin)', () => {
@@ -89,6 +147,9 @@ test.describe('/billing (admin)', () => {
 		const orgId = currentOrgId();
 		const planCode = `e2e_billing_${Date.now()}`;
 		let planId: string | null = null;
+		// The org already holds a live `free` subscription from provisioning;
+		// park it so this seeded one is the only live row (see the helper).
+		const parked = parkLiveSubscriptions(orgId);
 		try {
 			planId = controlPsql(
 				`INSERT INTO plans (id, code, name, monthly_price, currency, seat_component, ` +
@@ -125,6 +186,9 @@ test.describe('/billing (admin)', () => {
 				controlPsql(`DELETE FROM subscriptions WHERE plan_id='${planId}'`);
 				controlPsql(`DELETE FROM plans WHERE id='${planId}'`);
 			}
+			// Only now — restoring while this test's row is still live would
+			// recreate the two-live-rows collision the index forbids.
+			restoreLiveSubscriptions(parked);
 		}
 	});
 
@@ -365,12 +429,16 @@ test.describe('/billing (admin)', () => {
 		// hash is too long) but still unique enough to avoid cross-test collision.
 		let currentCode: string;
 		let targetCode: string;
+		let parked: string[] = [];
 
 		test.beforeEach(async ({ page }) => {
 			const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 			currentCode = `e2e_pc_cur_${suffix}`;
 			targetCode = `e2e_pc_tgt_${suffix}`;
 			orgId = currentOrgId();
+			// Park the provisioning-time `free` subscription so the seeded
+			// "current plan" below is the org's only live row (see the helper).
+			parked = parkLiveSubscriptions(orgId);
 			currentPlanId = controlPsql(
 				`INSERT INTO plans (id, code, name, monthly_price, currency, seat_component, ` +
 					`usage_components, entitlements, trial_days, is_active, created_at, updated_at) ` +
@@ -397,6 +465,10 @@ test.describe('/billing (admin)', () => {
 		test.afterEach(() => {
 			controlPsql(`DELETE FROM subscriptions WHERE plan_id IN ('${currentPlanId}', '${targetPlanId}')`);
 			controlPsql(`DELETE FROM plans WHERE id IN ('${currentPlanId}', '${targetPlanId}')`);
+			// After the deletes — the change-plan flow leaves a live row on the
+			// TARGET plan, so restoring earlier would collide on the index.
+			restoreLiveSubscriptions(parked);
+			parked = [];
 		});
 
 		test('changes plan and shows the real returned proration', async ({ page }) => {

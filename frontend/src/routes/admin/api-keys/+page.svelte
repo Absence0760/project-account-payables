@@ -12,6 +12,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import {
 		listApiKeys,
 		createApiKey,
@@ -67,6 +68,11 @@
 	// Most-recent 30 days, narrowed away from null so the table snippet (a
 	// closure, which loses the `{:else if usage}` narrowing) can read it.
 	const usageDays = $derived(usage ? usage.daily.slice(0, 30) : []);
+
+	// The usage panel is a re-issuable fetch keyed on which key was clicked, so
+	// it takes a request-identity guard (`frontend/CLAUDE.md` § Sequencing list
+	// fetches). Its own sequencer — the key LIST above is an independent stream.
+	const usageSequence = createRequestSequencer();
 
 	async function load() {
 		loading = true;
@@ -127,16 +133,23 @@
 	}
 
 	async function openUsage(key: ApiKey) {
+		const token = usageSequence.start();
 		usageKey = key;
 		usage = null;
 		usageError = null;
 		usageLoading = true;
 		try {
-			usage = await getApiKeyUsage(key.id, 30);
+			const res = await getApiKeyUsage(key.id, 30);
+			// Open one key's usage, close it, open another: the first response must
+			// not land in the panel now showing the second.
+			if (!usageSequence.canCommit(token)) return;
+			usage = res;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!usageSequence.isCurrentRequest(token)) return;
 			usageError = e instanceof Error ? e.message : m('admin.apiKeys.toast.usageFailed');
 		} finally {
-			usageLoading = false;
+			if (usageSequence.isCurrentRequest(token)) usageLoading = false;
 		}
 	}
 

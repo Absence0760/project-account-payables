@@ -441,7 +441,7 @@ async def list_deliveries(
     if status_filter is not None:
         stmt = stmt.where(WebhookDelivery.status == status_filter)
     stmt = (
-        stmt.order_by(WebhookDelivery.created_at.desc())
+        stmt.order_by(WebhookDelivery.created_at.desc(), WebhookDelivery.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

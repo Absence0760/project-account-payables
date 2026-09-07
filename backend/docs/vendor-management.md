@@ -269,6 +269,44 @@ that it changed plus a last-4 — never the number.
 | `POST` | `/api/vendors/{id}/reject` | Reject a vendor → rejected |
 | `POST` | `/api/vendors/sync-erp` | Pull vendors from connected ERP |
 
+### The paginated lists issue a fixed number of queries
+
+Three list endpoints in `api/vendors.py` each carry one supporting lookup that
+must be asked **once per page**, never once per row:
+
+| Endpoint | The per-row lookup | How it is asked once |
+|---|---|---|
+| `GET /api/vendors` | invoice tally per vendor | one grouped `SELECT vendor_id, count(*) … WHERE vendor_id IN (…) GROUP BY vendor_id` |
+| `GET /api/vendors/change-requests` | vendor name per staged request | one batched `IN` via `_vendor_names` |
+| `GET /api/vendors/screening/review-queue` | newest `sanctions_checks` row per vendor | one `DISTINCT ON (vendor_id) … ORDER BY vendor_id, checked_at DESC, id DESC` |
+
+All three were fanned out per row. Each individual query was index-only and
+cheap **on the database**, which is why none of them ever appeared in a
+slow-query log — the cost is one network round trip per row, so the shape only
+hurts at page size and only in latency. Measured against a loopback Postgres
+(sub-0.1 ms RTT, 120 vendors / 120 change requests / 120 flagged vendors with 3
+screening rows each), a `page_size=100` read fell from **105 statements to 6**
+on every one of the three, and 73.6 / 69.6 / 86.5 ms to 44.8 / 41.6 / 42.2 ms.
+Against a 1 ms-RTT database the same 99 removed round trips are worth roughly
+another 99 ms.
+
+Three details are load-bearing and should survive any rewrite:
+
+* The invoice tally is scoped by `vendor_id` **alone**. The per-row query it
+  replaced applied no entity filter; adding one here would silently change the
+  count every multi-entity tenant already sees.
+* A vendor with no invoices produces no group row, so the mapping is read with
+  `.get(id, 0)` — otherwise that vendor drops off the page entirely.
+* `DISTINCT ON` needs its `ORDER BY` to lead with the same column. The trailing
+  `id DESC` is a tie-break, not a change of meaning: a bulk re-screen stamps a
+  whole batch with one `checked_at`, and the per-vendor `LIMIT 1` it replaces
+  was free to return a different row of that batch on each read.
+
+`tests/test_vendor_list_query_counts.py` is the guard. Its assertion is
+shape-agnostic — *the statement count must not grow with the page size* — so it
+still holds through a future rewrite of any individual query, and each endpoint
+also pins the specific statement that regressed.
+
 ## User Interface
 
 ### Vendors Page (`/vendors`)

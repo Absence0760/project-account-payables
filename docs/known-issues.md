@@ -391,6 +391,52 @@ of how many realdb tests follow.
 
 ---
 
+## `payments/` e2e flakes when run alongside cross-directory specs locally
+
+**Diagnosed 2026-09-06 · not fixed · local-only, CI is green · pre-existing**
+
+Running `payments/` together with specs from other directories against the
+shared local dev stack produces an intermittent failure — roughly one run in
+three — and **the failing test moves**: `cards-pagination.spec.ts` ("Load more
+appends the next page", the `page=2` response never arrives inside 30 s) on two
+runs, `daily-journey.spec.ts` ("invoice scheduled leaves queue") on another.
+
+**It is not caused by the specs added in round 24, and not by that round's
+changes.** Measured on the round-24 integration branch:
+
+| selection | runs | failures |
+|---|---|---|
+| `payments/` alone | 2 | 0 (98/98, 34 s) |
+| `payments/cards-pagination.spec.ts` alone | 1 | 0 (3.1 s) |
+| the three cards specs together | 1 | 0 (16/16) |
+| `payments/` + the 3 **new** round-24 identity specs | 5 | 2 |
+| `payments/` + 3 **pre-existing** cross-dir specs (control) | 3 | 1 |
+
+The control is the decisive row: swapping the new specs for
+`vendors/chip-counts`, `audit/console` and `experiments/load-states` reproduces
+the flake at the same rate, so the trigger is *adding cross-directory specs to
+the run at all*, not anything those specs contain.
+
+**What is established:** the page state at failure is correct — the DOM snapshot
+shows exactly 20 rows and a `Load more (20 of 22)` button, so the seed, the
+tenant scoping and the first page are all right. The click is actionable and
+lands. What does not happen is the follow-up request completing within the
+timeout. The wait is armed before the click, so it is not the listener-attach
+race that the same file's comment records fixing earlier.
+
+**Most likely cause:** contention on the single shared local stack — one Vite
+dev server, one backend process, one Postgres — once Playwright's worker
+sharding changes. CI does not have this shape: it shards 14 ways with its own
+stack per shard, and every shard is green.
+
+**Not masked.** No timeout was inflated, no retry added, no assertion loosened —
+which is why this is written down instead. The durable fix is the same one
+[`followups.md`](followups.md) already carries for e2e tenant isolation: specs
+that write must not share a worker tenant with specs that count. Until that
+lands, run `payments/` on its own when working locally.
+
+---
+
 ## Two `queue-blocked` e2e cases fail on a fully-seeded local tenant
 
 **Diagnosed 2026-09-04 · not fixed · local-only, CI is green**

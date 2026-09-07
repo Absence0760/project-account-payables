@@ -9,10 +9,12 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -53,6 +55,18 @@ class Contract(Base, EntityMixin, TimestampMixin):
     """
 
     __tablename__ = "contracts"
+
+    # `GET /api/contracts`'s default order + its status chips. Same shape and
+    # same reasoning as `ix_invoices_created_at_id` — see migration 0092.
+    __table_args__ = (
+        Index("ix_contracts_created_at_id", text("created_at DESC"), text("id DESC")),
+        Index(
+            "ix_contracts_status_created_at_id",
+            "status",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     contract_number: Mapped[str] = mapped_column(String(100), nullable=False)

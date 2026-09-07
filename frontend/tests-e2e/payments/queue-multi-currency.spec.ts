@@ -118,6 +118,44 @@ test.describe('/payments queue — mixed-currency selection', () => {
 		}
 	});
 
+	test('the review panel keeps the row currency the queue above it renders', async ({ page }) => {
+		// The last screen before a payment run is staged. The queue row renders
+		// `item.currency`; the review table below dropped it and formatted the
+		// same figure under the ORG default, so a EUR payable was reviewed — and
+		// signed off — as `$100.00`.
+		//
+		// Asserting the SYMBOL is the point: every other assertion in this file
+		// and in the payments suite matches digits, and `$100.00` vs `€100.00`
+		// are identical to a digits-only check. Before the fix this fails on the
+		// `€` expectation with a `$` on screen.
+		const stamp = Date.now();
+		const eurNumber = `E2E-FXREV-${stamp}-EUR`;
+		const created: string[] = [];
+		try {
+			created.push(await createApprovedInvoice(page, eurNumber, 'EUR'));
+
+			await page.goto('/payments');
+			await page.locator('.tab', { hasText: 'Queue' }).click();
+
+			const eurRow = page.locator('table tbody tr', { hasText: eurNumber });
+			await loadMoreUntilRow(page, eurRow);
+			await eurRow.locator('input[type="checkbox"]').check();
+
+			// The queue row itself has always been right — this is the baseline
+			// the review panel had drifted from.
+			await expect(eurRow).toContainText('€100.00');
+
+			await page.locator('.pay-bar').getByRole('button', { name: 'Review & Pay' }).click();
+
+			const reviewRow = page.locator('.review-table tbody tr', { hasText: eurNumber });
+			await expect(reviewRow).toBeVisible();
+			await expect(reviewRow).toContainText('€100.00');
+			await expect(reviewRow).not.toContainText('$');
+		} finally {
+			for (const id of created) hardDeleteInvoice(id);
+		}
+	});
+
 	test('a same-currency selection still totals exactly (no regression)', async ({ page }) => {
 		// The single-currency path is the one the old `sumMoney` reduce got
 		// right; grouping must not break it. Two $100 invoices = $200.00.

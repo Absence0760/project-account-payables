@@ -165,6 +165,17 @@ class CorporateCardTransaction(Base, EntityMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("external_txn_id IS NOT NULL"),
         ),
+        # `GET /api/corporate-card-transactions` orders by `txn_date DESC` (the
+        # date the charge happened, not the date we imported it) and filters on
+        # `reconciliation_status` — so this table's ordering indexes are on
+        # different columns from its siblings'. See migration 0092.
+        Index("ix_corp_card_txn_date_id", text("txn_date DESC"), text("id DESC")),
+        Index(
+            "ix_corp_card_recon_status_txn_date_id",
+            "reconciliation_status",
+            text("txn_date DESC"),
+            text("id DESC"),
+        ),
     )
 
 
@@ -172,6 +183,18 @@ class Expense(Base, EntityMixin, TimestampMixin):
     """A single expense line — out-of-pocket or card-funded."""
 
     __tablename__ = "expenses"
+
+    # `GET /api/expenses`'s default order + its status chips. Same shape and
+    # same reasoning as `ix_invoices_created_at_id` — see migration 0092.
+    __table_args__ = (
+        Index("ix_expenses_created_at_id", text("created_at DESC"), text("id DESC")),
+        Index(
+            "ix_expenses_status_created_at_id",
+            "status",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # Optional — an expense can exist before being grouped into a report.

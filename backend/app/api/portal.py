@@ -369,7 +369,9 @@ async def list_my_invoices(
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
     query = (
-        query.order_by(Invoice.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
+        query.order_by(Invoice.created_at.desc(), Invoice.id.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     rows = (await db.execute(query)).scalars().all()
 
@@ -868,7 +870,9 @@ async def list_my_payments(
     total = (await db.execute(total_query)).scalar() or 0
 
     query = (
-        query.order_by(Payment.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
+        query.order_by(Payment.created_at.desc(), Payment.id.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     rows = (await db.execute(query)).all()
 
@@ -923,7 +927,7 @@ async def list_my_purchase_orders(
     ).scalar() or 0
 
     query = (
-        query.order_by(PurchaseOrder.created_at.desc())
+        query.order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )
@@ -1775,7 +1779,7 @@ async def list_my_discount_offers(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
-        query.order_by(DiscountOffer.created_at.desc())
+        query.order_by(DiscountOffer.created_at.desc(), DiscountOffer.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

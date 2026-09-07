@@ -176,6 +176,9 @@ async def test_void_payment_returns_invoice_to_approved_via_transition_invoice()
         organization_id=uuid.uuid4(),
         invoice_number="INV-1",
         vendor_name="Acme",
+        # `PaymentResponse` reports what the authorized amount is denominated
+        # in, off this same joined row — the void dialog renders it.
+        currency="USD",
         status=InvoiceStatus.payment_scheduled,
     )
     db = _void_db(payment, invoice)
@@ -259,6 +262,9 @@ async def test_void_audit_records_real_previous_status_and_decimal_amount():
         organization_id=uuid.uuid4(),
         invoice_number="INV-1",
         vendor_name="Acme",
+        # `PaymentResponse` reports what the authorized amount is denominated
+        # in, off this same joined row — the void dialog renders it.
+        currency="USD",
         status=InvoiceStatus.payment_scheduled,
     )
     db = _void_db(payment, invoice)

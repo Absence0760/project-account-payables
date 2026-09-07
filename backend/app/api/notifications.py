@@ -85,7 +85,7 @@ async def list_notifications(
     rows = (
         (
             await db.execute(
-                base.order_by(Notification.created_at.desc())
+                base.order_by(Notification.created_at.desc(), Notification.id.desc())
                 .offset(pagination.offset)
                 .limit(pagination.limit)
             )

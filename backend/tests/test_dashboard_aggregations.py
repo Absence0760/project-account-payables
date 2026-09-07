@@ -69,15 +69,16 @@ def _mk_db(*results):
 # test layout stays sane. Don't change the order without updating the
 # endpoint AND the comments below.
 #
-# Aging bands, the monthly-trend buckets, and the currency rollup are now
-# aggregated in SQL (GROUP BY), so those result rows are already grouped — the
-# off-by-one band boundaries + month bucketing are exercised by the realdb
-# tests in `test_analytics_aging_reconciliation.py`, not here.
+# Aging bands, the monthly-trend buckets, the currency rollup and the top-vendor
+# tile are now aggregated in SQL (GROUP BY), so those result rows are already
+# grouped — the off-by-one band boundaries + month bucketing are exercised by the
+# realdb tests in `test_analytics_aging_reconciliation.py`, not here, and the
+# vendor grouping/ordering by `test_dashboard_vendor_spend.py`.
 #
 #   1.  totals (count + sum)                       → .one() → (count, sum)
 #   2.  reporting rollup rows (per currency)       → .all() → (ccy, sum_amt, sum_rep, count, unconv)
 #   3.  pipeline status rows                       → .all()
-#   4.  vendor spend rows                          → .all()
+#   4.  vendor spend rows — SQL GROUP BY, top 10   → .all() → (vendor, sum_rep)
 #   5.  aging rows (bucket, sum, sum_rep) — SQL-bucketed → .all()
 #   6.  trend rows (month, count, sum, sum_rep) — SQL group → .all()
 #   7.  upcoming payment rows (+ currency/reporting cols)  → .all()

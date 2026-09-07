@@ -317,7 +317,7 @@ async def list_cards(
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
     query = (
-        query.order_by(VirtualCard.created_at.desc())
+        query.order_by(VirtualCard.created_at.desc(), VirtualCard.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

@@ -62,15 +62,16 @@ a legacy JSON number, so an app build older than this change keeps rendering.
 Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
 `monthly_trend`, `upcoming_payments`, `touchless_rate`, `total_*`.
 
-- `vendor_spend` — top 10 vendors by spend, excluding `rejected` invoices.
-  Rolled up into the org's reporting currency via
-  `currency_conversion.vendor_rollup_to_reporting_currency` — a vendor billing
-  in more than one currency is converted invoice-by-invoice and then summed,
-  not aggregated with a naive cross-currency `SUM(amount)` (that used to add a
-  USD invoice and a EUR invoice as if they were the same currency). Same
-  helper backs the CFO supplier-concentration tile, its drill-through, the
-  `vendor_spend` CSV export, and the scheduled report — see
-  `docs/multi-currency.md` § Per-vendor rollups.
+- `vendor_spend` — top 10 vendors by spend, excluding `rejected` invoices and
+  rows with no vendor name. Rolled up into the org's reporting currency — a
+  vendor billing in more than one currency is converted before its invoices are
+  summed, not aggregated with a naive cross-currency `SUM(amount)` (that used to
+  add a USD invoice and a EUR invoice as if they were the same currency).
+  Grouped in SQL, and ordered `(total DESC, vendor ASC)` — see § Vendor spend is
+  grouped in SQL below. The equivalent per-invoice helper
+  `currency_conversion.vendor_rollup_to_reporting_currency` still backs the CFO
+  supplier-concentration tile, its drill-through, the `vendor_spend` CSV export,
+  and the scheduled report — see `docs/multi-currency.md` § Per-vendor rollups.
 - `total_amount` — the "Total Amount" KPI on the web dashboard (`routes/+page.svelte`).
   A **naive sum across every invoice in the tenant, regardless of status or
   date** — no filter at all. This is a different population from the CFO
@@ -186,6 +187,65 @@ New keys added in a prior iteration:
   placed above the amounts it qualifies, naming the count and the currency it
   could not be expressed in. There is no fourth treatment, and a tooltip is not
   one of them.
+
+### Vendor spend is grouped in SQL
+
+The top-vendor tile is one aggregate query, like the four blocks around it:
+
+```sql
+SELECT vendor_name, coalesce(sum(<rep_expr>), 0) AS total
+  FROM invoices
+ WHERE vendor_name IS NOT NULL AND vendor_name <> '' AND status <> 'rejected'
+   AND <entity scope>
+ GROUP BY vendor_name
+ ORDER BY total DESC, vendor_name ASC
+ LIMIT 10
+```
+
+`<rep_expr>` is the **same** `CASE` the whole-book `reporting` rollup, the
+`aging_reporting` buckets and the `monthly_trend` reporting column use — the
+row's persisted `reporting_amount` when it is locked *for the org's reporting
+currency*, else face `amount`. There is one expression, built once in
+`api/dashboard.py`, so the tile cannot drift from the rollup beside it.
+
+It used to `SELECT` five columns of **every** non-rejected invoice — all time,
+no `LIMIT` — and fold them in Python through
+`vendor_rollup_to_reporting_currency`. Two problems, both structural:
+
+- the fold was a synchronous per-row loop inside an `async def`, so it occupied
+  the event loop for its whole duration — the shape the project invariant
+  *"blocking work does not run on the event loop"* forbids, on the landing page;
+- it grew linearly with the invoice table, while its four neighbours stayed one
+  aggregate each.
+
+Measured on a scratch tenant of exactly 190 000 invoices across 400 vendors
+(171 073 non-rejected rows scanned), local Postgres 16, mean of 5 warm runs:
+
+| | DB | Python fold | total |
+|---|---|---|---|
+| Select-all + Python fold | 235.4 ms | **270.3 ms** | 505.7 ms |
+| `GROUP BY … LIMIT 10` | 28.5 ms | — | **28.5 ms** |
+
+17.7× faster end to end, and the 270 ms of event-loop-blocking CPU is gone
+outright. The fold is the part that scaled worst: at 20 000 invoices it was
+24.9 ms (48.1 ms total) against the aggregate's 8.3 ms — a 10.9× fold cost for
+9.5× the rows, versus 3.4× for the aggregate.
+
+**The ordering rule got stricter, deliberately.** The Python fold sorted on the
+converted total alone, and Python's sort is stable, so equal-spend vendors came
+back in DB scan order: which of two took rank 10 — and which fell off the
+`[:10]` — could differ between two identical requests. The SQL breaks ties on
+`vendor_name ASC`, so the tile is reproducible. Nothing else about the answer
+changed; `tests/test_dashboard_vendor_spend.py` is the equivalence proof.
+
+**Unconvertible rows still fold at face value, silently.** A foreign invoice
+with no usable rate lock falls through at its face `amount` — exactly as the
+Python fold did, and exactly as `aging_reporting` and `monthly_trend` do. The
+`vendor_spend` response shape is `{vendor, amount}` with nowhere to report it,
+so only the whole-book `reporting` rollup on the same response carries an
+`unconverted_count`. Surfacing it per vendor needs a schema field on
+`VendorSpendEntry` (and the same question answered for the two sibling blocks),
+so it is tracked as a follow-up rather than solved unilaterally here.
 
 ### Touchless rate — what the number means
 
@@ -1000,6 +1060,7 @@ the cadence anchoring).
 | `tests/test_import_provenance_backfill.py` | The operator-run pre-marker backfill (`scripts/backfill_import_provenance.py`): cutover parsing (date vs ISO instant, naive-as-UTC, future and unparseable refused, no default — the operator must assert it); the marker's shape and its `asserted` flag; and on real Postgres — dry run is the default and writes neither marker nor audit row, `--apply` stamps only un-marked rows created strictly before the cutover (a row exactly on it is native), a re-run stamps 0 and leaves an existing `csv_import` marker byte-for-byte alone, a pre-cutover row in a status the importer cannot produce is reported and never stamped (and that status set is read from `csv_import`, not restated), the manifest audit row carries counts but no invoice number or vendor, and the stamped rows leave the touchless population through `imported_invoice_clause` itself |
 | `tests/test_touchless_rate_population.py` | The touchless numerator's POPULATION (as opposed to its arithmetic): a `new -> done` shortcut and a CSV-imported `paid` are in neither leg, a genuinely approved `done` still is, a rejection is denominator-only exactly as before, and the never-reviewed rows leaving the denominator are the ONLY denominator movement. Plus structural guards re-derived from `VALID_TRANSITIONS` and `csv_import._IMPORTABLE_INVOICE_STATUSES`, so a new legal edge or a newly-importable status cannot quietly re-widen the metric |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
+| `tests/test_dashboard_vendor_spend.py` | The top-vendor tile's SQL `GROUP BY` (§ Vendor spend is grouped in SQL) — equivalence against the Python fold it replaced, over three seeds of a book whose vendor / amount / status / date / currency / rate-lock are drawn **independently** (correlated generators hide aggregation bugs, `decisions.md` §82), each covering all four rate-lock cases and an excluded blank-vendor row; the ordering rule at a tie that straddles the rank-10 cutoff (alphabetical, inserted in reverse so a total-only sort surfaces) and its stability across repeated requests; multi-currency conversion incl. the face-value fallback for an unconvertible row and a lock denominated in a third currency (with the whole-book `unconverted_count` pinned alongside, so the silent fallback stays a known trade-off); `X-Entity-ID` narrowing; rejected exclusion; empty tenant |
 | `tests/test_dashboard_aggregates.py` | Real-Postgres guards for the four aggregates that were each wrong in their own way: `total_paid` vs its converted `total_paid_reporting` counterpart under mixed currency; `discount_capture`'s elapsed-window gate (open window → `pending`, elapsed → still a `missed`) and its reporting-currency amounts + `unconverted_count`; `touchless_rate` counting `sending_to_erp` and an approval-stamped `failed` while ignoring an extraction-failed one, and excluding a `done`/`paid` row that reached its terminal status without ever being approved; `monthly_trend` returning six WHOLE calendar months with no partial oldest bar and no seventh stub bucket (both window shapes pinned against a frozen `utc_today`) |
 | `tests/test_analytics_trend_insufficient_data.py` | The two "reported a comfortable number where there was none" surfaces: `compute_fraud_rate_trend` returning `None` + `insufficient_data` for a zero-invoice month (including the zero-invoices-with-exceptions shape) while still reporting a genuine 0%, and end-to-end `null` on the `/cfo` wire; `/forecast_variance` resolving `actual` into the reporting currency under mixed currency, excluding-and-disclosing an unexpressible payment, and answering `422` (not `500`) for `2026-13` / `2026-00` / `2026-99` / `0000-01` / `2026/07` |
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
