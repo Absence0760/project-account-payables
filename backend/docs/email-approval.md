@@ -53,7 +53,7 @@ the reviewer submits from the confirmation page (reject offers an optional reaso
 field).
 
 Both routes are **public-by-design** (the token is the credential) and live in
-`NO_AUTH_REQUIRED` in `tests/test_rbac.py`. They are served as small,
+`ALTERNATE_AUTH` in `tests/test_rbac.py`. They are served as small,
 self-contained HTML pages by the backend (no SPA dependency) so the flow works
 even though the frontend is a static site.
 
@@ -149,4 +149,4 @@ unset key simply disables the feature everywhere.
   no-key tokens, segregation block, non-approver role, wrong-status no-op, and
   the assigned-invoice email link injection.
 - Auth-gating is covered by `tests/test_rbac.py` (both routes are in
-  `NO_AUTH_REQUIRED`).
+  `ALTERNATE_AUTH`).

@@ -60,7 +60,7 @@ async def billing_webhook(
 
     PUBLIC-BY-DESIGN, no JWT — the provider HMAC is the gate. ``get_control_db``
     is a plain DB session, not an auth dependency (the route stays in
-    ``NO_AUTH_REQUIRED``). Returns 204 on every path so the response can't be
+    ``ALTERNATE_AUTH``). Returns 204 on every path so the response can't be
     used to enumerate providers, secrets, or subscription ids.
     """
     # 1. Master switch — closed by default in local dev (no outbound billing

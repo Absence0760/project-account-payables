@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import uuid
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -2000,6 +2001,51 @@ async def create_payment(
 # ── Payment Runs ─────────────────────────────────────────────────────
 
 
+def _one_currency(codes: Iterable[str | None]) -> str | None:
+    """The single currency a set of legs agrees on, or ``None``.
+
+    ``payment_runs.total_amount`` is a single bare ``Numeric`` with no currency
+    column beside it. What makes that legitimate is the guard in
+    ``services/payment_runs.create_payment_run_for_invoices``, which 422s a run
+    spanning more than one currency — so a run created through either supported
+    path has exactly one, carried on the invoices behind its payments.
+
+    It refuses to guess. A run with no payments, one whose invoices carry no
+    currency, and a legacy run predating that guard whose legs disagree all come
+    back ``None``: in the last case the total is itself denominated in nothing
+    real, so stamping a code on it would dress up a meaningless figure as a
+    genuine one — ``docs/decisions.md`` §79/§82. (``{None}`` collapses to
+    ``None`` for free, which is the same answer for a different reason.)
+    """
+    distinct = set(codes)
+    return next(iter(distinct)) if len(distinct) == 1 else None
+
+
+async def _run_currencies(
+    db: AsyncSession, run_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, str | None]:
+    """{run id: its one currency} for several runs, in ONE grouped query.
+
+    The list endpoint's counterpart to :func:`_one_currency`, which it applies —
+    never a lookup per run. A run id absent from the result (no payments at all)
+    reads as ``None`` at the call site's ``.get``.
+    """
+    if not run_ids:
+        return {}
+
+    rows = await db.execute(
+        select(Payment.payment_run_id, func.upper(Invoice.currency))
+        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
+        .where(Payment.payment_run_id.in_(run_ids))
+        .distinct()
+    )
+    seen: dict[uuid.UUID, list[str | None]] = {}
+    for run_id, code in rows.all():
+        seen.setdefault(run_id, []).append(code)
+
+    return {rid: _one_currency(codes) for rid, codes in seen.items()}
+
+
 @router.get("/runs/", response_model=PaymentRunListResponse)
 async def list_payment_runs(
     pagination: PaginationParams = Depends(pagination_params),
@@ -2053,6 +2099,12 @@ async def list_payment_runs(
         for pay_run_id, pay_status, n in status_rows.all():
             per_run[pay_run_id].extend([pay_status] * int(n))
 
+    # The currency each `total_amount` is denominated in, resolved in one more
+    # grouped query rather than folded into the rollup above — the rollup
+    # excludes superseded retry attempts, and a run's currency is a property of
+    # its invoices regardless of which attempt is live.
+    currencies = await _run_currencies(db, run_ids)
+
     items = []
     for run in runs:
         rollup = rollup_payment_statuses(per_run.get(run.id, ()))
@@ -2070,6 +2122,7 @@ async def list_payment_runs(
                 failed=rollup.failed,
                 in_flight=rollup.in_flight,
                 pending=rollup.pending,
+                currency=currencies.get(run.id),
             )
         )
 
@@ -2133,16 +2186,25 @@ async def create_payment_run(
     await db.commit()
 
     run = result.run
+    # The run's own currency, read off the invoices `create_payment_run_for_invoices`
+    # has just proven share exactly one. The confirmation message used to hardcode
+    # a dollar sign in front of the total — a symbol nobody had established, on the
+    # response of the very call that stages the money.
+    currency = (await _run_currencies(db, [run.id])).get(run.id)
+    total = f"{result.total_amount:,.2f}"
     return {
         "id": str(run.id),
         "status": run.status,
         # Money serialises as an exact Decimal STRING, never float().
         "total_amount": str(result.total_amount),
+        # `None` where it cannot be proven; the client renders the bare figure
+        # rather than a guessed code (`docs/decisions.md` §79/§82).
+        "currency": currency,
         "payment_count": result.payment_count,
         "requires_cfo_approval": run.requires_cfo_approval,
         "message": (
             f"Payment run created with {result.payment_count} payments totaling "
-            f"${result.total_amount:,.2f}"
+            + (f"{total} {currency}" if currency else total)
             + (" (CFO approval required)" if run.requires_cfo_approval else "")
         ),
     }
@@ -2185,6 +2247,11 @@ async def get_payment_run(
             "vendor_name": inv.vendor_name if inv else None,
             # Money serialises as an exact Decimal STRING, never float().
             "amount": str(p.amount),
+            # What `amount` is denominated in — the invoice's own currency, off
+            # the row already joined above. `None` where the invoice carries
+            # none; the client renders the bare figure rather than a guessed
+            # code (`docs/decisions.md` §79/§82).
+            "currency": (inv.currency.upper() if inv is not None and inv.currency else None),
             "method": p.method,
             "status": p.status,
             "reference": p.reference,
@@ -2211,6 +2278,13 @@ async def get_payment_run(
         "status": derive_run_status(run.status, rollup),
         # Money serialises as an exact Decimal STRING, never float().
         "total_amount": str(run.total_amount) if run.total_amount else "0",
+        # What `total_amount` is denominated in, derived from the same rows the
+        # payments list above was built from rather than a second query. `None`
+        # where the run's legs disagree or carry no currency at all — see
+        # `_run_currencies`.
+        "currency": _one_currency(
+            (inv.currency.upper() if inv is not None and inv.currency else None) for _, inv in rows
+        ),
         "initiated_by": str(run.initiated_by) if run.initiated_by else None,
         "executed_at": run.executed_at.isoformat() if run.executed_at else None,
         "created_at": run.created_at.isoformat() if run.created_at else "",

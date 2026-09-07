@@ -3,7 +3,8 @@
 Covers the happy path for each allowed role, the 400 on a bad format, the 404
 for an invoice not in the tenant DB, and the 422 (STRUCTURED, PII-free body)
 when the mapped document is tax-invalid. Auth/role gating itself is covered by
-test_rbac.py (the route carries require_roles and is not in NO_AUTH_REQUIRED).
+test_rbac.py (the route carries require_roles and is on neither
+PUBLIC_BY_DESIGN nor ALTERNATE_AUTH).
 
 The 422 body is a list of FastAPI validation-error items — ``loc`` (the dotted
 field path) / ``type`` (the reason code or EN 16931 rule id) / ``msg`` (the

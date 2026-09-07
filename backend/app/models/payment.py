@@ -84,6 +84,23 @@ class Payment(Base, EntityMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("status NOT IN ('voided', 'failed', 'cancelled')"),
         ),
+        # `GET /api/payments`'s default order + its status chips. Same shape and
+        # same reasoning as `ix_invoices_created_at_id` — see migration 0092.
+        Index("ix_payments_created_at_id", text("created_at DESC"), text("id DESC")),
+        Index(
+            "ix_payments_status_created_at_id",
+            "status",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        # Corridor analytics / the international-rail reads. Partial because a
+        # domestic payment leaves `corridor` NULL and those are the majority.
+        # Migration 0017's; declared here so `create_all` builds it too.
+        Index(
+            "ix_payments_corridor",
+            "corridor",
+            postgresql_where=text("corridor IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -94,7 +94,7 @@ async def list_preapprovals(
 
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
-        base.order_by(ExpensePreapproval.created_at.desc())
+        base.order_by(ExpensePreapproval.created_at.desc(), ExpensePreapproval.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

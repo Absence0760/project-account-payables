@@ -139,7 +139,7 @@ def test_portal_invoice_endpoints_use_vendor_auth():
     one-time card-reveal link emailed during card issuance. The URL
     token is the credential (sha256-hashed at rest, single-use, 7-day
     expiry); a vendor-auth dep would defeat the no-account UX. It's
-    listed in test_rbac.NO_AUTH_REQUIRED so the auth-coverage gate
+    listed in test_rbac.ALTERNATE_AUTH (the token IS the credential) so the gate
     still flags any other auth-less route."""
     import inspect
 
@@ -149,7 +149,7 @@ def test_portal_invoice_endpoints_use_vendor_auth():
         "/portal/cards/{token}",
         # Public-by-design white-label branding for the unauthenticated portal
         # login + themed pages. PII-free, resolves the tenant via get_tenant, and
-        # is listed in test_rbac.NO_AUTH_REQUIRED (the real auth-coverage gate).
+        # is listed in test_rbac.PUBLIC_BY_DESIGN (the real auth-coverage gate).
         "/portal/branding",
     }
 

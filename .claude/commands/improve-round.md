@@ -87,7 +87,7 @@ its tests in the **same** commit as the code:
   strings, never `float`.
 - **New router** → `require_roles` / `require_permission` on every endpoint, and
   add it to `tests/test_rbac.py` (the coverage gate fails otherwise). Public-by-
-  design routes go in `NO_AUTH_REQUIRED` with a comment saying why.
+  design routes go in `PUBLIC_BY_DESIGN` or `ALTERNATE_AUTH` with a reason.
 - **Frontend** → build from `frontend/src/lib/components/` (Svelte 5 runes
   only). Extract a component the second time you'd duplicate markup. New
   user-facing strings need an `en` key plus every other locale — the

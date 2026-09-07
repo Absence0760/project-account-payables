@@ -15,6 +15,7 @@
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
 
 	// RBAC parity with the backend: the auditor export is admin/CFO only (the
@@ -147,6 +148,12 @@
 	let drillError = $state('');
 	let invoiceReport = $state<InvoiceSignatureReport | null>(null);
 
+	// The drill-down is a re-issuable fetch keyed on which finding was clicked,
+	// so it takes a request-identity guard like every other one
+	// (`frontend/CLAUDE.md` § Sequencing list fetches). Its own sequencer: the
+	// population sweep above is an independent request stream.
+	const drillSequence = createRequestSequencer();
+
 	// Narrowed out of the possibly-null state so the DataTable `body()` snippet
 	// (a closure, which loses `{#if report}` narrowing) can read them.
 	const findings = $derived(report?.findings ?? []);
@@ -179,7 +186,11 @@
 	async function runVerification() {
 		verifyError = '';
 		verifyLoading = true;
-		// A fresh population run invalidates whatever drill-down was open.
+		// A fresh population run invalidates whatever drill-down was open. That
+		// is a local mutation of drill state with no fetch of its own, so retire
+		// any in-flight drill first — otherwise it lands afterwards and puts a
+		// report back for a finding that is no longer on the page.
+		drillSequence.supersedeInFlight();
 		drillInvoice = null;
 		invoiceReport = null;
 		drillError = '';
@@ -198,16 +209,24 @@
 	}
 
 	async function drillIntoInvoice(invoiceId: string, label: string) {
+		const token = drillSequence.start();
 		drillInvoice = { id: invoiceId, label };
 		drillError = '';
 		drillLoading = true;
 		invoiceReport = null;
 		try {
-			invoiceReport = await verifyInvoiceSignatures(invoiceId);
+			const res = await verifyInvoiceSignatures(invoiceId);
+			// Click finding A, then finding B: A's report must not land under B's
+			// heading. The drill-down is an auditor's evidence for one invoice, so
+			// a response attributed to the wrong one is worse than none at all.
+			if (!drillSequence.canCommit(token)) return;
+			invoiceReport = res;
 		} catch (e) {
+			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
+			if (!drillSequence.isCurrentRequest(token)) return;
 			drillError = e instanceof Error ? e.message : m('audit.verify.error');
 		} finally {
-			drillLoading = false;
+			if (drillSequence.isCurrentRequest(token)) drillLoading = false;
 		}
 	}
 </script>
@@ -427,7 +446,12 @@
 		{/if}
 
 		{#if drillInvoice}
-			<div class="verify-drill" data-testid="verify-drill">
+			<div
+				class="verify-drill"
+				data-testid="verify-drill"
+				data-invoice-id={drillInvoice.id}
+				data-report-for={invoiceReport?.invoice_id ?? ''}
+			>
 				<h3>{m('audit.verify.drillTitle', { invoice: drillInvoice.label })}</h3>
 				{#if drillLoading}
 					<p class="verify-state">{m('audit.verify.running')}</p>

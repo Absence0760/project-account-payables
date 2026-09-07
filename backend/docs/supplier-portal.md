@@ -44,7 +44,7 @@ All under `/api/portal/*`. Tenant resolved via the usual `X-Tenant-Slug`
 header. RBAC coverage gate in `tests/test_rbac.py` asserts every endpoint
 uses `get_current_vendor_user` (except `/portal/auth/login`,
 `/portal/auth/logout`, and `/portal/auth/mfa/challenge`, which are listed in
-`NO_AUTH_REQUIRED`).
+`ALTERNATE_AUTH`).
 
 ### Auth (`portal_auth.py`)
 

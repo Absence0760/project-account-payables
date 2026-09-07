@@ -34,8 +34,31 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-06 (round 23) — ten agents: four closing this
-file's actionable remainder, six hunting. **31 → 56.**
+**Last reconciled:** 2026-09-06 (round 24) — eleven agents in isolated
+worktrees, thirteen entries closed, eleven opened. **47 → 46.**
+
+Round 23 recorded 56 and was corrected to 50 before this round began: six of its
+entries had been closed by its own fix agents and left standing. Three money-path
+items then landed separately as PRs #373-#375, taking it to 47.
+
+The near-flat count is the honest result. Eleven agents closed thirteen entries
+and **every one of them returned something the entry had not predicted** — which
+is the argument for working this file rather than around it. Two findings were
+larger than the entry that surfaced them:
+
+* §104 found that migration `0010`'s audit-log index had never been declared on
+  its model, so for 82 revisions a `create_all`-provisioned tenant ran the
+  60-second shipper sweep as a full sequential scan. §109 then found that is a
+  **class of twenty**, two of them UNIQUE — including the only concurrency
+  control under the Positive Pay check-issue endpoint, whose absence turns its
+  own idempotency lookup into a permanent 500 on that run.
+* §100's per-handler audit guard exposed **six tenant-mutating handlers that
+  write no audit row**, one of which is the provisioning step in the
+  segregation-of-duties chain still held for security review.
+
+The two segregation-of-duties items remain **held for security review** and were
+deliberately not touched. They are SOC 2 CC6.3 controls; changing who may approve
+what is a control-design decision, not a bug fix.
 
 The growth is the finding, not a failure of the round. The hunters were pointed
 at areas the last two rounds had already swept, and still returned 34 verified
@@ -609,8 +632,8 @@ decide.
       which carries the same untested shape and was deliberately left alone.
       **Trigger:** next Monday's Dependabot run.
 
-- [ ] **Confirm the `packageManager` pin stopped Dependabot dropping the pnpm
-      overrides.** Two npm PRs in one day (#344, #351) arrived with the whole
+- [ ] **(b) Confirm the `packageManager` pin stopped Dependabot dropping the
+      pnpm overrides.** Two npm PRs in one day (#344, #351) arrived with the whole
       `overrides:` block deleted from `frontend/pnpm-lock.yaml` while
       `package.json` still declared `pnpm.overrides` for `cookie@<0.7.0` and
       `undici@<7.28.0`, red on every job that installs. Root cause was that
@@ -649,47 +672,26 @@ a read-only fact (§94).
 
 What remains from those sweeps:
 
-- [ ] **(c) `workflow_step_types.is_canonical_step_type` is unused and
-      untested.** Unchanged from round 21 — `workflow_builder` asks the inverse
-      question via `BUILDER_STEP_TYPES` and handles aliases correctly.
-      **Durable fix:** delete it, or give it a caller and coverage; an untested
-      third spelling in the module that gates a financial control
-      ([decisions.md](decisions.md) §32) is the wrong kind of spare part.
-      **Trigger:** the next workflow-step-type change.
-
-- [ ] **(c) `scheduled_reports.compute_next_run`'s docstring is false.** It
-      claims to be "used when seeding a brand-new schedule", but the API
-      deliberately seeds `next_run_at = body.next_run_at or now()` so an
-      operator can watch the first run happen. A doc fix. **Trigger:** any edit
-      to the scheduled-report runner.
-
-- [ ] **(c) Smaller caller-less surfaces, still verified open.**
-      `POST /api/payments/corridor-quotes`;
-      `POST /api/exceptions/{id}/agent-resolve` (the agent dashboard reports on
-      activity it cannot trigger); `POST /api/discounts/bulk-negotiate`; the two
-      `/api/enrichment` read endpoints. Round 22 closed the audit-verification,
-      sweep-health and card-rebate members of this group.
-      **Durable fix:** each is a small addition to a page that already exists.
-      **Trigger:** take them opportunistically when next in that page.
-
-- [ ] **(c) `INTAKE_STATUS_LABELS` / `REQUISITION_STATUS_LABELS` are hardcoded
-      English.** Unchanged. In `src/lib/types/*.ts` and not routed through i18n,
-      so a German user sees a translated Reopen confirm next to an untranslated
-      `DRAFT` badge. **Durable fix:** move both maps behind `MessageKey`s like
-      the other status-label sets. **Trigger:** the next i18n or procurement
-      slice.
-
-- [ ] **(c) `POST /api/invoices/{id}/route-intercompany` still has no UI.**
-      Inter-company mirror generation, documented and scored a competitive
-      "Have". It was moot while a tenant could not create a second entity;
-      `/admin/entities` (round 22) removes that excuse, so this is now a real
-      gap rather than a blocked one. **Durable fix:** an action on the invoice
-      detail modal, gated admin/ap_manager and on the tenant having ≥2 entities.
-      **Trigger:** the first multi-entity tenant.
+- [ ] **(c) `POST /api/discounts/bulk-negotiate` has no caller.** The last
+      member of the round-21 caller-less group. Round 22 closed the
+      audit-verification, sweep-health and card-rebate members; round 23 closed
+      `POST /api/payments/corridor-quotes` (the `/payments` advisory quote
+      panel), `POST /api/exceptions/{id}/agent-resolve` (a runner on the agent
+      dashboard that used to only report on activity it could not trigger) and
+      both `/api/enrichment` read endpoints (vendor score in `VendorModal`,
+      coding suggestions in `InvoiceModal`).
+      **Durable fix:** a small addition to `/discounts`, which already exists.
+      **Trigger:** take it opportunistically when next in that page.
 
 ### Surfaced by the round-22 parallel round (2026-09-05)
 
 Found while closing the above. None is a defect that can bite today.
+
+**Closed in round 23:** `RebateResponse` now resolves each row's `currency`
+from its joined card, and `GET /api/cards/rebates` / `GET /api/inspections`
+are both on the canonical `page` / `page_size` contract — `/inspections` also
+returns `gr_number` and takes a `?gr_id=` filter, so the UI no longer fetches
+a 100-row page of receipts purely to label a column.
 
 - [ ] **(b) The two `/organization` follow-ups the SSO agent correctly stopped
       at are DONE, but a third remains: the void's card-cancel outcome is
@@ -703,25 +705,6 @@ Found while closing the above. None is a defect that can bite today.
       beside it. **Durable fix:** surface `card_outcome` on `PaymentResponse`
       and in the void dialog, with a retry when the provider leg failed.
       **Trigger:** the next virtual-card slice.
-
-- [ ] **(c) `RebateResponse` carries no currency.** `card_rebates` has no
-      currency column; a rebate's currency is knowable only through its card.
-      The list envelope's `excluded_rebate_count` lets the UI prove the common
-      case (zero ⇒ every row is in the declared currency), but on a
-      mixed-currency programme the remaining rows render **bare figures with no
-      code**, which is the honest rendering and not a good one.
-      **Durable fix:** resolve `currency` from the joined card onto
-      `RebateResponse`. **Trigger:** the first tenant running cards in two
-      currencies.
-
-- [ ] **(c) `GET /api/cards/rebates` and `GET /api/inspections` are
-      unpaginated.** Both are fine at current volumes and both back a table that
-      will grow monotonically. `GET /api/inspections` additionally returns
-      `gr_id` with no `gr_number` and no `?gr_id=` filter, so the UI carries a
-      `page_size=100` receipts fetch purely to label a column.
-      **Durable fix:** the Load-More footer + `/ids` resolver pattern the
-      invoice, vendor and payment-queue lists already use; plus a `gr_id` filter.
-      **Trigger:** either list passing a few hundred rows.
 
 - [ ] **(c) `nav.ts` hides `/goods-receipts` from an `ap_clerk` whose backend
       reads are open to all four roles.** The receipts *and* inspections list
@@ -897,148 +880,13 @@ CISO / Security Analyst before acting.**
 
 #### Test-cover gaps — the guards do not bite
 
-- [ ] **(c) Tenant isolation has no drift guard at all.** The highest-blast-radius
-      invariant in the project is asserted nowhere: `test_tenant_isolation.py`
-      proves `get_tenant` cross-checks the JWT org claim *when used*, and nothing
-      proves it is used. There are 15 `create_async_engine` sites under `app/`
-      outside `app/database.py` — all correct today, all passing
-      `_make_tenant_url(org.db_name)` off a resolved row — and nothing
-      distinguishes that from a new site interpolating a request-supplied slug.
-      `.claude/hooks/security-patterns.sh` has no rule for it either.
-      **Durable fix:** an AST scan (the shape `test_pdf_render_offloaded.py`
-      already uses) asserting engines are constructed only in `app/database.py`
-      or a named exemption whose argument is a `_make_tenant_url(...)` call, and
-      that no `^feoh_` literal exists outside `config.py`. DB-free, sub-second.
-      **Trigger:** next test-hardening pass — this is the most valuable item in
-      this section.
-
-- [ ] **(c) The auth guard is satisfied by a function NAME, with a demonstrated
-      bypass.** `test_rbac.py` accepts any dependency whose closure is named
-      `checker` — the house style for all five factories in `deps.py`, including
-      the two *billing* gates. And `NO_AUTH_REQUIRED` makes zero assertions once
-      an entry is listed: **deleting `Depends(get_scim_tenant)` from all six SCIM
-      `/Groups` handlers — a credential that creates accounts and grants roles —
-      leaves the suite green.** Two allowlist entries
-      (`POST /auth/forgot-password`, `POST /auth/reset-password`) are documented
-      nowhere as public-by-design.
-      **Durable fix:** resolve auth deps by identity through `route.dependant`
-      (the walk exists in `test_sod_endpoint_wiring.py`), and split the allowlist
-      into `PUBLIC_BY_DESIGN` (driven with a real credential-free request) and
-      `ALTERNATE_AUTH` (asserted present in the tree).
-
-- [ ] **(c) The audit sweep is per-MODULE, not per-handler**, which is how the
-      three unaudited deletes round 23 fixed went unnoticed: `api/invoices.py`
-      has 21 tenant-mutating routes and one auditing handler exempted the other
-      twenty. **Durable fix:** switch the unit to `inspect.getsource(endpoint)`
-      with a same-module helper-call allowance and a handler-keyed exemption
-      dict.
-
-- [ ] **(c) The money-is-`Numeric` sweep's token list has drifted off the
-      schema.** It matches `("amount","total","price","subtotal","_tax","amount_")`;
-      **35 `Numeric` columns do not match**, including every FX rate at
-      `NUMERIC(18,8)` and the expense-policy thresholds. A new `Column(Float)`
-      named `balance`, `budget`, `limit`, `fee`, `cost` or `*_rate` passes the
-      whole file, and the sweep only asserts "not Float" — a money column typed
-      `String` passes too. **Durable fix:** invert it — every `Numeric` must
-      carry precision+scale, and no `Float`/`Double`/`REAL` may exist outside a
-      named non-money allowlist, so new columns are opt-out rather than opt-in.
-
-- [ ] **(c) One guard scans 1 route out of 564.** `test_audit_append_only.py`'s
-      naive `for route in app.routes` sees a single `APIRoute` under FastAPI
-      0.138+, so its audit-path filter yields `[]` and it passes having examined
-      nothing. Its own next test documents this exact behaviour and uses
-      `iter_route_contexts`. Currently redundant (a sibling covers the same
-      ground) but will silently keep reporting green the day that sibling is
-      relaxed. **Durable fix:** one-line swap to `iter_route_contexts`.
-
-- [ ] **(c) The SoD wiring pin omits the routes that actually move money.**
-      `test_sod_endpoint_wiring.py` hand-lists 19 routes; `execute`, `void`,
-      `settlement/accept`, `compliance/release`, `compliance/dismiss`, `resume`,
-      `sync-erp` and `retry-failed` are not among them, and two of the eight
-      catalogue permissions are never imported. All are correctly gated **today**
-      — verified — so this is coverage, not a live defect, on the one class of
-      route where the SoD layer existing at all is the point.
-
 #### Performance — measured, unfixed
 
 Numbers from a 200k-invoice / 1M-audit-row scratch database, medians of 5-7 warm
 `EXPLAIN (ANALYZE, BUFFERS)` runs, dimensions randomised independently (the
 round-20 lesson about correlated generators was applied).
 
-- [ ] **(c) `GET /api/dashboard` streams the whole invoice table into Python —
-      591 ms at 190k invoices, 361 ms of it a synchronous fold on the event
-      loop.** The top-vendor tile selects five columns of every non-rejected
-      invoice, all time, no LIMIT, then folds in Python — while the rollup,
-      pipeline, aging and trend blocks immediately around it all `GROUP BY` in
-      SQL, and the comment above them says to. The equivalent `GROUP BY … LIMIT
-      10` measures **20.6 ms — 29× faster**, and linear in invoice count either
-      way. The Python fold is also a blocking CPU loop in an `async def`, the
-      shape project invariant *"blocking work does not run on the event loop"*
-      forbids, in a form none of the five existing drift guards covers.
-      **Durable fix:** group in SQL; the `_rep_expr` CASE it needs is already in
-      scope. **Trigger:** next dashboard slice — this is the landing page.
-
-- [ ] **(c) `audit_log` has no index on `created_at`, so the shipper seq-scans
-      the whole table every 60 s forever.** At 1M rows the caught-up query
-      (`shipped_at IS NULL ORDER BY created_at LIMIT 500`) costs **31.9 ms /
-      25 054 buffers** and returns nothing; with a partial index
-      `(created_at) WHERE shipped_at IS NULL` it is **0.020 ms / 1 buffer** — a
-      **1 600×** win, and the index is **8 KB** because it only holds the
-      unshipped tail. Per tenant, every minute, on a healthy platform.
-      `audit_log` is the fastest-growing table in the schema.
-      **Durable fix:** three indexes (that partial one, `(action, created_at)`
-      for the signature sweep, `(created_at)` for the export).
-
-- [ ] **(c) `invoices` has no index covering the list's own sort order.** One
-      page-1 view costs ~19 000 buffers at 200k invoices (list 15.9 ms, count
-      10.5 ms, chips 15.3 ms); with `(created_at DESC, id DESC)` and
-      `(status, created_at DESC, id DESC)` the list is **0.060 ms / 23 buffers**.
-      Plans go bitmap-heap + top-N heapsort → index scan, and the fixed version
-      stays flat as the table grows. Measured **not** to help: the `/counts`
-      chips (a rollup over 100% of the table — correctly a seq scan, same
-      conclusion as round 20's budget rollup) and the `search=` path (leading
-      wildcard; only `pg_trgm` would serve it, with its own write cost). The same
-      shape holds on `payments`, `exceptions`, `expenses`, `purchase_orders`,
-      `contracts` and `corporate_card_transactions`.
-
-- [ ] **(c) N+1 on `GET /api/vendors` and two siblings, and an unbounded audit
-      export.** The N+1s are bounded by page size and cheap on the DB
-      (index-only, 0.11 ms each) but cost **~100 ms of pure round-trip latency**
-      at page_size 100 against a 1 ms-RTT database; the fix is one grouped
-      query, one batched `IN`, and a `DISTINCT ON`. Separately `GET /api/audit`
-      materialises every row in the range as ORM objects with no LIMIT — 41 649
-      rows for 30 days on the scratch DB, a whole-table heap for an annual SOX
-      export — while its own sibling `verify-signatures` already streams with
-      `yield_per=500`.
-
 #### Frontend — verified defects
-
-- [ ] **(c) A `Payment` carries no currency on the wire.** `PaymentResponse` and
-      `PaymentRunResponse` join `invoice.vendor_name` but not `invoice.currency`,
-      so six `/payments` call sites fall back to the org default. Worst in the
-      **Accept settlement** dialog: "Authorized" renders `$1,200.00` (fabricated)
-      directly above "Settled" `€1,150.00` (real, from `settled_currency`) — the
-      two figures that dialog exists to compare, in the screen built to catch
-      `currency_mismatch`. The e2e asserts only the digits, so the suite cannot
-      see it. Same class one screen earlier: the create-run review panel drops
-      the `QueueItem.currency` the queue row above it renders.
-      **Durable fix:** add `currency` to both response models (the invoice row is
-      already joined) and thread it through. **Trigger:** next payments slice.
-
-- [ ] **(c) Four modal fetches skip the request-identity guard**, after round 23
-      fixed the one that writes. `/vendors/screening` **acts** on the wrong row
-      (vendor B's modal showing vendor A's sanctions timeline, with Block/Unblock
-      operating on B) in a file that already uses sequencers for its list and
-      counts; `/audit`'s signature drill-down, `/admin/api-keys` and
-      `/experiments` are read-only. The convention and its shared primitive are
-      documented on `/goods-receipts`.
-
-- [ ] **(c) Two surfaces answer "we could not look" with "there is nothing".**
-      `/vendors/screening`'s history modal renders "No screening history yet."
-      on a failed fetch, directly above the Block/Unblock control whose decision
-      rests on that timeline; the `/payments` Cards tab is the only one of five
-      with no `*Errored` flag at all. `/exceptions` states the rule verbatim:
-      *"never reintroduce an empty message that outranks 'we could not look'"*.
 
 - [ ] **(c) `/invoices` deep-link and `/adaptive` presentation gaps.** The
       deep-link re-open race was fixed in round 23; what remains is that
@@ -1071,6 +919,160 @@ round-20 lesson about correlated generators was applied).
       fixed), which is what surfaced the two intermittent failures above. Also
       `EntitySwitcher` lists **inactive** entities, so an entity deactivated on
       the new `/admin/entities` page stays selectable and new rows land under it.
+
+### Surfaced by the round-24 batch (2026-09-06)
+
+Eleven agents closed thirteen entries above. Every one of them returned at least
+one thing the entry had not predicted; those are recorded here rather than
+dropped. Nothing below is a suspicion — each was verified at the code level by
+the agent that found it, and none was fixed because each sat outside that
+agent's declared file ownership.
+
+#### Invariant #3 — six handlers write no audit row
+
+- [ ] **(c) Six tenant-mutating handlers write no audit row.** Exposed by the
+      per-handler audit guard ([decisions.md](decisions.md) §100) and enumerated
+      in `tests/test_audit_append_only.py::_OPEN_AUDIT_HOLES`, deliberately kept
+      apart from the real exemption dict so a known gap cannot read as a settled
+      decision: `workflow_definitions.create_workflow` (creates the approval
+      routing rules), `vendors.invite_vendor_portal_user` (mints a `VendorUser`
+      credential and emails a temp password), `vendors.sync_vendors_from_erp_endpoint`,
+      `vendors.import_vendors_from_csv`, `invoices.import_invoices_from_csv`
+      (bulk-inserts invoices including `paid`/`done` historicals), and
+      `inspections.create_inspection` (the 4-way-match gate that can fail an
+      invoice).
+      **`invite_vendor_portal_user` is not routine audit debt** — it is the
+      provisioning step in the held segregation-of-duties chain above, so the one
+      action tying an AP actor to a vendor identity they created leaves no trace.
+      Raise it with the CISO alongside that item, not separately.
+      **Durable fix:** a PII-free `dispatch_audit` at each handler (or in
+      `services/csv_import` + `services/vendor_sync`, mirroring
+      `gl_recode.bulk_recode_gl`) — counts and ids, never a tax id, bank detail
+      or the temp password — then delete that handler's `_OPEN_AUDIT_HOLES`
+      entry; the stale-entry test enforces the deletion.
+      **Trigger:** next touch of any of those files, or the next SOC 2 evidence
+      pass. Highest value first: `invite_vendor_portal_user`, then
+      `create_workflow`.
+
+- [ ] **(c) A successful MFA enrollment writes no audit row, on either surface.**
+      `portal_auth.portal_mfa_verify` and `api/auth.py::enroll_mfa_verify` behave
+      identically, so this is a platform-wide question rather than a portal gap.
+      Step-up *failures* already audit. On an account that can stage bank
+      changes, a second factor being added or replaced is arguably the more
+      audit-worthy event of the two.
+      **Durable fix:** a decision on whether enrollment success is auditable,
+      then one `dispatch_audit` per surface. **Trigger:** the next auth slice or
+      SOC 2 evidence pass.
+
+#### Money path and reporting
+
+- [ ] **(c) `RunDetailModal` renders every money cell in USD regardless of the
+      org.** `frontend/src/lib/components/modals/RunDetailModal.svelte` calls
+      `fmt(x)` at five sites (`:215`, `:242`, `:283`, `:337`, `:347`) with the
+      `currency` argument its own signature accepts left off, so `formatMoney`
+      resolves to `DEFAULT_CURRENCY` — worse than the `/payments` bug fixed in
+      §107, since it ignores the tenant's default too. **The backend half is
+      already done**: `GET /api/payments/runs/{id}` now returns `currency` on the
+      run *and* on each payment, so this is threading two existing fields into
+      five calls plus the bare-figure fallback for a `null` code. Add an e2e
+      assertion on the currency **symbol**, not the digits.
+      **Trigger:** next `/payments` slice, or any change touching this modal.
+
+- [ ] **(c) Three dashboard reporting-currency figures fold unconvertible rows at
+      face value with no way to say so.** `vendor_spend`, `aging_reporting` and
+      `monthly_trend` all silently add a foreign invoice at its face `amount`
+      when no rate lock bridges it; only the whole-book `reporting` rollup
+      carries an `unconverted_count`. Pre-existing, and preserved deliberately by
+      §103's equivalence rewrite (which pinned the behaviour with a test so it is
+      known rather than latent). **Durable fix:** an `unconverted_count` on
+      `VendorSpendEntry` / `AgingBuckets` / `MonthlyTrendEntry` fed by the
+      `_unconv_expr` CASE already in scope, plus the shared `role="alert"`
+      treatment `analytics.md` already mandates. **Trigger:** next dashboard or
+      multi-currency slice.
+
+- [ ] **(c) Four sibling call sites still stream every period invoice into
+      `vendor_rollup_to_reporting_currency` on the event loop** — the CFO
+      concentration tile, its drill-through, the `vendor_spend` CSV export
+      (`app/api/analytics.py`) and `services/scheduled_reports.py`. The shape
+      §103 removed from the dashboard. Materially less bad — each is
+      date-bounded by `period_days` rather than all-time — but identical in kind.
+      **They cannot simply take `LIMIT 10`:** `compute_supplier_concentration`
+      derives its denominator from the full vendor set, and `analytics.md` is
+      explicit that passing a pre-sliced list corrupts every share percentage.
+      **Durable fix:** the same `GROUP BY` over the shared `_rep_expr`, returning
+      ALL vendors pre-aggregated, then slice for display.
+      **Trigger:** next CFO-analytics slice.
+
+#### Consequences of round-24 changes
+
+- [ ] **(c) The SOX audit export holds its tenant connection for the whole
+      response.** Streaming (§105) bounded the memory but extended the hold from
+      "while rows are read" to "until the last byte is transmitted". The
+      per-tenant pool is `pool_size=5, max_overflow=10`, so several concurrent
+      annual exports over slow links can exhaust it. **Durable fix:**
+      `ix_audit_log_created_at` (landed in §104's revision) removes the blocking
+      sort and shortens the hold materially; if it still bites, spool to a
+      `SpooledTemporaryFile` and serve from that so the connection is released at
+      read-completion. **Trigger:** pool-exhaustion or checkout-timeout errors
+      correlating with export activity.
+
+- [ ] **(b) Deployed databases may already hold rows the three newly-enforced
+      UNIQUE indexes forbid.** Migration 0093 pre-flights all three and refuses
+      with a counts-only, PII-free message rather than dying mid-`CREATE UNIQUE
+      INDEX` ([decisions.md](decisions.md) §109). If it refuses: duplicate
+      Positive Pay check-issue files → establish which went to the bank and
+      `DELETE /api/positive-pay/{id}` the others; two live subscriptions for one
+      org → cancel the superseded row; two orgs sharing a SCIM bearer digest →
+      re-mint one. All six local tenants and the local control plane pre-flighted
+      clean. **Trigger:** the next `alembic upgrade head` /
+      `migrate_all_tenants.py` on a deployed environment.
+
+#### Guard and tooling remainders
+
+- [ ] **(c) The three Lambda handlers inline `_make_tenant_url`'s body.**
+      `extraction_lambda.py:49`, `erp_lambda.py:51`, `audit_lambda.py:32` cannot
+      import `app.database` on a dotenv-free path, so they duplicate it — and
+      `audit_lambda` takes `tenant_db_name` straight from the SQS message body,
+      the one place a tenant DB name is not re-derived from a resolved row at the
+      point of use. Correct today and now guarded structurally (§99 holds them to
+      mirroring the helper). **Durable fix:** a dependency-free
+      `app/tenant_url.py` primitive that both `app/database.py` and the Lambda
+      handlers import, which deletes the exemption entirely.
+      **Trigger:** the next Lambda or multi-tenancy slice.
+
+- [ ] **(c) `test_sod_endpoint_wiring.py` still resolves `require_permission` by
+      name.** It matches `__qualname__.endswith("require_permission.<locals>.checker")`
+      — the same name-based fragility §98 removed from `test_rbac.py`, in the file
+      the original entry cited as the good example. Not a bypass (the qualname
+      pins the factory), but strictly weaker than the code-object comparison
+      `test_rbac.py::_gate_permissions` now uses. **Durable fix:** a two-line
+      swap to the code-object identity. **Trigger:** next auth or SoD slice.
+
+- [ ] **(c) `/admin/api-keys` per-key usage got the request-identity fix but no
+      e2e.** The sequencer shipped alongside the other three modal surfaces
+      (§106); the matching spec directory was outside that change's file scope.
+      **Durable fix:** a sibling of
+      `tests-e2e/experiments/results-identity.spec.ts` against
+      `GET /api/api-keys/{id}/usage` — hold key A's response, open key B's usage,
+      release A, assert the panel still reports B. **Trigger:** next admin slice.
+
+- [ ] **(c) A worktree cannot run the e2e suite, because the port is hardcoded.**
+      `frontend/tests-e2e/fixtures/helpers.ts` pins `:7777` in the per-worker
+      `baseURL` fixture, and `playwright.config.ts` reuses an existing server. A
+      session working in a git worktree therefore either tests the *primary*
+      checkout's build without noticing, or has to take the port from another
+      session — two round-24 agents hit this, one of them stopping and restarting
+      a server it did not own. Worktrees isolate files, not ports.
+      **Durable fix:** make the base URL and API base configurable from the
+      environment, defaulting to today's values, so a worktree can serve on its
+      own port. **Trigger:** the next round run in worktrees, or any e2e work.
+
+- [ ] **[Low] `ix_positive_pay_files_payment_run_id` is now a redundant prefix**
+      of `uq_positive_pay_run_format`. Unlike the `bank_transactions` duplicate
+      that 0093 dropped, the columns genuinely differ (`(payment_run_id)` vs
+      `(payment_run_id, bank_format)`), so it is a legitimate if marginal
+      narrower index. Recorded so it is not rediscovered as a parity defect.
+      **Trigger:** a read-pattern review of that table.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 

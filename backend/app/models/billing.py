@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -78,9 +78,20 @@ class Subscription(Base, TimestampMixin):
     __tablename__ = "subscriptions"
     __table_args__ = (
         # One subscription row per (org, plan) keeps re-subscribe idempotent at
-        # the seed/test layer; the partial unique index in the migration is what
-        # enforces "at most one *live* subscription per org".
+        # the seed/test layer. It does NOT bound the live count: two rows for
+        # two DIFFERENT plans satisfy it, which is exactly the double-billing
+        # shape the partial unique index below refuses.
         UniqueConstraint("organization_id", "plan_id", name="uq_subscription_org_plan"),
+        # "At most one *live* subscription per org" — the invariant itself.
+        # Migration 0056 created it and nothing declared it, so on every
+        # `create_all`-provisioned control plane the rule was enforced by
+        # application code alone.
+        Index(
+            "uq_subscription_one_live_per_org",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("status <> 'canceled'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

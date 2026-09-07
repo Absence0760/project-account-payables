@@ -45,7 +45,7 @@ async def peppol_inbound_webhook(
 
     PUBLIC-BY-DESIGN, no JWT — the HMAC signature is the gate. ``get_control_db``
     is a plain DB session, not an auth dependency (the route stays in
-    ``NO_AUTH_REQUIRED``); the tenant is taken from the URL path, never a header.
+    ``ALTERNATE_AUTH``); the tenant is taken from the URL path, never a header.
     Returns 204 on every path — success AND every rejection — so the response
     can't be used to enumerate tenants or probe for the signing secret.
     """

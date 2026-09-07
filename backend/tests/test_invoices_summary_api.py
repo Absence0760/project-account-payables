@@ -7,7 +7,7 @@ fingerprint-freshness invariant — the summary is cached and only regenerated
 when a new audit-log row moves the fingerprint.
 
 Auth/RBAC for the new routes is auto-covered by `test_rbac.py` (the routes
-carry `require_roles(...)` deps and are not in `NO_AUTH_REQUIRED`).
+carry `require_roles(...)` deps and are on neither `PUBLIC_BY_DESIGN` nor `ALTERNATE_AUTH`).
 """
 
 from __future__ import annotations

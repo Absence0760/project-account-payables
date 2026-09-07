@@ -254,7 +254,7 @@ async def list_offers(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
-        query.order_by(DiscountOffer.created_at.desc())
+        query.order_by(DiscountOffer.created_at.desc(), DiscountOffer.id.desc())
         .offset(pagination.offset)
         .limit(pagination.limit)
     )

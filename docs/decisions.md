@@ -3763,3 +3763,432 @@ information.
 And the reads that write audit rows are loaded on an explicit act, never polled
 or prefetched: a surface that logs the auditor looking at it must not log them
 looking at it every thirty seconds.
+
+---
+
+## 98. The auth-coverage gate resolves dependencies by identity, and an allowlist entry must assert something
+
+**Decided:** 2026-09-06 · `backend/tests/test_rbac.py`, `docs/authentication.md`
+
+`test_rbac.py` is the one test that has to fail noisily when someone forgets
+RBAC. For a long time it could not. It accepted any dependency whose closure was
+*named* `checker` — the house style for all five factories in `deps.py`,
+including the two billing entitlement gates. A name is not a security property
+in either direction: renaming the closure broke the gate on every route at once,
+while an unrelated function called `checker` that authenticated nobody satisfied
+it. Alongside it, a single `NO_AUTH_REQUIRED` set asserted *nothing* once an
+entry was listed. The two together were demonstrably exploitable — deleting
+`Depends(get_scim_tenant)` from all six SCIM `/Groups` handlers, the credential
+that creates accounts and grants roles, left the suite green.
+
+The gate now walks `route.dependant` and compares against the actual callables
+(`get_current_user`, `get_current_vendor_user`, `get_api_key_principal`);
+`require_permission` is identified by its **code object**, one shared `__code__`
+across every closure the factory returns. The allowlist splits by obligation, not
+category: `PUBLIC_BY_DESIGN` entries are *driven* with a real credential-free
+request and must not answer 401/403, so listing a protected route there fails
+rather than exempting it; `ALTERNATE_AUTH` entries each name their specific gate.
+Three companion tests refuse a stale entry, a route in both lists, and a route
+allowlisted despite already having real auth.
+
+Rejected: one list plus a comment convention — a comment is not an assertion,
+which is exactly how the SCIM hole survived. **Known limit, accepted:** the
+symbol check is static. It catches a gate going away; it cannot catch a gate
+called and ignored. The per-route behavioural suites cover that, and the limit is
+written down rather than left to be rediscovered.
+
+---
+
+## 99. Tenant engine construction is guarded statically, by discipline rather than by taint
+
+**Decided:** 2026-09-06 · `backend/tests/test_tenant_engine_construction.py`, `.claude/hooks/security-patterns.sh`
+
+`get_tenant`'s JWT org-claim cross-check is only load-bearing if it is reached,
+and nothing asserted that it was: a tenant engine built from an interpolated URL
+never asks the question. No static rule can prove a `db_name` came from a
+resolved `Organization` row rather than from the request, so the guard proves the
+weaker, checkable thing — every engine under `app/` is constructed through
+`_make_tenant_url(db_name)` or `settings.database_url`, no engine URL is
+interpolated, the constructor is never rebound or aliased, and no `feoh_`-prefixed
+literal exists outside `config.py`.
+
+Taint analysis was rejected as unmaintainable for the payoff. A blanket ban on
+engine construction outside `app/database.py` was rejected because 31 legitimate
+sites — background sweeps, dispatchers, webhook handlers — each need a
+loop-local engine. The three Lambda handlers are exempt from the *helper* (they
+cannot import `app.database` on a dotenv-free path) but not from the rule: the
+guard holds them to mirroring its body, and a stale exemption fails too.
+
+The rebound-constructor rule exists because that evasion makes the guard go
+*quiet* rather than red — `engine_factory = create_async_engine` removes every
+call site from the enumeration. A guard whose failure mode is silence has to
+assert against silence.
+
+---
+
+## 100. The audit-coverage guard's unit is the handler, and its route scan has a floor
+
+**Decided:** 2026-09-06 · `backend/tests/test_audit_append_only.py`
+
+Two properties of *how* invariant #3 is enforced are load-bearing and
+non-obvious.
+
+**The unit is the handler, not the module.** The sweep required `dispatch_audit`
+anywhere in the router module, so one auditing handler vouched for every
+unaudited handler beside it — `api/invoices.py` has 21 tenant-mutating routes
+behind that single grep, and three unaudited DELETE handlers shipped there and
+had to be found by hand in round 23. It now reads `inspect.getsource(endpoint)`
+and follows calls to functions defined in the **same module**, so a handler
+delegating to a local `_audit(...)` still counts. Exemptions are keyed
+`(module, handler)`.
+
+Calls *out of* the handler's module are deliberately not followed. "That other
+file audits" is a claim about a chokepoint, and a claim belongs where a reader
+can re-check it — not inferred by a source scan that would silently absorb the
+day the chokepoint stops auditing. Rejected: a transitive whole-app scan (green
+forever once any reachable path mentions `dispatch_audit`), and a runtime
+call-every-route harness (needs a live tenant per route, turning the fastest
+guard in the suite into the slowest).
+
+**Route discovery asserts a floor.** FastAPI 0.138+ keeps nested routers in
+`app.routes`, so the historical `isinstance(r, APIRoute)` filter saw 1 route out
+of 564 and every filter built on it yielded `[]`. The swap to
+`iter_route_contexts` fixes today; `_MIN_EXPECTED_ROUTES` is what fixes tomorrow.
+
+Six handlers the re-keying exposed sit in `_OPEN_AUDIT_HOLES`, apart from the
+real exemption dict and labelled as holes rather than decisions — widening the
+exemption dict to reach green would have made a known gap indistinguishable from
+a settled call.
+
+---
+
+## 101. The money-`Numeric` guard is opt-out, not opt-in
+
+**Decided:** 2026-09-06 · `backend/tests/test_money_invariants.py`, `backend/docs/database.md`
+
+The sweep sought `Float` only on columns whose *name* matched a token list
+(`amount`, `total`, `price`, `subtotal`, `_tax`, `amount_`). That made the money
+invariant opt-in: a column was protected only once someone spelled it a way the
+tokens happened to cover. The list had drifted — 35 of 88 `Numeric` columns
+matched no token, including every FX rate at `NUMERIC(18,8)`, all four
+expense-policy thresholds, `contracts.spend_limit`, and `invoice_line_items.tax`
+(the token carried an underscore) — so a new `Column(Float)` named `balance`,
+`fee` or `*_rate` passed the whole file.
+
+Inverted: **every** `Numeric` must declare precision and scale, and **no** binary
+float may exist outside `NON_MONEY_FLOAT_ALLOWLIST` with a written reason. Adding
+a money column costs nothing; adding a float costs an argument in writing. The
+allowlist shipped **empty** — the schema has zero float columns — and a stale
+entry fails its own test, since a leftover key would pre-approve a future column
+of that name.
+
+Rejected: a second, broader name-token sweep for a money column typed `String`.
+Measured, a token list wide enough to be useful (`balance`, `fee`, `cost`,
+`_rate`) flags 9 legitimate non-money columns, and an allowlist for *those* is
+the same hand-maintained list this change deleted, one layer down. The `String`
+hole is closed instead by an exact-name assertion over nine unambiguous money
+names — zero false positives, so no allowlist — documented as a supplement, not
+a completeness claim.
+
+Also rejected: walking `Base.registry.mappers` after `import app.models`.
+`usage.py` is not re-exported from `__init__.py`, so that walk silently skips it.
+The sweep imports every module in the package and reads `Base.metadata.tables`,
+with a non-vacuity floor — a guard that iterates nothing passes everything.
+
+---
+
+## 102. The SoD endpoint pin is derived from the app, not hand-listed
+
+**Decided:** 2026-09-06 · `backend/tests/test_sod_endpoint_wiring.py`
+
+The pin hand-listed the routes that must gate on `require_permission`. A
+hand-list omits, and what it omitted was the worst possible subset: the eight
+routes that actually move money (`runs/{id}/execute`, `{id}/void`,
+`settlement/accept`, `compliance/release`, `compliance/dismiss`, `resume`,
+`sync-erp`, `retry-failed`) plus the whole `/api/admin` `user.manage` surface —
+leaving two of the eight catalogue permissions never imported by the guard at
+all. Everything was correctly gated; nothing proved it stayed that way, on the
+one class of route where the granular-permission layer existing at all is the
+point.
+
+The pin now walks the live app's `route.dependant` and asserts `CASES` ≡ the set
+of `require_permission` routes, in both directions, and that every
+`ALL_PERMISSIONS` entry gates at least one pinned route so a catalogue addition
+wired to nothing is caught as dead config. It stores the **exact** any-of set
+rather than "must include this permission", because a widening — adding
+`payment.void` to the `/execute` gate — is as much an SoD failure as a narrowing.
+
+Two deliberate exclusions, commented so they read as decisions: `runs/{id}/approve`
+(CFO sign-off) stays on `require_roles` so it cannot be granted to whoever holds
+the broader create-draft permission, and `/admin/roles` CRUD stays role-gated
+because role CRUD *defines* permissions — gating it on one would let a custom
+role mint itself everything.
+
+---
+
+## 103. The dashboard's top-vendor tile groups in SQL, and its ties are broken by name
+
+**Decided:** 2026-09-06 · `backend/app/api/dashboard.py`, `backend/docs/analytics.md`
+
+The tile selected five columns of every non-rejected invoice — all time, no
+`LIMIT` — and folded them in Python, while the rollup, pipeline, aging and trend
+blocks either side of it all `GROUP BY` in SQL and say so in their comments. Two
+problems: the fold was a synchronous per-row loop inside an `async def`, the
+shape the "blocking work does not run on the event loop" invariant forbids, on
+the landing page; and it grew linearly with the invoice table while its four
+neighbours stayed one aggregate each. Measured at 190 000 invoices: 505.7 ms, of
+which 270.3 ms was the fold, against 28.5 ms for the equivalent `GROUP BY` —
+17.7×.
+
+Rejected: keeping the fold and offloading it with `asyncio.to_thread`, which
+unblocks the loop but leaves the unbounded transfer and the linear growth; and
+pre-aggregating into a stored per-vendor total, the compute-on-read discipline
+the rest of analytics deliberately avoids. The rewrite reuses the `_rep_expr`
+CASE already in scope rather than restating the conversion rule, so the tile
+cannot drift from the figure directly above it — the same one-owner argument as
+§82's budget rollup.
+
+It also **tightened** the ordering. The fold sorted on converted total alone and
+Python's sort is stable, so equal-spend vendors came back in DB scan order: which
+took rank 10, and which fell off the `[:10]`, could differ between two identical
+requests. The SQL orders `(total DESC, vendor ASC)`. A non-reproducible top-10 is
+not a defensible answer to give a CFO twice.
+
+An index was considered and refused: `EXPLAIN ANALYZE` shows a parallel seq scan
+removing only 10% of rows, so a covering index would be near heap-sized and add
+write cost on the tenant's hottest table for no plan change.
+
+---
+
+## 104. An index declared only in a migration reaches half the fleet
+
+**Decided:** 2026-09-06 · `backend/alembic/versions/0092_list_and_audit_indexes.py`, `backend/app/models/`
+
+Tenants are provisioned two ways: `alembic upgrade head` for existing ones, and
+`Base.metadata.create_all` in `tenant_provisioning._create_tenant_tables` for new
+ones. `create_all` builds exactly what the ORM declares, so an index written only
+into a migration silently never reaches a freshly-provisioned tenant.
+
+Migration `0010_audit_log_shipping` added `ix_audit_log_shipped_at_null` for the
+shipper's `shipped_at IS NULL ORDER BY created_at` sweep and never declared it on
+`AuditLog`. For 82 revisions a migrated tenant had it and a provisioned one ran
+that sweep — per tenant, every 60 seconds — as a full sequential scan of its
+largest table: 39.740 ms / 30 003 buffers at 1.2 M rows, to return nothing.
+
+The rule: **every index is declared in both places, under one name.** The
+migration is for tenants that already exist; the model `__table_args__` is for
+the ones that don't yet. `test_list_and_audit_indexes.py` compares the two
+against `pg_get_indexdef` on a real provisioned tenant, so a name, column order
+or partial predicate that disagrees fails.
+
+Rejected: a second index under a new name — it would have worked, and cost every
+migrated tenant a duplicate partial-index write on every audit row forever.
+Adopting the existing name means this revision must not drop it on downgrade: an
+index a revision *ensures exists* is not one it *owns*, and the two lists are
+kept apart for that reason.
+
+Also settled: **no `CREATE INDEX CONCURRENTLY` in Alembic revisions.** It cannot
+run inside the migration transaction, and paired with `IF NOT EXISTS` a cancelled
+build leaves an INVALID index that every later run skips while reporting success.
+Measured build cost is ~2.5 s for a 17-index revision at 1.2 M audit rows; an
+operator needing less lock pre-builds by hand and verifies `indisvalid`, after
+which the migration no-ops.
+
+---
+
+## 105. The SOX audit export streams, and is never capped
+
+**Decided:** 2026-09-06 · `backend/app/api/audit.py`, `backend/docs/audit-log-shipping.md`
+
+`GET /api/audit/export` materialised every row in the range as ORM objects and
+built the whole body in memory; an annual range is tens of thousands of rows.
+
+Rejected: a `LIMIT`, which makes the memory problem trivial and the endpoint
+worthless — a silently short export is evidence an auditor signs off on, strictly
+worse than a slow one. Rejected: deferring the `audit.exported` row until the
+stream completes, which would lose the record of an aborted download even though
+the access happened.
+
+Chosen: a `yield_per` cursor over plain columns plus a chunked
+`StreamingResponse`, with the range pinned to a snapshot from the *database*
+clock — comparing against the process clock would drop or admit rows on skew —
+so the export cannot contain the record of itself, and `COUNT(*)` +
+`DISTINCT actor_id` folded into one aggregate so the range is scanned once. Peak
+server allocation went from linear in the range (70.6 MiB at 20 000 rows) to flat
+1.5 MiB, output byte-identical.
+
+Two consequences accepted deliberately: the request holds its tenant connection
+for the whole response, and the mechanism depends on FastAPI keeping
+`yield`-dependency teardown after the body drains — internal ordering, guarded by
+a raw-ASGI test against a real database rather than assumed. CSV traded ~20% wall
+clock, which measurement attributed to the *database* still sorting the range;
+`ix_audit_log_created_at` (§104's revision) removes that sort node.
+
+---
+
+## 106. A detail modal is a list of one, and it is the request-identity case that bites hardest
+
+**Decided:** 2026-09-06 · `frontend/src/routes/{vendors/screening,audit,experiments,admin/api-keys}`
+
+The app-wide `createRequestSequencer` sweep landed on lists, so fetches that
+*look* like a single read — a modal opened from a row, a drill-down opened from a
+finding — were left unguarded. They are not single reads: "open A, close it, open
+B" re-issues the same request with a different subject, and the failure is
+invisible by construction, because the heading renders from the click and the
+body from the response.
+
+Rejected: comparing the response to the current selection inside each handler —
+the same guard written four more times, and it gets the loading/error bookkeeping
+wrong (`canCommit` vs `isCurrentRequest`). The rule is the one lists follow — one
+sequencer per independent request stream — plus a cheap second obligation: the
+panel exposes **both** ids in the DOM, the subject it was opened for and the id
+the response claims, so a mismatch is assertable rather than inferred from
+rendered content.
+
+`/vendors/screening` settled the harder half. A modal that *acts* has a third
+identity to bind beyond the heading and the body: the target of its buttons.
+Block/Unblock read the live `selected` after its awaits and `rescreen` re-read it
+after two, so a reviewer could read one vendor's sanctions timeline while the
+control blocked another. The rule: an action captures its subject at click time,
+and everything after the first await reads that capture, never the live
+selection; its `busy` flag is keyed to that subject for the same reason.
+
+Its history modal also gained a real error state ordered above the empty one —
+"we could not look" must outrank "there is nothing", directly above a
+Block/Unblock control whose decision rests on that timeline.
+
+---
+
+## 107. A payment states its currency, or states that it cannot
+
+**Decided:** 2026-09-06 · `backend/app/schemas/payment.py`, `backend/app/api/payments.py`, `frontend/src/routes/payments/+page.svelte`
+
+`payments` has no currency column and `payment_runs.total_amount` is one bare
+`Numeric`. Both are legitimate — a payment settles in its invoice's currency, and
+run creation 422s a run spanning more than one — but neither response carried the
+code, though both already joined the invoice row for `vendor_name`. Every
+`/payments` reader therefore rendered per-row money under the org's default.
+
+The sharpest instance was the Accept-settlement dialog. It exists because a rail
+can settle a different amount, or a different currency, than AP authorized, and
+it puts "Authorized" beside "Settled". `settled_currency` was on the wire; the
+authorized figure's currency was not. A EUR payment rendered a fabricated
+`$1,200.00` directly above a real `€1,150.00` — on the screen built to catch
+`currency_mismatch`.
+
+Both responses now carry it, and where it cannot be **proven** the answer is
+`None`, never a substituted default (§79/§82). The deciding case is a legacy run
+predating the single-currency guard: its `total_amount` is a sum across
+currencies, denominated in nothing real, so naming either leg's code would dress
+a meaningless figure up as a genuine one. `_one_currency` is one shared rule
+applied by the list, the detail and the create response, so the three cannot
+publish different codes for the same run. The client renders an unprovable code
+as a bare grouped figure.
+
+Rejected: defaulting to the org's reporting currency (the fabrication being
+removed), and converting on read (a rate fetched on a read makes a historical
+figure move under the reader — §18).
+
+**The guard is the assertion, not the field.** The e2e suite matched digits only,
+so `$500.00` and `€500.00` were indistinguishable to it and this shipped unseen.
+The payments specs now assert the currency **symbol**, and the settlement fixture
+is EUR rather than the tenant's own currency — a same-currency fixture makes the
+wrong rendering look right.
+
+---
+
+## 108. OFFSET paging needs a total order, and the guard for it is a source guard
+
+**Decided:** 2026-09-06 · `backend/app/api/`, `backend/tests/test_pagination_total_order.py`
+
+`OFFSET`/`LIMIT` paging is only coherent if the `ORDER BY` is a total order.
+`created_at` is not one: it defaults to the transaction timestamp, so every row
+written by a single transaction — an ERP sync page, a CSV import, one sweep tick
+— shares it *exactly*. Postgres is then free to order the tied rows differently
+between the two queries that fetch page 1 and page 2, so a row can be handed to
+the caller twice or skipped altogether.
+
+Two endpoints were reported (`api/exceptions.py`, `api/purchase_orders.py`,
+found while indexing their tables in §104). Sweeping for the shape found **26**,
+including four supplier-portal lists, the notification centre, credit memos,
+cards and the SCIM user list. `exceptions.py` was the clearest case: its own
+`/ids` select-all resolver three lines below the list already tie-broke on `id`,
+so the list disagreed with the resolver it exists to feed. All 26 now append the
+primary key.
+
+**The guard is a source guard, deliberately, and that decision was forced by a
+failed attempt at the obvious one.** A runtime test — write N rows in one
+transaction so their timestamps tie, page through them, assert each appears once
+— was written first and **passed without the fix**. At fixture scale Postgres
+returns a stable scan order, so the test proved nothing and would have shipped as
+a guard that never fails: precisely the vacuity §100 and §101 were about, and it
+was discarded rather than tuned until it happened to go red. The manifestation is
+planner-dependent; the *property* the correctness argument rests on is not. So
+the guard asserts the property — an AST scan for `.offset(...)` chained to an
+`.order_by(...)` whose keys are all timestamp-ish — and says in its own docstring
+why it is not a runtime test.
+
+It keys on `.offset(...)` rather than on `order_by` alone because a bare
+`ORDER BY created_at` is perfectly correct on a `LIMIT 1` lookup, an aggregate,
+or a whole-set fetch — nothing splits tied rows across two requests there. The
+unnarrowed version flagged 62 sites, most of them fine; a guard that cries wolf
+gets its exemption list padded until it means nothing.
+
+---
+
+## 109. A migration-only index is invisible to half the fleet, so parity is a test, not a habit
+
+**Decided:** 2026-09-06 · `backend/alembic/versions/0093_migration_only_indexes.py`, `backend/tests/test_migration_model_index_parity.py`
+
+§104 fixed one instance of this; an audit of all 216 `CREATE INDEX` statements
+found **twenty**. A database here is built two ways and only one runs Alembic, so
+an index written into a migration and never declared on its model reaches
+migrated databases and silently never reaches a freshly-provisioned one. Nothing
+notices — the reads still return correct rows, just by sequential scan — and
+where the index is UNIQUE, the invariant it enforces is simply absent on half the
+fleet. Verified against a tenant with no `alembic_version` row at all, and
+against one stamped at head that was nonetheless missing every one: **"at head"
+is not evidence the indexes exist.**
+
+**Two were correctness, not performance.** `uq_positive_pay_run_format` is the
+*only* concurrency control under the check-issue endpoint's read-then-insert —
+without it the handler's `except IntegrityError` branch is dead code, two
+concurrent calls both insert, and its own `scalar_one_or_none()` idempotency
+lookup then raises `MultipleResultsFound` on **every later call**: a permanent
+500 on that run, plus a second MinIO object carrying full account and routing
+numbers. `uq_subscription_one_live_per_org` is the one-live-subscription-per-org
+billing invariant that `uq_subscription_org_plan` does not bound, since two rows
+for two different plans satisfy it.
+
+**Two were not defects and are resolved the other way**, because declaring them
+would build a genuine duplicate: `ix_bank_transactions_matched_payment` is the
+exact column and predicate of the UNIQUE index 0081 added (which never dropped
+it, so migrated tenants carried pure write overhead on a hot table), so 0093
+drops it; `ix_vendor_change_requests_org_id` is the model's
+`ix_vendor_change_requests_organization_id` under another name, so 0093 converges
+on the model's spelling, creating before dropping so the column is never briefly
+unindexed. Rejected: declaring both spellings, and `ALTER INDEX … RENAME`, which
+is correct only on the one database shape that has the source and not the target.
+
+0093 **ensures, it does not own** — restating an earlier revision's CREATE is a
+catch-up for an already-provisioned database, so its downgrade drops none of the
+eighteen (§104's `_ADOPTED` semantics). Where a UNIQUE index is involved it
+**pre-flights and refuses** with a counts-only, PII-free message rather than
+failing mid-revision: choosing which of two Positive Pay files went to the bank
+is an operator's judgement, not a silent `DELETE` in a migration — the call §72
+made for duplicate GL codes.
+
+**Two test fixtures were themselves relying on the missing index** and only
+surfaced once it existed: `test_dunning_sweep_resilience.py` seeded two or three
+`past_due` subscriptions under one org, and `tests-e2e/billing/billing.spec.ts`
+seeded a second `active` subscription for an org that already holds the `free`
+one `tenant_provisioning` gives every org. Neither shape is constructible in
+production, and with two live rows the endpoint under test picked one
+arbitrarily — so those assertions had been passing by luck. Both now seed the
+state the app actually supports.
+
+The durable half is the guard, not the migration. New tenants keep being
+provisioned by `create_all`, so a migration alone would leave the *next* tenant
+in the state being repaired. The parity test is opt-out — every
+`CREATE [UNIQUE] INDEX` in every revision, checked against the models, with
+exemptions needing a written reason that is itself re-checked so it cannot rot.

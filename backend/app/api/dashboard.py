@@ -33,7 +33,6 @@ from app.services.currency_conversion import (
     reporting_amount_for_row,
     resolve_reporting_currency,
     rollup_from_grouped_rows,
-    vendor_rollup_to_reporting_currency,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 from app.utils.dates import utc_today
@@ -175,35 +174,45 @@ async def get_dashboard(
     # into the org's reporting currency (not a naive SUM across currencies) —
     # a vendor billing in more than one currency used to add e.g. USD + EUR
     # as if they were one currency.
+    #
+    # Grouped in SQL, like the rollup / pipeline / aging / trend blocks either
+    # side of it, and through the very same `_rep_expr` CASE — so a vendor's
+    # total is built by exactly the rule the whole-book rollup uses. This tile
+    # used to select five columns of EVERY non-rejected invoice (all time, no
+    # LIMIT) and fold them in Python: a synchronous per-row loop inside an
+    # `async def`, occupying the event loop for its whole duration and growing
+    # linearly with the invoice table while its four neighbours stayed one
+    # aggregate each. See backend/docs/analytics.md § Vendor spend is grouped
+    # in SQL for the measured before/after.
+    #
+    # The ordering rule is (total DESC, vendor ASC). The Python fold sorted on
+    # the total alone and Python's sort is stable, so ties fell back to DB scan
+    # order — which of two equal-spend vendors took rank 10 (and which fell off
+    # the `[:10]`) could differ between two identical requests. The name
+    # tiebreak makes the tile reproducible.
+    _vendor_total = func.coalesce(func.sum(_rep_expr), 0)
     vendor_rows = await db.execute(
         _inv(
-            select(
-                Invoice.vendor_name,
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(
+            select(Invoice.vendor_name, _vendor_total.label("total"))
+            .where(
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
                 Invoice.status != "rejected",
             )
+            .group_by(Invoice.vendor_name)
+            .order_by(_vendor_total.desc(), Invoice.vendor_name.asc())
+            .limit(10)
         )
     )
-    vendor_entries = vendor_rollup_to_reporting_currency(
-        [
-            {
-                "vendor": vendor,
-                "amount": amount,
-                "currency": currency,
-                "reporting_amount": rep_amt,
-                "reporting_currency": rep_cur,
-            }
-            for vendor, amount, currency, rep_amt, rep_cur in vendor_rows.all()
-        ],
-        reporting_currency=reporting_currency,
-    )
-    vendor_spend = [{"vendor": e.vendor, "amount": e.amount} for e in vendor_entries[:10]]
+    # `Invoice.amount` and `Invoice.reporting_amount` are both `Numeric(15, 2)`,
+    # so a Postgres SUM over them is already exact at 2dp — summing then
+    # quantizing matches the row-at-a-time quantize-then-sum the Python fold
+    # did, the same argument `rollup_from_grouped_rows` makes for the whole-book
+    # rollup. Stays `Decimal` into the response; `DashboardResponse` does the
+    # single float hop at serialization, like every other money figure here.
+    vendor_spend = [
+        {"vendor": vendor, "amount": Decimal(str(total))} for vendor, total in vendor_rows.all()
+    ]
 
     # Aging buckets — boundaries are days past the due date:
     # current (not yet due) / 1-30 / 31-60 / 61-90 / 90+.

@@ -14,7 +14,7 @@ breadcrumbs log only `{change_type, request_id, last4}`).
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +23,18 @@ from app.models.base import Base, TimestampMixin
 
 class VendorChangeRequest(Base, TimestampMixin):
     __tablename__ = "vendor_change_requests"
+
+    # The AP approval queue reads only `pending` rows; an approved/rejected one
+    # is history. Partial, so the index stays the size of the queue rather than
+    # of the table. Migration 0022's; declared here so `create_all` builds it
+    # too.
+    __table_args__ = (
+        Index(
+            "ix_vendor_change_requests_pending",
+            "status",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     vendor_id: Mapped[uuid.UUID] = mapped_column(

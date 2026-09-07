@@ -223,7 +223,9 @@ async def list_users(
     ).scalar() or 0
 
     # SCIM uses 1-based indexing
-    page_query = base_query.order_by(User.created_at).offset(startIndex - 1).limit(count)
+    page_query = (
+        base_query.order_by(User.created_at, User.id.desc()).offset(startIndex - 1).limit(count)
+    )
     result = await db.execute(page_query)
     users = result.scalars().all()
 

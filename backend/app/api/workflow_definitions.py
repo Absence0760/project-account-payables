@@ -275,7 +275,11 @@ async def list_workflows(
         total = 1
 
     result = await db.execute(
-        base.order_by(WorkflowDefinition.is_default.desc(), WorkflowDefinition.created_at)
+        base.order_by(
+            WorkflowDefinition.is_default.desc(),
+            WorkflowDefinition.created_at,
+            WorkflowDefinition.id.desc(),
+        )
         .offset(pagination.offset)
         .limit(pagination.limit)
     )
