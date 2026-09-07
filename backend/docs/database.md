@@ -301,7 +301,89 @@ and in the owning model's `__table_args__` (fresh tenants, which are built by
 is what left `ix_audit_log_shipped_at_null` missing from provisioned tenants for
 82 revisions, so `tests/test_list_and_audit_indexes.py` is the guard — it fails
 if the two spellings ever disagree on a name, a column order, or a partial
-predicate, and it asserts each index actually serves its caller's query.
+predicate, and it asserts each index actually serves its caller's query. That was
+one instance of a class of 20; see **Index parity between the two provisioning
+paths** below for the rest and for the systemic guard that now covers every
+revision.
+
+### Index parity between the two provisioning paths
+
+A database here is built **two ways**, and only one of them runs Alembic:
+
+| Path | Built by | Applies to |
+|------|----------|-----------|
+| Alembic | `alembic upgrade head` / `scripts/migrate_all_tenants.py` | every EXISTING tenant + the control plane |
+| `create_all` | `Base.metadata.create_all` in `services/tenant_provisioning._create_tenant_tables` | every NEW tenant, the control plane on a fresh install, and the pytest `realdb` harness |
+
+`create_all` builds **exactly what the ORM declares**. So an index written into a
+migration and never declared on its model reaches migrated databases and
+*silently never reaches a freshly-provisioned one*. Nothing notices: the reads
+still return correct rows, just by sequential scan — and where the index is
+UNIQUE, the invariant it enforces is simply absent on half the fleet.
+
+**Every index must therefore be declared twice on purpose**: in the migration
+(existing databases) and in the owning model's `__table_args__` (new ones).
+
+Migration 0092 fixed the first instance of this found
+(`ix_audit_log_shipped_at_null`, migration 0010 — the audit shipper's own
+60-second sweep running as a full scan on every provisioned tenant). Migration
+**0093** closed the rest of the class: an audit of all 216 `CREATE INDEX`
+statements across every revision found **20** that no model declared, verified
+absent on a real `create_all`-built tenant (`feoh_pytesta`, which has no
+`alembic_version` row at all) and on a `create_all`-built control plane.
+
+- **18 were genuinely missing** and are now declared on their models —
+  `users.ix_users_sso_lookup` (the SSO callback's identity lookup),
+  `organizations.ix_organizations_scim_bearer_hash`,
+  `subscriptions.uq_subscription_one_live_per_org`,
+  `invoice_embeddings.ix_invoice_embeddings_embedding_hnsw` (pgvector HNSW,
+  expressed with `postgresql_using="hnsw"` + `postgresql_ops`),
+  `exceptions.ix_exceptions_due_at`, `payments.ix_payments_corridor`, both
+  `sanctions_checks` indexes, both `bank_transactions` read indexes,
+  `scheduled_reports.ix_scheduled_reports_due`,
+  `vendor_change_requests.ix_vendor_change_requests_pending`, both
+  `quality_inspections` FK indexes, all three `vendors` screening indexes, and
+  `positive_pay_files.uq_positive_pay_run_format`. 0093 restates each `CREATE
+  INDEX IF NOT EXISTS` so an already-provisioned database catches up; it
+  **ensures, it does not own** them, so its `downgrade()` drops none of them
+  (the original revision still owns each DROP) — the `_ADOPTED` semantics 0092
+  established.
+- **2 were not missing at all** and are reconciled rather than duplicated onto a
+  model, because declaring them would build a second, identical index:
+  `ix_bank_transactions_matched_payment` (0019) is the exact column and
+  predicate of the UNIQUE `uq_bank_transactions_matched_payment` that 0081 added
+  and the model declares, so 0093 **drops** it; and
+  `ix_vendor_change_requests_org_id` (0022) is the model's
+  `ix_vendor_change_requests_organization_id` under another name, so 0093
+  converges on the model's spelling (create, then drop the alias).
+
+Two of the 18 are **UNIQUE, i.e. correctness rather than performance**:
+`uq_positive_pay_run_format` is the only concurrency backstop under the
+check-issue endpoint's read-then-insert (see `docs/positive-pay.md`
+§ Idempotency), and `uq_subscription_one_live_per_org` is the "one live
+subscription per org" billing invariant — `uq_subscription_org_plan`, the one
+the model *did* declare, does not bound the live count, since two rows for two
+different plans satisfy it. Because a database that ran without one may already
+hold the rows it was meant to prevent, 0093 **pre-flights** each UNIQUE index:
+it counts the offending groups and refuses with an actionable, PII-free message
+(counts only) *before* any DDL, rather than failing half-way through with a bare
+Postgres error. Cleaning up is a judgement call about real artefacts — which of
+two Positive Pay files went to the bank, which subscription is billing — so it
+is deliberately the operator's, not a silent `DELETE` inside a migration.
+
+**The guard is `tests/test_migration_model_index_parity.py`** — opt-out, not
+opt-in. It parses every `CREATE [UNIQUE] INDEX` out of every revision (via
+`ast`, so DDL split across adjacent string literals is read correctly) and fails
+if any of them, on a table still in `Base.metadata`, is not declared on the
+model. A new migration-only index fails the suite the day it lands, with no list
+to remember to update. An exemption needs a written reason in `EXEMPT`, and is
+itself re-checked so it can't rot. Against a real Postgres it also drops what
+`create_all` built, rebuilds it from 0093's own SQL, and compares
+`pg_get_indexdef` — same access method, columns, sort direction, operator class
+and partial predicate, not just the same name.
+
+`tests/test_list_and_audit_indexes.py` remains the per-index guard for 0092's own
+16 list/audit indexes (including that each actually serves its caller's query).
 
 ## Seeding
 

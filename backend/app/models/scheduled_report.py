@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +14,17 @@ from app.models.base import Base
 
 class ScheduledReport(Base):
     __tablename__ = "scheduled_reports"
+
+    # `list_due_schedules` — the runner's per-tick question, per tenant, forever.
+    # Partial because a disabled schedule is never due. Migration 0020's;
+    # declared here so `create_all` builds it too.
+    __table_args__ = (
+        Index(
+            "ix_scheduled_reports_due",
+            "next_run_at",
+            postgresql_where=text("enabled = true"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)

@@ -66,6 +66,18 @@ class UserRole(Base):
 class User(Base, TimestampMixin):
     __tablename__ = "users"
 
+    # The SSO callback's identity lookup — `(sso_provider, sso_provider_id)` on
+    # every OIDC/SAML sign-in. Partial, because a password account leaves both
+    # NULL. Migration 0004's; declared here so `create_all` builds it too.
+    __table_args__ = (
+        Index(
+            "ix_users_sso_lookup",
+            "sso_provider",
+            "sso_provider_id",
+            postgresql_where=text("sso_provider IS NOT NULL"),
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)

@@ -104,6 +104,17 @@ class BankTransaction(Base):
             unique=True,
             postgresql_where=text("matched_payment_id IS NOT NULL"),
         ),
+        # `GET /api/bank-reconciliation/{id}` reads one statement's lines in
+        # date order; the Outstanding worksheet reads the whole org's, newest
+        # first. Migration 0019 created both and nothing declared them, so a
+        # `create_all`-provisioned tenant had neither — see migration
+        # 0093_declare_migration_only_indexes.
+        Index("ix_bank_transactions_statement", "statement_id", "transaction_date"),
+        Index(
+            "ix_bank_transactions_org_date",
+            "organization_id",
+            text("transaction_date DESC"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

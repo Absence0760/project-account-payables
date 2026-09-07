@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -9,6 +9,20 @@ from app.models.base import Base, TimestampMixin
 
 class Organization(Base, TimestampMixin):
     __tablename__ = "organizations"
+
+    # The SCIM auth path resolves a tenant from the bearer digest on every
+    # provisioning call. UNIQUE — two orgs sharing a digest would make that
+    # lookup ambiguous — and partial, because the overwhelming majority of orgs
+    # have SCIM off (NULL) and NULLs must not collide. Migration 0021 created
+    # it; declared here so `create_all` builds it too.
+    __table_args__ = (
+        Index(
+            "ix_organizations_scim_bearer_hash",
+            "scim_bearer_hash",
+            unique=True,
+            postgresql_where=text("scim_bearer_hash IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
