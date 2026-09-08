@@ -2321,6 +2321,7 @@ async def import_invoices_from_csv(
         csv_text,
         entity_id=entity_id,
         day_first=resolve_day_first_preference(org.settings or {}),
+        actor_id=user.id,
     )
     await db.commit()
     return result.to_dict()

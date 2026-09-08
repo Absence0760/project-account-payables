@@ -311,6 +311,11 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "audits via services/qms_sync (`quality_inspection.synced`)"
     ),
     ("app.api.invoices", "bulk_recode_gl_endpoint"): "audits via services/gl_recode.bulk_recode_gl",
+    ("app.api.invoices", "import_invoices_from_csv"): (
+        "audits via services/csv_import.import_invoices_csv (`invoice.imported_csv` per "
+        "created invoice, keyed on its own correlation_id, plus `vendor.imported_csv` "
+        "for each auto-created vendor stub)"
+    ),
     ("app.api.invoices", "bulk_status_change"): (
         "audits via workflow_engine.transition_invoice + services/review"
     ),
@@ -325,6 +330,14 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "audits via workflow_engine.transition_invoice + exception_lifecycle.record_decision"
     ),
     ("app.api.recurring", "generate_now"): ("audits via services/recurring_invoices.generate_one"),
+    ("app.api.vendors", "import_vendors_from_csv"): (
+        "audits via services/csv_import.import_vendors_csv (`vendor.imported_csv` per "
+        "created vendor)"
+    ),
+    ("app.api.vendors", "sync_vendors_from_erp_endpoint"): (
+        "audits via services/vendor_sync.sync_vendors_from_erp "
+        "(`vendor.synced_from_erp` per created/updated/linked vendor)"
+    ),
     ("app.api.vendors", "screen_vendor"): (
         "audits via services/vendor_screening.screen_vendor_record (`vendor.screened`)"
     ),
@@ -348,48 +361,37 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
 # OPEN HOLES — NOT justified exemptions
 # ---------------------------------------------------------------------------
 #
-# Handlers the per-handler unit exposed that genuinely mutate tenant business
-# state with no audit row anywhere on the path. They are listed so the suite is
-# green on a KNOWN, enumerated set rather than by widening the real exemption
-# dict — every one of them is work still to do, and `test_audit_exemption_list_
-# has_no_stale_entries` fails the moment one starts auditing, which is the
-# prompt to delete its entry here.
+# Handlers that genuinely mutate tenant business state with no audit row
+# anywhere on the path. Listing one here keeps the suite green on a KNOWN,
+# enumerated set instead of widening the real exemption dict above — an entry
+# here says "still to do", never "already covered", and
+# `test_audit_exemption_list_has_no_stale_entries` fails the moment the handler
+# starts auditing, which is the prompt to delete the entry.
 #
 # Do not add to this dict. A new unaudited mutating handler is a bug to fix, not
 # an entry to make.
-_OPEN_AUDIT_HOLES: dict[tuple[str, str], str] = {
-    ("app.api.inspections", "create_inspection"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. Writes a "
-        "QualityInspection (the 4-way-match gate that can fail an invoice) with "
-        "no audit row; its sibling `sync_inspections` audits via qms_sync."
-    ),
-    ("app.api.invoices", "import_invoices_from_csv"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. "
-        "services/csv_import.import_invoices_csv bulk-inserts Invoice rows "
-        "(including `paid`/`done` historicals) with no audit row."
-    ),
-    ("app.api.vendors", "import_vendors_from_csv"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. "
-        "services/csv_import.import_vendors_csv creates/updates Vendor rows "
-        "with no audit row."
-    ),
-    ("app.api.vendors", "invite_vendor_portal_user"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. Creates a "
-        "VendorUser credential (an account that can submit invoices and stage "
-        "bank-detail changes) with no audit row."
-    ),
-    ("app.api.vendors", "sync_vendors_from_erp_endpoint"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. "
-        "services/vendor_sync.sync_vendors_from_erp creates/updates Vendor rows "
-        "with no audit row, unlike gl_accounts.sync_gl_accounts_from_erp."
-    ),
-    ("app.api.workflow_definitions", "create_workflow"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. Creates a "
-        "WorkflowDefinition (the approval routing rules) with no audit row, "
-        "while every other mutator in the same module audits — exactly the "
-        "one-handler-vouches-for-the-file gap the per-handler unit exists to catch."
-    ),
-}
+_OPEN_AUDIT_HOLES: dict[tuple[str, str], str] = {}
+"""Empty on purpose — kept, not deleted.
+
+The six entries this held (round-24 report) are all closed:
+
+* ``workflow_definitions.create_workflow`` → ``workflow.created``
+* ``vendors.invite_vendor_portal_user`` → ``vendor_user.invited``
+* ``vendors.sync_vendors_from_erp_endpoint`` → ``vendor.synced_from_erp``
+  (in ``services/vendor_sync``)
+* ``vendors.import_vendors_from_csv`` → ``vendor.imported_csv``
+  (in ``services/csv_import``)
+* ``invoices.import_invoices_from_csv`` → ``invoice.imported_csv``
+  (in ``services/csv_import``)
+* ``inspections.create_inspection`` → ``quality_inspection.created``
+
+The dict stays because the DISTINCTION it draws is the valuable part: a known
+gap is not a settled decision, and merging one into the exemption dict above is
+how "we have not done this yet" quietly becomes "this is fine". A future
+unaudited mutator should be FIXED; if one genuinely cannot be fixed in the
+session that finds it, it belongs here — with a reason that says it is open work
+— and nowhere else.
+"""
 
 _AUDIT_EXEMPT = {**_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT, **_OPEN_AUDIT_HOLES}
 

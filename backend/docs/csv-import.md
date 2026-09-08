@@ -124,6 +124,47 @@ read as native. That is deliberate: absence of the marker means "we do not
 know", and inventing provenance for a historical row is exactly the guessing
 the marker exists to avoid.
 
+## Audit trail
+
+Both importers write an append-only audit row for **every row they create**,
+from inside `services/csv_import` (which is why neither endpoint carries a
+`dispatch_audit` of its own — the cross-module chokepoint is recorded in
+`tests/test_audit_append_only.py::_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`):
+
+| Action | Written for | `details` |
+|---|---|---|
+| `vendor.imported_csv` | Each vendor created — by the vendor importer, and by the invoice importer when it mints a stub for an unknown supplier | `name`, `code`, `source` |
+| `invoice.imported_csv` | Each invoice created | `invoice_number`, `status`, `vendor_id`, `source` |
+
+Why it matters: a CSV import **bypasses the workflow engine entirely** and can
+land an invoice directly at `paid` or `done` — a state a native invoice can only
+reach through an approval, a segregation check and an approval signature.
+Without these rows such an invoice had a completely empty audit trail, which is
+precisely the row a SOX auditor most wants attributed. The same goes for a
+vendor: an import mints **payee** rows, and `POST /api/vendors` has always
+written `vendor.created` for the single-row path.
+
+Two properties worth knowing:
+
+- **The invoice row is keyed on the invoice's own `correlation_id`.**
+  `GET /api/audit/invoice/{id}` and `GET /api/invoices/{id}/audit-log` resolve an
+  invoice's trail by joining `AuditLog.correlation_id` to `Invoice.correlation_id`,
+  so a row keyed any other way would be invisible on the very invoice it
+  describes. Both ids are column defaults populated by the INSERT, so the
+  importer flushes the batch *before* writing its audit rows.
+- **Skipped and errored rows write nothing.** Nothing was created, so there is
+  nothing to attribute — a duplicate that dedups out leaves no evidence behind.
+
+`details` is PII-free by construction: `name` / `code` for a vendor (the same
+two fields `vendor.created` records) and `invoice_number` / `status` for an
+invoice. The `tax_id`, `email`, `phone` and `address` columns the vendor CSV
+accepts are written onto the vendor row but **never** into the trail, which is
+append-only, undeletable (migration 0022) and shipped to a WORM store.
+
+The importing user rides the row as `actor_id`; the API handlers pass it in.
+A direct caller of `import_vendors_csv` / `import_invoices_csv` that omits
+`actor_id` produces system-attributed rows.
+
 ## What the import does NOT do
 
 - **No file attachment.** The importer creates the AP records; it does

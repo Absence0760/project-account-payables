@@ -156,6 +156,65 @@ Each synced vendor stores:
 - `erp_vendor_id` — the vendor's ID in the external ERP (for two-way mapping)
 - `erp_synced_at` — timestamp of last sync
 
+### Every changed vendor writes an audit row
+
+`services/vendor_sync.sync_vendors_from_erp` writes an append-only
+`vendor.synced_from_erp` row for each vendor it **actually changes** — the same
+per-row shape `services/qms_sync` uses for the inspections it upserts, and the
+reason `POST /api/vendors/sync-erp` carries no `dispatch_audit` of its own
+(`tests/test_audit_append_only.py` records that cross-module chokepoint in
+`_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`).
+
+A vendor is a **payee**: before this, a bulk ERP pull could materialise new
+payee rows with nothing in the trail saying where they came from or who ran the
+pull — while a single-vendor `POST /api/vendors` has always written
+`vendor.created`.
+
+| `details.change` | Means |
+|---|---|
+| `created` | A brand-new payee row |
+| `updated` | Fields refreshed on a vendor already linked by `erp_vendor_id` |
+| `linked` | A manually-created vendor adopted by an ERP id (this is also what can promote it out of `unverified`) |
+
+A record the pull leaves byte-identical (`unchanged`) writes **nothing** — an
+audit row for a state change that did not happen is unbounded growth describing
+nothing.
+
+`details` carries `change`, `erp_vendor_id`, `name` and `code` — the same two
+vendor fields `vendor.created` records. The ERP payload also carries `tax_id`,
+`email`, `phone` and `address`, and the sync writes all four onto the vendor
+row; **none of them reach the trail**, which is append-only, undeletable
+(migration 0022) and shipped to a WORM store.
+
+## Bulk and credential paths audit too
+
+Every path that creates or changes a vendor writes an append-only audit row
+(project invariant #3), not just the single-row `POST` / `PATCH` endpoints. The
+bulk ones were the gap: a per-MODULE audit check let one auditing handler vouch
+for its unaudited neighbours, so three vendor-touching paths ran without one.
+
+| Path | Action | `details` |
+|---|---|---|
+| `POST /api/vendors/sync-erp` | `vendor.synced_from_erp` | `change`, `erp_vendor_id`, `name`, `code` |
+| `POST /api/vendors/import-csv` | `vendor.imported_csv` | `name`, `code`, `source` |
+| `POST /api/vendors/{id}/portal-users` | `vendor_user.invited` | `vendor_user_id` |
+
+**CSV import** goes through `services/csv_import`, which writes one row per
+vendor actually created (a skipped duplicate creates nothing and writes
+nothing). Same PII floor as the ERP sync — `name` and `code` only, never the
+`tax_id`, `email`, `phone` or `address` columns the CSV may carry. The invoice
+importer writes the same row for each vendor stub it mints for an unknown
+supplier. See [`csv-import.md`](csv-import.md) § Audit trail.
+
+**Portal invites** write `vendor_user.invited`, keyed on the **vendor** so it
+sits on the same trail as the `vendor_user.deleted` row the revoke has always
+written. Provisioning a supplier credential is the segregation-of-duties half
+that used to leave no trace: an account that can submit invoices and stage
+bank-detail changes could be created, used and deleted, and the trail would show
+only the deletion. `details` is `{"vendor_user_id": ...}` — never the supplier's
+login address, and never the temp password the response body and the invite
+email carry.
+
 ## Vendor Fields
 
 | Field | Type | Description |

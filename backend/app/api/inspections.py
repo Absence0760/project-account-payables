@@ -28,6 +28,7 @@ from app.models.procurement import GoodsReceipt
 from app.models.quality_inspection import QualityInspection
 from app.models.user import User
 from app.schemas.inspection import VALID_RESULTS, InspectionCreate
+from app.services.audit_dispatch import dispatch_audit
 from app.services.qms_adapters import UnknownQmsProviderError, list_available_providers
 from app.services.qms_sync import resolve_opted_in_qms_config, sync_tenant_inspections
 from app.tenant import (
@@ -182,6 +183,32 @@ async def create_inspection(
     )
     db.add(inspection)
     await db.flush()
+
+    # The 4-way-match quality gate: a `fail`/`partial` here is what flips an
+    # invoice's `po_match` to a quality hold, so a hand-entered inspection can
+    # block (or clear) a payable invoice. Its QMS-synced sibling has always
+    # audited via `services/qms_sync`; the manual path did not, which left the
+    # one inspection a human could fabricate as the only one with no record of
+    # who recorded it. Details mirror `quality_inspection.synced` exactly —
+    # inspection number and outcome only. The inspector's name, the accepted /
+    # rejected quantities and the free-text deviation notes are deliberately
+    # NOT recorded: the same PII-lean rule the sync path applies.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="quality_inspection.created",
+        entity_type="quality_inspection",
+        entity_id=inspection.id,
+        details={
+            "inspection_number": inspection.inspection_number,
+            "result": inspection.result,
+            "po_resolved": po_id is not None,
+            "gr_resolved": gr_id is not None,
+        },
+    )
+
     # Same shape as a listed row, `gr_number` included — a client that renders
     # the created row without re-reading would otherwise show a blank cell that
     # fills itself in on the next load.
