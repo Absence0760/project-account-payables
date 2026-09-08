@@ -35,6 +35,19 @@ async def _default_entity_id(realdb, key: str = "a") -> uuid.UUID:
         return (await s.execute(select(Entity.id).where(Entity.is_default))).scalar_one()
 
 
+async def _org_id(realdb, key: str = "a") -> uuid.UUID:
+    """The tenant's own organization id, read off its default entity.
+
+    ``entities.organization_id`` is NOT NULL, so a test that inserts a
+    subsidiary has to carry the same org the harness provisioned.
+    """
+    mk = realdb.sessionmaker(key)
+    async with mk() as s:
+        return (
+            await s.execute(select(Entity.organization_id).where(Entity.is_default))
+        ).scalar_one()
+
+
 # ---------------------------------------------------------------------------
 # get_entity_id — header resolution + validation
 # ---------------------------------------------------------------------------
@@ -121,6 +134,75 @@ async def test_get_write_entity_id_honours_selected(realdb):
         # When an entity is selected the value passes through untouched (it was
         # already validated by get_entity_id upstream).
         assert await get_write_entity_id(chosen, s) == chosen
+
+
+async def test_get_write_entity_id_refuses_a_deactivated_entity(realdb):
+    """A retired subsidiary must stop *accumulating* rows.
+
+    ``/entities`` deactivates an entity precisely so nothing new is filed under
+    it, but ``get_entity_id`` validates only that the id EXISTS — so a stale
+    ``X-Entity-ID`` (a client that had it selected when an admin retired it)
+    kept writing there. Reads are deliberately unaffected; see the sibling test.
+    """
+    org_id = await _org_id(realdb)
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        retired = Entity(
+            organization_id=org_id,
+            name="Retired Sub",
+            slug=f"retired-{uuid.uuid4().hex[:8]}",
+            is_active=False,
+        )
+        s.add(retired)
+        await s.commit()
+        with pytest.raises(HTTPException) as exc:
+            await get_write_entity_id(retired.id, s)
+        assert exc.value.status_code == 409
+        # The refusal names the state, never the entity's own name.
+        assert "deactivated" in exc.value.detail.lower()
+        assert "Retired Sub" not in exc.value.detail
+
+
+async def test_get_entity_id_still_resolves_a_deactivated_entity_for_reads(realdb):
+    """Deactivating an entity must not make its history unreachable.
+
+    The write path refuses (above); the READ path keeps resolving, so a
+    retired subsidiary's invoices, payments and audit trail can still be
+    listed and exported — which is the whole reason a deactivation is not a
+    delete.
+    """
+    org_id = await _org_id(realdb)
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        retired = Entity(
+            organization_id=org_id,
+            name="Retired Sub",
+            slug=f"retired-{uuid.uuid4().hex[:8]}",
+            is_active=False,
+        )
+        s.add(retired)
+        await s.commit()
+        assert await get_entity_id(str(retired.id), s) == retired.id
+
+
+async def test_get_write_entity_id_allows_an_active_entity(realdb):
+    """The guard must bite on `is_active is False` only — not on truthiness.
+
+    Without this the refusal could not be told apart from one that also
+    rejected the ordinary case, and the fallback path below would mask it.
+    """
+    org_id = await _org_id(realdb)
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        live = Entity(
+            organization_id=org_id,
+            name="Live Sub",
+            slug=f"live-{uuid.uuid4().hex[:8]}",
+            is_active=True,
+        )
+        s.add(live)
+        await s.commit()
+        assert await get_write_entity_id(live.id, s) == live.id
 
 
 # ---------------------------------------------------------------------------
