@@ -33,16 +33,20 @@
 	import { toggleSort, type SortOrder } from '$lib/utils/sort';
 
 	// Search + the quick status chips are URL-backed (`?search=&status=`)
-	// alongside `assigned_to_id` and sort, so a reload / back / shared link
-	// reproduces the view — mirrors `/contracts` + `/expenses`. The Advanced
-	// Search modal's richer filters stay out of the URL (a separate, larger
-	// surface). See `syncUrl()`.
+	// alongside `assigned_to_id`, sort and the `?id=` deep link, so a reload /
+	// back / shared link reproduces the view — mirrors `/contracts` +
+	// `/expenses`. The Advanced Search modal's richer filters stay out of the
+	// URL (a separate, larger surface). `syncUrl()` is the ONE writer of the
+	// whole query string — read its comment before adding a param.
 	let search = $state($page.url.searchParams.get('search') ?? '');
 	let activeStatuses = $state<InvoiceStatus[]>(
 		($page.url.searchParams.get('status') ?? '')
 			.split(',')
 			.filter((s): s is InvoiceStatus => (INVOICE_STATUSES as readonly string[]).includes(s))
 	);
+	// The `?id=` deep link, mirrored out of `$page.url` (see the effect near
+	// the bottom) so `syncUrl()` — the single query-string writer — can own it.
+	let deepLinkId = $state<string | null>($page.url.searchParams.get('id'));
 	let editing = $state<Invoice | null>(null);
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
@@ -134,31 +138,17 @@
 		}
 	}
 
-	// Column sort — URL-backed (`?sort=&order=`), mirrors /expenses'
-	// `syncUrl()` pattern. `null` field = the backend's own default order
-	// (most-recent first).
+	// Column sort — URL-backed (`?sort=&order=`) through the same single
+	// `syncUrl()` writer the filters use, mirroring /expenses. `null` field =
+	// the backend's own default order (most-recent first).
 	let sortField = $state<string | null>($page.url.searchParams.get('sort'));
 	let sortOrder = $state<SortOrder>(($page.url.searchParams.get('order') as SortOrder) ?? 'desc');
-
-	function syncSortUrl() {
-		untrack(() => {
-			const url = new URL($page.url);
-			if (sortField) {
-				url.searchParams.set('sort', sortField);
-				url.searchParams.set('order', sortOrder);
-			} else {
-				url.searchParams.delete('sort');
-				url.searchParams.delete('order');
-			}
-			replaceState(`${url.pathname}${url.search}`, {});
-		});
-	}
 
 	function handleSort(field: string) {
 		const next = toggleSort({ field: sortField, order: sortOrder }, field);
 		sortField = next.field;
 		sortOrder = next.order;
-		syncSortUrl();
+		syncUrl();
 		invoiceStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	}
 
@@ -198,29 +188,48 @@
 	}
 
 	/**
-	 * Reflect `assignedToId` into the URL as `?assigned_to_id=` — the "Assigned
-	 * to" filter and the "My Approvals" toggle (which just sets this to the
-	 * caller's own id) both drive off the one param, so a reload or a shared
-	 * link reproduces the same view. Mirrors the `syncUrl()` convention on
-	 * `/contracts` and `/expenses`: every read here is untracked, `$page.url`
-	 * included, because this is a WRITER called from the filter `$effect`
-	 * below — a tracked `$page.url` read would self-trigger the very effect
-	 * that calls `replaceState`, and a tracked `search` read would make every
-	 * filter effect re-fire on each keystroke (issue #168). Covers the search
-	 * term + the quick status chips + `assigned_to_id`; the Advanced Search
-	 * modal's richer filters and column sort (`syncSortUrl`) are handled apart.
+	 * The ONE writer of this route's query string.
+	 *
+	 * It serialises EVERY param the page reads — `search`, `status`,
+	 * `assigned_to_id`, `sort`/`order` and the `?id=` deep link — from
+	 * component state, and it is the only `replaceState` call on the route.
+	 * That is not tidiness; a second writer is a correctness bug here:
+	 *
+	 * SvelteKit's shallow-routing `replaceState` writes `history` and
+	 * `page.state` but **never updates `page.url`** (see `@sveltejs/kit`'s
+	 * `client.js`), so `$page.url` stays frozen at the last real navigation.
+	 * Two writers that each rebuilt from it therefore didn't merely race —
+	 * they deterministically dropped each other's params: the old
+	 * `syncSortUrl()` rebuilt a URL with no `search=`/`status=` in it, and the
+	 * next filter change rebuilt one with no `sort=`. Same reason `?id=` is
+	 * owned here rather than inherited from `$page.url`: after
+	 * `closeInvoiceModal()` scrubbed it, the next rebuild read it straight
+	 * back off the frozen URL and re-armed the deep link.
+	 *
+	 * Building the string from scratch (rather than mutating `$page.url`) is
+	 * what makes "one owner" checkable: a param that is not listed below does
+	 * not survive, so a future param cannot be half-owned. `$page.url` is read
+	 * only for `pathname`.
+	 *
+	 * Every read here is untracked because this is a WRITER called from the
+	 * filter `$effect`s below — a tracked `$page.url` read would self-trigger
+	 * the very effect that calls `replaceState`, and a tracked `search` read
+	 * would make every filter effect re-fire on each keystroke (issue #168).
 	 */
 	function syncUrl() {
 		untrack(() => {
-			const url = new URL($page.url);
-			if (assignedToId) url.searchParams.set('assigned_to_id', assignedToId);
-			else url.searchParams.delete('assigned_to_id');
+			const params = new URLSearchParams();
+			if (deepLinkId) params.set('id', deepLinkId);
 			const s = search.trim();
-			if (s) url.searchParams.set('search', s);
-			else url.searchParams.delete('search');
-			if (activeStatuses.length > 0) url.searchParams.set('status', activeStatuses.join(','));
-			else url.searchParams.delete('status');
-			replaceState(`${url.pathname}${url.search}`, {});
+			if (s) params.set('search', s);
+			if (activeStatuses.length > 0) params.set('status', activeStatuses.join(','));
+			if (assignedToId) params.set('assigned_to_id', assignedToId);
+			if (sortField) {
+				params.set('sort', sortField);
+				params.set('order', sortOrder);
+			}
+			const qs = params.toString();
+			replaceState(`${$page.url.pathname}${qs ? `?${qs}` : ''}`, {});
 		});
 	}
 
@@ -296,26 +305,38 @@
 	});
 
 	// Deep-link: `/invoices?id=<uuid>` (e.g. the "Invoice" action on the
-	// exceptions queue) opens that invoice's detail modal on load. The row
-	// may live on a later page than the default 20 we fetch, so resolve it
-	// straight from the API rather than the in-memory list.
+	// exceptions queue, the notification bell's `goto`) opens that invoice's
+	// detail modal. The row may live on a later page than the default 20 we
+	// fetch, so resolve it straight from the API rather than the in-memory list.
+	//
+	// Two halves, deliberately split:
+	//   - the READ is `$page.url`, because a deep link arrives by REAL
+	//     navigation and that is the only thing which updates it;
+	//   - the WRITE is `deepLinkId`, mirrored out of that read and serialised
+	//     by `syncUrl()`, because `replaceState` never updates `$page.url` — so
+	//     the scrub on close has to be recorded in state or the next URL write
+	//     reads the id straight back off the frozen URL.
+	// Re-arming stays driven by the URL, never by the close handler (a marker
+	// the handler cleared itself could be re-read before the scrub landed, and
+	// re-open the modal the user had just closed).
 	let deepLinkLoaded = $state<string | null>(null);
 	$effect(() => {
 		const id = $page.url.searchParams.get('id');
-		// Re-arming is driven by the URL, never by the close handler. When the
-		// handler cleared `deepLinkLoaded` itself it did so right after calling
-		// `replaceState`, and this effect could re-run before the `$page` store
-		// had caught up — reading the still-present `id` against a now-null
-		// marker and immediately RE-OPENING the modal the user had just closed.
-		// The window is tiny, which is why it only surfaced once something else
-		// in the modal (an extra fetch on mount) shifted the scheduling; keying
-		// the reset off the scrubbed URL removes it rather than hiding it.
+		// State reads AND writes are untracked: this effect depends on the
+		// router's URL and on nothing else, so it can neither self-trigger nor
+		// re-fire when `syncUrl()` clears the mirror.
 		if (!id) {
-			deepLinkLoaded = null;
+			untrack(() => {
+				deepLinkId = null;
+				deepLinkLoaded = null;
+			});
 			return;
 		}
-		if (deepLinkLoaded === id) return;
-		deepLinkLoaded = id;
+		if (untrack(() => deepLinkLoaded) === id) return;
+		untrack(() => {
+			deepLinkId = id;
+			deepLinkLoaded = id;
+		});
 		api
 			.get<Invoice>(`/api/invoices/${id}`)
 			.then((inv) => (editing = inv))
@@ -338,12 +359,13 @@
 
 	function closeInvoiceModal() {
 		editing = null;
-		const url = new URL($page.url);
-		if (url.searchParams.has('id')) {
-			url.searchParams.delete('id');
-			replaceState(`${url.pathname}${url.search}`, {});
-			// Re-arming for a fresh deep-link click is the effect's job, off the
-			// scrubbed URL — clearing the marker here raced `replaceState`.
+		if (deepLinkId) {
+			// Scrub `?id=` through the single writer, so the rest of the query
+			// string (search / status / assignee / sort) survives the close.
+			deepLinkId = null;
+			syncUrl();
+			// Re-arming for a fresh deep-link click is the effect's job, off a
+			// real navigation — clearing `deepLinkLoaded` here raced the scrub.
 		}
 		// Re-apply this page's active filters. The modal's mutation handlers
 		// (approve / reject / save / …) deliberately don't refresh the list
