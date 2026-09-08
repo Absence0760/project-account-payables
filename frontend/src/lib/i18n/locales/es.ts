@@ -1503,6 +1503,8 @@ export const messages = {
 	'cfoMetrics.concentration.top10': 'Los 10 principales proveedores',
 	'cfoMetrics.concentration.top50': 'Los 50 principales proveedores',
 	'cfoMetrics.concentration.largest': 'Proveedor principal',
+	'cfoMetrics.concentration.unconverted': 'Parcial: {n, plural, one {# factura} other {# facturas}} sin tipo de cambio a {currency}, contabilizadas por su valor nominal, por lo que los porcentajes anteriores se calculan sobre un total parcialmente convertido. Registre el tipo de cambio que falta antes de actuar sobre ellos.',
+
 	'cfoMetrics.fraudTrend.title': 'Tendencia de tasa de excepciones (6 meses)',
 	'cfoMetrics.fraudTrend.noInvoices': 'sin facturas: tasa no calculable',
 	'cfoMetrics.fx.title': 'Ganancia / pérdida cambiaria no realizada',

@@ -1506,6 +1506,8 @@ export const messages = {
 	'cfoMetrics.concentration.top10': 'Top 10 fornecedores',
 	'cfoMetrics.concentration.top50': 'Top 50 fornecedores',
 	'cfoMetrics.concentration.largest': 'Maior fornecedor',
+	'cfoMetrics.concentration.unconverted': 'Parcial: {n, plural, one {# fatura} other {# faturas}} sem taxa de câmbio para {currency}, contabilizadas pelo valor de face — portanto os percentuais acima são calculados sobre um total parcialmente convertido. Registre a taxa ausente antes de agir sobre eles.',
+
 	'cfoMetrics.fraudTrend.title': 'Tendência da taxa de exceções (6 meses)',
 	'cfoMetrics.fraudTrend.noInvoices': 'sem faturas — taxa não calculável',
 	'cfoMetrics.fx.title': 'Ganho / perda cambial não realizado',

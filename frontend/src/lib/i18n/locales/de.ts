@@ -1506,6 +1506,8 @@ export const messages = {
 	'cfoMetrics.concentration.top10': 'Top 10 Lieferanten',
 	'cfoMetrics.concentration.top50': 'Top 50 Lieferanten',
 	'cfoMetrics.concentration.largest': 'Größter Lieferant',
+	'cfoMetrics.concentration.unconverted': 'Teilweise: {n, plural, one {# Rechnung} other {# Rechnungen}} ohne Wechselkurs in {currency}, zum Nennwert erfasst — die Anteile oben beziehen sich daher auf eine nur teilweise umgerechnete Summe. Erfassen Sie den fehlenden Kurs, bevor Sie danach handeln.',
+
 	'cfoMetrics.fraudTrend.title': 'Ausnahmequote-Trend (6 Monate)',
 	'cfoMetrics.fraudTrend.noInvoices': 'keine Rechnungen — Quote nicht berechenbar',
 	'cfoMetrics.fx.title': 'Nicht realisierter Wechselkursgewinn/-verlust',

@@ -1505,6 +1505,8 @@ export const messages = {
 	'cfoMetrics.concentration.top10': 'Top 10 fournisseurs',
 	'cfoMetrics.concentration.top50': 'Top 50 fournisseurs',
 	'cfoMetrics.concentration.largest': 'Plus grand fournisseur',
+	'cfoMetrics.concentration.unconverted': 'Partiel : {n, plural, one {# facture} other {# factures}} sans taux de change vers {currency}, comptabilisées à leur valeur faciale — les parts ci-dessus portent donc sur un total partiellement converti. Enregistrez le taux manquant avant de vous en servir.',
+
 	'cfoMetrics.fraudTrend.title': "Tendance du taux d'exceptions (6 mois)",
 	'cfoMetrics.fraudTrend.noInvoices': 'aucune facture — taux non calculable',
 	'cfoMetrics.fx.title': 'Gain / perte de change latent',

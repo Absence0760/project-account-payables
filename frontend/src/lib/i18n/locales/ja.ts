@@ -1483,6 +1483,8 @@ export const messages = {
 	'cfoMetrics.concentration.top10': '上位10社',
 	'cfoMetrics.concentration.top50': '上位50社',
 	'cfoMetrics.concentration.largest': '最大の仕入先',
+	'cfoMetrics.concentration.unconverted': '一部未換算: {currency} への為替レートがない請求書 {n, plural, other {# 件}}を額面のまま集計しているため、上記の構成比は一部未換算の合計に対する値です。判断に使う前に不足しているレートを登録してください。',
+
 	'cfoMetrics.fraudTrend.title': '例外率の推移(6か月)',
 	'cfoMetrics.fraudTrend.noInvoices': '請求書なし — 率は算出不可',
 	'cfoMetrics.fx.title': '未実現為替差損益',

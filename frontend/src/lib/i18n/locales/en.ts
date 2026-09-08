@@ -1575,6 +1575,10 @@ export const en = {
 	'cfoMetrics.concentration.top10': 'Top 10 vendors',
 	'cfoMetrics.concentration.top50': 'Top 50 vendors',
 	'cfoMetrics.concentration.largest': 'Largest vendor',
+
+	// Concentration shares are computed over a PART-CONVERTED total — the unconvertible rows are INCLUDED at face value here, the opposite of cfoMetrics.apBalance.unconverted, which reports a floor because they were EXCLUDED. Do not collapse the two.
+	'cfoMetrics.concentration.unconverted': 'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value — so the shares above are computed over a part-converted total. Book the missing rate before acting on them.',
+
 	'cfoMetrics.fraudTrend.title': 'Exception rate trend (6 months)',
 	'cfoMetrics.fraudTrend.noInvoices': 'no invoices — rate not computable',
 	'cfoMetrics.fx.title': 'Unrealized FX gain / loss',
