@@ -266,9 +266,12 @@ NULL, and the `unconverted` CASE fell to its `ELSE` — reporting such a row as
 converted while its face value was what got added. The money figures were
 always the face amount and did not change.
 
-**One inline copy of the rule remains**: `api/payments.py::_queue_summary_rows`'
-`rep_expr` / `unconv_expr`, which carries the same missing `IS NOT NULL` leg.
-It should adopt the helper on its next touch.
+`api/payments.py::_payment_queue_rollup` carried the same inline copy with the
+same missing leg, and adopted the helper in the same round — verified against
+real Postgres, where the old expression reported `unconverted: 0` on a row the
+new one counts as `1`. Two surfaces independently reaching that bug from the
+same hand-written CASE is the argument for the shared expression, stated
+better than any comment could.
 
 ### Touchless rate — what the number means
 
@@ -633,15 +636,9 @@ own message — `cfoMetrics.apBalance.unconverted` says "Excluded ... the balanc
 above is a floor", and these rows are **included** at face value, so reusing it
 would state the opposite of what happened.
 
-The CSV export does **not** yet carry a column for it. It is the one surface
-with no other channel to disclose — no sibling JSON field, no page to put a
-note on — and a downloaded file outlives the page that produced it, so the
-column belongs there: appended after `currencies`, which already exists for
-exactly this auditability reason (`currencies` says which currencies rolled in;
-`unconverted_count` says how many of them were not actually converted).
-`tests/test_report_export.py` pins the header order, so adding it is a
-deliberate two-file change rather than a silent one — that pin is the guard
-working as designed, not an argument against the column.
+The CSV export carries it too, as its own column — see § CSV export. That
+surface needed it most: it has no sibling field and no page to carry a note,
+and the file outlives the tenant context that produced it.
 
 Three sibling rollups on the same handler moved to the same shape in the same
 change, through `currency_conversion.invoice_currency_rollup_select`:
@@ -969,7 +966,7 @@ returning "no threshold" rather than raising.
 | `{report}` | Columns |
 |---|---|
 | `invoice_register` | invoice_id, invoice_number, vendor_name, amount, currency, status, invoice_date, due_date, created_at, po_number |
-| `vendor_spend` | vendor_name, invoice_count, total_amount, currencies |
+| `vendor_spend` | vendor_name, invoice_count, total_amount, currencies, unconverted_count |
 | `payment_register` | payment_id, invoice_id, invoice_number, vendor_name, amount, currency, method, status, provider, reference, submitted_at, completed_at |
 | `aging_snapshot` | as_of_date, current, days_30, days_60, days_90, days_90_plus, total. `as_of_date` defaults to `utc_today()` — neither caller passes `snapshot_date`, and both bucket against a UTC `today`, so a local-time default labelled the file with one date while the buckets were computed as of another |
 | `cashflow_forecast` | period, period_start, period_end, scheduled_amount, committed_amount, pending_amount, discount_eligible_amount, count |
@@ -980,9 +977,25 @@ returning "no threshold" rather than raising.
 JSON endpoint.
 
 `vendor_spend`'s `total_amount` is the org's reporting-currency rollup (see
-above), not a raw `SUM(amount)` — `currencies` lists every distinct original
-invoice currency that rolled into the total, so a mixed-currency vendor's row
-is auditable (e.g. `"EUR, USD"`) rather than looking like a same-currency sum.
+above), not a raw `SUM(amount)`. Two columns make it auditable rather than a
+figure to take on trust: `currencies` lists every distinct original invoice
+currency that rolled in (e.g. `"EUR, USD"`), and `unconverted_count` says how
+many of those invoices were summed at **face value** because no locked rate
+bridged them.
+
+That second column matters more here than on any JSON surface. Every other
+spend surface can put the disclosure beside the figure — a `role="alert"` note,
+a sibling field. A CSV is opened later, in a spreadsheet, by someone with no
+way back to the tenant that produced it, so a total that quietly mixes
+currencies has no channel to say so at all. It is **appended** after
+`currencies`, so a consumer reading by header is unaffected and one reading by
+position keeps working for the four columns it already knew.
+
+A row from a caller that exposes no `unconverted_count` (the legacy positional
+tuple / attribute-only shapes) exports **blank**, not `0` — such a caller has
+made no claim about convertibility, and `0` would read as "everything
+converted". Same zero-versus-unknown rule as `docs/decisions.md` §34. A rollup
+row that genuinely converted everything exports `0`.
 
 ### `Row` is not a tuple — duck-type the joined exporters
 
@@ -1003,6 +1016,14 @@ builds one with no database) — plain-tuple fixtures cannot catch this.
 Column order is pinned by `tests/test_report_export.py` — finance
 imports rely on column position; a reorder breaks downstream
 pipelines.
+
+The pin is a **drift guard, not a freeze**. Adding a column is allowed when it
+carries something the file cannot otherwise say (as `unconverted_count` does
+for `vendor_spend`), on two conditions: it goes at the **END**, so nothing a
+consumer already reads by position moves; and the pin is updated in the same
+commit, which is what makes the change deliberate instead of silent. A column
+that is inserted, renamed, reordered or removed is the case the pin exists to
+stop.
 
 ### Formula-injection guard (CWE-1236)
 
@@ -1226,7 +1247,7 @@ the cadence anchoring).
 | File | Coverage |
 |---|---|
 | `tests/test_analytics.py` | Every compute_* function: DPO formula, CCC None-on-missing-legs, working-capital monotonicity, supplier concentration flag threshold, fraud-rate **not-computable** on a zero-invoice month (`None`, never `0`), rebate annualisation, forecast-variance sign convention, processing-time min-sample collapse, approval-bottleneck rollup + unassigned bucket, discount-capture three-way split (open window is `pending`, not `missed`) and its no-decided-rows `None` rate |
-| `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
+| `tests/test_report_export.py` | Registry pins all six reports; per-report header column-order pinned (one shared `_VENDOR_SPEND_HEADER` constant, so the three `vendor_spend` cases cannot disagree about it); enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted; `vendor_spend`'s `unconverted_count` — a real `0` from a fully-converted rollup row, a real count from a part-converted one, and **blank** from a legacy caller that exposes no such attribute, so "we did not ask" never renders as "none" |
 | `tests/test_scheduled_reports.py` | 20 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone; **per-recipient delivery** — one bad address doesn't block the ones after it, a partial advances `next_run_at` and isn't a strike, a total failure holds `next_run_at` and still attempts every address; **cadence anchoring** — 30 late ticks in a row leave the 09:00 slot at 09:00, a dormant fortnight catches up to ONE next slot rather than 14 sends, an exactly-due slot still moves forward (no busy-loop), a future slot takes exactly one step, a naive `scheduled_for` reads as UTC |
 | `tests/test_scheduled_reports_api.py` | 23 cases — CRUD round-trip; the created row is what `list_due_schedules` picks up; `report_type` / `cadence` validated against the runner's own registries (create AND patch); recipient list shape-checked / de-duped / bounded / non-empty; our validator message names no address; RBAC (mutations admin-only, reads admin+cfo, ap_manager/ap_clerk refused); tenant isolation (list, get, patch); PII-free audit rows carrying the recipient COUNT; re-enabling a 5-strike-disabled row clears the stale `[retry N]` marker |
 | `tests/test_utc_today.py` | Drift guard — `utc_today()` is the UTC calendar date; an AST scan fails on any `date.today()` / `datetime.today()` / `datetime.date.today()` reappearing in the modules that have converged on it (the cash-flow stack, plus the AP surfaces: discounts, portal, dashboard, payments queue, recurring, workflow, review, extraction, invoice warnings, 1099, Positive Pay, the exporters). The scanner itself is a tested helper — the module-attribute spelling `datetime.date.today()` slipped past the first version, which is how two Positive Pay modules could have been listed as converged while still reading local time, and naive `datetime.now().date()` isn't spelled `today` at all |

