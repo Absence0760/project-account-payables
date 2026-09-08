@@ -1949,6 +1949,9 @@ export const messages = {
 	'catalogs.filter.preferred': '優先',
 	'catalogs.col.name': '名称',
 	'catalogs.col.type': '種類',
+	'catalogs.type.internal': '社内',
+	'catalogs.type.punchout': 'パンチアウト',
+
 	'catalogs.col.items': '品目',
 	'catalogs.col.status': 'ステータス',
 	'catalogs.status.active': '有効',
@@ -1980,6 +1983,9 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'カタログ：{name}',
 	'catalogs.guided.contractLabel': '契約：{number}',
 	'catalogs.guided.preferredTag': '優先',
+	'catalogs.guided.reason.preferredCatalog': '優先カタログ',
+	'catalogs.guided.reason.activeContract': '有効な契約',
+
 	'catalogs.loadMore': 'さらに読み込む（{total}件中{shown}件）',
 	'catalogs.showingAll': '{total, plural, other {#件すべてのカタログを表示中}}',
 

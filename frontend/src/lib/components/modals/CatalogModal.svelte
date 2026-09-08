@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Catalog, CatalogItem, CatalogType } from '$lib/types/catalog';
-	import { CATALOG_TYPES, CATALOG_TYPE_LABELS } from '$lib/types/catalog';
+	import { CATALOG_TYPES, CATALOG_TYPE_LABEL_KEYS } from '$lib/types/catalog';
 	import { auth } from '$lib/stores/auth.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -173,7 +173,7 @@
 				<span>{m('catalogs.modal.field.type')}</span>
 				<select bind:value={catalog_type} disabled={!canEdit}>
 					{#each CATALOG_TYPES as t}
-						<option value={t}>{CATALOG_TYPE_LABELS[t]}</option>
+						<option value={t}>{m(CATALOG_TYPE_LABEL_KEYS[t])}</option>
 					{/each}
 				</select>
 			</label>

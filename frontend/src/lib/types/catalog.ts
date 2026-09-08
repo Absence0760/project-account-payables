@@ -17,10 +17,18 @@ export type CatalogType = 'internal' | 'punchout';
 
 export const CATALOG_TYPES: CatalogType[] = ['internal', 'punchout'];
 
-export const CATALOG_TYPE_LABELS: Record<CatalogType, string> = {
-	internal: 'Internal',
-	punchout: 'Punch-out'
+// The catalog type is a table cell on the (extracted) `/catalogs` list and a
+// `<select>` option in `CatalogModal`, both beside translated copy — so it is
+// keyed like every other value map in this tree.
+export const CATALOG_TYPE_LABEL_KEYS: Record<CatalogType, MessageKey> = {
+	internal: 'catalogs.type.internal',
+	punchout: 'catalogs.type.punchout'
 };
+
+/** The message key for a catalog type, or `null` for an unrecognised one. */
+export function catalogTypeLabelKey(catalogType: string): MessageKey | null {
+	return CATALOG_TYPE_LABEL_KEYS[catalogType as CatalogType] ?? null;
+}
 
 export interface CatalogItem {
 	id: string;
@@ -118,10 +126,20 @@ export interface GuidedBuyingSuggestion {
 	items: GuidedBuyingItem[];
 }
 
-export const GUIDED_BUYING_REASON_LABELS: Record<string, string> = {
-	preferred_catalog: 'Preferred catalog',
-	active_contract: 'Active contract'
+// Why guided buying is steering the buyer at this vendor. The backend's
+// vocabulary is fixed but open-ended (`api/catalogs.py` builds the list), so
+// the accessor is tolerant: an unrecognised reason renders its raw code rather
+// than disappearing from the card — a reason nobody can read is still better
+// evidence than no reason at all.
+export const GUIDED_BUYING_REASON_LABEL_KEYS: Record<string, MessageKey> = {
+	preferred_catalog: 'catalogs.guided.reason.preferredCatalog',
+	active_contract: 'catalogs.guided.reason.activeContract'
 };
+
+/** The message key for a guided-buying reason, or `null` for an unknown one. */
+export function guidedBuyingReasonLabelKey(reason: string): MessageKey | null {
+	return GUIDED_BUYING_REASON_LABEL_KEYS[reason] ?? null;
+}
 
 // ===================== Punch-out (live cXML/OCI round-trip) =====================
 

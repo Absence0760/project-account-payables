@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Catalog, GuidedBuyingSuggestion } from '$lib/types/catalog';
-	import { CATALOG_TYPE_LABELS, GUIDED_BUYING_REASON_LABELS } from '$lib/types/catalog';
+	import { catalogTypeLabelKey, guidedBuyingReasonLabelKey } from '$lib/types/catalog';
 	import { auth } from '$lib/stores/auth.svelte';
 	import {
 		listCatalogs,
@@ -30,6 +30,20 @@
 	const canCreate = $derived(auth.isManager); // admin | ap_manager
 	// Buyers (admin / ap_manager / ap_clerk) may start a punch-out session.
 	const canPunchout = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
+
+	// Catalog type and guided-buying reason are message keys, not English
+	// literals — a value this build doesn't know renders raw rather than
+	// disappearing (a reason nobody can read is still better evidence than
+	// none).
+	const typeLabel = (t: string) => {
+		const key = catalogTypeLabelKey(t);
+		return key ? m(key) : t;
+	};
+
+	const reasonLabel = (r: string) => {
+		const key = guidedBuyingReasonLabelKey(r);
+		return key ? m(key) : r;
+	};
 
 	// --- List state ---
 	const PAGE_SIZE = 100;
@@ -236,7 +250,7 @@
 									<strong>{v.vendor_name}</strong>
 									<div class="reasons">
 										{#each v.reasons as r}
-											<span class="reason">{GUIDED_BUYING_REASON_LABELS[r] ?? r}</span>
+											<span class="reason">{reasonLabel(r)}</span>
 										{/each}
 									</div>
 									{#if v.catalog_name}<span class="sub">{m('catalogs.guided.catalogLabel', { name: v.catalog_name })}</span>{/if}
@@ -313,7 +327,7 @@
 							{#if c.is_preferred}<span class="pref-dot" title={m('catalogs.preferredTitle')}>★</span>{/if}
 						</RowLink>
 					</td>
-					<td>{CATALOG_TYPE_LABELS[c.catalog_type as keyof typeof CATALOG_TYPE_LABELS] ?? c.catalog_type}</td>
+					<td>{typeLabel(c.catalog_type)}</td>
 					<td class="right">{c.item_count}</td>
 					<td>{c.is_active ? m('catalogs.status.active') : m('catalogs.status.inactive')}</td>
 					<td class="actions">

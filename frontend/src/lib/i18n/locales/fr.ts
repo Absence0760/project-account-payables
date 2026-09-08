@@ -1976,6 +1976,9 @@ export const messages = {
 	'catalogs.filter.preferred': 'Privilégié',
 	'catalogs.col.name': 'Nom',
 	'catalogs.col.type': 'Type',
+	'catalogs.type.internal': 'Interne',
+	'catalogs.type.punchout': 'Punch-out',
+
 	'catalogs.col.items': 'Articles',
 	'catalogs.col.status': 'Statut',
 	'catalogs.status.active': 'Actif',
@@ -2007,6 +2010,9 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'Catalogue : {name}',
 	'catalogs.guided.contractLabel': 'Contrat : {number}',
 	'catalogs.guided.preferredTag': 'Privilégié',
+	'catalogs.guided.reason.preferredCatalog': 'Catalogue privilégié',
+	'catalogs.guided.reason.activeContract': 'Contrat actif',
+
 	'catalogs.loadMore': 'Charger plus ({shown} sur {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Affichage du # catalogue} other {Affichage des # catalogues}}',

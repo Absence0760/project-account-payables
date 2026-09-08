@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
+	CATALOG_TYPES,
+	CATALOG_TYPE_LABEL_KEYS,
+	GUIDED_BUYING_REASON_LABEL_KEYS,
+	catalogTypeLabelKey,
+	guidedBuyingReasonLabelKey,
 	PUNCHOUT_STATUS_LABEL_KEYS,
 	PUNCHOUT_STATUS_TONES,
 	punchoutStatusLabelKey,
@@ -49,5 +54,37 @@ describe('PUNCHOUT_STATUS_LABEL_KEYS', () => {
 		for (const status of Object.keys(PUNCHOUT_STATUS_TONES)) {
 			expect(punchoutStatusLabelKey(status), `${status} has a tone but no label`).toBeTruthy();
 		}
+	});
+});
+
+describe('CATALOG_TYPE_LABEL_KEYS', () => {
+	it('names a real catalogue key for every catalog type', () => {
+		for (const type of CATALOG_TYPES) {
+			const key = CATALOG_TYPE_LABEL_KEYS[type];
+			expect(key, `${type} has no label key`).toBeTruthy();
+			expect(Object.keys(en), `${type} → "${key}" is not in the catalogue`).toContain(key);
+		}
+	});
+
+	it('resolves a known type and returns null otherwise', () => {
+		expect(catalogTypeLabelKey('punchout')).toBe('catalogs.type.punchout');
+		expect(catalogTypeLabelKey('marketplace')).toBeNull();
+	});
+});
+
+describe('GUIDED_BUYING_REASON_LABEL_KEYS', () => {
+	it('names a real catalogue key for every reason', () => {
+		for (const key of Object.values(GUIDED_BUYING_REASON_LABEL_KEYS)) {
+			expect(Object.keys(en), `"${key}" is not in the catalogue`).toContain(key);
+		}
+	});
+
+	it('returns null for a reason the backend adds first', () => {
+		// The card renders the raw code in that case — a reason nobody can read
+		// is still better evidence for steering a buyer than no reason at all.
+		expect(guidedBuyingReasonLabelKey('active_contract')).toBe(
+			'catalogs.guided.reason.activeContract'
+		);
+		expect(guidedBuyingReasonLabelKey('volume_discount')).toBeNull();
 	});
 });

@@ -2053,6 +2053,11 @@ export const en = {
 	'catalogs.filter.preferred': 'Preferred',
 	'catalogs.col.name': 'Name',
 	'catalogs.col.type': 'Type',
+
+	// Catalog type value labels ($lib/types/catalog.ts). Punch-out is the industry term and stays verbatim outside ja, which already transliterates it in catalogs.punchout.title.
+	'catalogs.type.internal': 'Internal',
+	'catalogs.type.punchout': 'Punch-out',
+
 	'catalogs.col.items': 'Items',
 	'catalogs.col.status': 'Status',
 	'catalogs.status.active': 'Active',
@@ -2084,6 +2089,11 @@ export const en = {
 	'catalogs.guided.catalogLabel': 'Catalog: {name}',
 	'catalogs.guided.contractLabel': 'Contract: {number}',
 	'catalogs.guided.preferredTag': 'Preferred',
+
+	// Why guided buying is steering the buyer here ($lib/types/catalog.ts)
+	'catalogs.guided.reason.preferredCatalog': 'Preferred catalog',
+	'catalogs.guided.reason.activeContract': 'Active contract',
+
 	'catalogs.loadMore': 'Load more ({shown} of {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Showing all # catalog} other {Showing all # catalogs}}',

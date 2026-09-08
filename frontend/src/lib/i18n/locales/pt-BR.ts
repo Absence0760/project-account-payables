@@ -1976,6 +1976,9 @@ export const messages = {
 	'catalogs.filter.preferred': 'Preferencial',
 	'catalogs.col.name': 'Nome',
 	'catalogs.col.type': 'Tipo',
+	'catalogs.type.internal': 'Interno',
+	'catalogs.type.punchout': 'Punch-out',
+
 	'catalogs.col.items': 'Itens',
 	'catalogs.col.status': 'Status',
 	'catalogs.status.active': 'Ativo',
@@ -2007,6 +2010,9 @@ export const messages = {
 	'catalogs.guided.catalogLabel': 'Catálogo: {name}',
 	'catalogs.guided.contractLabel': 'Contrato: {number}',
 	'catalogs.guided.preferredTag': 'Preferencial',
+	'catalogs.guided.reason.preferredCatalog': 'Catálogo preferencial',
+	'catalogs.guided.reason.activeContract': 'Contrato ativo',
+
 	'catalogs.loadMore': 'Carregar mais ({shown} de {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Exibindo # catálogo} other {Exibindo todos os # catálogos}}',
