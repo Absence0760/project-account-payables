@@ -99,6 +99,37 @@ name: Dependabot lockfile sync
 # secret store, or (sturdier — no expiry, not bound to one person) a GitHub App
 # token via `actions/create-github-app-token`. Both are the same operator step
 # this workflow deliberately does not depend on. See docs/followups.md.
+#
+# ---------------------------------------------------------------------------
+# Scorecard findings this file will always produce, and why they are accepted
+# ---------------------------------------------------------------------------
+#
+# Scorecard reads a workflow file, not a job graph, so the very split that
+# makes this safe is invisible to it. Three findings are therefore permanent
+# and are dismissed with these reasons rather than "fixed" — the only edits
+# that would silence them are the ones that break the design:
+#
+#   Dangerous-Workflow, on each `ref: …head.sha` checkout (frontend, backend)
+#       "untrusted code checkout" under `pull_request_target`. True as stated
+#       and deliberate: regenerating a lockfile means resolving the PR head's
+#       manifests, and `uv pip compile` may build an sdist, which runs a
+#       third-party `setup.py`. What makes it safe is what Scorecard cannot
+#       see — both jobs pin `permissions: contents: read`, set
+#       `persist-credentials: false`, and NAME NO SECRET, and a job is handed
+#       only the secrets it names. A `contents: read` token on a public repo
+#       is worth no more than an anonymous clone. Results leave those jobs as
+#       artifacts, never as a push.
+#
+#   Token-Permissions, on the push job's `contents: write`
+#       Irreducible: the job's entire purpose is to commit to the branch.
+#       It is also the one job that executes no PR-authored code — `git`
+#       plumbing and three `cp`s onto fixed paths, no install, no resolver,
+#       no script. Same shape as the dismissals on dependabot-auto-merge.yml
+#       and claude.yml, where the write grant IS the workflow.
+#
+# Both properties are load-bearing, so state them plainly if you edit this
+# file: adding a secret to a resolver job, or a build/install step to the push
+# job, collapses the split into the pwn-request this is written to avoid.
 
 on:
   pull_request_target:
