@@ -36,10 +36,11 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import Tabs from '$lib/components/ui/Tabs.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
-	import Badge from '$lib/components/ui/Badge.svelte';
+	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatMoney } from '$lib/utils/money';
@@ -377,6 +378,42 @@
 		{ label: m('adaptive.patterns.col.sample'), class: 'right' }
 	]);
 
+	/**
+	 * Anomaly-flag severity → `Badge` tone.
+	 *
+	 * The backend emits `info` and `warning` only, and the old
+	 * `severity === 'error' ? 'danger' : 'warning'` ternary therefore painted
+	 * EVERY flag as a warning — including the four `info` ones
+	 * (`amount_low`, `unusual_approver`, `off_pattern_timing`,
+	 * `amount_comparison_unavailable`), the last of which reports the ABSENCE
+	 * of a verdict. A tinted badge reads as a signal, so the wrong tint is a
+	 * wrong claim: `info` is the accent tint the page already uses for "open,
+	 * for your attention", not the amber one that says "this looks wrong".
+	 * `error` is mapped defensively so a future severity gets louder rather
+	 * than quieter, and an unrecognised one falls to the untinted `neutral`
+	 * chip instead of borrowing a signal it hasn't earned (decisions §47).
+	 */
+	const SEVERITY_TONES: Record<string, BadgeTone> = {
+		info: 'accent',
+		warning: 'warning',
+		error: 'danger'
+	};
+	const severityTone = (severity: string): BadgeTone => SEVERITY_TONES[severity] ?? 'neutral';
+
+	/**
+	 * How many approvals the vendor money columns leave out.
+	 *
+	 * `avg_approved_amount` is computed over approvals that could be expressed
+	 * in the reporting currency; `sample_size` counts every decision. When the
+	 * two disagree the average is over fewer rows than the count beside it
+	 * claims, so the table says so rather than moving the denominator
+	 * (decisions §79/§82 — the same `role="alert"` treatment `/cfo` gives its
+	 * unconverted outflows).
+	 */
+	const vendorUnconvertedTotal = $derived(
+		(patterns?.vendors ?? []).reduce((n, v) => n + (v.unconverted_count ?? 0), 0)
+	);
+
 	const ANOMALY_COLUMNS = $derived([
 		{ label: m('adaptive.anomalies.col.invoice') },
 		{ label: m('adaptive.anomalies.col.vendor') },
@@ -696,6 +733,17 @@
 				</DataTable>
 
 				<h3>{m('adaptive.patterns.vendors')}</h3>
+				<!-- "Average approved" is computed over approvals expressible in the
+				     reporting currency; "Sample" counts every decision. When some
+				     could not be converted the two disagree, and an average over
+				     N-minus-k beside a sample count of N is a wrong number. Disclose
+				     it — do not quietly move the denominator (decisions §79/§82).
+				     Sits ABOVE the figures it qualifies, as on /cfo. -->
+				{#if vendorUnconvertedTotal > 0}
+					<p class="unconverted" role="alert" data-testid="adaptive-vendor-unconverted">
+						{m('dashboard.reporting.unconverted', { currency: orgCurrency.currency })}
+					</p>
+				{/if}
 				<DataTable
 					columns={VENDOR_COLUMNS}
 					isEmpty={(patterns?.vendors.length ?? 0) === 0}
@@ -703,7 +751,7 @@
 				>
 					{#snippet body()}
 						{#each patterns?.vendors ?? [] as v (v.vendor_name)}
-							<tr>
+							<tr data-unconverted={v.unconverted_count}>
 								<td>{v.vendor_name}</td>
 								<td class="right mono">{v.approval_rate_pct}%</td>
 								<td class="right mono">{v.consistency_pct}%</td>
@@ -748,15 +796,40 @@
 					{#snippet body()}
 						{#each anomalies?.flagged ?? [] as a (a.invoice_id)}
 							<tr>
-								<td class="mono">{a.invoice_id.slice(0, 8)}</td>
+								<!-- The id used to be a bare 8-character stub: not openable, not
+								     selectable, and not enough to paste anywhere. It is now the
+								     same `/invoices?id=` deep link the exceptions queue uses, so
+								     the row leads somewhere; the full uuid rides on the title +
+								     accessible name (and in the href) for copying. -->
+								<td class="mono" title={a.invoice_id}>
+									<RowLink
+										href="/invoices?id={a.invoice_id}"
+										ariaLabel="{m('adaptive.anomalies.col.invoice')} {a.invoice_id}"
+									>
+										{a.invoice_id.slice(0, 8)}
+									</RowLink>
+								</td>
 								<td>{a.vendor_name}</td>
 								<td class="right">
-									<Money amount={a.amount} currency={orgCurrency.currency} mono />
+									<!-- `amount_currency`, never the org's reporting currency: when
+									     the invoice carries no usable rate lock the backend falls
+									     back to the BILLED figure for display, and labelling that
+									     with the reporting currency is a wrong number rather than
+									     a missing one. The `amount_comparison_unavailable` flag
+									     beside it says the amount rules abstained. If the backend
+									     can't name a currency at all, the bare exact figure is the
+									     honest render — `formatMoney` would otherwise fall back to
+									     the platform default and invent a symbol. -->
+									{#if a.amount_currency}
+										<Money amount={a.amount} currency={a.amount_currency} mono />
+									{:else}
+										<span class="money mono">{a.amount}</span>
+									{/if}
 								</td>
 								<td>
 									{#each a.flags as f (f.code)}
 										<div class="flag">
-											<Badge tone={f.severity === 'error' ? 'danger' : 'warning'} variant={f.code}>
+											<Badge tone={severityTone(f.severity)} variant={f.code}>
 												{f.code}
 											</Badge>
 											<span class="sub">{f.message}</span>
@@ -916,6 +989,24 @@
 		display: block;
 		color: var(--text-muted);
 		font-size: 0.8rem;
+	}
+	/* The unconverted-approvals disclosure. Amber and emphatic — this is not a
+	   hint, it is the caveat that makes the average beside it readable — and the
+	   same token `/cfo` and the by-entity breakdown use for the identical
+	   "these figures are a floor" line. */
+	.unconverted {
+		color: var(--warning-on-tint);
+		font-weight: 600;
+		font-size: 0.85rem;
+		margin: 0 0 8px;
+		max-width: 80ch;
+	}
+	/* The currency-less fallback render — matches `<Money mono>` so a table
+	   column doesn't change metrics when one row can't be labelled. */
+	.money.mono {
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+		font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 	}
 	.state {
 		color: var(--text-muted);

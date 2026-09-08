@@ -48,6 +48,15 @@ export interface VendorPattern {
 	min_approved_amount: MoneyString;
 	max_approved_amount: MoneyString;
 	sample_size: number;
+	/**
+	 * Approvals EXCLUDED from the four money fields above because their amount
+	 * could not be expressed in the org's reporting currency — but still counted
+	 * in `sample_size`. Non-zero means the average is over `approved_count`
+	 * minus this, so rendering it beside the sample count without disclosing it
+	 * is a wrong number (decisions §79/§82). Never move the denominator to make
+	 * them agree — say what was left out.
+	 */
+	unconverted_count: number;
 }
 
 export interface ApprovalPatterns {
@@ -80,9 +89,18 @@ export interface VendorBaseline {
 	median_time_to_approve_days: string;
 }
 
+/**
+ * The backend emits `info` and `warning` only (`services/adaptive_workflows.py`
+ * → `AnomalyFlag.severity`). `error` is accepted here so an added severity maps
+ * to a louder tone rather than being silently absorbed into `warning`, which is
+ * what the old `severity === 'error' ? 'danger' : 'warning'` ternary did to
+ * every `info` flag on the page.
+ */
+export type AnomalySeverity = 'info' | 'warning' | 'error';
+
 export interface AnomalyFlag {
 	code: string;
-	severity: string;
+	severity: AnomalySeverity | (string & {});
 	message: string;
 	observed: string;
 	expected: string;
@@ -93,6 +111,15 @@ export interface InvoiceAnomaly {
 	vendor_id: string | null;
 	vendor_name: string;
 	amount: MoneyString;
+	/**
+	 * What `amount` is DENOMINATED IN — normally the org's reporting currency,
+	 * but the invoice's own billed currency when it carries no usable rate lock
+	 * and the backend fell back to the billed figure "for DISPLAY only". Always
+	 * label `amount` with this, never with the org's reporting currency: the
+	 * fallback figure is not in it, and stamping it on is a wrong number rather
+	 * than a missing one.
+	 */
+	amount_currency: string;
 	insufficient_history: boolean;
 	baseline: VendorBaseline | null;
 	flags: AnomalyFlag[];

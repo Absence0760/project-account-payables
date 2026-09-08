@@ -174,6 +174,34 @@ Both call sites (`run_extraction` and `POST /api/invoices/{id}/complete`) run
 `refresh_warnings` immediately beforehand, which is what locks the rate, so the
 conversion is a read of the row.
 
+#### The wire says what the reader is looking at
+
+Excluding a row makes the aggregate honest; it does not make the *presentation*
+honest, so both read models carry the fact out to the client rather than leaving
+it to be inferred:
+
+- `VendorPatternResponse.unconverted_count` — the money fields exclude those
+  approvals while `sample_size` still counts them, so an average over
+  `approved_count - unconverted_count` rows is otherwise presented beside a
+  sample count that disagrees with it. `/adaptive` renders a `role="alert"`
+  line above the vendor table when any row is non-zero, the same disclosure
+  treatment `/cfo` gives its unconverted outflows (`docs/decisions.md` §79,
+  reinforced by §82). **The denominator is never quietly moved to make the two
+  agree** — the exclusion is reported.
+- `InvoiceAnomalyResponse.amount_currency` — `amount` is only in the reporting
+  currency when the subject could be expressed there; otherwise
+  `detect_invoice_anomaly` falls back to the **billed** figure for display, and
+  a client with no currency on the row has no choice but to stamp the reporting
+  currency onto a number that is not in it. `_anomaly_amount_currency` resolves
+  it (reporting currency when convertible, `Invoice.currency` when not) and
+  `_anomaly_dict` takes it as a required keyword argument — no default to
+  forget, the same reason `amount` is required on `detect_invoice_anomaly`.
+
+`AnomalyFlag.severity` is `info` or `warning` — four of the five flags are
+`info`, including `amount_comparison_unavailable`, which reports the *absence*
+of a verdict. A renderer that folds `info` into a warning tint makes the page
+claim something the backend did not.
+
 **Single-currency tenants are unaffected** — same currency converts at rate 1
 with no lock required. For a tenant whose reporting currency is *not* USD, the
 figures the threshold surfaces show are now that currency, and they say so: the
@@ -603,7 +631,7 @@ lazy load, so a reader pays for the panel they opened:
 | Anomalies | `GET /anomalies` | — |
 | Feedback loop | `GET /feedback` | — |
 
-Four contracts the page encodes, each of which is easy to get wrong:
+Seven contracts the page encodes, each of which is easy to get wrong:
 
 - **Advisory is stated, not implied.** A standing line under the page title says
   nothing here has changed a workflow, and each of the three acts is a separate,
@@ -628,6 +656,27 @@ Four contracts the page encodes, each of which is easy to get wrong:
   "the automation is never overruled" on a two-invoice sample. The overturn-rate
   KPI shows an em dash in the same state.
 
+- **An anomaly row's invoice id is a link, not a stub.** It renders through the
+  shared `RowLink` as `/invoices?id=<uuid>` — the same deep link the exceptions
+  queue uses — with the full uuid on the cell's `title` and in the accessible
+  name. The truncated id it used to show could be neither opened nor pasted, so
+  a flagged invoice was a dead end.
+- **The amount is labelled with `amount_currency`, never the org's reporting
+  currency.** An invoice the backend could not express in the reporting currency
+  reaches the page as its *billed* figure; stamping the reporting currency on it
+  is a wrong number, not a missing one. The `amount_comparison_unavailable` flag
+  beside it says the amount rules abstained.
+- **Flag severity maps through the shared `Badge` tone vocabulary** —
+  `info → accent`, `warning → warning`, `error → danger`, anything else to the
+  untinted `neutral` chip. A tinted badge reads as a signal, so folding `info`
+  into `warning` (as `severity === 'error' ? 'danger' : 'warning'` did) made the
+  page claim four flags were problems, including the one that reports the
+  absence of a verdict.
+- **The vendor average discloses what it excluded.** When any row carries
+  `unconverted_count > 0` a `role="alert"` line sits above the table saying the
+  figures are a floor — the §79/§82 treatment. The sample count is left alone:
+  the two are reconciled by telling the reader, not by moving a denominator.
+
 Smart routing ranks *people*, so each candidate carries its `base_score`, the
 `outcome_penalty` with the `overturn_rate_pct` and `outcome_sample_size` it was
 read over, and the backend's own `reasons` list — an unexplained ranking of
@@ -636,7 +685,15 @@ line is rendered explicitly so a thin record can't be mistaken for a clean one.
 
 E2E: `frontend/tests-e2e/adaptive/adaptive.spec.ts` (role gate both ways,
 section-bar reachability, dismiss, apply, the stale-guard state, the audited-read
-timing, and both feedback metric states).
+timing, and both feedback metric states) and
+`frontend/tests-e2e/adaptive/presentation.spec.ts` (the openable invoice link,
+the billed-vs-reporting currency label, the `info` badge tone, and the
+unconverted-approvals disclosure). Backend-side, the two serialisers are pure
+functions covered by `backend/tests/test_adaptive_response_currency.py`, which
+includes a drift guard that `_vendor_pattern_dict` emits every
+`VendorPatternResponse` field — without it `unconverted_count` could be dropped
+again and the response would fall back to its schema default of `0`, a
+disclosure that says "nothing excluded" when rows were.
 
 ## Tunables — `Organization.settings.adaptive`
 
