@@ -205,8 +205,9 @@ def test_transition_invoice_helper_dispatches_audit():
 # Every HANDLER that mutates TENANT state audits — drift guard
 # ---------------------------------------------------------------------------
 
-# Tenant-mutating HANDLERS with no `dispatch_audit` reachable from their own
-# source. Keyed on `(module, handler)` — never on the module.
+# Tenant-mutating HANDLERS with no audit-writing call (`_AUDIT_WRITERS`, below)
+# reachable from their own source. Keyed on `(module, handler)` — never on the
+# module.
 #
 # The unit used to be the module, and one auditing handler exempted every other
 # handler beside it: `api/invoices.py` has 21 tenant-mutating routes, so a
@@ -265,25 +266,16 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "rebuilds the derived `invoices.meta.audit_summary` cache FROM the audit trail; "
         "no business field changes"
     ),
-    # -- supplier-portal auth: the auth trail (`dispatch_auth_audit`), not the
-    #    business trail. Each of these touches only the calling vendor user's
-    #    own account or an ephemeral Redis credential.
-    ("app.api.portal_auth", "portal_login"): "audits via dispatch_auth_audit (auth trail)",
-    ("app.api.portal_auth", "portal_change_password"): (
-        "audits via dispatch_auth_audit (auth trail)"
-    ),
+    # -- supplier-portal auth: writes NO audit row of any kind. Each of these
+    #    touches only the calling vendor user's own account or an ephemeral
+    #    Redis credential. (`portal_login`, `portal_change_password`,
+    #    `portal_mfa_verify` and `portal_mfa_disable` used to be listed here
+    #    too, on the strength of auditing via `dispatch_auth_audit` /
+    #    `queue_auth_audit`. Those now count as auditing — see `_AUDIT_WRITERS`
+    #    — so they need no exemption and the sweep covers them directly.)
     ("app.api.portal_auth", "portal_mfa_challenge"): (
         "trades the login-issued challenge token for an access token; writes no "
         "tenant row (the failure budget is Redis) — auth trail, not business trail"
-    ),
-    ("app.api.portal_auth", "portal_mfa_disable"): (
-        "audits step-up failures via dispatch_auth_audit (auth trail)"
-    ),
-    ("app.api.portal_auth", "portal_mfa_verify"): (
-        "completes the caller's own TOTP enrollment. A SUCCESSFUL enrollment is "
-        "unaudited on both surfaces — `api/auth.py::enroll_mfa_verify` behaves "
-        "identically — so this is a platform-wide auth-trail question, not a "
-        "portal-specific hole; step-up failures around it DO audit"
     ),
     ("app.api.portal_auth", "portal_request_email_otp"): (
         "mints a single-use email OTP into Redis; writes no tenant row"
@@ -426,11 +418,35 @@ def _identifiers_in(src: str) -> set[str]:
     return names
 
 
+# Every helper that writes an `audit_log` row. `dispatch_audit` is the
+# tenant-session path; `dispatch_auth_audit` and `queue_auth_audit` open their
+# OWN tenant session (a handler running on the control-plane session has none to
+# write through) and then go through the same `services/audit.log_action`
+# primitive. All three produce the row this invariant is about, so all three
+# have to count as auditing.
+#
+# Matching only `dispatch_audit` was a blind spot with teeth. Neither of the
+# other two contains it as a substring, so a handler auditing through them read
+# as UNAUDITED — it had to be excused in the dict above, and because
+# `test_audit_exemption_list_has_no_stale_entries` only fires when an excused
+# handler STARTS auditing, that entry's reason string could then never be
+# re-validated by anything. That is how `portal_mfa_verify` kept a reason
+# asserting "a SUCCESSFUL enrollment is unaudited on both surfaces" after both
+# surfaces started auditing it: the same "one thing silently vouches for
+# another" shape as the module-wide unit this file's per-handler unit replaced.
+_AUDIT_WRITERS = ("dispatch_audit", "dispatch_auth_audit", "queue_auth_audit")
+
+
+def _writes_audit_row(src: str) -> bool:
+    return any(writer in src for writer in _AUDIT_WRITERS)
+
+
 def _handler_audits(
     fn: object, module: str, _depth: int = 0, _seen: set[str] | None = None
 ) -> bool:
-    """True when `dispatch_audit` appears in this handler's own source, or in
-    the source of a function it calls that is defined in the SAME module.
+    """True when an audit-writing call (`_AUDIT_WRITERS`) appears in this
+    handler's own source, or in the source of a function it calls that is
+    defined in the SAME module.
 
     The same-module allowance is what keeps a real pattern legible: several
     routers funnel their writes through a local `_audit(...)` / `_transition(...)`
@@ -452,7 +468,7 @@ def _handler_audits(
         src = inspect.getsource(fn)  # type: ignore[arg-type]
     except (OSError, TypeError):  # pragma: no cover - C builtins
         return False
-    if "dispatch_audit" in src:
+    if _writes_audit_row(src):
         return True
 
     mod = sys.modules.get(module)
@@ -554,7 +570,7 @@ def test_audit_exemption_list_has_no_stale_entries():
             continue
         fn = _resolve_handler(module, name)
         if fn is not None and _handler_audits(fn, module):
-            stale.append(f"{module}.{name} (now calls dispatch_audit — drop the exemption)")
+            stale.append(f"{module}.{name} (now writes an audit row — drop the exemption)")
     assert not stale, f"stale audit exemptions: {stale}"
 
 
