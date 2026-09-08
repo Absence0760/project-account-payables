@@ -348,7 +348,10 @@ async def create_workflow(
         details={
             "name": defn.name,
             "step_count": len(body.steps),
-            "entity_id": str(write_entity_id) if write_entity_id else None,
+            # `get_write_entity_id` never returns NULL — it resolves the
+            # tenant default, or 500s if the tenant has none — so there is no
+            # unscoped case to encode here.
+            "entity_id": str(write_entity_id),
         },
     )
     await db.commit()
