@@ -516,22 +516,32 @@ async def portal_mfa_challenge(
 STEP_UP_RATE_LIMIT_PER_MINUTE = 5
 
 
-async def _audit_portal_step_up_failure(vu: VendorUser, *, operation: str) -> None:
-    """Record a failed re-authentication against a vendor's factor change.
+async def _audit_portal_mfa_event(vu: VendorUser, *, action: str, details: dict) -> None:
+    """Write one PII-free MFA row onto a vendor user's auth trail.
 
-    PII-free — `operation` is a fixed literal, the submitted credential never
-    enters the trail. Skipped for a legacy row with no `organization_id` (the
-    audit dispatcher resolves the tenant DB from it); `dispatch_auth_audit`
-    swallows its own failures, so this never breaks the request either way.
+    Every portal MFA row goes through here so the shape matches its employee
+    twin (`api/auth._audit_mfa_event`): the subject is the vendor user
+    (`actor_id` and `entity_id` both `vu.id`) and `details` carries fixed
+    literals only — never the TOTP secret, never a submitted password or code.
+    Skipped for a legacy row with no `organization_id` (the audit dispatcher
+    resolves the tenant DB from it); `dispatch_auth_audit` swallows its own
+    failures, so this never breaks the request either way.
     """
     if not vu.organization_id:
         return
     await dispatch_auth_audit(
         organization_id=vu.organization_id,
         actor_id=vu.id,
-        action="portal.mfa.step_up.failure",
+        action=action,
         entity_id=vu.id,
-        details={"operation": operation},
+        details=details,
+    )
+
+
+async def _audit_portal_step_up_failure(vu: VendorUser, *, operation: str) -> None:
+    """Record a failed re-authentication against a vendor's factor change."""
+    await _audit_portal_mfa_event(
+        vu, action="portal.mfa.step_up.failure", details={"operation": operation}
     )
 
 
@@ -611,6 +621,12 @@ async def portal_mfa_verify(
     The only place a TOTP secret is written to `vendor_users`. Until it
     succeeds the previous factor stays live, so an abandoned enrollment can't
     leave the portal account single-factor.
+
+    **Success is audited**, on the same terms as the employee surface
+    (`api/auth.enroll_mfa_verify`): a supplier account can stage a bank-detail
+    change, so its second factor changing hands is a security event, not a
+    preference. `replaced` separates a first enrollment from one that displaced
+    a live authenticator.
     """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
@@ -620,11 +636,17 @@ async def portal_mfa_verify(
     if not await mfa.verify_totp(pending, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
+    # Read before the write — afterwards every account looks freshly enrolled.
+    replaced = bool(vu.mfa_enabled and vu.mfa_secret)
     vu.mfa_secret = pending
     vu.mfa_enabled = True
     vu.mfa_enrolled_at = datetime.now(UTC)
     await db.commit()
     await mfa.clear_pending_vendor_totp_secret(vu.id)
+    # After the commit: the trail records factors that actually took effect.
+    await _audit_portal_mfa_event(
+        vu, action="portal.mfa.enrolled", details={"factor": "totp", "replaced": replaced}
+    )
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
@@ -649,7 +671,8 @@ async def portal_mfa_disable(
 ):
     """Turn off TOTP for this vendor account. Requires a valid current code —
     a stolen session shouldn't be able to silently strip MFA off. Throttled +
-    audited on failure like the enroll step-up."""
+    audited on failure like the enroll step-up, and audited on success too: a
+    factor coming off is at least as audit-worthy as one going on."""
     if not vu.mfa_enabled or not vu.mfa_secret:
         raise HTTPException(status_code=400, detail="MFA is not enabled")
     await check_rate_limit(
@@ -669,6 +692,7 @@ async def portal_mfa_disable(
     # Drop any half-finished enrollment so a candidate minted before the
     # disable can't be promoted by a later verify call.
     await mfa.clear_pending_vendor_totp_secret(vu.id)
+    await _audit_portal_mfa_event(vu, action="portal.mfa.disabled", details={"factor": "totp"})
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
