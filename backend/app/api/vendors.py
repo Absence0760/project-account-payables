@@ -1535,6 +1535,26 @@ async def sync_vendors_from_erp_endpoint(
     vendor_dicts = [dataclasses.asdict(v) for v in erp_vendors]
 
     result = await sync_vendors_from_erp(db, org_id, vendor_dicts, entity_id=entity_id)
+
+    # One PII-free summary row per sync — the trail records that a bulk payee
+    # change happened, who ran it and how much it moved. Mirrors
+    # `gl_account.synced_from_erp`; `entity_id=org_id` because a bulk sync has
+    # no single vendor to key on.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.synced_from_erp",
+        entity_type="vendor",
+        entity_id=org_id,
+        details={
+            "created": result["created"],
+            "updated": result["updated"],
+            "unchanged": result["unchanged"],
+            "entity_id": str(entity_id) if entity_id else None,
+        },
+    )
     await db.commit()
 
     return {
@@ -1577,6 +1597,25 @@ async def import_vendors_from_csv(
         raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
 
     result = await import_vendors_csv(db, org_id, csv_text, entity_id=entity_id)
+
+    # One PII-free summary row per import — bulk payee creation belongs on the
+    # trail, keyed on `org_id` since the import spans many vendors. Counts only,
+    # never a vendor name or bank detail.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.imported_from_csv",
+        entity_type="vendor",
+        entity_id=org_id,
+        details={
+            "imported": result.imported,
+            "skipped": result.skipped,
+            "errors": len(result.errors),
+            "entity_id": str(entity_id) if entity_id else None,
+        },
+    )
     await db.commit()
     return result.to_dict()
 
@@ -1663,6 +1702,22 @@ async def invite_vendor_portal_user(
     await db.flush()
     await db.refresh(vu)
 
+    # Provisioning a supplier-portal credential is an access-control change —
+    # and it was the one AP action tying an AP actor to a vendor identity they
+    # created that left no trace (the delete and password-reset paths beside it
+    # already audit). Keyed on the VENDOR so it stays on that vendor's trail;
+    # PII-free — the vendor-user id only, never the supplier's login address.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="vendor_user.invited",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"vendor_user_id": str(vu.id)},
+    )
+
     # Best-effort welcome email. If delivery fails we still return 201 with
     # `temp_password` so the admin can share it manually — same pattern as
     # the tenant-signup welcome email.
@@ -1696,6 +1751,7 @@ async def invite_vendor_portal_user(
             "Portal-user welcome email failed for %s (vendor=%s)", body.email, vendor.id
         )
 
+    await db.commit()
     return PortalInviteResponse(
         user=_vendor_user_response(vu), temp_password=temp_password, portal_url=portal_url
     )

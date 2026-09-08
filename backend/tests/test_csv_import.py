@@ -462,6 +462,61 @@ async def test_import_vendors_endpoint_role_gated_and_commits(realdb):
     assert count == 1
 
 
+async def test_import_vendors_endpoint_writes_a_summary_audit_row(realdb):
+    """A bulk payee create must leave one PII-free summary row on the trail
+    (invariant #3), keyed on the org and carrying counts only."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    file = {"file": ("vendors.csv", b"name,code\nAudited Vendor,VA1\n", "text/csv")}
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post("/api/vendors/import-csv", files=file)).status_code == 200
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        rows = list(
+            (
+                await s.execute(
+                    select(AuditLog).where(AuditLog.action == "vendor.imported_from_csv")
+                )
+            ).scalars()
+        )
+    assert len(rows) == 1, rows
+    assert str(rows[0].entity_id) == str(realdb.info("a").org_id)
+    assert rows[0].details["imported"] == 1
+    assert "Audited Vendor" not in str(rows[0].details)
+
+
+async def test_import_invoices_endpoint_writes_a_summary_audit_row(realdb):
+    """Day-0 bulk AP load leaves one PII-free summary row (invariant #3);
+    `csv-import.md` promises imported rows "get a real audit trail"."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    csv_bytes = (
+        b"invoice_number,vendor_name,amount,invoice_date,status\n"
+        b"INV-AUD-1,Acme,50.00,2026-02-01,done\n"
+    )
+    file = {"file": ("invoices.csv", csv_bytes, "text/csv")}
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post("/api/invoices/import-csv", files=file)).status_code == 200
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        rows = list(
+            (
+                await s.execute(
+                    select(AuditLog).where(AuditLog.action == "invoice.imported_from_csv")
+                )
+            ).scalars()
+        )
+    assert len(rows) == 1, rows
+    assert str(rows[0].entity_id) == str(realdb.info("a").org_id)
+    assert rows[0].details["imported"] == 1
+
+
 async def test_import_vendors_endpoint_rejects_non_utf8(realdb):
     bad = b"\xff\xfen\x00a\x00m\x00e\x00"  # UTF-16 bytes — invalid UTF-8
     file = {"file": ("vendors.csv", bad, "text/csv")}

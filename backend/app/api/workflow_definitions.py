@@ -329,6 +329,27 @@ async def create_workflow(
     db.add(defn)
     await db.flush()
     await db.refresh(defn)
+
+    # A workflow definition is the approval routing every invoice in its entity
+    # is bound to — creating one is a control change that belongs on the
+    # append-only trail, exactly like the from-template and import paths beside
+    # it. PII-free: name + step count + entity are routing config, not data.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="workflow.created",
+        entity_type="workflow_definition",
+        entity_id=defn.id,
+        details={
+            "name": defn.name,
+            "step_count": len(body.steps),
+            "entity_id": str(write_entity_id) if write_entity_id else None,
+        },
+    )
+    await db.commit()
+    await db.refresh(defn)
     return WorkflowDefinitionResponse.from_db(defn)
 
 

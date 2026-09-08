@@ -292,6 +292,28 @@ async def test_sync_erp_endpoint_happy_path(realdb):
     assert count == 2
 
 
+async def test_sync_erp_endpoint_writes_a_summary_audit_row(realdb):
+    """A bulk payee pull from the ERP must leave one PII-free summary row on
+    the trail (invariant #3), keyed on the org and counts only."""
+    from app.models.workflow import AuditLog
+
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post("/api/vendors/sync-erp")).status_code == 200
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        rows = list(
+            (
+                await s.execute(select(AuditLog).where(AuditLog.action == "vendor.synced_from_erp"))
+            ).scalars()
+        )
+    assert len(rows) == 1, rows
+    assert str(rows[0].entity_id) == str(realdb.info("a").org_id)
+    assert rows[0].details["created"] == 2
+    assert rows[0].actor_id is not None
+
+
 async def test_sync_erp_endpoint_idempotent_second_run(realdb):
     await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
     async with realdb.client(key="a", role="ap_manager") as c:

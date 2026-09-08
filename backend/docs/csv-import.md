@@ -16,6 +16,11 @@ Both accept `multipart/form-data` with a single `file` field. Response is
 JSON with `imported`, `skipped`, and a per-row `errors` list. Files must
 be UTF-8.
 
+Each import writes one PII-free summary audit row (`vendor.imported_from_csv`
+/ `invoice.imported_from_csv`, keyed on the org, counts only — never a vendor
+name or bank detail) so a bulk load of the tenant's ledger is on the
+append-only trail (invariant #3).
+
 ## Vendor CSV columns
 
 Only `name` is required. Unknown columns are ignored — hand us the raw

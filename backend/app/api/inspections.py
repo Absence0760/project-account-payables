@@ -28,6 +28,7 @@ from app.models.procurement import GoodsReceipt
 from app.models.quality_inspection import QualityInspection
 from app.models.user import User
 from app.schemas.inspection import VALID_RESULTS, InspectionCreate
+from app.services.audit_dispatch import dispatch_audit
 from app.services.qms_adapters import UnknownQmsProviderError, list_available_providers
 from app.services.qms_sync import resolve_opted_in_qms_config, sync_tenant_inspections
 from app.tenant import (
@@ -182,6 +183,28 @@ async def create_inspection(
     )
     db.add(inspection)
     await db.flush()
+
+    # A quality inspection is the 4th leg of 4-way matching — a `pass` clears
+    # the quality gate on a real invoice, a `fail` flips it to `mismatch`. A
+    # hand-recorded one belongs on the append-only trail exactly like a
+    # QMS-synced one (`quality_inspection.synced`). PII-free: inspection number
+    # + result + PO/GR ids, no personal data.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="quality_inspection.created",
+        entity_type="quality_inspection",
+        entity_id=inspection.id,
+        details={
+            "inspection_number": inspection.inspection_number,
+            "result": inspection.result,
+            "po_id": str(po_id) if po_id else None,
+            "gr_id": str(gr_id) if gr_id else None,
+        },
+    )
+
     # Same shape as a listed row, `gr_number` included — a client that renders
     # the created row without re-reading would otherwise show a blank cell that
     # fills itself in on the next load.
