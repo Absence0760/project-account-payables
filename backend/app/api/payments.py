@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, exists, func, not_, select
+from sqlalchemy import case, exists, func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +53,7 @@ from app.schemas.payment import (
 from app.services.audit_access import log_access
 from app.services.currency_conversion import (
     card_currency_sql,
+    invoice_reporting_amount_sql,
     payment_reporting_amount_sql,
     reporting_amount_at_locked_rate,
     resolve_reporting_currency,
@@ -502,14 +503,28 @@ async def _payment_queue_rollup(
     excludes rows a payment run would refuse (the set "select all matching"
     resolves).
     """
-    tgt = reporting_currency.upper()
-    cur_key = func.upper(func.coalesce(Invoice.currency, tgt))
-    has_lock = and_(
-        Invoice.reporting_amount.isnot(None),
-        func.upper(Invoice.reporting_currency) == tgt,
+    # The reporting-amount CASE comes from `currency_conversion`, the one owner
+    # of "is this row locked to the reporting currency?", rather than being
+    # restated here. The inline copy this replaces tested the lock as
+    # `reporting_amount IS NOT NULL AND upper(reporting_currency) = tgt` and
+    # left the NULL-currency case to three-valued logic: for a row carrying a
+    # `reporting_amount` but NO `reporting_currency`, `has_lock` is NULL, so
+    # `NOT has_lock` is NULL too and the row fell through the `unconverted`
+    # CASE — counted as CONVERTED while its money came from the unlocked face
+    # `amount`. A figure claiming a currency lock it does not have, on the
+    # payment queue's own rollup. The shared builder states
+    # `reporting_currency IS NOT NULL` explicitly, and matches
+    # `reporting_amount_for_row`, which requires both columns.
+    conv = invoice_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        amount=Invoice.amount,
+        currency=Invoice.currency,
+        persisted_reporting_amount=Invoice.reporting_amount,
+        persisted_reporting_currency=Invoice.reporting_currency,
     )
-    rep_expr = case((has_lock, Invoice.reporting_amount), else_=Invoice.amount)
-    unconv_expr = case((and_(not_(has_lock), cur_key != tgt), 1), else_=0)
+    cur_key = conv.currency_key
+    rep_expr = conv.amount
+    unconv_expr = conv.unconverted
 
     where = _queue_base_where()
     if selectable_only:

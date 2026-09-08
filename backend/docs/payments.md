@@ -1257,8 +1257,10 @@ invoice set on every view. It now takes `page` / `page_size` (via
 `items` is one ordered page (`Invoice.due_date ASC NULLS LAST, Invoice.id ASC`
 — the `id` tie-breaker is what stops a row hopping between pages). Every other
 field describes the **whole** queue, computed in SQL by
-`_payment_queue_rollup` (grouped by currency, mirroring the dashboard's
-reporting-amount `CASE`) so a KPI or banner can't contradict the list:
+`_payment_queue_rollup` — grouped by currency, with the reporting-amount
+expressions built by `currency_conversion.invoice_reporting_amount_sql` (the
+one owner of the rule, shared with the dashboard) — so a KPI or banner can't
+contradict the list:
 
 - `total` — every payable row; `selectable_total` / `blocked_total` split it by
   whether the financial-integrity gate would refuse the row.
@@ -1268,6 +1270,20 @@ reporting-amount `CASE`) so a KPI or banner can't contradict the list:
 - `total_savings` / per-currency `total_savings` come off the same rate-locked
   figure as the outflow (INNER-joined discount aggregate restricted to rows
   with a live `discount_date` / `discount_percent`).
+
+**A rate lock is two columns, and the rollup checks both.** The queue used to
+carry its own copy of the reporting-amount `CASE`, testing the lock as
+`reporting_amount IS NOT NULL AND upper(reporting_currency) = tgt`. For a row
+carrying an amount but a NULL `reporting_currency` that predicate is NULL, not
+FALSE — and `NOT NULL` is NULL too, so the row fell through the `unconverted`
+`CASE` and was counted as **converted** while the money it contributed came
+from the unlocked face `amount`. A foreign-currency total presented as fully
+converted, which is precisely what `unconverted_count` exists to prevent
+(`docs/decisions.md` §35). The shared builder states
+`reporting_currency IS NOT NULL` explicitly and matches
+`reporting_amount_for_row`, which requires both columns. Pinned by
+`tests/test_payment_queue_reporting_lock.py`, whose last case fails if the
+queue ever restates the rule inline again.
 
 **The row and the rollup round the same way.** Both compute
 `invoice.amount * discount_percent / 100` from the same `PaymentSchedule` row,
@@ -1293,7 +1309,10 @@ Load-More footer and a pay-bar "Select all N matching" button whose count +
 per-currency totals + mixed-currency guard read this response, not the loaded
 page.
 
-**Tests:** `tests/test_payment_queue_pagination.py` (DB-backed — page 1 caps,
+**Tests:** `tests/test_payment_queue_reporting_lock.py` (the two-column rate
+lock + the no-inline-copy guard),
+`tests/test_payment_queue_discount_rounding.py` (the row and the rollup agree
+on a half-cent), `tests/test_payment_queue_pagination.py` (DB-backed — page 1 caps,
 `total` is the whole set, page 2 appends the tail with no dup/drop, `/queue/ids`
 whole set + per-currency breakdown, a blocked row stays blocked on its page and
 is excluded from `/queue/ids`, `ap_clerk` 403 on both);
