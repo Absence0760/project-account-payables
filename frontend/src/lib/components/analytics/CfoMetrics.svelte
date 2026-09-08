@@ -187,6 +187,19 @@
 					<span class="cfm-stat-value">{data.supplier_concentration.largest_vendor ?? '—'}</span>
 				</div>
 			</div>
+			<!-- Every share above — and the `flagged` risk warning — divides by
+			     `total_spend`, which counts an invoice with no locked rate at its
+			     FACE value. Same role="alert" skipped-rows treatment as the AP
+			     balance above, but a DIFFERENT message: that one says "excluded ...
+			     a floor" because its rows are left out, these are counted in. -->
+			{#if data.supplier_concentration.unconverted_count > 0}
+				<p class="cfm-skipped" role="alert" data-testid="unconverted-concentration">
+					{m('cfoMetrics.concentration.unconverted', {
+						n: data.supplier_concentration.unconverted_count,
+						currency: data.reporting_spend.reporting_currency
+					})}
+				</p>
+			{/if}
 		</div>
 
 		{#if data.fraud_rate_trend.length > 0}
