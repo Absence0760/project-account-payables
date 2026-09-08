@@ -3815,9 +3815,16 @@ literal exists outside `config.py`.
 Taint analysis was rejected as unmaintainable for the payoff. A blanket ban on
 engine construction outside `app/database.py` was rejected because 31 legitimate
 sites — background sweeps, dispatchers, webhook handlers — each need a
-loop-local engine. The three Lambda handlers are exempt from the *helper* (they
-cannot import `app.database` on a dotenv-free path) but not from the rule: the
-guard holds them to mirroring its body, and a stale exemption fails too.
+loop-local engine. The three Lambda handlers used to be exempt from the *helper*
+(they cannot import `app.database` on a dotenv-free path — it reaches
+`app.config`, which needs dotenv), held only to mirroring its body. **Round 25
+deleted that exemption rather than re-documenting it:** the builder moved to a
+dependency-free `backend/app/tenant_url.py` that `app/database.py` and all three
+handlers import, so the guard now refuses the construction *anywhere* but that
+module, and a second test pins the import-cleanliness the sharing depends on —
+in a subprocess, because proving it in-process is vacuous once pytest has already
+imported the app. Duplication guarded by inspection became duplication that no
+longer exists.
 
 The rebound-constructor rule exists because that evasion makes the guard go
 *quiet* rather than red — `engine_factory = create_async_engine` removes every
@@ -4017,8 +4024,9 @@ so the export cannot contain the record of itself, and `COUNT(*)` +
 server allocation went from linear in the range (70.6 MiB at 20 000 rows) to flat
 1.5 MiB, output byte-identical.
 
-Two consequences accepted deliberately: the request holds its tenant connection
-for the whole response, and the mechanism depends on FastAPI keeping
+One consequence accepted here was **later reversed — see §110**: the request held
+its tenant connection for the whole response. The other stands: the mechanism
+depends on FastAPI keeping
 `yield`-dependency teardown after the body drains — internal ordering, guarded by
 a raw-ASGI test against a real database rather than assumed. CSV traded ~20% wall
 clock, which measurement attributed to the *database* still sorting the range;
@@ -4192,3 +4200,177 @@ provisioned by `create_all`, so a migration alone would leave the *next* tenant
 in the state being repaired. The parity test is opt-out — every
 `CREATE [UNIQUE] INDEX` in every revision, checked against the models, with
 exemptions needing a written reason that is itself re-checked so it cannot rot.
+
+---
+
+## 110. The SOX export renders to a spool, so the connection is released before the last byte
+
+**Decided:** 2026-09-08 · `backend/app/api/audit.py`, `backend/tests/test_audit_export_connection.py`
+
+§105 traded a linear allocation for a flat one by streaming, and accepted that the
+request would hold its tenant connection until the last byte was *transmitted*
+rather than until the last row was *read*. Over a slow link that is an unbounded
+hold on a `pool_size=5, max_overflow=10` pool, so several concurrent annual
+exports could exhaust it.
+
+Rendered chunks now drain into a `SpooledTemporaryFile` — in memory below
+`_SPOOL_MAX_MEMORY_BYTES`, on disk above it — the session is closed, and the
+response streams back from the spool. That threshold is what replaces §105's flat
+1.5 MiB as the memory bound; nothing is materialised into a list and nothing
+truncates. Cleanup covers all three exits: last block read, client hang-up
+mid-download, and a render that raised.
+
+The behaviour change worth stating: a database error part-way through now
+surfaces as a clean 500 **before the first byte**, instead of truncating a body
+the client had already begun saving. That is the same principle as the
+un-terminated CSV chunk and the missing JSON `]` — a partial export must not look
+like a complete one.
+
+The test is the load-bearing part. It samples the **engine's own pool
+checkout/checkin events** from inside the ASGI `send` callable at each body chunk,
+and was verified to fail against the pre-spool route ("1 tenant connection(s) were
+still checked out when the first csv body chunk was sent"). Byte identity is
+compared against the module's independent materialising renderer over a
+deliberately non-ASCII fixture, because the spool slices bytes, not characters.
+
+---
+
+## 111. A second factor being added is as audit-worthy as one being refused
+
+**Decided:** 2026-09-08 · `backend/app/api/auth.py`, `backend/app/api/portal_auth.py`
+
+MFA *step-up failures* audited; MFA enrollment *successes* did not, on either
+surface. On an account that can stage a vendor bank change, the more
+consequential event is the one that succeeded — a second factor added, replaced,
+or removed changes who can authorise, and left no trace.
+
+Four paths were missing (not the three the follow-up predicted — employee disable
+was also unaudited): employee TOTP enroll-verify, employee MFA disable, portal
+TOTP enroll-verify, portal MFA disable. The two passkey paths already audited and
+were **not** duplicated; they joined the same vocabulary instead.
+
+Two details that are the decision rather than the implementation. The row is
+written **after** the commit, so the trail records factors that actually took
+effect. And `replaced` is read **before** the write — afterwards every account
+looks freshly enrolled, so the distinction between a first enrollment and one
+that displaced a live authenticator is unrecoverable a moment later.
+
+PII floor: the row carries the factor kind and, for a passkey, the API-visible
+credential id — never the TOTP secret, the authenticator handle, the COSE public
+key, or a recovery code.
+
+---
+
+## 112. A lapsed discount offer is lapsed by the calendar, not by a sweep having run
+
+**Decided:** 2026-09-08 · `backend/app/services/discount_offers.py`, `backend/app/api/{discounts,portal}.py`
+
+Offer *expiry* was gated behind `FEOH_DISCOUNT_OPTIMIZATION_ENABLED`, the
+auto-capture kill switch, which is off by default — so lapsed offers stayed
+`offered` forever and `capture_rate_pct` could read `100.00` on one captured of
+ten, while the config comment and the docs both claimed only auto-capture was
+gated.
+
+The obvious fix — give expiry its own always-on sweep leg — was **rejected on
+merit**. It would still leave the truth dependent on a process having run, which
+is the exact dependency that caused the bug, and it is wrong in every context
+where no sweep runs: tests, a one-shot CLI, `pnpm dev`. Instead `effective_status`
+/ `effective_status_sql` compute it on read and every consumer classifies through
+them; the sweep's write is demoted to a materialisation. This is §41
+(`derive_run_status`) applied to a second subsystem, and it now spans three
+surfaces — the AP router, the supplier portal, and the copilot tool.
+
+Two things closing it exposed. The sweep's `expire_if_past` had been committing a
+status change with **no audit row** — it now writes `discount_offer.expired`. And
+`decline` accepted a lapsed offer and stored `declined`, asserting on an
+append-only row a refusal nobody made; the guard went into the shared pure mutator
+with a **required** `as_of` rather than a defaulted one, because a default is
+precisely the completeness obligation §41 argues against, and because shipping it
+on the AP side alone would have been a knowingly asymmetric control.
+
+---
+
+## 113. An importer's audit row belongs on the imported object's own trail
+
+**Decided:** 2026-09-08 · `backend/app/services/{csv_import,vendor_sync}.py`, `backend/tests/test_audit_open_holes.py`
+
+Six tenant-mutating handlers wrote no audit row (invariant #3), exposed by §100's
+per-handler guard. Two calls in closing them are worth keeping.
+
+**Per-created-entity, not per-batch.** A batch summary row in the handler would
+have satisfied the guard while leaving every imported invoice with an empty
+trail — and `import_invoices_from_csv` bulk-inserts `paid`/`done` historicals. The
+invoice row is keyed on `Invoice.correlation_id` because that is the join key
+`GET /api/audit/invoice/{id}` uses, so the row lands where an auditor looks for
+it. This mirrors `gl_recode.bulk_recode_gl`.
+
+**The audit cannot be written inline.** `Invoice.id`, `Invoice.correlation_id` and
+`Vendor.id` are Python-side column defaults evaluated at INSERT, not at
+construction, so an inline `dispatch_audit` produced rows with a NULL
+`entity_id` — present, countable, and useless. Both importers and the ERP sync
+accumulate and audit after one batch flush.
+
+`_OPEN_AUDIT_HOLES` is retained but **empty**, with a docstring saying why:
+folding a known gap into the exemption dict is how "not done yet" quietly becomes
+"this is fine". Closing it also widened the scan to
+`("dispatch_audit", "dispatch_auth_audit", "queue_auth_audit")` — four exemptions
+had gone stale precisely because their handlers called a writer the grep did not
+recognise, so they read as unaudited and their reason strings were never
+re-validated. That is the same one-thing-vouches-for-another shape §100 was built
+to remove.
+
+---
+
+## 114. The row checkbox meets the 24 px floor rather than resting on its neighbours
+
+**Decided:** 2026-09-08 · `frontend/src/app.css`, `frontend/src/lib/a11y/targetSizeAudit.ts`
+
+WCAG 2.2 SC 2.5.8 (AA) is satisfiable two ways: a 24×24 target, or the spacing
+exception — a 24 px-diameter circle on the target touching no other target's
+circle. `input[type=checkbox]` was globally 16×16 and passed only via the
+exception.
+
+The exception was chosen against, because *its satisfaction was owned by per-page
+CSS*. Measured, `/invoices` had 7.0 px of clear space against a 4.0 px
+requirement; `/exceptions` had 2.0 px, surviving only on the next cell's 14 px
+padding. A conformance claim that flips when someone adjusts a column's padding,
+in ten route files a global fix cannot reach, is not a claim worth making. The
+24×24 route makes the verdict independent of neighbours.
+
+The mechanism keeps the visual unchanged: a 4 px **transparent border** grows the
+border box to 24×24 while the painted box stays 16×16, and a −4 px margin keeps
+the *reserved* box at 16×16. Row heights are identical before and after
+(46.84 / 44.00 / 38.25 px), which is the property that made a global change safe.
+
+Recorded honestly: the agent that landed this **could not reproduce** an axe
+`target-size` violation — its replica reported none before or after. What is
+established is the arithmetic above, not a red-to-green transition. Radios stay
+16×16 on the exception deliberately: they pass on every scanned route, and their
+checked dot is carved with an inset `box-shadow` the transparent-border recipe
+would have to re-derive, which is visual risk with no failing criterion behind it.
+
+---
+
+## 115. A deactivated entity stops taking new rows, but keeps giving up its old ones
+
+**Decided:** 2026-09-08 · `backend/app/tenant.py`, `backend/tests/test_entity_scoping.py`
+
+`get_entity_id` validated only that an `X-Entity-ID` **exists**, so a client
+holding a stale header — one that had a subsidiary selected when an admin retired
+it — kept filing new rows under it. `/entities` deactivates an entity precisely to
+stop that.
+
+The check goes on `get_write_entity_id` alone, not on the shared resolver. Reads
+must keep resolving a deactivated entity or a retired subsidiary's invoices,
+payments and audit trail become unreachable, which would make a deactivation a
+soft delete — the opposite of its purpose.
+
+It is a **409, not a 400**: the header is well-formed and names a real entity of
+this tenant, so nothing about the request is malformed. What changed is the
+entity's state, and the caller's remedy is to re-select, not to correct a field.
+The refusal names the state and never the entity's name, so it carries no tenant
+data.
+
+The frontend half (the switcher dropping a retired selection back to the
+consolidated view) is a convenience, not the control — it was written first, and
+was a client-side guard over a server-side hole until this landed.
