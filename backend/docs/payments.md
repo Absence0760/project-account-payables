@@ -843,7 +843,7 @@ loads the invoice once and reuses it for the discount capture.
 | `matched` | within one cent of an authorized leg whose currency is compatible | unchanged: capture the discount, hand the run to the ERP sync |
 | `amount_mismatch` | a currency-compatible leg exists, none within tolerance | open a `fraud_flag`, skip the discount capture |
 | `currency_mismatch` | the reported currency matches no authorized leg | open a `fraud_flag`, skip the discount capture |
-| `unverified` | the provider's webhook carried no amount | unchanged, but the blind spot is recorded on the audit row |
+| `unverified` | the provider's webhook carried no amount, **or carried one that is not a usable number** | unchanged, but the blind spot is recorded on the audit row |
 
 Tolerance is one cent — the same band `positive_pay.DEFAULT_AMOUNT_TOLERANCE`
 and `bank_reconciliation.AMOUNT_MATCH_TOLERANCE` use. Three reconcilers
@@ -912,6 +912,30 @@ transaction** with it: the `fraud_flag` the verdict had already decided on was
 rolled back, the payment's completion was never recorded, the handler 5xx'd,
 and the processor retried into the identical failure. The single most
 suspicious settlement a rail can report was the one nothing was recorded about.
+
+##### A figure that is not a number at all
+
+`json.loads` accepts `NaN` and `Infinity` by default, so an adapter parsing a
+hostile or broken payload really can hand the verifier one — as can a rail
+reporting a magnitude past the decimal context. Those reach the same
+`unverified` OUTCOME as an absent figure (neither is evidence of a discrepancy,
+and inventing a `fraud_flag` out of garbage would flag every payment on a
+broken integration), but under their own reason,
+`provider_reported_unusable_amount`, because the two diverge downstream.
+
+The NaN-aware guard runs **first**. It used to run last: the tolerance
+comparison quantized the reported figure before anything NaN-aware saw it, so
+`InvalidOperation` escaped out of a pure function on the money path — the
+webhook 5xx'd and the processor retried into the identical failure for as long
+as it kept retrying, while the payment stayed in flight. A retry storm rather
+than a wrong figure, but the recording layer one call later
+(`persistable_settled_amount` → `fits_numeric`) was already written to
+quarantine exactly these values.
+
+So the unusable figure is carried onto the verdict, recorded as
+`settled_amount_unstorable`, and coverage returns `uncertain` — the invoice
+**holds**, behind the same two exits a shortfall has. It is never laundered
+into the fails-open NULL that means "no rail ever reported a figure".
 
 `payment_settlement.persistable_settled_amount` is now the one splitter both
 writers use (the webhook and the reconciler backstop, so they cannot disagree
@@ -1017,10 +1041,13 @@ settlement exactly where it was. The conversion helpers likewise return `None`
 read as a total under-settlement.
 
 **One recorder, both paths.** Fetching the missing figure, running
-`verify_settlement`, persisting `settled_amount`/`settled_currency` and raising
-the `fraud_flag` on a discrepancy all live in
-`services/payment_settlement_record.py`, and the webhook and the reconciler
-call the *same* functions. They had drifted: the backstop persisted a figure
+`verify_settlement`, persisting `settled_amount`/`settled_currency`, computing
+the **realized FX gain/loss** and raising the `fraud_flag` on a discrepancy all
+live in `services/payment_settlement_record.py`, and the webhook and the
+reconciler call the *same* functions —
+`record_completion` returns one `SettlementCompletion` carrying both the
+verdict and the FX figure, and `as_audit_details()` is the single builder for
+the `details` fragment both paths put on their audit row. They had drifted: the backstop persisted a figure
 and stopped there — no verdict, no `details.settlement` on the audit row, no
 exception. So a rail reporting a 10× overpayment settled silently (over-
 settlement is `covered` by design, so `payment_erp_sync` marked the invoice
@@ -1030,12 +1057,25 @@ already-terminal payment, a late webhook could never supply the missing
 verdict either. The verdict now rides the reconciler's append-only audit row
 exactly as it does the webhook's, on every completion.
 
+Then they drifted again, one field over. **Realized FX gain/loss** — the
+difference between the liability a foreign-currency invoice accrued at its
+locked rate and the cash that actually left in the home currency — was computed
+inline in the webhook handler and nowhere else, so every cross-currency payment
+the backstop recovered booked none. Same population, same cause, same silence:
+nothing re-derives the figure once the payment is terminal. It is now part of
+`record_completion`, and `tests/test_payment_completion_record.py` is the drift
+guard — a source scan asserting that
+`international_payments.realized_fx_gain_loss_for_settlement` has exactly one
+caller and that neither completion path calls `record_settlement` directly.
+
 **Tests:** `tests/test_payment_settlement.py` (the verdict table + the coverage
 classifier), `tests/test_payment_settlement_adapters.py` (per-provider
 extraction + the minor-unit exponent round-trip),
 `tests/test_payment_settlement_webhook.py` (handler behaviour),
 `tests/test_payment_settlement_hold.py` (the hold and both its exits, DB-backed),
-`tests/test_payment_fetch_settlement.py` (the capability + both call sites).
+`tests/test_payment_fetch_settlement.py` (the capability + both call sites),
+`tests/test_payment_completion_record.py` (realized FX on both completion
+paths + the one-owner drift guard).
 
 #### Webhook URL
 
@@ -1228,6 +1268,21 @@ reporting-amount `CASE`) so a KPI or banner can't contradict the list:
 - `total_savings` / per-currency `total_savings` come off the same rate-locked
   figure as the outflow (INNER-joined discount aggregate restricted to rows
   with a live `discount_date` / `discount_percent`).
+
+**The row and the rollup round the same way.** Both compute
+`invoice.amount * discount_percent / 100` from the same `PaymentSchedule` row,
+so they have to agree to the cent. They did not: the per-row figure used
+`Decimal.quantize(Decimal("0.01"))`, which takes the decimal context's default
+`ROUND_HALF_EVEN`, while the rollup's `round(numeric, 2)` is Postgres'
+half-away-from-zero. A 21.00 invoice at 2.50% — exactly 0.5250 — rendered
+`0.52` in the row and summed as `0.53` in the banner above it. The Python side
+now passes `ROUND_HALF_UP` explicitly, matching Postgres and matching every
+other money quantizer in the codebase (`international_payments._quantize_money`,
+`payment_settlement._q`, `currency_conversion._quantize_money`); money here is
+non-negative, so the two names describe one rule. Latent until now only because
+nothing in the app writes a `PaymentSchedule` (`scripts/seed.py` is the sole
+writer) — which is why it is pinned by
+`tests/test_payment_queue_discount_rounding.py` rather than left as a comment.
 
 **`GET /api/payments/queue/ids`** is the "select all N matching" resolver
 (mirrors `GET /api/invoices/ids`): `{ids, total, truncated, currency,
@@ -1675,7 +1730,7 @@ Decimal `amount` as a string, and the reference — never bank/account values.
 | Action | Trigger | Entity |
 |---|---|---|
 | `payment_run.executed` | A run is executed (`POST /runs/{id}/execute`); rolls up `payments_completed` / `_in_flight` / `_failed` / `cards_issued` + `total_amount` | `payment_run` |
-| `payment.completed` | A child payment settled (mock adapter or, in prod, a webhook). Any completion that ran the settlement verifier — the webhook path AND the reconciler backstop — also carries `details.settlement` — the settlement-amount verdict (`matched` / `amount_mismatch` / `currency_mismatch` / `unverified`) with the settled + authorized amounts as exact strings and the signed variance. See § Settlement-amount verification | `payment` |
+| `payment.completed` | A child payment settled (mock adapter or, in prod, a webhook). Any completion that ran the settlement verifier — the webhook path AND the reconciler backstop — also carries `details.settlement` — the settlement-amount verdict (`matched` / `amount_mismatch` / `currency_mismatch` / `unverified`) with the settled + authorized amounts as exact strings and the signed variance — plus `details.realized_fx_gain_loss` (exact string, absent rather than zero when there is no FX exposure) on both paths. See § Settlement-amount verification | `payment` |
 | `payment.failed` | A child payment failed during execution | `payment` |
 | `payment.submitted` / `payment.processing` | A child payment is in flight awaiting the processor webhook | `payment` |
 | `payment.pending_compliance` | A child payment held by the sanctions/KYC gate | `payment` |

@@ -5,7 +5,7 @@ import logging
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 from typing import Literal
 
@@ -60,7 +60,8 @@ from app.services.currency_conversion import (
 from app.services.exception_lifecycle import record_decision
 from app.services.international_payments import (
     is_international_payment,
-    realized_fx_gain_loss_for_settlement,
+    normalize_currency_code,
+    resolve_home_currency,
 )
 from app.services.payment_adapters import (
     PaymentAdapter,
@@ -89,13 +90,11 @@ from app.services.payment_runs import (
     rollup_payment_statuses,
     superseded_payment_ids,
 )
-from app.services.payment_settlement import (
-    SettlementVerification,
-    settlement_coverage,
-)
+from app.services.payment_settlement import settlement_coverage
 from app.services.payment_settlement_record import (
+    SettlementCompletion,
     open_settlement_mismatch_exception,
-    record_settlement,
+    record_completion,
 )
 from app.services.workflow_engine import VALID_TRANSITIONS, transition_invoice
 from app.tenant import (
@@ -535,7 +534,11 @@ async def _payment_queue_rollup(
 
     # Early-pay savings — a separate INNER-join aggregate restricted to rows
     # with a live discount window (`discount_date` in the future + a percent
-    # set). Rounded per row then summed, matching the old Python loop.
+    # set). Rounded per row then summed, matching the per-row `discount_amount`
+    # the queue endpoint renders. Postgres' `round(numeric, 2)` is
+    # half-away-from-zero; the Python side passes `ROUND_HALF_UP` explicitly to
+    # match it, because `Decimal.quantize`'s default (ROUND_HALF_EVEN) made the
+    # two disagree on a genuine half-cent.
     disc_where = [
         *where,
         PaymentSchedule.discount_date.isnot(None),
@@ -656,8 +659,21 @@ async def payment_queue(
             and sched.discount_date >= today
         ):
             discount_eligible = True
+            # ROUND_HALF_UP, explicitly. `Decimal.quantize` defaults to the
+            # context's ROUND_HALF_EVEN, and the whole-set rollup beside this
+            # list (`_payment_queue_rollup`) computes the SAME figure in SQL
+            # with `round(numeric, 2)` — which Postgres defines as
+            # half-away-from-zero. So a genuine half-cent (a 21.00 invoice at
+            # 2.50%: 0.525) rendered 0.52 in the row and summed as 0.53 in the
+            # banner above it: the same discount, two numbers, on one screen.
+            # Half-away-from-zero is the one both sides now use — it is what
+            # Postgres does, what every other money quantizer in this codebase
+            # passes explicitly (`international_payments._quantize_money`,
+            # `payment_settlement._q`, `currency_conversion._quantize_money`),
+            # and what auditors expect. Money amounts here are non-negative, so
+            # ROUND_HALF_UP and half-away-from-zero are the same rule.
             discount_amount = (inv.amount * sched.discount_percent / Decimal(100)).quantize(
-                Decimal("0.01")
+                Decimal("0.01"), rounding=ROUND_HALF_UP
             )
         items.append(
             {
@@ -2931,10 +2947,16 @@ async def _execute_single_payment(
     # adapter call and persist the source-side outflow + rate on
     # the row. The corridor lookup also decides whether the row
     # needs to flip to `sepa` / `international_wire`.
-    invoice_currency = (invoice.currency if invoice else "USD").upper()
-    org_home_currency = (
-        ((org.settings or {}).get("payments") or {}).get("home_currency") or "USD"
-    ).upper()
+    # Both codes come through the ONE normaliser
+    # (`international_payments.resolve_home_currency` /
+    # `normalize_currency_code`). This site only upper-cased, while the KYC gate
+    # and the reporting rollup stripped as well, so a trailing space in the
+    # tenant's own `settings.payments.home_currency` made `"USD "` != `"USD"`
+    # here and routed EVERY domestic payment down the international leg — a
+    # cross-border corridor, a locked FX rate on the row, and a KYC gate reading
+    # a different value for the same setting.
+    invoice_currency = normalize_currency_code(invoice.currency if invoice else None) or "USD"
+    org_home_currency = resolve_home_currency(org.settings)
     has_intl_bank_fields = bool(
         vendor_bank and (vendor_bank.get("iban") or vendor_bank.get("swift_bic"))
     )
@@ -4009,9 +4031,8 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             # denominated in the INVOICE's currency, which the Payment row
             # doesn't carry, and a discrepancy needs the invoice to hang its
             # queue entry on.
-            settlement: SettlementVerification | None = None
+            completion: SettlementCompletion | None = None
             settled_invoice: Invoice | None = None
-            realized_fx: Decimal | None = None
             if payment.status == "completed":
                 settled_invoice = (
                     await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
@@ -4029,13 +4050,16 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                 # was — `unverified` — because a settlement fetch must never
                 # break the webhook that is recording money movement.
                 #
-                # `record_settlement` owns the fetch-fallback, the verdict and
-                # the column writes, and the reconciler backstop calls the SAME
-                # function — the two paths a payment can reach `completed` on
-                # must not disagree about what "verified" means (they used to:
-                # the backstop persisted a figure and skipped the verdict
-                # entirely).
-                settlement = await record_settlement(
+                # `record_completion` owns the fetch-fallback, the verdict,
+                # the column writes AND the realized FX gain/loss, and the
+                # reconciler backstop calls the SAME function — the two paths a
+                # payment can reach `completed` on must not disagree about what
+                # "verified" means, nor about what a foreign-currency
+                # settlement books. They used to on both counts: the backstop
+                # persisted a figure and skipped the verdict entirely, and
+                # realized FX was computed inline right here, so every
+                # cross-currency payment the backstop recovered lost it.
+                completion = await record_completion(
                     db,
                     payment=payment,
                     adapter=adapter,
@@ -4043,23 +4067,6 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     reported_amount=event.amount,
                     reported_currency=event.currency,
                 )
-                # Realized FX gain/loss, at the moment a foreign-currency
-                # invoice actually settles. The liability was accrued at the
-                # rate locked on the invoice when its reporting amount was
-                # materialized; what moved is `source_amount` in the home
-                # currency, and the difference is realized here and nowhere
-                # else. `None` for a domestic payment, an invoice with no
-                # accrual rate, or a same-currency settlement — a zero would
-                # claim we measured and found no exposure.
-                if settled_invoice is not None:
-                    realized_fx = realized_fx_gain_loss_for_settlement(
-                        invoice_amount=settled_invoice.amount,
-                        invoice_currency=settled_invoice.currency,
-                        reporting_currency=settled_invoice.reporting_currency,
-                        reporting_fx_rate=settled_invoice.reporting_fx_rate,
-                        paid_source_amount=payment.source_amount,
-                        paid_source_currency=payment.source_currency,
-                    )
 
             # Append-only audit trail for the webhook-driven status transition.
             # This is the production money-movement event — the processor's
@@ -4090,21 +4097,18 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                     "payment_run_id": (
                         str(payment.payment_run_id) if payment.payment_run_id else None
                     ),
-                    # The settlement verdict rides the SAME append-only row
-                    # that records the money moving. The exception row below
-                    # is mutable and gets resolved; this is the WORM-shipped
-                    # evidence of what the processor said it settled, and it
-                    # is written on every completion — matched, mismatched,
-                    # and unverified alike — so a rail that reports no amount
-                    # is a visible blind spot rather than a silent one.
-                    **({"settlement": settlement.as_details()} if settlement else {}),
-                    # Exact decimal string, never a float. Absent (not zero)
-                    # when there is no FX exposure to measure.
-                    **(
-                        {"realized_fx_gain_loss": str(realized_fx)}
-                        if realized_fx is not None
-                        else {}
-                    ),
+                    # The settlement verdict and the realized FX gain/loss
+                    # ride the SAME append-only row that records the money
+                    # moving, built by the ONE shared helper the reconciler
+                    # backstop also uses. The exception row below is mutable
+                    # and gets resolved; this is the WORM-shipped evidence of
+                    # what the processor said it settled, and it is written on
+                    # every completion — matched, mismatched, and unverified
+                    # alike — so a rail that reports no amount is a visible
+                    # blind spot rather than a silent one. Money is an exact
+                    # decimal string, never a float; the FX key is absent (not
+                    # zero) when there is no exposure to measure.
+                    **(completion.as_audit_details() if completion else {}),
                 },
             )
 
@@ -4116,7 +4120,7 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             # recognized (mirrors the synchronous completion leg's call) —
             # unless the settlement itself didn't reconcile.
             if payment.status == "completed":
-                if settlement is not None and settlement.is_discrepancy:
+                if completion is not None and completion.is_discrepancy:
                     # Flag, and do NOT capture the discount: the payoff match
                     # runs against `payment.amount` — OUR authorized figure,
                     # which the rail has just contradicted — so capturing here
@@ -4134,7 +4138,7 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                         payment=payment,
                         invoice=settled_invoice,
                         org=org,
-                        verification=settlement,
+                        verification=completion.verification,
                     )
                 else:
                     await _capture_discount_offers(

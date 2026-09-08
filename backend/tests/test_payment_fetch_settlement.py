@@ -268,8 +268,16 @@ async def test_reconciler_records_the_settled_figure_when_it_settles_a_payment()
         return_value=SettlementReport(available=True, amount=Decimal("250.00"), currency="USD")
     )
 
+    # A real `Invoice` row always carries the accrual columns the completion
+    # recorder reads for realized FX (`reporting_currency` / `reporting_fx_rate`);
+    # a stand-in that omits them is an incomplete fixture, not a lax contract.
     invoice = SimpleNamespace(
-        id=payment.invoice_id, currency="USD", amount=Decimal("500.00"), invoice_number="INV-1"
+        id=payment.invoice_id,
+        currency="USD",
+        amount=Decimal("500.00"),
+        invoice_number="INV-1",
+        reporting_currency="USD",
+        reporting_fx_rate=None,
     )
     inv_res = MagicMock()
     inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
@@ -292,7 +300,7 @@ async def test_reconciler_records_the_settled_figure_when_it_settles_a_payment()
     db.add = MagicMock()
     org = SimpleNamespace(id=uuid.uuid4(), settings={})
 
-    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+    completion = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
         db, payment=payment, adapter=adapter, org=org
     )
 
@@ -302,8 +310,8 @@ async def test_reconciler_records_the_settled_figure_when_it_settles_a_payment()
     # $500 authorization is a discrepancy, and the caller puts this on the
     # append-only audit row. It used to persist the figure and stop, so a
     # divergent settlement on this path had no verdict and no queue entry.
-    assert verification.is_discrepancy
-    assert verification.outcome == "amount_mismatch"
+    assert completion.is_discrepancy
+    assert completion.verification.outcome == "amount_mismatch"
 
 
 @pytest.mark.asyncio
@@ -325,7 +333,17 @@ async def test_reconciler_settlement_fetch_failure_leaves_the_columns_null():
     adapter.provider_name = "mock"
     adapter.fetch_settlement = AsyncMock(side_effect=RuntimeError("processor down"))
 
-    invoice = SimpleNamespace(id=payment.invoice_id, currency="USD", invoice_number="INV-1")
+    # A real `Invoice` row always carries the accrual columns the completion
+    # recorder reads for realized FX (`reporting_currency` / `reporting_fx_rate`);
+    # a stand-in that omits them is an incomplete fixture, not a lax contract.
+    invoice = SimpleNamespace(
+        id=payment.invoice_id,
+        currency="USD",
+        amount=Decimal("500.00"),
+        invoice_number="INV-1",
+        reporting_currency="USD",
+        reporting_fx_rate=None,
+    )
     inv_res = MagicMock()
     inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
     db = AsyncMock()
@@ -333,15 +351,15 @@ async def test_reconciler_settlement_fetch_failure_leaves_the_columns_null():
     db.add = MagicMock()
     org = SimpleNamespace(id=uuid.uuid4(), settings={})
 
-    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+    completion = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
         db, payment=payment, adapter=adapter, org=org
     )
 
     assert payment.settled_amount is None
     # A fetch failure leaves the verdict `unverified`, NOT a discrepancy — we
     # learned nothing, and a blind spot must not masquerade as a mismatch.
-    assert verification.outcome == "unverified"
-    assert not verification.is_discrepancy
+    assert completion.verification.outcome == "unverified"
+    assert not completion.is_discrepancy
 
 
 @pytest.mark.asyncio
@@ -382,7 +400,17 @@ async def test_reconciler_flags_a_settlement_discrepancy_it_resolved_itself():
         return_value=SettlementReport(available=True, amount=Decimal("5000.00"), currency="USD")
     )
 
-    invoice = SimpleNamespace(id=payment.invoice_id, currency="USD", invoice_number="INV-OVER")
+    # A real `Invoice` row always carries the accrual columns the completion
+    # recorder reads for realized FX (`reporting_currency` / `reporting_fx_rate`);
+    # a stand-in that omits them is an incomplete fixture, not a lax contract.
+    invoice = SimpleNamespace(
+        id=payment.invoice_id,
+        currency="USD",
+        amount=Decimal("500.00"),
+        invoice_number="INV-OVER",
+        reporting_currency="USD",
+        reporting_fx_rate=None,
+    )
     inv_res = MagicMock()
     inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
     generic = MagicMock()
@@ -401,12 +429,12 @@ async def test_reconciler_flags_a_settlement_discrepancy_it_resolved_itself():
     db.add = MagicMock(side_effect=added.append)
     org = SimpleNamespace(id=uuid.uuid4(), settings={})
 
-    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+    completion = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
         db, payment=payment, adapter=adapter, org=org
     )
 
-    assert verification.outcome == "amount_mismatch"
-    assert verification.is_discrepancy
+    assert completion.verification.outcome == "amount_mismatch"
+    assert completion.is_discrepancy
     # A 10x over-settlement is still persisted — money moved, and refusing to
     # record that does not un-move it. The control is the blocking exception.
     assert payment.settled_amount == Decimal("5000.00")

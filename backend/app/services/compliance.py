@@ -62,6 +62,7 @@ from app.models.payment import Payment
 from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
 from app.services.currency_conversion import payment_reporting_amount_sql
+from app.services.international_payments import normalize_currency_code, resolve_home_currency
 from app.services.payment_methods import (
     INTERNATIONAL_PAYMENT_METHODS,
     normalize_payment_method,
@@ -160,7 +161,7 @@ def _kyc_required_for(
         return False
     threshold = Decimal(str(cfg.get("kyc_required_above", _DEFAULT_KYC_REQUIRED_ABOVE)))
     home_currency = _home_currency(org_settings)
-    if (amount_currency or "").strip().upper() != home_currency:
+    if normalize_currency_code(amount_currency) != home_currency:
         # Not provably comparable (a foreign-currency leg, or an FX rate we
         # never locked). Require KYC rather than wave the payment through on a
         # number-vs-number comparison across two currencies.
@@ -170,11 +171,17 @@ def _kyc_required_for(
 
 def _home_currency(org_settings: dict | None) -> str:
     """The org's home currency — the denomination of every money threshold in
-    `settings.compliance`. Same source `_execute_single_payment` reads when it
-    decides whether a payment needs an FX leg at all, so the two can't drift.
+    `settings.compliance`.
+
+    Delegates to `international_payments.resolve_home_currency`, the ONE owner:
+    the same setting is also what `_execute_single_payment` reads when it
+    decides whether a payment needs an FX leg at all, and the two normalised it
+    differently — this side stripped, that side did not — so a trailing space
+    made the gate and the corridor selector disagree about the org's own home
+    currency. A local alias is kept only because this module's own call sites
+    read better with it.
     """
-    pmt = (org_settings or {}).get("payments") or {}
-    return ((pmt.get("home_currency") or "USD") or "USD").strip().upper()
+    return resolve_home_currency(org_settings)
 
 
 def _aml_threshold(org_settings: dict | None) -> Decimal:
@@ -419,7 +426,7 @@ async def check_payment_compliance(
         # currency, and hands this gate that leg. When it isn't, count only what
         # is comparable rather than adding two currencies together; the
         # exclusion is stated in the alert below.
-        comparable = (payment_currency or "").strip().upper() == home_currency
+        comparable = normalize_currency_code(payment_currency) == home_currency
         projected = trailing + (payment_amount if comparable else Decimal("0"))
         if not comparable:
             excluded += 1
