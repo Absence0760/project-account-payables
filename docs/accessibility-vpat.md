@@ -90,7 +90,7 @@ and the manual audit is the tracked outstanding work.
 | 2.4.11 Focus Not Obscured (Minimum) | AA | Partially Supports | **New in 2.2.** The shared `Modal` and sticky headers are designed not to fully hide the focused element; this is inherently a manual check and is part of the outstanding screen-reader/keyboard pass. |
 | 2.4.12 Focus Not Obscured (Enhanced) | AAA | Not Applicable | AAA criterion — outside the Level AA target (listed for completeness re: the 2.2 additions). |
 | 2.5.7 Dragging Movements | AA | Partially Supports | **New in 2.2.** Most interactions need no dragging. The workflow-builder canvas uses native HTML5 drag-and-drop; a single-pointer (click-to-add / keyboard-reorder) alternative is the tracked follow-up. |
-| 2.5.8 Target Size (Minimum) | AA | Supports | **New in 2.2.** Interactive targets meet the 24×24 CSS-px minimum (buttons, chips, row controls); the axe `target-size` rule guards regressions. |
+| 2.5.8 Target Size (Minimum) | AA | Supports | **New in 2.2.** Interactive targets meet the 24×24 CSS-px minimum (buttons, chips, row controls). The row-select checkbox is the case worth stating: it is *painted* 16×16 to fit a dense table row, so it used to conform only through the criterion's spacing exception — which each page's checkbox-column padding decided rather than the design system. Its own box is now 24×24 (a transparent border, returned to the layout as a negative margin, so nothing moves and no row grows), meeting the size minimum outright. Guarded by the axe `target-size` rule, by `tests-e2e/a11y/target-size.spec.ts` on a *selectable* row, and by the stylesheet scan `src/lib/a11y/targetSizeAudit.test.ts`. |
 | 3.1.2 Language of Parts | AA | Not Applicable | Content is single-language (en-US); no inline foreign-language passages requiring `lang`. |
 | 3.2.3 Consistent Navigation | AA | Supports | Sidebar nav and section tabs appear in the same relative order across routes (driven by the single `$lib/nav.ts` source). |
 | 3.2.4 Consistent Identification | AA | Supports | Components with the same function (e.g. status badges, row actions, money formatting) are identified consistently via the shared `ui/` component library. |
@@ -112,7 +112,7 @@ likeliest gaps in an older codebase:
 | 2.4.12 Focus Not Obscured (Enhanced) | AAA | Not Applicable | Above the AA target. |
 | 2.4.13 Focus Appearance | AAA | Not Applicable | Above the AA target. |
 | 2.5.7 Dragging Movements | AA | Supports | The workflow-builder canvas drag-to-reorder has a per-node single-pointer + keyboard alternative — Move ↑ / Move ↓ buttons on every step (and in the step config panel). Covered by `workflow-builder.spec.ts`. |
-| 2.5.8 Target Size (Minimum) | AA | Supports | 24×24px minimum; guarded by axe `target-size`. |
+| 2.5.8 Target Size (Minimum) | AA | Supports | 24×24px minimum, met by size rather than by the spacing exception — the 16×16 row-select checkbox carries a 24×24 hit box that costs no layout. Guarded by axe `target-size`, `tests-e2e/a11y/target-size.spec.ts` and `src/lib/a11y/targetSizeAudit.test.ts`. |
 | 3.2.6 Consistent Help | AA | Partially Supports | Consistent placement of help/feedback affordance — manual check pending. |
 | 3.3.7 Redundant Entry | AA | Partially Supports | Don't re-ask for known info in multi-step flows — manual check pending. |
 | 3.3.8 Accessible Authentication (Minimum) | AA | Partially Supports | No cognitive-function test without alternative; paste-enabled password fields — manual confirmation pending. |

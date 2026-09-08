@@ -126,16 +126,47 @@ CI plus two kinds of human review:
    is its runtime complement, stubbing the list responses on
    `/admin/webhooks`, `/admin/api-keys` and `/admin` so a de-emphasised row
    is guaranteed on screen when axe runs.
-4. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
+4. **Automated (target-size scan, every CI run).** WCAG 2.2's SC 2.5.8 accepts
+   either a 24×24 CSS-px target or, through its *spacing* exception, an
+   undersized one whose 24px-diameter circle reaches no other target.
+   `input[type=checkbox]` is painted 16×16, so every row-select and select-all
+   checkbox in the app used to conform through the exception — and whether it
+   did was decided by whatever padding each page gave its checkbox column, not
+   by the design system: `/invoices` left 7px of clear space around the box,
+   `/exceptions` (`width: 32px; padding-right: 0`) left 2px, and 4px is the
+   threshold. A criterion a page's padding can flip is not one the design
+   system is meeting, so the checkbox now satisfies the **size** half outright.
+   Its own box is 24×24 — a 4px transparent border plus
+   `background-clip: padding-box`, so the painted control is still 16×16 — and
+   a matching `margin: -4px` returns those 8px to the layout, leaving the
+   margin box (what a line box, a flex row or a table cell measures) at 16×16
+   so no row height moves. The floor is spelled `min-width`/`min-height`
+   rather than `width`/`height` on purpose: a page-scoped `input { … }` rule
+   outranks the global base, and a `min-*` clamp wins regardless of which
+   `width` applies. Two guards, because neither sees what the other does.
+   `frontend/src/lib/a11y/targetSizeAudit.test.ts` (vitest, `pnpm test:unit`)
+   scans the stylesheets so the recipe cannot be weakened for the whole app
+   from a file no route list covers. `frontend/tests-e2e/a11y/target-size.spec.ts`
+   measures the rendered page — and had to, because the route scan in (1) was
+   passing without ever looking: a **disabled** input is not focusable, so
+   axe's own matcher skips it, and every `SYSTEM_MANAGED_STATUSES` invoice
+   (`pending`, `paid`, `done`, …) renders its checkbox disabled. Playwright
+   walks spec folders alphabetically, so `a11y/` saw the tenant before the
+   `invoices/` specs added a selectable row to it; the coverage was an artefact
+   of file ordering. That spec now forces a selectable row on screen and
+   asserts the geometry directly, including that a click 4px outside the
+   painted control still toggles it and that the focus ring is drawn on the
+   control rather than around the invisible target.
+5. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
    asserts the structural semantics a screen-reader/keyboard user relies on:
    skip link + named landmarks + a single `<h1>`, no positive tabindex, 320px
    reflow with no horizontal scroll, and dialog focus-trap + focus-restore on
    Esc. `workflow-builder.spec.ts` covers the keyboard step-reorder path.
-5. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
+6. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
    `Semantics` tree and `meetsGuideline` widget tests (`mobile/test/a11y/`) to
    assert that interactive widgets expose labels, roles, and state to TalkBack /
    VoiceOver, plus tap-target size and contrast.
-6. **Manual screen-reader passes.** Keyboard-only and screen-reader walkthroughs
+7. **Manual screen-reader passes.** Keyboard-only and screen-reader walkthroughs
    of the core flows — **VoiceOver** (macOS Safari + iOS), **NVDA** (Windows
    Firefox/Chrome), **TalkBack** (Android) — run from the repeatable
    [screen-reader checklist](./accessibility-screen-reader-checklist.md) before a
@@ -182,6 +213,12 @@ The current build implements:
   per page, and ordered headings; native controls (checkbox, radio, select,
   file, range) are restyled with `appearance: none` while preserving their
   native semantics and states.
+- **Pointer targets that meet the 24×24 minimum** (SC 2.5.8) rather than
+  relying on its spacing exception. The row-select checkbox is the case that
+  matters: it is painted 16×16 to fit a dense table row, and its *hit* box is
+  grown to 24×24 with a transparent border that the layout gets back as a
+  negative margin — so the target clears the floor without any row growing or
+  any control moving a pixel.
 - **Consistent navigation and help** — the sidebar nav and section tabs appear
   in the same relative order across routes.
 
@@ -238,6 +275,10 @@ five business days.
   the repeatable manual VoiceOver / NVDA / TalkBack pass.
 - `frontend/tests-e2e/a11y/axe.spec.ts` + `screen-reader.spec.ts` — the
   automated regression guards (axe + navigability/reflow/focus-trap).
+- `frontend/tests-e2e/a11y/target-size.spec.ts` +
+  `frontend/src/lib/a11y/targetSizeAudit.test.ts` — the SC 2.5.8 pair: the
+  rendered geometry of a *selectable* row checkbox, and the stylesheet scan on
+  the recipe that produces it.
 - `frontend/src/lib/a11y/tokenPairing.test.ts` — the stylesheet colour-token /
   contrast scan (`pnpm test:unit`), with its pure scanners in `cssAudit.ts` and
   the WCAG math in `contrast.ts`.
