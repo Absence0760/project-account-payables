@@ -2,8 +2,8 @@
 	import type { Expense, ExpenseStatus } from '$lib/types/expense';
 	import {
 		EXPENSE_PAYMENT_METHODS,
-		EXPENSE_PAYMENT_METHOD_LABELS,
-		EXPENSE_STATUS_LABELS,
+		EXPENSE_PAYMENT_METHOD_LABEL_KEYS,
+		expenseStatusLabelKey,
 		EXPENSE_STATUS_TONES
 	} from '$lib/types/expense';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -86,6 +86,12 @@
 	// `?? fallback` — a status this build doesn't know renders its raw value in
 	// a flat chip rather than blank.
 	const statusKey = $derived(status as ExpenseStatus);
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = $derived.by(() => {
+		const key = expenseStatusLabelKey(status);
+		return key ? m(key) : status;
+	});
 
 	function numOrNull(v: unknown): number | null {
 		if (v === '' || v === null || v === undefined) return null;
@@ -199,7 +205,7 @@
 		{#if !isCreate}
 			<div class="status-row">
 				<Badge tone={EXPENSE_STATUS_TONES[statusKey] ?? 'neutral'} variant={status}>
-					{EXPENSE_STATUS_LABELS[statusKey] ?? status}
+					{statusLabel}
 				</Badge>
 			</div>
 		{/if}
@@ -241,7 +247,7 @@
 				<span>{m('expenseModal.field.paymentMethod')}</span>
 				<select bind:value={payment_method} disabled={!canEdit}>
 					{#each EXPENSE_PAYMENT_METHODS as method}
-						<option value={method}>{EXPENSE_PAYMENT_METHOD_LABELS[method]}</option>
+						<option value={method}>{m(EXPENSE_PAYMENT_METHOD_LABEL_KEYS[method])}</option>
 					{/each}
 				</select>
 			</label>

@@ -1563,6 +1563,17 @@ export const en = {
 	'expenses.col.gl': 'GL',
 	'expenses.col.amount': 'Amount',
 	'expenses.col.status': 'Status',
+
+	// Expense status + payment-method value labels ($lib/types/expense.ts)
+	'expenses.status.draft': 'Draft',
+	'expenses.status.submitted': 'Submitted',
+	'expenses.status.approved': 'Approved',
+	'expenses.status.rejected': 'Rejected',
+	'expenses.status.reimbursed': 'Reimbursed',
+	'expenses.method.outOfPocket': 'Out of pocket',
+	'expenses.method.corporateCard': 'Corporate card',
+	'expenses.method.virtualCard': 'Virtual card',
+
 	'expenses.selectAllAria': 'Select all expenses on this page',
 	'expenses.selectAria': 'Select expense {name}',
 	'expenses.row.editAria': 'Edit expense {name}',
@@ -1605,6 +1616,16 @@ export const en = {
 	'expenses.reports.col.merchant': 'Merchant',
 	'expenses.reports.col.category': 'Category',
 	'expenses.reports.col.amount': 'Amount',
+
+	// Expense-report status labels ($lib/types/expense.ts)
+	'expenses.reports.status.draft': 'Draft',
+	'expenses.reports.status.submitted': 'Submitted',
+	'expenses.reports.status.pendingApproval': 'Pending Approval',
+	'expenses.reports.status.approved': 'Approved',
+	'expenses.reports.status.rejected': 'Rejected',
+	'expenses.reports.status.reimbursed': 'Reimbursed',
+	'expenses.reports.status.cancelled': 'Cancelled',
+
 	'expenses.reports.openAria': 'Open report {number}',
 	'expenses.reports.empty': 'No expense reports yet.',
 	'expenses.reports.loadMore': 'Load more ({shown} of {total})',
@@ -1640,6 +1661,12 @@ export const en = {
 	'expenses.preapprovals.col.category': 'Category',
 	'expenses.preapprovals.col.estimated': 'Estimated',
 	'expenses.preapprovals.col.status': 'Status',
+
+	// Pre-approval request status labels ($lib/types/expense.ts)
+	'expenses.preapprovals.status.pending': 'Pending',
+	'expenses.preapprovals.status.approved': 'Approved',
+	'expenses.preapprovals.status.rejected': 'Rejected',
+
 	'expenses.preapprovals.approve': 'Approve',
 	'expenses.preapprovals.reject': 'Reject',
 	'expenses.preapprovals.confirmReject': 'Confirm reject',
@@ -1656,6 +1683,12 @@ export const en = {
 	'expenses.cards.col.card': 'Card',
 	'expenses.cards.col.amount': 'Amount',
 	'expenses.cards.col.status': 'Status',
+
+	// Corporate-card reconciliation status labels ($lib/types/expense.ts)
+	'expenses.cards.status.unmatched': 'Unmatched',
+	'expenses.cards.status.matched': 'Matched',
+	'expenses.cards.status.ignored': 'Ignored',
+
 	'expenses.cards.virtual': 'Virtual',
 	'expenses.cards.match': 'Match',
 	'expenses.cards.createExpense': 'Create expense',

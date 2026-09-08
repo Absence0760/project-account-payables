@@ -16,15 +16,16 @@
 	} from '$lib/types/expense';
 	import {
 		EXPENSE_FILTER_STATUSES,
-		EXPENSE_STATUS_LABELS,
+		EXPENSE_STATUS_LABEL_KEYS,
+		expenseStatusLabelKey,
 		EXPENSE_STATUS_TONES,
-		EXPENSE_REPORT_STATUS_LABELS,
+		expenseReportStatusLabelKey,
 		EXPENSE_REPORT_STATUS_TONES,
 		EXPENSE_PREAPPROVAL_STATUSES,
-		EXPENSE_PREAPPROVAL_STATUS_LABELS,
+		expensePreapprovalStatusLabelKey,
 		EXPENSE_PREAPPROVAL_STATUS_TONES,
 		RECONCILIATION_STATUSES,
-		RECONCILIATION_STATUS_LABELS,
+		reconciliationStatusLabelKey,
 		RECONCILIATION_STATUS_TONES
 	} from '$lib/types/expense';
 	import { expenseStore } from '$lib/stores/expenses.svelte';
@@ -144,14 +145,33 @@
 	// invisible and the user can always click back to All.
 	const chipStatuses = $derived.by(() => {
 		const active = statusFilter as ExpenseStatus;
-		if (EXPENSE_FILTER_STATUSES.includes(active) || !(active in EXPENSE_STATUS_LABELS))
+		if (EXPENSE_FILTER_STATUSES.includes(active) || !(active in EXPENSE_STATUS_LABEL_KEYS))
 			return EXPENSE_FILTER_STATUSES;
 		return [...EXPENSE_FILTER_STATUSES, active];
 	});
 
+	// Every status name below is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = expenseStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+	const reportStatusLabel = (s: string) => {
+		const key = expenseReportStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+	const preapprovalStatusLabel = (s: string) => {
+		const key = expensePreapprovalStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+	const reconStatusLabel = (s: string) => {
+		const key = reconciliationStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...chipStatuses.map((s) => ({ key: s, label: EXPENSE_STATUS_LABELS[s] }))
+		...chipStatuses.map((s) => ({ key: s, label: statusLabel(s) }))
 	]);
 
 	const COLUMNS = $derived([
@@ -824,7 +844,7 @@
 		{ key: 'all', label: m('common.all') },
 		...EXPENSE_PREAPPROVAL_STATUSES.map((s) => ({
 			key: s,
-			label: EXPENSE_PREAPPROVAL_STATUS_LABELS[s]
+			label: preapprovalStatusLabel(s)
 		}))
 	]);
 
@@ -941,7 +961,7 @@
 
 	const RECON_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...RECONCILIATION_STATUSES.map((s) => ({ key: s, label: RECONCILIATION_STATUS_LABELS[s] }))
+		...RECONCILIATION_STATUSES.map((s) => ({ key: s, label: reconStatusLabel(s) }))
 	]);
 
 	const unmatchedCount = $derived(
@@ -1217,7 +1237,7 @@
 							     is also the caller's to own — the tooltip is the point of
 							     that chip. -->
 							<span class="status-cell">
-								<Badge tone={EXPENSE_STATUS_TONES[exp.status as ExpenseStatus]} variant={exp.status}>{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</Badge>
+								<Badge tone={EXPENSE_STATUS_TONES[exp.status as ExpenseStatus]} variant={exp.status}>{statusLabel(exp.status)}</Badge>
 								{#if exp.policy_violations && exp.policy_violations.length}
 									<span class="violation-chip">
 										<Badge tone="danger" variant="violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</Badge>
@@ -1264,7 +1284,7 @@
 					<button class="btn-back" onclick={closeReport}>{m('expenses.reports.back')}</button>
 					<div class="report-title-block">
 						<h2>{activeReport.report_number}</h2>
-						<Badge tone={EXPENSE_REPORT_STATUS_TONES[activeReport.status as ExpenseReportStatus]} variant={activeReport.status}>{EXPENSE_REPORT_STATUS_LABELS[activeReport.status as keyof typeof EXPENSE_REPORT_STATUS_LABELS] ?? activeReport.status}</Badge>
+						<Badge tone={EXPENSE_REPORT_STATUS_TONES[activeReport.status as ExpenseReportStatus]} variant={activeReport.status}>{reportStatusLabel(activeReport.status)}</Badge>
 					</div>
 					<div class="report-detail-actions">
 						<button class="btn-secondary" onclick={exportReportCsv}>{m('expenses.reports.exportCsv')}</button>
@@ -1358,7 +1378,7 @@
 								<td class="right mono"><Money amount={exp.amount} currency={exp.currency} /></td>
 								<td>
 									<span class="status-cell">
-										<Badge tone={EXPENSE_STATUS_TONES[exp.status as ExpenseStatus]} variant={exp.status}>{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</Badge>
+										<Badge tone={EXPENSE_STATUS_TONES[exp.status as ExpenseStatus]} variant={exp.status}>{statusLabel(exp.status)}</Badge>
 										{#if exp.policy_violations && exp.policy_violations.length}
 											<span class="violation-chip">
 												<Badge tone="danger" variant="violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</Badge>
@@ -1396,7 +1416,7 @@
 								</RowLink>
 							</td>
 							<td>{r.title ?? '—'}</td>
-							<td><Badge tone={EXPENSE_REPORT_STATUS_TONES[r.status as ExpenseReportStatus]} variant={r.status}>{EXPENSE_REPORT_STATUS_LABELS[r.status as keyof typeof EXPENSE_REPORT_STATUS_LABELS] ?? r.status}</Badge></td>
+							<td><Badge tone={EXPENSE_REPORT_STATUS_TONES[r.status as ExpenseReportStatus]} variant={r.status}>{reportStatusLabel(r.status)}</Badge></td>
 							<td class="right mono"><Money amount={r.total_amount} currency={r.currency} /></td>
 						</tr>
 					{/each}
@@ -1501,7 +1521,7 @@
 						<td>{pa.title}</td>
 						<td>{pa.category ?? '—'}</td>
 						<td class="right mono"><Money amount={pa.estimated_amount} currency={pa.currency} /></td>
-						<td><Badge tone={EXPENSE_PREAPPROVAL_STATUS_TONES[pa.status as ExpensePreapprovalStatus]} variant={pa.status}>{EXPENSE_PREAPPROVAL_STATUS_LABELS[pa.status as keyof typeof EXPENSE_PREAPPROVAL_STATUS_LABELS] ?? pa.status}</Badge></td>
+						<td><Badge tone={EXPENSE_PREAPPROVAL_STATUS_TONES[pa.status as ExpensePreapprovalStatus]} variant={pa.status}>{preapprovalStatusLabel(pa.status)}</Badge></td>
 						<td class="actions">
 							{#if canDecidePreapproval(pa)}
 								<RowAction variant="success" onclick={() => approvePa(pa)}>{m('expenses.preapprovals.approve')}</RowAction>
@@ -1568,9 +1588,7 @@
 								]}
 								variant={txn.reconciliation_status}
 							>
-								{RECONCILIATION_STATUS_LABELS[
-									txn.reconciliation_status as keyof typeof RECONCILIATION_STATUS_LABELS
-								] ?? txn.reconciliation_status}
+								{reconStatusLabel(txn.reconciliation_status)}
 							</Badge>
 						</td>
 						<!-- All four bind `cardBusy`. The three mutating handlers already
