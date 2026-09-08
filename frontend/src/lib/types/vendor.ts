@@ -271,6 +271,7 @@ export interface VendorMergeResponse {
 }
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 
 /**
  * Badge tone per vendor lifecycle status (`Vendor.status`).
@@ -296,12 +297,33 @@ export const VENDOR_STATUS_TONES: Record<string, BadgeTone> = {
 	rejected: 'danger'
 };
 
-export const SCREENING_STATUS_LABELS: Record<ScreeningStatus, string> = {
-	unscreened: 'Unscreened',
-	clear: 'Clear',
-	review: 'Review',
-	match: 'Match'
+/**
+ * The i18n key carrying each screening-status label — never the English string
+ * itself. `ui/ScreeningBadge.svelte` renders this pill on the (extracted)
+ * `/vendors` list and inside `VendorModal`, so a hardcoded English map here
+ * put an untranslated `Clear` beside translated columns. `Record<
+ * ScreeningStatus, MessageKey>` makes a new status a compile error rather
+ * than a blank pill, and `vendor.test.ts` proves every key exists in the
+ * catalogue.
+ *
+ * The sibling `RISK_LEVEL_LABELS` below is deliberately NOT keyed yet: it is
+ * still read by `modals/VendorModal.svelte`, outside this change's scope.
+ */
+export const SCREENING_STATUS_LABEL_KEYS: Record<ScreeningStatus, MessageKey> = {
+	unscreened: 'vendors.screening.status.unscreened',
+	clear: 'vendors.screening.status.clear',
+	review: 'vendors.screening.status.review',
+	match: 'vendors.screening.status.match'
 };
+
+/**
+ * The message key for a screening status, or `null` for one this frontend
+ * doesn't know (the caller renders the raw value — visible and searchable —
+ * rather than a blank pill).
+ */
+export function screeningStatusLabelKey(status: string): MessageKey | null {
+	return SCREENING_STATUS_LABEL_KEYS[status as ScreeningStatus] ?? null;
+}
 
 export const RISK_LEVEL_LABELS: Record<RiskLevel, string> = {
 	low: 'Low',

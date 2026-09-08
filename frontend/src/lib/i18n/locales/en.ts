@@ -490,6 +490,16 @@ export const en = {
 	'vendors.col.email': 'Email',
 	'vendors.col.status': 'Status',
 	'vendors.col.screening': 'Screening',
+
+	// Sanctions-screening pill — ui/ScreeningBadge.svelte + $lib/types/vendor.ts
+	'vendors.screening.status.unscreened': 'Unscreened',
+	'vendors.screening.status.clear': 'Clear',
+	'vendors.screening.status.review': 'Review',
+	'vendors.screening.status.match': 'Match',
+	'vendors.screening.blocked': 'Blocked',
+	'vendors.screening.adverseMedia': 'Negative news',
+	'vendors.screening.adverseMediaTitle': 'Adverse-media (negative news) hit — review the relationship',
+
 	'vendors.col.source': 'Source',
 	'vendors.col.invoices': 'Invoices',
 	'vendors.col.erp': 'ERP',

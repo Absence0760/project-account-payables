@@ -9,11 +9,12 @@
 	// and the detail modal — don't hand-roll these pills (the tone classes
 	// carry calibrated WCAG-checked text colours; see `docs/accessibility.md`).
 	import {
-		SCREENING_STATUS_LABELS,
+		screeningStatusLabelKey,
 		RISK_LEVEL_LABELS,
 		type ScreeningStatus,
 		type RiskLevel
 	} from '$lib/types/vendor';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let {
 		screening,
@@ -36,6 +37,15 @@
 		return 'grey';
 	}
 
+	// The screening verdict is a message key, not an English literal — an
+	// unrecognised status renders raw rather than blank. (`RISK_LEVEL_LABELS`
+	// below is still the English map: `modals/VendorModal.svelte` reads it too
+	// and is outside this change's scope.)
+	function screeningLabel(s: ScreeningStatus): string {
+		const key = screeningStatusLabelKey(s);
+		return key ? m(key) : s;
+	}
+
 	function riskTone(r: RiskLevel): string {
 		if (r === 'low') return 'grey';
 		if (r === 'medium') return 'amber';
@@ -46,7 +56,7 @@
 
 {#if screening}
 	<span class="screen-badge {screeningTone(screening, blocked)}">
-		{blocked ? 'Blocked' : SCREENING_STATUS_LABELS[screening]}
+		{blocked ? m('vendors.screening.blocked') : screeningLabel(screening)}
 	</span>
 {/if}
 {#if risk && risk !== 'unknown'}
@@ -55,11 +65,8 @@
 	</span>
 {/if}
 {#if adverseMedia}
-	<span
-		class="screen-badge amber"
-		title="Adverse-media (negative news) hit — review the relationship"
-	>
-		Negative news
+	<span class="screen-badge amber" title={m('vendors.screening.adverseMediaTitle')}>
+		{m('vendors.screening.adverseMedia')}
 	</span>
 {/if}
 
