@@ -216,6 +216,21 @@ check it isn't caught by a pattern there — `app/`, `alembic/`,
 `scripts/` are the deliberate keeps (`deploy/deploy.sh` and
 `deploy/add-tenant.sh` run `scripts/*.py` inside this image).
 
+### pip is not in the runtime image
+
+The install layer ends with `python -m pip uninstall -y pip`. `python:3.14-slim`
+ships pip as the **only** package in site-packages; this image installs with
+`uv` and runs the app from the copied source, so nothing invokes pip and no
+runtime path imports it. All it contributed was a `dist-info` for Trivy to match
+CVEs against — and it did, reporting CVE-2026-13346 (pip < 26.2.0, "arbitrary
+file installation via malicious package indexes") against an installer the image
+never calls. Deleting it retires that alert and every future pip CVE with it,
+instead of bumping the base digest each time one lands.
+
+`uv` stays on the PATH, so `uv pip install --system <pkg>` is still how you add
+something to a running container for debugging. `tests/test_container_supply_chain.py`
+guards the removal.
+
 ## CI test sharding
 
 The full suite (~3900 tests against a real Postgres/Redis/MinIO) ran ~27 min as

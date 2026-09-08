@@ -108,6 +108,29 @@ def test_pip_installs_require_hashes(dockerfile: Path) -> None:
         )
 
 
+def test_backend_image_ships_no_pip() -> None:
+    """The scanned image installs with uv and never invokes pip.
+
+    `python:3.14-slim` ships pip as the only package in site-packages. Nothing
+    in the image installs with it and no runtime path imports it, so the only
+    thing it contributes is a dist-info for Trivy to match CVEs against — which
+    it did (CVE-2026-13346, pip < 26.2.0), against an installer that is never
+    invoked. Removing it in the install layer retires that alert and every
+    future pip CVE with it.
+
+    Scoped to `backend/Dockerfile`: that is the image `security.yml`'s
+    `trivy-backend-image` job builds and scans, and the one that reaches a
+    deployed environment. `tools/fake-erp` is a local-dev compose service, is
+    neither scanned nor deployed, and is left alone deliberately.
+    """
+    lines = _instructions(REPO_ROOT / "backend" / "Dockerfile")
+    assert any(re.search(r"\bpip\s+uninstall\b.*\bpip\b", line) for line in lines), (
+        "backend/Dockerfile no longer removes pip from the runtime image. "
+        "Every pip CVE will reappear in the Trivy scan, reported against an "
+        "installer the image never invokes."
+    )
+
+
 def test_backend_dockerignore_keeps_secrets_and_venv_out_of_the_image() -> None:
     """`COPY . .` ships whatever the build context holds.
 
