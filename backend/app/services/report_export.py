@@ -197,10 +197,15 @@ def export_vendor_spend(rows: Iterable) -> str:
     """Per-vendor rollup: name, invoice_count, total (in the org's reporting
     currency), and the distinct original currencies rolled into it.
 
-    The real caller is `currency_conversion.vendor_rollup_to_reporting_currency`
-    — each row a `VendorSpendEntry` (`.vendor` / `.amount` / `.invoice_count` /
-    `.currencies`) — so a vendor billing in more than one currency exports a
-    real converted total instead of a meaningless mixed-currency sum. Also
+    Every real caller hands it `VendorSpendEntry` rows (`.vendor` / `.amount` /
+    `.invoice_count` / `.currencies`), so a vendor billing in more than one
+    currency exports a real converted total instead of a meaningless
+    mixed-currency sum. Those rows now come from
+    `currency_conversion.vendor_spend_grouped_select` +
+    `vendor_rollup_from_grouped_rows`, which group in SQL; the row-at-a-time
+    `vendor_rollup_to_reporting_currency` this used to name has no production
+    caller left (see `backend/docs/analytics.md` § Per-vendor spend is one
+    query). Nothing about the exported shape changed with it. Also
     accepts a 3-item positional sequence `(vendor_name, invoice_count, total)`
     — a plain tuple/list OR a SQLAlchemy `Row` — or an object exposing
     `vendor_name`/`total_amount` (no currency info; the column exports blank),
