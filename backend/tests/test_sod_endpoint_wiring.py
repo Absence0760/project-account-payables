@@ -11,7 +11,13 @@ future refactor can't quietly drop a route back onto `require_roles`.
 We resolve each route's `require_permission` checker out of its FastAPI
 dependency tree and exercise it directly with a user holding / lacking the
 permission — so the test covers BOTH "this route is permission-gated" and "it
-gates on the RIGHT permission set," with no DB.
+gates on the RIGHT permission set," with no DB. The resolution itself lives in
+`tests/permission_gates.py` and identifies the gate by its **code object**:
+`require_permission` builds a fresh closure per call but they all share one
+`__code__`, so a rename of the real checker cannot make this scan quietly stop
+finding it. This file used to match `__qualname__` instead — not a bypass (the
+qualname pins the enclosing factory), but strictly weaker, and a second copy of
+the question is how the two files drifted apart at all.
 
 **The pin is inverted, not hand-maintained.** `CASES` used to be a hand-written
 list, and a hand-written list omits things: the eight routes that actually move
@@ -45,6 +51,7 @@ from app.api.permissions import (
     PERM_VENDOR_MANAGE,
 )
 from app.main import app
+from tests.permission_gates import permission_checkers, permission_gate_sets
 
 
 def _iter_app_routes():
@@ -75,24 +82,9 @@ def _find_route(path: str, method: str):
 
 
 def _permission_checkers(route):
-    """Every `require_permission(...).checker` reachable from a route, with the
-    permission set it captured in its closure."""
-    found: list[frozenset[str]] = []
-
-    def walk(dep):
-        call = getattr(dep, "call", None)
-        if call is not None and getattr(call, "__qualname__", "").endswith(
-            "require_permission.<locals>.checker"
-        ):
-            for cell in call.__closure__ or ():
-                val = cell.cell_contents
-                if isinstance(val, frozenset):
-                    found.append(val)
-        for sub in getattr(dep, "dependencies", []) or []:
-            walk(sub)
-
-    walk(route.dependant)
-    return found
+    """Every `require_permission(...)` gate on a route, as the permission set it
+    captured in its closure. Code-object identity — see `permission_gates`."""
+    return permission_gate_sets(route)
 
 
 def _permission_gated_routes() -> dict[tuple[str, str], list[frozenset[str]]]:
@@ -126,25 +118,12 @@ def _user_with(perms: set[str]):
 
 async def _call_checker(route, user):
     """Invoke the route's permission checker as FastAPI would."""
-    checker = None
-    for route_dep in [route.dependant, *_iter_deps(route.dependant)]:
-        call = getattr(route_dep, "call", None)
-        if call is not None and getattr(call, "__qualname__", "").endswith(
-            "require_permission.<locals>.checker"
-        ):
-            checker = call
-            break
-    assert checker is not None, "no require_permission checker on route"
+    checkers = permission_checkers(route)
+    assert checkers, "no require_permission checker on route"
     fake_request = SimpleNamespace(
         client=None, headers={}, method="POST", url=SimpleNamespace(path="/test")
     )
-    return await checker(request=fake_request, user=user)
-
-
-def _iter_deps(dep):
-    for sub in getattr(dep, "dependencies", []) or []:
-        yield sub
-        yield from _iter_deps(sub)
+    return await checkers[0](request=fake_request, user=user)
 
 
 # --- which permission set each splittable route must gate on -------------------
@@ -346,3 +325,44 @@ def test_every_catalogue_permission_is_exercised():
 
     unknown = exercised - set(ALL_PERMISSIONS)
     assert not unknown, f"CASES names permissions outside the catalogue: {sorted(unknown)}"
+
+
+# --- the resolution itself is by identity, not by name -------------------------
+
+
+def test_gate_resolution_ignores_a_decoy_with_the_right_qualname():
+    """A function merely *named* like the checker is not treated as a gate.
+
+    This file used to resolve the gate with
+    `__qualname__.endswith("require_permission.<locals>.checker")`. That is
+    weaker in both directions, and this pins both:
+
+      * a decoy carrying that qualname must NOT satisfy it — otherwise a helper
+        that happens to be spelled that way could stand in for a real gate;
+      * a renamed real checker must STILL satisfy it — otherwise the scan goes
+        quiet, and `test_every_permission_gated_route_is_pinned` would report a
+        route as un-gated (or worse, stop seeing it) after a pure rename.
+    """
+    from app.api.deps import require_permission
+    from tests.permission_gates import is_permission_gate
+
+    def decoy():  # pragma: no cover — never called
+        pass
+
+    decoy.__qualname__ = "require_permission.<locals>.checker"
+    assert not is_permission_gate(decoy)
+
+    real = require_permission(PERM_PAYMENT_EXECUTE)
+    assert is_permission_gate(real)
+
+    real.__qualname__ = "something_else_entirely"
+    assert is_permission_gate(real), "renaming the checker must not hide it from the scan"
+
+
+def test_gate_resolution_reads_the_real_permission_set():
+    """The set comes out of the checker's own closure, not from a lookup table."""
+    from app.api.deps import require_permission
+    from tests.permission_gates import _captured_permissions
+
+    checker = require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)
+    assert _captured_permissions(checker) == frozenset({PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID})
