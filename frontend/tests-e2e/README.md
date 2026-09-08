@@ -74,9 +74,11 @@ Start the local e2e backend with both set (CI uses these exact values):
 
 ```
 tests-e2e/
-├── playwright.config.ts             config; webServer boots `pnpm dev`; workers default 4
+├── playwright.config.ts             config; webServer boots vite on E2E_WEB_ORIGIN's port; workers default 4
 ├── fixtures/
+│   ├── env.ts                       web origin + API base — see "Running from a worktree" below
 │   ├── helpers.ts                   per-worker fixtures + signIn / tenantPsql / etc.
+│   ├── services.ts                  reachability gates for the opt-in compose services
 │   └── globalSetup.ts               pre-run guard — see "Workflow shape guard" below
 ├── a11y/                            axe-core accessibility regression guard (WCAG 2.2 AA)
 ├── meta/                            source guards over the specs themselves — see "Invoice teardown" below
