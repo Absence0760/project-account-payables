@@ -4,6 +4,7 @@ import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 // `/api/contracts` endpoints (backend `Contract.to_dict()`). Money fields
 // arrive as numbers (or null); date fields are ISO date strings (or null).
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 
 export type ContractType =
 	| 'purchase'
@@ -26,16 +27,24 @@ export const CONTRACT_TYPES: ContractType[] = [
 	'other'
 ];
 
-export const CONTRACT_TYPE_LABELS: Record<ContractType, string> = {
-	purchase: 'Purchase',
-	service: 'Service',
-	subscription: 'Subscription',
-	lease: 'Lease',
-	sla: 'SLA',
-	msa: 'MSA',
-	sow: 'SOW',
-	other: 'Other'
+// The contract type is a table cell AND a `<select>` option beside the
+// translated status badge, so an English literal here reads as a gap in the
+// row rather than a deliberate data value. Keyed like the status map below.
+export const CONTRACT_TYPE_LABEL_KEYS: Record<ContractType, MessageKey> = {
+	purchase: 'contracts.type.purchase',
+	service: 'contracts.type.service',
+	subscription: 'contracts.type.subscription',
+	lease: 'contracts.type.lease',
+	sla: 'contracts.type.sla',
+	msa: 'contracts.type.msa',
+	sow: 'contracts.type.sow',
+	other: 'contracts.type.other'
 };
+
+/** The message key for a contract type, or `null` for an unrecognised one. */
+export function contractTypeLabelKey(contractType: string): MessageKey | null {
+	return CONTRACT_TYPE_LABEL_KEYS[contractType as ContractType] ?? null;
+}
 
 export type ContractStatus =
 	| 'draft'
@@ -52,14 +61,33 @@ export const CONTRACT_STATUSES: ContractStatus[] = [
 	'cancelled'
 ];
 
-// StatusBadge-style label map (Title Case) for the contract status pill.
-export const STATUS_LABELS: Record<ContractStatus, string> = {
-	draft: 'Draft',
-	active: 'Active',
-	expired: 'Expired',
-	terminated: 'Terminated',
-	cancelled: 'Cancelled'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * Both surfaces that render a contract status (the `/contracts` list page and
+ * `ContractModal`) are inside the i18n extraction slice, so a hardcoded
+ * English map here put a translated lifecycle button beside an untranslated
+ * `Active` badge. `Record<ContractStatus, MessageKey>` makes a new status a
+ * compile error rather than a blank badge, and `contract.test.ts` proves every
+ * key exists in the catalogue.
+ */
+export const STATUS_LABEL_KEYS: Record<ContractStatus, MessageKey> = {
+	draft: 'contracts.status.draft',
+	active: 'contracts.status.active',
+	expired: 'contracts.status.expired',
+	terminated: 'contracts.status.terminated',
+	cancelled: 'contracts.status.cancelled'
 };
+
+/**
+ * The message key for a status, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank badge). `Contract.status` is typed `string` because the API is the
+ * source of truth.
+ */
+export function contractStatusLabelKey(status: string): MessageKey | null {
+	return STATUS_LABEL_KEYS[status as ContractStatus] ?? null;
+}
 
 // Badge tone per status, so the list page and the modal can't tint the same
 // status two different shades — which is exactly what they did (the modal's

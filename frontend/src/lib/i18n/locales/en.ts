@@ -707,6 +707,22 @@ export const en = {
 	'contracts.col.endDate': 'End Date',
 	'contracts.col.value': 'Value',
 	'contracts.col.spend': 'Spend',
+
+	// Contract status + type value labels ($lib/types/contract.ts)
+	'contracts.status.draft': 'Draft',
+	'contracts.status.active': 'Active',
+	'contracts.status.expired': 'Expired',
+	'contracts.status.terminated': 'Terminated',
+	'contracts.status.cancelled': 'Cancelled',
+	'contracts.type.purchase': 'Purchase',
+	'contracts.type.service': 'Service',
+	'contracts.type.subscription': 'Subscription',
+	'contracts.type.lease': 'Lease',
+	'contracts.type.sla': 'SLA',
+	'contracts.type.msa': 'MSA',
+	'contracts.type.sow': 'SOW',
+	'contracts.type.other': 'Other',
+
 	'contracts.selectAllAria': 'Select all contracts on this page',
 	'contracts.bulk.changeStatus': 'Change Status',
 	'contracts.bulk.newStatusAria': 'New status for selected contracts',

@@ -6,8 +6,8 @@
 	} from '$lib/types/contract';
 	import {
 		CONTRACT_TYPES,
-		CONTRACT_TYPE_LABELS,
-		STATUS_LABELS,
+		CONTRACT_TYPE_LABEL_KEYS,
+		contractStatusLabelKey,
 		STATUS_TONES
 	} from '$lib/types/contract';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -327,13 +327,19 @@
 				: m('contracts.modal.title.view', { number: contract!.contract_number })
 	);
 	const ariaLabel = $derived(isCreate ? m('contracts.modal.aria.new') : m('contracts.modal.aria.detail'));
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = $derived.by(() => {
+		const key = contractStatusLabelKey(status);
+		return key ? m(key) : status;
+	});
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<Badge tone={STATUS_TONES[status]} variant={status}>{STATUS_LABELS[status]}</Badge>
+				<Badge tone={STATUS_TONES[status]} variant={status}>{statusLabel}</Badge>
 				{#if contract!.auto_renew}<span class="meta-pill">{m('contracts.modal.autoRenewPill')}</span>{/if}
 			</div>
 		{/if}
@@ -360,7 +366,7 @@
 				<span>{m('contracts.modal.field.type')}</span>
 				<select bind:value={contract_type} disabled={!canEdit}>
 					{#each CONTRACT_TYPES as t}
-						<option value={t}>{CONTRACT_TYPE_LABELS[t]}</option>
+						<option value={t}>{m(CONTRACT_TYPE_LABEL_KEYS[t])}</option>
 					{/each}
 				</select>
 			</label>
