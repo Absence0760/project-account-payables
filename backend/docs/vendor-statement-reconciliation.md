@@ -307,7 +307,7 @@ is entity-scoped.
 | `POST /vendor-statements` | Create a run from a pasted/normalised list of lines (`source_format = manual`) |
 | `POST /vendor-statements/upload` | Create a run from an uploaded statement **CSV or PDF** (`multipart/form-data`: `file` + `vendor_id` + `statement_date` + optional `statement_reference` / `currency`). A PDF routes through the extraction pipeline (`source_format = pdf`), anything else through the CSV parser (`source_format = csv`); 422 on a structurally-bad CSV or an unreadable statement, 413 over the size cap |
 | `GET /vendor-statements` | List runs (filters: `vendor_id`, `status`, `search`; paginated `page` / `page_size`). Omits lines. `search` ILIKEs the supplier name + statement reference — the two free-text columns the row renders. The page used to filter the LOADED rows in the browser, so a run matching on page 2 read as "nothing matched" while the footer's "Showing all N" (the server's whole-set total) sat above a client-narrowed table |
-| `GET /vendor-statements/summary` | Whole-set KPI rollup — `by_status` counts + `open_discrepancies` (SUM of `amount_mismatch + missing_our_side + missing_their_side` across the filtered set). Shares `_recon_list_filters` (`vendor_id` / `status` / `search`) with the list so the page's `openCount` / `totalDiscrepancies` KPIs can't describe only the loaded page. Declared **before** `/{recon_id}` so the literal path wins |
+| `GET /vendor-statements/summary` | Whole-set KPI rollup — `by_status` counts + `open_discrepancies` (a COUNT of the **live** lines across the filtered set that are still actionable *and* still unresolved: `classification IN _ACTIONABLE_CLASSES AND resolution_status = 'unresolved'`). Shares `_recon_list_filters` (`vendor_id` / `status` / `search`) with the list so the page's `openCount` / `totalDiscrepancies` KPIs can't describe only the loaded page. Declared **before** `/{recon_id}` so the literal path wins |
 | `GET /vendor-statements/close-readiness` | Period-close gate (see below). Declared **before** `/{recon_id}` so the literal path wins |
 | `GET /vendor-statements/{recon_id}` | Detail — the run + all its lines (with each matched invoice's number, fetched in one query, no N+1) |
 | `GET /vendor-statements/{recon_id}/file` | Download the archived supplier document this run was built from. Read roles; entity-scoped run lookup **and** an org-prefix check on the stored key; the same opaque 404 for an unknown run and a run with no document |
@@ -337,6 +337,33 @@ is consequently carried for reporting only; **the caller owns the filter.**
 A run flips to `resolved` (`_recompute_run_status`) once no actionable line
 (`missing_on_our_side` / `amount_mismatch`) is still `unresolved`; resolving the
 last open actionable line on the resolve endpoint closes the run.
+
+#### `open_discrepancies` is derived from the lines, not the run's counters
+
+The run row carries denormalised `amount_mismatch_count` /
+`missing_our_side_count` / `missing_their_side_count` figures that
+`_build_summary` stamps **once**, when the run is created. They describe the
+import, and `resolve_line` never touches them — deliberately, because they are
+the record of what the statement looked like on arrival.
+
+`GET /summary` used to sum those three columns for its `open_discrepancies`
+KPI, which made it wrong in two independent ways:
+
+* **Monotonically non-decreasing.** Nothing decrements them, so a clerk who
+  resolved or ignored every difference on every run still saw the day-one
+  figure. The number could only ever go up, and it sat directly above a table
+  in which every row read `resolved`.
+* **Counting a class the screen excludes.** `missing_their_side` — an invoice on
+  our ledger the supplier has not billed — is not in `_ACTIONABLE_CLASSES`, so
+  it does not keep a run `open`, does not appear in `close-readiness`, and is
+  not something the clerk chases here. Summing it inflated the KPI by a
+  population the rest of the feature ignores.
+
+The KPI now COUNTs live `VendorStatementReconLine` rows joined to the same
+filtered run set, under the same predicate the run status and the close-readiness
+gate use: `classification IN _ACTIONABLE_CLASSES AND resolution_status =
+'unresolved'`. One predicate, three consumers — resolving a line lowers the
+count, ignoring it lowers the count, and an excluded class never raises it.
 
 ### RBAC
 

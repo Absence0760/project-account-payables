@@ -663,6 +663,19 @@ async def reconciliation_summary(
     ``openCount`` filtered the LOADED page and ``totalDiscrepancies`` reduced
     the per-run discrepancy counts over it — both contradicting the whole-set
     ``total``.
+
+    ``open_discrepancies`` counts the LIVE line rows, not the run's import-time
+    counters. Those counters (``amount_mismatch_count`` /
+    ``missing_our_side_count`` / ``missing_their_side_count``) are stamped once
+    when the run is created and ``resolve_line`` never touches them, so summing
+    them made the KPI **monotonically non-decreasing**: a clerk could clear
+    every difference on every run and the card still reported the day-one
+    figure. It also summed ``missing_their_side_count``, a class
+    ``_ACTIONABLE_CLASSES`` deliberately excludes — an invoice on our ledger the
+    supplier has not billed is not something the clerk chases on this screen,
+    and it is not what ``_recompute_run_status`` or ``close-readiness`` count
+    either. Deriving from the lines makes those three read the SAME
+    population.
     """
     run = VendorStatementReconciliation
     base = _recon_list_filters(
@@ -677,17 +690,17 @@ async def reconciliation_summary(
     ).all()
     by_status = {str(s): int(n) for s, n in status_rows}
 
+    # Same predicate as `_recompute_run_status` (and `close-readiness`):
+    # actionable class AND still unresolved. Joined to the filtered runs so the
+    # KPI describes exactly the set the table below it lists.
     discrepancies = (
         await db.execute(
-            select(
-                func.coalesce(
-                    func.sum(
-                        base.c.amount_mismatch_count
-                        + base.c.missing_our_side_count
-                        + base.c.missing_their_side_count
-                    ),
-                    0,
-                )
+            select(func.count())
+            .select_from(VendorStatementReconLine)
+            .join(base, VendorStatementReconLine.reconciliation_id == base.c.id)
+            .where(
+                VendorStatementReconLine.classification.in_(_ACTIONABLE_CLASSES),
+                VendorStatementReconLine.resolution_status == RESOLUTION_UNRESOLVED,
             )
         )
     ).scalar() or 0
