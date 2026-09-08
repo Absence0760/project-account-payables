@@ -9,8 +9,8 @@
 	// and the detail modal — don't hand-roll these pills (the tone classes
 	// carry calibrated WCAG-checked text colours; see `docs/accessibility.md`).
 	import {
+		riskLevelLabelKey,
 		screeningStatusLabelKey,
-		RISK_LEVEL_LABELS,
 		type ScreeningStatus,
 		type RiskLevel
 	} from '$lib/types/vendor';
@@ -37,13 +37,20 @@
 		return 'grey';
 	}
 
-	// The screening verdict is a message key, not an English literal — an
-	// unrecognised status renders raw rather than blank. (`RISK_LEVEL_LABELS`
-	// below is still the English map: `modals/VendorModal.svelte` reads it too
-	// and is outside this change's scope.)
+	// Verdict and risk level are message keys, not English literals — an
+	// unrecognised value renders raw rather than blank.
 	function screeningLabel(s: ScreeningStatus): string {
 		const key = screeningStatusLabelKey(s);
 		return key ? m(key) : s;
+	}
+
+	// The pill and its tooltip are COMPOSED strings — `{level} risk` in
+	// English, `Risiko: {level}` in German — so each is its own key with the
+	// level interpolated. Concatenating a translated level onto an English
+	// word here is exactly the mixed-language pill this badge had.
+	function riskLabel(r: RiskLevel): string {
+		const key = riskLevelLabelKey(r);
+		return key ? m(key) : r;
 	}
 
 	function riskTone(r: RiskLevel): string {
@@ -60,8 +67,11 @@
 	</span>
 {/if}
 {#if risk && risk !== 'unknown'}
-	<span class="screen-badge risk {riskTone(risk)}" title="Risk: {RISK_LEVEL_LABELS[risk]}">
-		{RISK_LEVEL_LABELS[risk]} risk
+	<span
+		class="screen-badge risk {riskTone(risk)}"
+		title={m('vendors.risk.title', { level: riskLabel(risk) })}
+	>
+		{m('vendors.risk.pill', { level: riskLabel(risk) })}
 	</span>
 {/if}
 {#if adverseMedia}

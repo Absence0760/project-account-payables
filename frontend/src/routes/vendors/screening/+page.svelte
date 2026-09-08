@@ -19,7 +19,7 @@
 	import type { ScreeningReviewItem, SanctionsCheck } from '$lib/types/vendor';
 	import {
 		screeningStatusLabelKey,
-		RISK_LEVEL_LABELS,
+		riskLevelLabelKey,
 		formatScreeningCategories as formatCategories
 	} from '$lib/types/vendor';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -49,6 +49,11 @@
 	const screeningLabel = (s: string) => {
 		const key = screeningStatusLabelKey(s);
 		return key ? m(key) : s;
+	};
+
+	const riskLabel = (level: string) => {
+		const key = riskLevelLabelKey(level);
+		return key ? m(key) : level;
 	};
 	const canRescreen = $derived(auth.isManager);
 
@@ -503,7 +508,7 @@
 			</div>
 			<div>
 				<dt>Risk level</dt>
-				<dd>{RISK_LEVEL_LABELS[selected.risk_level]}{selected.risk_score ? ` (${selected.risk_score})` : ''}</dd>
+				<dd>{riskLabel(selected.risk_level)}{selected.risk_score ? ` (${selected.risk_score})` : ''}</dd>
 			</div>
 			<div>
 				<dt>Matched list</dt>

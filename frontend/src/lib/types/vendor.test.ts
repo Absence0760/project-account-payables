@@ -1,15 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import {
+	ENRICHABLE_FIELD_LABEL_KEYS,
+	RISK_LEVEL_LABEL_KEYS,
 	SCREENING_STATUS_LABEL_KEYS,
 	VENDOR_SOURCE_LABEL_KEYS,
 	VENDOR_STATUSES,
 	VENDOR_STATUS_LABEL_KEYS,
 	VENDOR_STATUS_TONES,
+	riskLevelLabelKey,
 	screeningStatusLabelKey,
 	vendorSourceLabelKey,
 	vendorStatusLabelKey,
+	type RiskLevel,
 	type ScreeningStatus
 } from './vendor';
+import { interpolate } from '$lib/i18n/interpolate';
 import { en } from '$lib/i18n/locales/en';
 
 /**
@@ -91,5 +96,50 @@ describe('VENDOR_SOURCE_LABEL_KEYS', () => {
 		}
 		expect(vendorSourceLabelKey('erp_sync')).toBe('vendors.source.erpSync');
 		expect(vendorSourceLabelKey('portal_self_service')).toBeNull();
+	});
+});
+
+const RISK_LEVELS: RiskLevel[] = ['low', 'medium', 'high', 'critical', 'unknown'];
+
+describe('RISK_LEVEL_LABEL_KEYS', () => {
+	it('names a real catalogue key for every risk level', () => {
+		for (const level of RISK_LEVELS) {
+			const key = RISK_LEVEL_LABEL_KEYS[level];
+			expect(key, `${level} has no label key`).toBeTruthy();
+			expect(Object.keys(en), `${level} → "${key}" is not in the catalogue`).toContain(key);
+			expect(en[key]).not.toBe(level);
+		}
+	});
+
+	it('resolves a known level and returns null otherwise', () => {
+		for (const level of RISK_LEVELS) {
+			expect(riskLevelLabelKey(level)).toBe(RISK_LEVEL_LABEL_KEYS[level]);
+		}
+		expect(riskLevelLabelKey('severe')).toBeNull();
+	});
+
+	it('composes the pill and its tooltip through their own keys', () => {
+		// The badge must never concatenate a translated level onto an English
+		// word — the whole reason the risk pill read `High risk` between two
+		// translated pills. Both composed strings carry `{level}`, so a locale
+		// can put the noun wherever its grammar wants it.
+		for (const key of ['vendors.risk.pill', 'vendors.risk.title'] as const) {
+			expect(Object.keys(en)).toContain(key);
+			expect(en[key], `${key} must interpolate the level`).toContain('{level}');
+			expect(
+				interpolate(en[key], { level: en[RISK_LEVEL_LABEL_KEYS.high] })
+			).not.toContain('{level}');
+		}
+	});
+});
+
+describe('ENRICHABLE_FIELD_LABEL_KEYS', () => {
+	it('names a real catalogue key for every applyable field', () => {
+		// The field name is also the `{field}` interpolated into the translated
+		// apply-checkbox aria-label, so an English literal here landed
+		// mid-sentence in a translated label.
+		for (const key of Object.values(ENRICHABLE_FIELD_LABEL_KEYS)) {
+			expect(Object.keys(en), `"${key}" is not in the catalogue`).toContain(key);
+		}
 	});
 });

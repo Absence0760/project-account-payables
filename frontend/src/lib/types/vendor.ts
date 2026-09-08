@@ -211,11 +211,14 @@ export interface VendorEnrichmentApplyResponse {
 	applied_at: string;
 }
 
-// Human labels for the applyable fields (used in the enrich diff UI).
-export const ENRICHABLE_FIELD_LABELS: Record<EnrichableField, string> = {
-	name: 'Legal name',
-	address: 'Address',
-	website: 'Website'
+// Message keys for the applyable fields (used in the enrich diff UI). The
+// field name is a table cell AND the `{field}` interpolated into the
+// translated `vendors.modal.applyFieldAria` checkbox label, so an English
+// literal here landed mid-sentence in a translated aria-label.
+export const ENRICHABLE_FIELD_LABEL_KEYS: Record<EnrichableField, MessageKey> = {
+	name: 'vendors.enrich.field.name',
+	address: 'vendors.enrich.field.address',
+	website: 'vendors.enrich.field.website'
 };
 
 // ---------------------------------------------------------------------------
@@ -350,8 +353,6 @@ export function vendorSourceLabelKey(source: string): MessageKey | null {
  * than a blank pill, and `vendor.test.ts` proves every key exists in the
  * catalogue.
  *
- * The sibling `RISK_LEVEL_LABELS` below is deliberately NOT keyed yet: it is
- * still read by `modals/VendorModal.svelte`, outside this change's scope.
  */
 export const SCREENING_STATUS_LABEL_KEYS: Record<ScreeningStatus, MessageKey> = {
 	unscreened: 'vendors.screening.status.unscreened',
@@ -369,13 +370,37 @@ export function screeningStatusLabelKey(status: string): MessageKey | null {
 	return SCREENING_STATUS_LABEL_KEYS[status as ScreeningStatus] ?? null;
 }
 
-export const RISK_LEVEL_LABELS: Record<RiskLevel, string> = {
-	low: 'Low',
-	medium: 'Medium',
-	high: 'High',
-	critical: 'Critical',
-	unknown: 'Unknown'
+/**
+ * The i18n key carrying each risk level — never the English string itself.
+ *
+ * It is rendered in three places, and the pill in `ui/ScreeningBadge.svelte`
+ * is why this had to land: that badge shows the screening verdict and the
+ * negative-news flag (both localized) directly beside the risk level, so an
+ * English `High risk` sat between two translated pills.
+ *
+ * The pill and its tooltip are COMPOSED strings, not the bare level, so they
+ * get their own keys (`vendors.risk.pill` / `.title`) rather than an English
+ * `{label} risk` template: German puts the noun first, French wants a space
+ * before its colon, and Japanese neither. Never concatenate a translated
+ * level onto an English word.
+ */
+export const RISK_LEVEL_LABEL_KEYS: Record<RiskLevel, MessageKey> = {
+	low: 'vendors.risk.low',
+	medium: 'vendors.risk.medium',
+	high: 'vendors.risk.high',
+	critical: 'vendors.risk.critical',
+	unknown: 'vendors.risk.unknown'
 };
+
+/**
+ * The message key for a risk level, or `null` for one this frontend doesn't
+ * know (the caller renders the raw value — visible and searchable — rather
+ * than a blank cell). `Vendor.risk_level` is typed against the union, but the
+ * scorer can widen it before this map catches up.
+ */
+export function riskLevelLabelKey(level: string): MessageKey | null {
+	return RISK_LEVEL_LABEL_KEYS[level as RiskLevel] ?? null;
+}
 
 // The screening-hit taxonomy (`SanctionsCheck.categories`). The backend's
 // vocabulary is fixed but open-ended — a future provider may report a label we

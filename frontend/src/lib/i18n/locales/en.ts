@@ -521,6 +521,18 @@ export const en = {
 	'vendors.screening.adverseMedia': 'Negative news',
 	'vendors.screening.adverseMediaTitle': 'Adverse-media (negative news) hit — review the relationship',
 
+	// Vendor risk level + the two composed pill strings, and the enrichable-field names ($lib/types/vendor.ts)
+	'vendors.risk.low': 'Low',
+	'vendors.risk.medium': 'Medium',
+	'vendors.risk.high': 'High',
+	'vendors.risk.critical': 'Critical',
+	'vendors.risk.unknown': 'Unknown',
+	'vendors.risk.pill': '{level} risk',
+	'vendors.risk.title': 'Risk: {level}',
+	'vendors.enrich.field.name': 'Legal name',
+	'vendors.enrich.field.address': 'Address',
+	'vendors.enrich.field.website': 'Website',
+
 	'vendors.col.source': 'Source',
 	'vendors.col.invoices': 'Invoices',
 	'vendors.col.erp': 'ERP',
