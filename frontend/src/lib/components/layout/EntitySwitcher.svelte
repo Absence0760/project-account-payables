@@ -9,8 +9,18 @@
 
 	// Default entity first, then the rest alphabetically (matches the backend
 	// list order); "All entities" is rendered as a fixed first option.
-	let entities = $derived(entityStore.entities);
+	//
+	// ACTIVE entities only. An entity deactivated on `/admin/entities` is
+	// archived, and the backend does not police that end: `get_entity_id`
+	// validates only that the id exists, so a retired entity left in this menu
+	// stayed selectable and `get_write_entity_id` kept filing new invoices,
+	// vendors and payments under it.
+	let entities = $derived(entityStore.activeEntities);
 	let selectedId = $derived(entityStore.selectedId);
+	// The entity that was selected until this session's load found it retired.
+	// The store has already dropped the selection back to the consolidated view;
+	// this is what stops that being silent (see the disabled option below).
+	let retired = $derived(entityStore.deactivatedSelection);
 	// The store's `selectedLabel` falls back to an English literal, so the label
 	// is derived here instead: `m()` is reactive to a locale switch and the store
 	// stays free of i18n. `selected` is null exactly when "all entities" is active.
@@ -61,6 +71,26 @@
 						{#if e.is_default}<span class="entity-option-sub">{m('entity.default')}</span>{/if}
 					</button>
 				{/each}
+				{#if retired}
+					<!-- The entity this session started on, deactivated while it was in
+					     use. Listed once, disabled, rather than silently disappearing:
+					     the store has already moved the scope back to "All entities"
+					     (so nothing new lands in a retired subsidiary), and this menu
+					     is where the user goes looking for the choice they made. It is
+					     gone on the next load, because that reset is persisted — a
+					     change notice, not a permanent row. -->
+					<button
+						class="entity-option"
+						role="option"
+						aria-selected="false"
+						aria-disabled="true"
+						disabled
+						data-testid="entity-option-retired"
+					>
+						{retired.name}
+						<span class="entity-option-sub">{m('admin.entities.statusInactive')}</span>
+					</button>
+				{/if}
 			</div>
 		{/if}
 		<button
@@ -205,8 +235,16 @@
 		transition: background 0.12s;
 	}
 
-	.entity-option:hover {
+	.entity-option:not(:disabled):hover {
 		background: rgba(99, 140, 255, 0.08);
+	}
+
+	/* De-emphasised with the muted TOKEN, never `opacity` — a fade composites
+	   the whole subtree and would drag the sub-label under 4.5:1 with it
+	   (app.css § .row-muted). `--text-muted` is 5.38:1 on `--surface`. */
+	.entity-option:disabled {
+		color: var(--text-muted);
+		cursor: default;
 	}
 
 	.entity-option.selected {
