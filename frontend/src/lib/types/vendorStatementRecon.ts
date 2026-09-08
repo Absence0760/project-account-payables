@@ -6,6 +6,7 @@ import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 // numbers (or null); date/time fields are ISO strings (or null).
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 
 // --- Run status -----------------------------------------------------------
 
@@ -13,11 +14,24 @@ export type ReconStatus = 'open' | 'resolved';
 
 export const RECON_STATUSES: ReconStatus[] = ['open', 'resolved'];
 
-// StatusBadge-style label map (Title Case) for the run status pill.
-export const RECON_STATUS_LABELS: Record<ReconStatus, string> = {
-	open: 'Open',
-	resolved: 'Resolved'
+/**
+ * The i18n key carrying each run-status label — never the English string
+ * itself. Both surfaces that render it (the `/vendor-statements` list and
+ * `VendorStatementReconModal`) are inside the i18n extraction slice, so a
+ * hardcoded English map here put translated chips beside an untranslated
+ * `Open` badge. `Record<ReconStatus, MessageKey>` makes a new status a
+ * compile error rather than a blank badge, and `vendorStatementRecon.test.ts`
+ * proves every key exists in the catalogue.
+ */
+export const RECON_STATUS_LABEL_KEYS: Record<ReconStatus, MessageKey> = {
+	open: 'vendorStatements.status.open',
+	resolved: 'vendorStatements.status.resolved'
 };
+
+/** The message key for a run status, or `null` for an unrecognised one. */
+export function reconStatusLabelKey(status: string): MessageKey | null {
+	return RECON_STATUS_LABEL_KEYS[status as ReconStatus] ?? null;
+}
 
 // Badge tone per status, so the list page and the modal can't tint the same
 // status two different shades — which is exactly what they did (.12 alpha on
@@ -37,13 +51,18 @@ export const RECON_STATUS_TONES: Record<ReconStatus, BadgeTone> = {
 // reading of a document, which is why the provenance block exists.
 export type ReconSourceFormat = 'manual' | 'csv' | 'pdf';
 
-// Data-value map, English by the established convention (see the status /
-// classification maps above).
-export const RECON_SOURCE_FORMAT_LABELS: Record<ReconSourceFormat, string> = {
-	manual: 'Entered by hand',
-	csv: 'CSV upload',
-	pdf: 'PDF (machine-read)'
+// The provenance pill sits directly under the translated provenance heading
+// in the modal, so this is keyed like the status map above.
+export const RECON_SOURCE_FORMAT_LABEL_KEYS: Record<ReconSourceFormat, MessageKey> = {
+	manual: 'vendorStatements.sourceFormat.manual',
+	csv: 'vendorStatements.sourceFormat.csv',
+	pdf: 'vendorStatements.sourceFormat.pdf'
 };
+
+/** The message key for a source format, or `null` for an unrecognised one. */
+export function reconSourceFormatLabelKey(format: string): MessageKey | null {
+	return RECON_SOURCE_FORMAT_LABEL_KEYS[format as ReconSourceFormat] ?? null;
+}
 
 // --- Line classification --------------------------------------------------
 
@@ -53,21 +72,24 @@ export type ReconClassification =
 	| 'missing_on_our_side'
 	| 'missing_on_their_side';
 
-export const RECON_CLASSIFICATION_LABELS: Record<ReconClassification, string> = {
-	matched: 'Matched',
-	amount_mismatch: 'Amount mismatch',
-	missing_on_our_side: 'Missing (our side)',
-	missing_on_their_side: 'Missing (their side)'
+// Rendered as the Classification cell of the modal's diff table, whose every
+// header and action is translated — so these are keys, not literals.
+export const RECON_CLASSIFICATION_LABEL_KEYS: Record<ReconClassification, MessageKey> = {
+	matched: 'vendorStatements.classification.matched',
+	amount_mismatch: 'vendorStatements.classification.amountMismatch',
+	missing_on_our_side: 'vendorStatements.classification.missingOurSide',
+	missing_on_their_side: 'vendorStatements.classification.missingTheirSide'
 };
 
 // --- Line resolution ------------------------------------------------------
 
 export type ReconResolutionStatus = 'unresolved' | 'resolved' | 'ignored';
 
-export const RECON_RESOLUTION_LABELS: Record<ReconResolutionStatus, string> = {
-	unresolved: 'Unresolved',
-	resolved: 'Resolved',
-	ignored: 'Ignored'
+/** Message keys for the per-line Resolution cell — see the map above. */
+export const RECON_RESOLUTION_LABEL_KEYS: Record<ReconResolutionStatus, MessageKey> = {
+	unresolved: 'vendorStatements.resolution.unresolved',
+	resolved: 'vendorStatements.resolution.resolved',
+	ignored: 'vendorStatements.resolution.ignored'
 };
 
 // --- Response shapes ------------------------------------------------------

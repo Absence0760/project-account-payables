@@ -2,7 +2,7 @@
 	import type { Reconciliation, ReconStatus } from '$lib/types/vendorStatementRecon';
 	import {
 		RECON_STATUSES,
-		RECON_STATUS_LABELS,
+		reconStatusLabelKey,
 		RECON_STATUS_TONES
 	} from '$lib/types/vendorStatementRecon';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -38,9 +38,16 @@
 
 	const canCreate = $derived(auth.isManager);
 
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = reconStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...RECON_STATUSES.map((s) => ({ key: s, label: RECON_STATUS_LABELS[s] }))
+		...RECON_STATUSES.map((s) => ({ key: s, label: statusLabel(s) }))
 	]);
 
 	const COLUMNS = $derived([
@@ -401,7 +408,7 @@
 					<td class="right mono"><Money amount={recon.summary.ledger_total} currency={recon.currency} /></td>
 					<td>
 						<Badge tone={RECON_STATUS_TONES[recon.status]} variant={recon.status}>
-							{RECON_STATUS_LABELS[recon.status]}
+							{statusLabel(recon.status)}
 						</Badge>
 					</td>
 					<td class="actions">

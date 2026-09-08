@@ -4326,6 +4326,11 @@ export const en = {
 	'vendorStatements.col.statementDate': 'Statement date',
 	'vendorStatements.col.statementTotal': 'Statement total',
 	'vendorStatements.col.status': 'Status',
+
+	// Reconciliation run status ($lib/types/vendorStatementRecon.ts)
+	'vendorStatements.status.open': 'Open',
+	'vendorStatements.status.resolved': 'Resolved',
+
 	'vendorStatements.col.vendor': 'Vendor',
 	'vendorStatements.empty': 'No reconciliations match your filters.',
 	'vendorStatements.kpi.blocking': '{n} blocking',
@@ -4417,6 +4422,19 @@ export const en = {
 	'vendorStatements.modal.thDifference': 'Difference',
 	'vendorStatements.modal.thClassification': 'Classification',
 	'vendorStatements.modal.thResolution': 'Resolution',
+
+	// Per-line classification / resolution + the source-format pill ($lib/types/vendorStatementRecon.ts)
+	'vendorStatements.classification.matched': 'Matched',
+	'vendorStatements.classification.amountMismatch': 'Amount mismatch',
+	'vendorStatements.classification.missingOurSide': 'Missing (our side)',
+	'vendorStatements.classification.missingTheirSide': 'Missing (their side)',
+	'vendorStatements.resolution.unresolved': 'Unresolved',
+	'vendorStatements.resolution.resolved': 'Resolved',
+	'vendorStatements.resolution.ignored': 'Ignored',
+	'vendorStatements.sourceFormat.manual': 'Entered by hand',
+	'vendorStatements.sourceFormat.csv': 'CSV upload',
+	'vendorStatements.sourceFormat.pdf': 'PDF (machine-read)',
+
 	'vendorStatements.modal.noLines': 'No statement lines.',
 	'vendorStatements.modal.resolve': 'Resolve',
 	'vendorStatements.modal.resolveAria': 'Resolve line {line}',
