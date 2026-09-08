@@ -580,8 +580,12 @@ of capital, and an operator legitimately wants it off. Expiry is a
 
 Every read surface classifies through those — `GET /offers` (filter *and*
 reported status), `GET /offers/{id}`, and all three dashboard buckets
-(`captured` / `missed` / `open`). `tests/test_discount_offers.py` pins the SQL
-mirror against the Python predicate so the pair cannot drift.
+(`captured` / `missed` / `open`). `test_discount_offers.py` pins the Python
+predicate (including the window's own last day, where an off-by-one would
+mislabel every offer for exactly one day), and
+`test_discounts_api.py::test_effective_status_sql_matches_the_python_rule`
+evaluates the `CASE` and the predicate over the same rows so the pair cannot
+drift.
 
 A second always-on background loop was the alternative and is worse: it would
 still leave the truth dependent on a process having run, which is exactly the
@@ -602,6 +606,9 @@ touches no `Payment` / `PaymentRun`. `AutoTriggerResult.offers_expired` counts
 it separately from `offers_captured` so the two are never conflated in a log
 line.
 
-The supplier portal (`/api/portal/discount-offers`) still renders the stored
+**Known gap:** the supplier portal (`/api/portal/discount-offers`,
+`api/portal.py` → `PortalDiscountOfferResponse`) still renders the stored
 column, so a lapsed offer reads `offered` to the supplier until the sweep
-materializes it. Tracked in `docs/followups.md`.
+materializes it. The fix is the same one-line substitution the AP router makes
+— `offers_svc.effective_status(offer, as_of=utc_today())` — on the portal's
+list, detail and status filter.
