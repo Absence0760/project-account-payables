@@ -290,6 +290,17 @@ export const en = {
 	'payments.col.terms': 'Terms',
 	'payments.col.status': 'Status',
 	'payments.col.routes': 'Routes',
+
+	// Payment status labels — the History badge + its filter chips ($lib/types/payment.ts::PAYMENT_STATUS_LABEL_KEYS)
+	'payments.status.pending': 'Pending',
+	'payments.status.pendingCompliance': 'Compliance Hold',
+	'payments.status.submitted': 'Submitted',
+	'payments.status.processing': 'Processing',
+	'payments.status.completed': 'Completed',
+	'payments.status.failed': 'Failed',
+	'payments.status.cancelled': 'Cancelled',
+	'payments.status.voided': 'Voided',
+
 	// Corridor quote comparison — advisory only (POST /api/payments/corridor-quotes)
 	'payments.quotes.open': 'Compare routes',
 	'payments.quotes.openAria': 'Compare payment routes for invoice {invoice}',
