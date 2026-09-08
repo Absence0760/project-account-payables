@@ -13,6 +13,11 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_PAYMENT_EXECUTE } from '$lib/types/admin';
 	import { formatMoney } from '$lib/utils/money';
+	// The bare (no-symbol) rendering `fmt` falls back to when the server could
+	// not establish a figure's currency — the same primitive `/payments` and
+	// `/discounts` use for their own unprovable-currency cases, so a change to
+	// rounding or locale can't land in one and not the others.
+	import { formatAmountWithoutCurrency } from '$lib/utils/discountRecommendation';
 	import { m } from '$lib/i18n/store.svelte';
 
 	let {
@@ -43,6 +48,17 @@
 		vendor_name: string | null;
 		// Exact Decimal STRING money (never float); formatMoney coerces to display.
 		amount: string;
+		/**
+		 * What `amount` is denominated in — the invoice's own currency, off the
+		 * row `GET /api/payments/runs/{id}` already joins (`api/payments.py`).
+		 * `payments` has no currency column; a payment settles in its invoice's
+		 * currency.
+		 *
+		 * `null` means the server could not establish it (a legacy invoice
+		 * carrying none) — render the bare figure, never a substituted default
+		 * (`docs/decisions.md` §79/§82/§107).
+		 */
+		currency: string | null;
 		method: string | null;
 		status: string;
 		reference: string | null;
@@ -52,6 +68,19 @@
 		id: string;
 		status: string;
 		total_amount: string;
+		/**
+		 * What `total_amount` is denominated in. `payment_runs` has no currency
+		 * column either — the total is one bare `Numeric`, kept meaningful by
+		 * `create_payment_run_for_invoices` refusing a run whose invoices span
+		 * more than one currency, so the server derives the code from the legs
+		 * (`api/payments.py::_one_currency`).
+		 *
+		 * `null` when it could not be PROVEN: a run with no payments, or a
+		 * legacy run predating that guard whose legs disagree — in which case
+		 * the total is denominated in nothing real and a code would be worse
+		 * than none.
+		 */
+		currency: string | null;
 		initiated_by: string | null;
 		executed_at: string | null;
 		created_at: string;
@@ -165,9 +194,33 @@
 
 	// Esc + focus trap/restore are handled by the shared `focusTrap` action.
 
-	function fmt(amount: number | string | null | undefined, currency?: string | null): string {
-		// Money arrives as string-Decimal from the API; formatMoney coerces it.
-		return formatMoney(amount, { currency });
+	/** Render money under the currency the SERVER stated, honestly.
+	 *
+	 *  Every money cell in this dialog goes through it. The five call sites used
+	 *  to omit the argument entirely, so `formatMoney` fell back to
+	 *  `DEFAULT_CURRENCY` and the whole dialog — run total, per-payment amounts,
+	 *  and the amount printed on the Execute button that moves the money —
+	 *  rendered in `$` for every tenant. Worse than the `/payments` bug
+	 *  `docs/decisions.md` §107 fixed: this ignored the tenant's own default
+	 *  too.
+	 *
+	 *  A stated code formats normally; an unstated one renders BARE rather than
+	 *  borrowing the org default. `null` is exactly where the backend refused to
+	 *  guess, so substituting a code there would reinstate the fabrication the
+	 *  wire field exists to end — a symbol the reader takes as established fact
+	 *  when nobody established it (§79/§82).
+	 *
+	 *  A payment row passes its OWN code, never the run's: they cannot
+	 *  disagree (`_one_currency` returns a code only when every leg carried
+	 *  that same one, so a stated run currency implies every payment states it
+	 *  too), and a fallback that can never fire is a claim about the data that
+	 *  nothing checks.
+	 *
+	 *  Nothing here adds, compares or converts — the value passes through
+	 *  untouched (money arrives as string-Decimal; `formatMoney` coerces it).
+	 */
+	function fmt(amount: number | string | null | undefined, currency: string | null): string {
+		return currency ? formatMoney(amount, { currency }) : formatAmountWithoutCurrency(amount);
 	}
 
 	function fmtDate(s: string | null): string {
@@ -212,7 +265,7 @@
 			{:else if run}
 				<dl class="meta">
 					<dt>{m('paymentRuns.runDetail.total')}</dt>
-					<dd class="total">{fmt(run.total_amount)}</dd>
+					<dd class="total" data-testid="run-total">{fmt(run.total_amount, run.currency)}</dd>
 					<dt>{m('paymentRuns.runDetail.payments')}</dt>
 					<dd>{run.payments.length}</dd>
 					<dt>{m('paymentRuns.runDetail.created')}</dt>
@@ -239,7 +292,9 @@
 							<tr>
 								<td class="mono">{p.invoice_number ?? '—'}</td>
 								<td>{p.vendor_name ?? '—'}</td>
-								<td class="right mono">{fmt(p.amount)}</td>
+								<td class="right mono" data-testid="run-payment-amount">
+									{fmt(p.amount, p.currency)}
+								</td>
 								<td>{methodLabel(p.method)}</td>
 								<!-- No `?? 'neutral'`: the map is total over `PaymentStatus`,
 								     and a value off the union lands on `Badge`'s own `tone`
@@ -280,7 +335,9 @@
 					     screen-reader user learns the next click moves money
 					     without having to re-read the button. -->
 					<p class="footer-note armed-note" role="alert" data-testid="execute-armed-note">
-						{m('paymentRuns.runDetail.executeArmedNote', { amount: fmt(run.total_amount) })}
+						{m('paymentRuns.runDetail.executeArmedNote', {
+							amount: fmt(run.total_amount, run.currency)
+						})}
 					</p>
 				{/if}
 
@@ -334,7 +391,7 @@
 								{executing
 									? m('paymentRuns.runDetail.executing')
 									: m('paymentRuns.runDetail.confirmExecuteAmount', {
-											amount: fmt(run.total_amount)
+											amount: fmt(run.total_amount, run.currency)
 										})}
 							</button>
 						{:else}
@@ -344,7 +401,9 @@
 								title={pendingCfo ? m('paymentRuns.runDetail.awaitingCfo') : ''}
 								onclick={() => arm('execute')}
 							>
-								{m('paymentRuns.runDetail.executeAmount', { amount: fmt(run.total_amount) })}
+								{m('paymentRuns.runDetail.executeAmount', {
+									amount: fmt(run.total_amount, run.currency)
+								})}
 							</button>
 						{/if}
 					{/if}
