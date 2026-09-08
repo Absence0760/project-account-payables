@@ -80,7 +80,7 @@
 					     gone on the next load, because that reset is persisted — a
 					     change notice, not a permanent row. -->
 					<button
-						class="entity-option"
+						class="entity-option retired"
 						role="option"
 						aria-selected="false"
 						aria-disabled="true"
@@ -88,7 +88,15 @@
 						data-testid="entity-option-retired"
 					>
 						{retired.name}
-						<span class="entity-option-sub">{m('admin.entities.statusInactive')}</span>
+						<span class="entity-option-sub">{m('entity.deactivated')}</span>
+						<!-- The sentence lives INSIDE the option, not beside it: this
+						     container is a `role="listbox"`, whose only permitted
+						     children are options, so a loose <p> here would break the
+						     role contract. As option content it is also part of the
+						     option's accessible name, which is what a change notice
+						     wants — the row is announced as the entity, its state, and
+						     why the scope moved. -->
+						<span class="entity-option-note">{m('entity.deactivatedNote')}</span>
 					</button>
 				{/if}
 			</div>
@@ -250,6 +258,22 @@
 	.entity-option.selected {
 		background: rgba(99, 140, 255, 0.12);
 		color: var(--accent);
+	}
+
+	/* The retired row is the only option that carries a sentence, so it wraps
+	   onto a second line rather than squeezing the name/state row above it. */
+	.entity-option.retired {
+		flex-wrap: wrap;
+	}
+
+	.entity-option-note {
+		flex-basis: 100%;
+		margin-top: 2px;
+		font-size: 0.7rem;
+		line-height: 1.35;
+		text-align: left;
+		white-space: normal;
+		color: var(--text-muted);
 	}
 
 	.entity-option-sub {

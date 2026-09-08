@@ -738,10 +738,18 @@
 				     could not be converted the two disagree, and an average over
 				     N-minus-k beside a sample count of N is a wrong number. Disclose
 				     it — do not quietly move the denominator (decisions §79/§82).
-				     Sits ABOVE the figures it qualifies, as on /cfo. -->
+				     Sits ABOVE the figures it qualifies, as on /cfo. The wording
+				     is this panel's own key, not the dashboard's borrowed one:
+				     that string names the dashboard's OWN excluded figures, while
+				     what is excluded here is the average / largest / median, and
+				     it carries the COUNT so the reader knows how much of the
+				     sample the qualifier covers. -->
 				{#if vendorUnconvertedTotal > 0}
 					<p class="unconverted" role="alert" data-testid="adaptive-vendor-unconverted">
-						{m('dashboard.reporting.unconverted', { currency: orgCurrency.currency })}
+						{m('adaptive.patterns.unconverted', {
+							n: vendorUnconvertedTotal,
+							currency: orgCurrency.currency
+						})}
 					</p>
 				{/if}
 				<DataTable

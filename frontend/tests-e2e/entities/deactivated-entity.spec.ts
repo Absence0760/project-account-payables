@@ -115,12 +115,15 @@ test.describe('entity switcher — a deactivated entity', () => {
 			page.locator('.entity-option:not([disabled])', { hasText: name })
 		).toHaveCount(0);
 		// …and it has not silently vanished either — it is listed once, marked
-		// inactive and unselectable, so the user can see what became of the
+		// deactivated and unselectable, so the user can see what became of the
 		// choice they made.
 		const retired = page.getByTestId('entity-option-retired');
 		await expect(retired).toBeVisible();
 		await expect(retired).toContainText(name);
-		await expect(retired).toContainText('Inactive');
+		// `entity.deactivated`, this row's own key — it used to borrow the
+		// admin table's `admin.entities.statusInactive` ("Inactive"), which
+		// names a lifecycle FLAG rather than the change that just happened.
+		await expect(retired).toContainText('Deactivated');
 		await expect(retired).toBeDisabled();
 		await page.keyboard.press('Escape');
 
