@@ -999,7 +999,12 @@
 		color: var(--text-muted);
 	}
 
-	input {
+	/* The TEXT-entry recipe, carved away from the checkbox/radio it also
+	   reached. Svelte scopes this to `.card.svelte-x input:where(.svelte-x)`,
+	   which outranks the global control base in `app.css`, and `background:`
+	   is a SHORTHAND — it reset `background-image`, the drawn tick, so the
+	   two notification-preference toggle rendered identically checked and unchecked. */
+	input:not([type='checkbox']):not([type='radio']) {
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 4px;
@@ -1009,7 +1014,9 @@
 		font-family: inherit;
 	}
 
-	input:focus {
+	/* Same carve-out: `outline: none` here would strip the checkbox/radio
+	   focus ring `app.css` draws for them (WCAG 2.4.7). */
+	input:not([type='checkbox']):not([type='radio']):focus {
 		outline: none;
 		border-color: var(--accent);
 	}

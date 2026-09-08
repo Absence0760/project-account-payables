@@ -2872,7 +2872,12 @@
 		margin-bottom: 12px;
 	}
 
-	input,
+	/* The TEXT-entry recipe, carved away from the checkbox/radio it also
+	   reached. Svelte scopes this to `.card.svelte-x input:where(.svelte-x)`,
+	   which outranks the global control base in `app.css`, and `background:`
+	   is a SHORTHAND — it reset `background-image`, the drawn tick, so the
+	   twelve `.switch-row` toggle rendered identically checked and unchecked. */
+	input:not([type='checkbox']):not([type='radio']),
 	select,
 	textarea {
 		background: var(--bg);
@@ -2890,7 +2895,9 @@
 		resize: vertical;
 	}
 
-	input:focus,
+	/* Same carve-out: `outline: none` here would strip the checkbox/radio
+	   focus ring `app.css` draws for them (WCAG 2.4.7). */
+	input:not([type='checkbox']):not([type='radio']):focus,
 	select:focus,
 	textarea:focus {
 		outline: none;
@@ -3150,7 +3157,10 @@
 		letter-spacing: 0.04em;
 	}
 
-	.threshold-row input,
+	/* Text-entry recipe. No checkbox sits under this selector today, but it
+	   outranks the global control base in `app.css`, so the carve-out keeps a
+	   later one from losing its tick (`background:` resets the drawn mark). */
+	.threshold-row input:not([type='checkbox']):not([type='radio']),
 	.threshold-row textarea {
 		background: var(--bg);
 		border: 1px solid var(--border);
@@ -3167,7 +3177,7 @@
 		font-size: 0.82rem;
 	}
 
-	.threshold-row input:focus,
+	.threshold-row input:not([type='checkbox']):not([type='radio']):focus,
 	.threshold-row textarea:focus {
 		outline: none;
 		border-color: var(--accent);

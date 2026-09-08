@@ -1941,8 +1941,11 @@
 		align-items: center;
 		flex-wrap: wrap;
 	}
-	.attach-row input,
-	.reject-row input {
+	/* Text-entry recipe. No checkbox sits under this selector today, but it
+	   outranks the global control base in `app.css`, so the carve-out keeps a
+	   later one from losing its tick (`background:` resets the drawn mark). */
+	.attach-row input:not([type='checkbox']):not([type='radio']),
+	.reject-row input:not([type='checkbox']):not([type='radio']) {
 		padding: 7px 9px;
 		border-radius: 5px;
 		border: 1px solid var(--border);
@@ -2002,7 +2005,10 @@
 		font-size: 0.82rem;
 		color: var(--text-muted);
 	}
-	.report-form input,
+	/* Text-entry recipe. No checkbox sits under this selector today, but it
+	   outranks the global control base in `app.css`, so the carve-out keeps a
+	   later one from losing its tick (`background:` resets the drawn mark). */
+	.report-form input:not([type='checkbox']):not([type='radio']),
 	.report-form textarea {
 		padding: 7px 9px;
 		border-radius: 5px;

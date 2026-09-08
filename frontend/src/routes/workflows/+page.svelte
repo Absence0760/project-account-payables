@@ -485,7 +485,10 @@
 		margin-bottom: 5px;
 	}
 
-	.form-group input,
+	/* Text-entry recipe. No checkbox sits under this selector today, but it
+	   outranks the global control base in `app.css`, so the carve-out keeps a
+	   later one from losing its tick (`background:` resets the drawn mark). */
+	.form-group input:not([type='checkbox']):not([type='radio']),
 	.form-group textarea {
 		width: 100%;
 		padding: 8px 10px;

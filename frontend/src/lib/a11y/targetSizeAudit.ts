@@ -71,7 +71,16 @@ export interface OverrideFinding {
 	declaration: string;
 }
 
-export type TargetSizeFinding = BaseRuleFinding | OverrideFinding;
+export interface CheckedPaintFinding {
+	kind: 'checked-paint';
+	/** The declaration that is missing or no longer paints what it should. */
+	property: string;
+	expected: string;
+	/** The merged value across the `:checked` rules, or `null` when unset. */
+	actual: string | null;
+}
+
+export type TargetSizeFinding = BaseRuleFinding | OverrideFinding | CheckedPaintFinding;
 
 /** Stable `path {selector}` identity, matching `opacityAudit`'s key shape. */
 export function findingKey(finding: OverrideFinding): string {
@@ -274,6 +283,70 @@ export function findCheckboxOverrides(sources: StyleSource[]): OverrideFinding[]
 				}
 			}
 		}
+	}
+	return findings;
+}
+
+/** The compound whose painted result decides whether a tick is visible. */
+const CHECKED_SELECTOR = "input[type='checkbox']:checked";
+
+/**
+ * What a CHECKED checkbox actually resolves to — the property that was wrong,
+ * not the specificity that caused it.
+ *
+ * The defect this closes was never a layout bug: five dialogs' text-field
+ * recipes reached their own checkboxes and spelled the fill as the
+ * `background` SHORTHAND, which resets `background-image`. The drawn tick IS
+ * that background image, so "Auto renew", "Reimbursable" and "Active"
+ * rendered pixel-identical checked and unchecked — a user could not tell what
+ * they were about to save. Nothing in a layout or contrast check sees that.
+ *
+ * Two halves make the claim, and both are needed. This function is the
+ * positive one: the `:checked` rules DECLARE a tick and an accent ring.
+ * {@link findCheckboxOverrides} is the negative one: no rule that can reach a
+ * checkbox re-declares `background` / `border`, so nothing can reset them.
+ * Asserted statically rather than through a resolved `getComputedStyle`
+ * because jsdom does not implement cascade resolution faithfully enough to
+ * trust with a correctness claim, and a browser is the e2e guard's job.
+ *
+ * The ring is deliberately checked mechanism-agnostically: it is an inset
+ * `box-shadow` today (the real border is now the transparent hit area) and was
+ * a `border-color` before, and the question worth guarding is whether the
+ * checked state is drawn in the accent at all.
+ */
+export function auditCheckedCheckboxPaint(sources: StyleSource[]): CheckedPaintFinding[] {
+	const merged = new Map<string, string>();
+	for (const source of sources) {
+		for (const rule of parseRules(source.css)) {
+			const matches = splitSelectorList(rule.selector).some(
+				(one) => normalise(one) === normalise(CHECKED_SELECTOR)
+			);
+			if (!matches) continue;
+			// Later declarations win, as in the cascade.
+			for (const [property, value] of rule.declarations) merged.set(property, value);
+		}
+	}
+
+	const findings: CheckedPaintFinding[] = [];
+	const need = (property: string, expected: string, ok: (v: string) => boolean) => {
+		const value = merged.get(property) ?? null;
+		if (value === null || !ok(value)) findings.push({ kind: 'checked-paint', property, expected, actual: value });
+	};
+
+	// The tick. `none` or absent is the exact symptom the shorthand produced.
+	need('background-image', 'a drawn mark (url(…)), never none', (v) => /\burl\(/.test(v) && !/^none$/i.test(v.trim()));
+	// The accent fill behind it.
+	need('background-color', 'var(--accent)', (v) => /var\(\s*--accent\s*\)/.test(v));
+
+	// …and the accent ring, by whichever mechanism draws it.
+	const ring = merged.get('box-shadow') ?? merged.get('border-color') ?? null;
+	if (!ring || !/var\(\s*--accent\s*\)/.test(ring)) {
+		findings.push({
+			kind: 'checked-paint',
+			property: 'box-shadow | border-color',
+			expected: 'an accent ring — var(--accent)',
+			actual: ring
+		});
 	}
 	return findings;
 }

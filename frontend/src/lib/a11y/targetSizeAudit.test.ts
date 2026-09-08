@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
 	auditCheckboxBaseRule,
+	auditCheckedCheckboxPaint,
 	CHECKBOX_BASE_SELECTOR,
 	fileCanStyleCheckbox,
+	findCheckboxBaseRule,
 	findCheckboxOverrides,
 	findingKey,
 	MIN_TARGET_PX,
@@ -66,65 +68,53 @@ const checkboxSources: StyleSource[] = files
 	.flatMap(([path, source]) => extractStyleBlocks(path, source));
 
 /**
- * Files whose own generic text-field recipe lands on their own checkboxes,
- * with what it costs. **These are pre-existing, and predate the target-size
- * work** — the scan surfaces them, it did not cause them.
+ * Files whose own generic text-field recipe still lands on their own
+ * checkboxes. **Empty, and it should stay that way.**
  *
- * Each of these rules is a `.form-grid input` / bare `input` recipe written for
- * text fields, at a specificity that outranks the global checkbox base. Two
- * consequences, and the second is the serious one:
+ * It was not empty. Twelve rules — `.form-grid input` in four modals, a bare
+ * `input` recipe on `/organization` and `/profile`, and six more — were
+ * written for text fields and reached checkboxes too, at a specificity the
+ * global base cannot outrank (Svelte compiles `.form-grid input` to
+ * `.form-grid.svelte-x input:where(.svelte-x)`, i.e. 0-2-1 against the base's
+ * 0-1-1). Each spelled its fill as the `background` SHORTHAND, which resets
+ * `background-image` — and the drawn tick IS that image, so "Auto renew",
+ * "Not to exceed", "Reimbursable" and "Active" rendered pixel-identical
+ * checked and unchecked. Two of them also spelled `outline: none` on `:focus`,
+ * which stripped the checkbox focus ring (WCAG 2.4.7).
  *
- *   1. the checkbox is painted as a bordered box the size of its hit area
- *      rather than the 16×16 control (measured 20×16 before this change, 24×24
- *      after — either way not the design-system control); and
- *   2. `background: var(--bg)` is a SHORTHAND, so it resets `background-image`
- *      — the drawn tick — which means a **checked checkbox renders identically
- *      to an unchecked one** in these dialogs ("1099 eligible", "Auto renew",
- *      "Not to exceed", "Reimbursable", "Active").
+ * All twelve now carry the `:not([type='checkbox']):not([type='radio'])`
+ * carve-out that `app.css`'s `.modal input` recipe and `routes/admin/privacy`
+ * already spelled, so this map is empty and the check below is a hard zero.
  *
- * 2.5.8 is unaffected: the `min-width`/`min-height` floor is what carries the
- * criterion and none of these touch it — which is exactly why the base rule
- * spells the floor with `min-*` rather than `width`/`height`.
- *
- * **The fix is per-file, not here**: give the rule the same
- * `:not([type='checkbox']):not([type='radio'])` carve-out that `app.css`'s
- * `.modal input` recipe and `routes/admin/privacy` already spell. Entries may
- * only ever be REMOVED; a new file introducing the idiom fails the ratchet
- * below by name.
+ * **Only ever remove entries.** The shape stays because it is the contract: a
+ * conversion that genuinely has to be tranched records itself here with its
+ * reason, exactly as `opacityAudit`'s `PENDING_CONVERSION` does, rather than
+ * being argued for in a commit message. Adding an entry is not a way to land
+ * a new one.
  */
-const GENERIC_INPUT_RECIPE_REACHES_CHECKBOX: Record<string, string> = {
-	'lib/components/modals/BulkRecodeGLModal.svelte {.filters input}':
-		'The GL-recode filter row recipe; the dialog also carries the ' +
-		'"include AI fallback" toggle.',
-	'lib/components/modals/CatalogModal.svelte {.form-grid input, .form-grid select, .form-grid textarea}':
-		'Reaches the Active / Preferred toggles in the same grid.',
-	'lib/components/modals/ContractModal.svelte {.form-grid input, .form-grid select, .form-grid textarea}':
-		'Reaches the Not-to-exceed / Auto-renew toggles.',
-	'lib/components/modals/ContractModal.svelte {.sub-form-grid input}':
-		'The renew sub-form recipe, same shape.',
-	'lib/components/modals/ExpenseModal.svelte {.form-grid input, .form-grid select, .form-grid textarea}':
-		'Reaches the Reimbursable toggle.',
-	'lib/components/modals/PolicyModal.svelte {.form-grid input}': 'Reaches the Active toggle.',
-	'routes/expenses/+page.svelte {.attach-row input, .reject-row input}':
-		'Inline attach / reject row recipe on a page that also renders row-select ' +
-		'checkboxes.',
-	'routes/expenses/+page.svelte {.report-form input, .report-form textarea}':
-		'The new-report form recipe, same page.',
-	'routes/organization/+page.svelte {input, select, textarea}':
-		'A bare `input` recipe on a page whose panels are largely toggles. Ties ' +
-		'with the global base on specificity, so which one wins is decided by ' +
-		'stylesheet order rather than by intent.',
-	'routes/organization/+page.svelte {.threshold-row input, .threshold-row textarea}':
-		'The fraud-threshold row recipe, same page.',
-	'routes/profile/+page.svelte {input}':
-		'A bare `input` recipe on the page carrying the notification-preference ' +
-		'checkboxes.',
-	'routes/workflows/+page.svelte {.form-group input, .form-group textarea}':
-		'The create-workflow form recipe on a page that also renders row-select ' +
-		'checkboxes.'
-};
+const GENERIC_INPUT_RECIPE_REACHES_CHECKBOX: Record<string, string> = {};
+
+/**
+ * Files a carve-out took to zero. A generic input recipe reappearing in one of
+ * these fails by name rather than as an anonymous count — six of them are
+ * dialogs whose only symptom was a tick that stopped being drawn, which is
+ * precisely the kind of regression nobody notices in review.
+ */
+const CONVERTED = [
+	'app.css',
+	'lib/components/modals/BulkRecodeGLModal.svelte',
+	'lib/components/modals/CatalogModal.svelte',
+	'lib/components/modals/ContractModal.svelte',
+	'lib/components/modals/ExpenseModal.svelte',
+	'lib/components/modals/PolicyModal.svelte',
+	'routes/expenses/+page.svelte',
+	'routes/organization/+page.svelte',
+	'routes/profile/+page.svelte',
+	'routes/workflows/+page.svelte'
+];
 
 const baseFindings = auditCheckboxBaseRule(allSources);
+const paintFindings = auditCheckedCheckboxPaint(allSources);
 const overrides = findCheckboxOverrides(checkboxSources);
 
 describe('targetSizeAudit — the scanner', () => {
@@ -173,6 +163,58 @@ describe('targetSizeAudit — the scanner', () => {
 		expect(scan('.x input { background-color: #000; }')).toEqual([]);
 	});
 
+	it('catches the shorthand that erased the tick', () => {
+		// The exact defect, as a fixture: a `:checked` rule whose fill is the
+		// `background` SHORTHAND declares no `background-image`, so the drawn
+		// mark is gone and a checked box paints like an unchecked one.
+		const shorthandOnly = auditCheckedCheckboxPaint([
+			{
+				path: 'fixture.css',
+				css: "input[type='checkbox']:checked { background: var(--accent); }"
+			}
+		]);
+		expect(shorthandOnly.map((f) => f.property)).toContain('background-image');
+
+		// `background-image: none` is the same claim spelled explicitly.
+		const explicitNone = auditCheckedCheckboxPaint([
+			{
+				path: 'fixture.css',
+				css: "input[type='checkbox']:checked { background-image: none; }"
+			}
+		]);
+		expect(explicitNone.map((f) => f.property)).toContain('background-image');
+	});
+
+	it('accepts a checked state that paints a tick, a fill and an accent ring', () => {
+		expect(
+			auditCheckedCheckboxPaint([
+				{
+					path: 'fixture.css',
+					css:
+						"input[type='checkbox']:checked, input[type='checkbox']:indeterminate {" +
+						' background-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }' +
+						" input[type='checkbox']:checked { background-image: url(\"data:image/svg+xml,x\"); }"
+				}
+			])
+		).toEqual([]);
+	});
+
+	it('accepts either mechanism for the accent ring', () => {
+		// It is an inset box-shadow now (the real border became the transparent
+		// hit area) and was a border-color before. The question worth guarding
+		// is whether the checked state is drawn in the accent at all.
+		const withBorder = auditCheckedCheckboxPaint([
+			{
+				path: 'fixture.css',
+				css:
+					"input[type='checkbox']:checked { background-color: var(--accent);" +
+					' border-color: var(--accent);' +
+					' background-image: url("data:image/svg+xml,x"); }'
+			}
+		]);
+		expect(withBorder).toEqual([]);
+	});
+
 	it('never reports the base rule against itself', () => {
 		expect(
 			scan(`${CHECKBOX_BASE_SELECTOR} { border: 4px solid transparent; background-clip: padding-box; }`)
@@ -207,10 +249,37 @@ describe('checkbox target-size recipe (WCAG 2.2 AA, 2.5.8)', () => {
 		).toEqual([]);
 	});
 
-	it('finds the idiom it is meant to find', () => {
-		// The scan's own canary against the live tree: if the parser broke, every
-		// assertion here would go green by finding nothing at all.
-		expect(overrides.map(findingKey)).toContain('routes/profile/+page.svelte {input}');
+	it('actually reaches the live stylesheet it is asserting about', () => {
+		// The canary. Every assertion below is "we found nothing wrong", so a
+		// parser that silently reached nothing would turn the whole suite green.
+		// It used to be an offending rule on `/profile`; that rule is fixed, so
+		// the canary is now the positive fact — the base rule was really parsed
+		// out of `app.css` — which cannot go stale by being repaired.
+		const base = findCheckboxBaseRule(allSources);
+		expect(base).not.toBeNull();
+		expect(base!.map(([property]) => property)).toEqual(
+			expect.arrayContaining(['min-width', 'min-height', 'border', 'background-clip', 'margin'])
+		);
+	});
+
+	it('paints a CHECKED checkbox with a tick, an accent fill and an accent ring', () => {
+		// The property that was actually wrong. Five dialogs' text-field recipes
+		// spelled their fill as the `background` shorthand, which resets
+		// `background-image` — the drawn tick — so "Auto renew", "Reimbursable"
+		// and "Active" rendered identically checked and unchecked. This asserts
+		// the tick is declared; the two checks below assert nothing can reset it.
+		expect(
+			paintFindings,
+			'The `:checked` rules in app.css must declare a drawn mark ' +
+				'(`background-image: url(…)`), the accent fill and an accent ring. A ' +
+				'checked checkbox that paints none of those is indistinguishable from ' +
+				'an unchecked one, which is a correctness bug no contrast or layout ' +
+				'check can see.'
+		).toEqual([]);
+	});
+
+	it.each(CONVERTED)('%s keeps its generic input recipe off checkboxes', (path) => {
+		expect(overrides.filter((f) => f.path === path).map(findingKey)).toEqual([]);
 	});
 
 	it('lets no rule shrink a checkbox back under the 24px floor', () => {
@@ -223,7 +292,7 @@ describe('checkbox target-size recipe (WCAG 2.2 AA, 2.5.8)', () => {
 		).toEqual([]);
 	});
 
-	it('adds no new file whose generic input recipe repaints a checkbox', () => {
+	it('lets no generic input recipe repaint a checkbox', () => {
 		const known = new Set(Object.keys(GENERIC_INPUT_RECIPE_REACHES_CHECKBOX));
 		expect(
 			overrides
