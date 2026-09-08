@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { Page } from '@playwright/test';
 
 import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
@@ -28,9 +30,12 @@ import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../f
 
 const LIST_PATH = '/api/bank-reconciliation';
 
-/** Unique per run, so the import-idempotency slot never collides across runs. */
+/** Unique per run, so the import-idempotency slot never collides across runs.
+ *  `randomUUID` rather than `Math.random`: the shard matrix starts workers in
+ *  the same millisecond, which leaves `Date.now()` contributing nothing and a
+ *  ~20-bit tail carrying the whole collision budget. */
 function uniqueTag(): string {
-	return `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+	return randomUUID();
 }
 
 /** A debit far outside the matcher's window and at an amount no seeded payment
