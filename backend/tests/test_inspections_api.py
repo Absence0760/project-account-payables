@@ -52,6 +52,37 @@ async def test_create_and_get_inspection(realdb, header_role):
         assert iid in {row["id"] for row in body["items"]}
 
 
+async def test_create_inspection_writes_an_audit_row(realdb):
+    """A hand-recorded quality inspection clears (or fails) the 4-way match
+    gate on a real invoice — it must leave an append-only row (invariant #3),
+    just like a QMS-synced one."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/inspections",
+            json={"inspection_number": "QI-AUDIT", "result": "pass"},
+        )
+    assert resp.status_code == 201, resp.text
+    iid = resp.json()["id"]
+
+    async with realdb.sessionmaker("a")() as s:
+        rows = list(
+            (
+                await s.execute(
+                    select(AuditLog).where(AuditLog.action == "quality_inspection.created")
+                )
+            ).scalars()
+        )
+    mine = [r for r in rows if str(r.entity_id) == iid]
+    assert len(mine) == 1, rows
+    assert mine[0].actor_id is not None
+    assert mine[0].details["inspection_number"] == "QI-AUDIT"
+    assert mine[0].details["result"] == "pass"
+
+
 async def test_get_unknown_inspection_is_404(realdb):
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.get(f"/api/inspections/{uuid.uuid4()}")

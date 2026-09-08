@@ -2322,6 +2322,26 @@ async def import_invoices_from_csv(
         entity_id=entity_id,
         day_first=resolve_day_first_preference(org.settings or {}),
     )
+
+    # One PII-free summary row per import — a Day-0 bulk load of a tenant's AP
+    # ledger belongs on the trail, keyed on `org_id` since it spans many
+    # invoices. Counts only; `csv-import.md` promises imported rows "get a real
+    # audit trail".
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="invoice.imported_from_csv",
+        entity_type="invoice",
+        entity_id=org_id,
+        details={
+            "imported": result.imported,
+            "skipped": result.skipped,
+            "errors": len(result.errors),
+            "entity_id": str(entity_id) if entity_id else None,
+        },
+    )
     await db.commit()
     return result.to_dict()
 

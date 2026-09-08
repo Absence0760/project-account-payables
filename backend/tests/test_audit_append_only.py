@@ -357,39 +357,16 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
 #
 # Do not add to this dict. A new unaudited mutating handler is a bug to fix, not
 # an entry to make.
-_OPEN_AUDIT_HOLES: dict[tuple[str, str], str] = {
-    ("app.api.inspections", "create_inspection"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. Writes a "
-        "QualityInspection (the 4-way-match gate that can fail an invoice) with "
-        "no audit row; its sibling `sync_inspections` audits via qms_sync."
-    ),
-    ("app.api.invoices", "import_invoices_from_csv"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. "
-        "services/csv_import.import_invoices_csv bulk-inserts Invoice rows "
-        "(including `paid`/`done` historicals) with no audit row."
-    ),
-    ("app.api.vendors", "import_vendors_from_csv"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. "
-        "services/csv_import.import_vendors_csv creates/updates Vendor rows "
-        "with no audit row."
-    ),
-    ("app.api.vendors", "invite_vendor_portal_user"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. Creates a "
-        "VendorUser credential (an account that can submit invoices and stage "
-        "bank-detail changes) with no audit row."
-    ),
-    ("app.api.vendors", "sync_vendors_from_erp_endpoint"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. "
-        "services/vendor_sync.sync_vendors_from_erp creates/updates Vendor rows "
-        "with no audit row, unlike gl_accounts.sync_gl_accounts_from_erp."
-    ),
-    ("app.api.workflow_definitions", "create_workflow"): (
-        "OPEN HOLE — see round-24 report, not a justified exemption. Creates a "
-        "WorkflowDefinition (the approval routing rules) with no audit row, "
-        "while every other mutator in the same module audits — exactly the "
-        "one-handler-vouches-for-the-file gap the per-handler unit exists to catch."
-    ),
-}
+#
+# The round-24 six — `inspections.create_inspection`,
+# `invoices.import_invoices_from_csv`, `vendors.{import_vendors_from_csv,
+# invite_vendor_portal_user, sync_vendors_from_erp_endpoint}` and
+# `workflow_definitions.create_workflow` — now each dispatch a PII-free audit
+# row (`quality_inspection.created` / `invoice.imported_from_csv` /
+# `vendor.imported_from_csv` / `vendor_user.invited` / `vendor.synced_from_erp`
+# / `workflow.created`) and their entries are deleted, exactly as the note
+# above prescribes.
+_OPEN_AUDIT_HOLES: dict[tuple[str, str], str] = {}
 
 _AUDIT_EXEMPT = {**_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT, **_OPEN_AUDIT_HOLES}
 
@@ -566,6 +543,35 @@ def test_entity_and_gl_account_mutations_dispatch_audit():
         assert "dispatch_audit" in inspect.getsource(handler), handler.__name__
     for handler in (gl_accounts.create_gl_account, gl_accounts.sync_gl_accounts_from_erp):
         assert "dispatch_audit" in inspect.getsource(handler), handler.__name__
+
+
+def test_round_24_open_audit_holes_are_closed():
+    """The six handlers round 24 enumerated in `_OPEN_AUDIT_HOLES` — a Day-0
+    CSV load of a tenant's AP ledger, an ERP vendor pull, a bulk vendor
+    import, the one AP action that mints a vendor identity, a workflow
+    definition, and a hand-recorded 4-way-match quality inspection — now each
+    dispatch a PII-free audit row (invariant #3).
+
+    Pinned by name here, per-handler, so a refactor that drops one
+    `dispatch_audit` call fails loudly even if the route-discovery sweep ever
+    stops reaching that handler — the belt to the sweep's suspenders.
+    """
+    from app.api import inspections, invoices, vendors, workflow_definitions
+
+    handlers = [
+        workflow_definitions.create_workflow,
+        vendors.invite_vendor_portal_user,
+        vendors.sync_vendors_from_erp_endpoint,
+        vendors.import_vendors_from_csv,
+        invoices.import_invoices_from_csv,
+        inspections.create_inspection,
+    ]
+    missing = [
+        f"{h.__module__}.{h.__name__}"
+        for h in handlers
+        if "dispatch_audit" not in inspect.getsource(h)
+    ]
+    assert not missing, f"these tenant-mutating handlers write no audit row: {missing}"
 
 
 # ---------------------------------------------------------------------------
