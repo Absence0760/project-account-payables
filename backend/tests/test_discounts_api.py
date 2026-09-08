@@ -15,7 +15,10 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.models.discount import (
+    OFFER_STATUS_CAPTURED,
     OFFER_STATUS_DECLINED,
+    OFFER_STATUS_EXPIRED,
+    OFFER_STATUS_OFFERED,
     DiscountOffer,
 )
 from app.models.entity import Entity
@@ -65,6 +68,34 @@ async def _add_invoice(
 
 def _tiers():
     return [{"days": 5, "percent": "3.00"}, {"days": 10, "percent": "2.00"}]
+
+
+async def _add_offer_row(mk, org_id, *, status, valid_until=None, base="1000.00", captured=None):
+    """Insert one `DiscountOffer` straight into the tenant DB.
+
+    The dashboard/list expiry cases need offer rows in states the HTTP surface
+    cannot produce (a `captured` offer, or an `offered` one whose window closed
+    yesterday), so they are written directly — exactly as
+    `test_discount_auto_trigger` does.
+    """
+    async with mk() as s:
+        offer = DiscountOffer(
+            organization_id=org_id,
+            entity_id=await _default_entity_id(s),
+            scope="vendor",
+            source="supplier",
+            status=status,
+            tiers=_tiers(),
+            base_amount=Decimal(base),
+            currency="USD",
+            valid_from=date.today() - timedelta(days=60),
+            valid_until=valid_until,
+            captured_amount=Decimal(captured) if captured is not None else None,
+        )
+        s.add(offer)
+        await s.commit()
+        await s.refresh(offer)
+        return str(offer.id)
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +523,67 @@ async def test_bulk_negotiate_sums_open_invoices(realdb):
     assert body["base_amount"] == 3000.0  # summed open balances
 
 
+async def test_optimize_reports_a_horizonless_bulk_offer_as_unrankable(realdb):
+    """A bulk offer with no `valid_until` has no net due date, so it has no APR.
+
+    Regression: `_build_opportunity` ended its due-date chain at `or pay_by`,
+    which is zero days accelerated — so the offer came back with
+    `annualized_return_pct: 0.00` and `worthwhile: false` sitting beside a
+    POSITIVE `net_benefit`, and was permanently unrecommendable. The unknown is
+    now expressed (`horizon_known: false`, nulls) and carried on `unrankable`,
+    where a client can tell it apart from a genuine 0 % return.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Horizonless Supply Co")
+    await _add_invoice(mk, org_id, amount="500000.00", vendor_id=vendor_id)
+    # A second, invoice-scoped offer that DOES have a horizon, so the two
+    # populations are visibly separated in one response.
+    ranked_invoice = await _add_invoice(mk, org_id, amount="1000.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        bulk_id = (
+            await c.post(
+                "/api/discounts/bulk-negotiate",
+                json={
+                    "vendor_id": vendor_id,
+                    "tiers": [{"days": 5, "percent": "3.00"}],
+                    # No `valid_until` — exactly what `build_bulk_offer` allows
+                    # and what the UI sends when the buyer names no end date.
+                },
+            )
+        ).json()["id"]
+        ranked_id = (
+            await c.post(
+                "/api/discounts/offers",
+                json={"scope": "invoice", "invoice_id": ranked_invoice, "tiers": _tiers()},
+            )
+        ).json()["id"]
+
+        body = (await c.post("/api/discounts/optimize", json={})).json()
+
+    assert [r["offer_id"] for r in body["recommendations"]] == [ranked_id]
+    assert [r["offer_id"] for r in body["unrankable"]] == [bulk_id]
+
+    unranked = body["unrankable"][0]["roi"]
+    assert unranked["horizon_known"] is False
+    assert unranked["days_accelerated"] is None
+    assert unranked["annualized_return_pct"] is None
+    assert unranked["opportunity_cost"] is None
+    assert unranked["net_benefit"] is None
+    assert unranked["worthwhile"] is None
+    # The discount itself is a real figure: 3 % of 500,000.
+    assert Decimal(str(unranked["savings"])) == Decimal("15000.00")
+    assert body["unrankable"][0]["selected"] is False
+
+    # The ranked offer still carries real numbers — the nulls are specific to
+    # the missing horizon, not a blanket weakening of the contract.
+    ranked_roi = body["recommendations"][0]["roi"]
+    assert ranked_roi["horizon_known"] is True
+    assert ranked_roi["annualized_return_pct"] > 0
+    assert ranked_roi["worthwhile"] is True
+
+
 # ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
@@ -527,6 +619,133 @@ async def test_dashboard_rolls_up_captured_missed_open(realdb):
     # missed savings counts the best tier (3%) of the 4000 invoice = 120.
     assert body["missed_amount"] >= 120.0
     assert body["projected_savings"] > 0
+
+
+async def test_dashboard_capture_rate_counts_lapsed_offers_as_missed(realdb):
+    """1 captured of 10 must not read as a 100 % capture rate.
+
+    Regression: `expire_if_past` has exactly one caller — the auto-capture
+    sweep — and that sweep is behind `FEOH_DISCOUNT_OPTIMIZATION_ENABLED`,
+    which is `false` by default (and is off here). So nine offers whose
+    `valid_until` passed months ago stayed at `offered`: they never entered the
+    `missed` bucket, `capture_rate_pct` is captured / (captured + missed), and
+    the card reported **100.00 %** while the `open` chip counted nine dead
+    offers. Expiry is now derived on read
+    (`discount_offers.effective_status_sql`), so it no longer depends on any
+    sweep having run.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    yesterday = date.today() - timedelta(days=1)
+
+    await _add_offer_row(mk, org_id, status=OFFER_STATUS_CAPTURED, captured="30.00")
+    for _ in range(9):
+        await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=yesterday)
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/discounts/dashboard")).json()
+
+    assert body["captured_count"] == 1
+    assert body["missed_count"] == 9
+    # Each lapsed offer's best tier is 3 % of 1000.00 = 30.00.
+    assert Decimal(str(body["missed_amount"])) == Decimal("270.00")
+    # A lapsed offer is NOT still on the table, so it is not counted twice.
+    assert body["open_offer_count"] == 0
+    assert Decimal(str(body["capture_rate_pct"])) == Decimal("10.00")
+
+
+async def test_dashboard_capture_rate_ignores_offers_still_in_window(realdb):
+    """The mirror case — an offer whose window is still open stays `open` and
+    never inflates `missed`, so the derived rule can't overcorrect."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    await _add_offer_row(mk, org_id, status=OFFER_STATUS_CAPTURED, captured="30.00")
+    # Today is the last day of the window — `valid_until < today` is false.
+    await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today())
+    # No `valid_until` at all: nothing has elapsed.
+    await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=None)
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/discounts/dashboard")).json()
+
+    assert body["captured_count"] == 1
+    assert body["missed_count"] == 0
+    assert body["open_offer_count"] == 2
+    assert Decimal(str(body["capture_rate_pct"])) == Decimal("100.00")
+
+
+async def test_offer_list_reports_and_filters_on_the_effective_status(realdb):
+    """A lapsed offer renders as `expired`, is filtered out of `offered`, and
+    is found by the `missed` chip — without the sweep ever running."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    lapsed_id = await _add_offer_row(
+        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today() - timedelta(days=1)
+    )
+    live_id = await _add_offer_row(
+        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today() + timedelta(days=30)
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        rows = {o["id"]: o for o in (await c.get("/api/discounts/offers")).json()["items"]}
+        assert rows[lapsed_id]["status"] == OFFER_STATUS_EXPIRED
+        assert rows[live_id]["status"] == OFFER_STATUS_OFFERED
+
+        detail = (await c.get(f"/api/discounts/offers/{lapsed_id}")).json()
+        assert detail["status"] == OFFER_STATUS_EXPIRED
+
+        open_ids = [
+            o["id"] for o in (await c.get("/api/discounts/offers?status=offered")).json()["items"]
+        ]
+        assert open_ids == [live_id]
+
+        missed_ids = [
+            o["id"] for o in (await c.get("/api/discounts/offers?status=missed")).json()["items"]
+        ]
+        assert missed_ids == [lapsed_id]
+
+    # Derived, never written: the stored column is untouched by a read.
+    async with mk() as s:
+        row = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == uuid.UUID(lapsed_id)))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_OFFERED
+
+
+async def test_effective_status_sql_matches_the_python_rule(realdb):
+    """Drift guard: the `CASE` the queries filter/group by must agree with the
+    Python predicate the responses are built from, row for row — including on
+    the window's own last day, where an off-by-one would mislabel every offer
+    for exactly one day."""
+    from app.services import discount_offers as offers_svc
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    today = date.today()
+
+    for status, valid_until in (
+        (OFFER_STATUS_OFFERED, today - timedelta(days=1)),  # lapsed
+        (OFFER_STATUS_OFFERED, today),  # last day of the window — still open
+        (OFFER_STATUS_OFFERED, today + timedelta(days=1)),
+        (OFFER_STATUS_OFFERED, None),
+        (OFFER_STATUS_CAPTURED, today - timedelta(days=1)),
+        (OFFER_STATUS_DECLINED, today - timedelta(days=1)),
+        (OFFER_STATUS_EXPIRED, today - timedelta(days=1)),
+    ):
+        await _add_offer_row(mk, org_id, status=status, valid_until=valid_until)
+
+    async with mk() as s:
+        rows = list((await s.execute(select(DiscountOffer))).scalars().all())
+        sql_by_id = dict(
+            (
+                await s.execute(select(DiscountOffer.id, offers_svc.effective_status_sql(today)))
+            ).all()
+        )
+
+    assert len(rows) == 7
+    for row in rows:
+        assert sql_by_id[row.id] == offers_svc.effective_status(row, as_of=today), row.id
 
 
 # ---------------------------------------------------------------------------

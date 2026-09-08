@@ -29,6 +29,14 @@ PercentNumber = Annotated[
     PlainSerializer(_decimal_to_number, return_type=float, when_used="json"),
 ]
 
+# The same, but nullable — a percentage that may be genuinely UNKNOWN rather
+# than zero. `None` on the wire is `null`, which a client can tell apart from
+# `0`; a fabricated `0.00` reads as a measurement.
+OptionalPercentNumber = Annotated[
+    Decimal | None,
+    PlainSerializer(_decimal_to_number, return_type=float | None, when_used="json"),
+]
+
 
 class OfferScope(StrEnum):
     invoice = "invoice"
@@ -103,7 +111,21 @@ class DiscountOfferResponse(BaseModel):
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_db(cls, o, *, vendor_name: str | None = None, invoice_number: str | None = None):
+    def from_db(
+        cls,
+        o,
+        *,
+        vendor_name: str | None = None,
+        invoice_number: str | None = None,
+        effective_status: str | None = None,
+    ):
+        """``effective_status`` overrides the stored column.
+
+        The router passes ``discount_offers.effective_status(o, as_of=today)``,
+        which reports a lapsed ``offered`` row as ``expired`` whether or not the
+        (kill-switched) auto-capture sweep has ever materialized that onto the
+        row. See ``services/discount_offers`` § Expiry is DERIVED, not read.
+        """
         accepted = None
         if o.accepted_tier:
             accepted = DiscountTier(
@@ -115,7 +137,7 @@ class DiscountOfferResponse(BaseModel):
             invoice_id=str(o.invoice_id) if o.invoice_id else None,
             vendor_id=str(o.vendor_id) if o.vendor_id else None,
             source=o.source,
-            status=o.status,
+            status=effective_status or o.status,
             tiers=[
                 DiscountTier(days=int(t["days"]), percent=Decimal(str(t["percent"])))
                 for t in (o.tiers or [])
@@ -145,17 +167,34 @@ class DiscountOfferListResponse(BaseModel):
 
 
 class DiscountROIResponse(BaseModel):
-    """Annualized-return analysis for one early-payment opportunity."""
+    """Annualized-return analysis for one early-payment opportunity.
+
+    Every horizon-relative field is nullable, because the horizon itself can be
+    unknown: a vendor-scoped bulk offer spans many invoices and has no single
+    net due date. `horizon_known` is the explicit marker — when it is `false`,
+    `days_accelerated` / `annualized_return_pct` / `opportunity_cost` /
+    `net_benefit` are `null` and `worthwhile` is `null` meaning *cannot rank*,
+    which is not the same answer as `false` (*ranked, and it loses*).
+
+    They used to be non-nullable, so the router substituted the discount
+    deadline for the missing due date. That reports `days_accelerated: 0` —
+    hence `annualized_return_pct: 0.00` and `worthwhile: false` beside a
+    POSITIVE `net_benefit` — and made every bulk-negotiated offer with no
+    `valid_until` permanently unrecommendable.
+    """
 
     base_amount: MoneyAmount
     discount_percent: PercentNumber
-    days_accelerated: int
-    savings: MoneyAmount
-    annualized_return_pct: PercentNumber
+    days_accelerated: int | None
+    savings: MoneyAmount  # horizon-free — a percentage of the base amount
+    annualized_return_pct: OptionalPercentNumber
     cost_of_capital_pct: PercentNumber
-    opportunity_cost: MoneyAmount
-    net_benefit: MoneyAmount
-    worthwhile: bool
+    opportunity_cost: OptionalMoneyAmount
+    net_benefit: OptionalMoneyAmount
+    worthwhile: bool | None
+    # False = no net due date to accelerate against; read the nulls above as
+    # "unknown", never as zero.
+    horizon_known: bool = True
 
 
 class OptimizerRecommendation(BaseModel):
@@ -221,6 +260,12 @@ class OptimizerResponse(BaseModel):
     # Ranked offers left out of the totals because they are in another currency.
     unconvertible_count: int = 0
     recommendations: list[OptimizerRecommendation]
+    # Offers with no resolvable net due date. Their `roi.horizon_known` is
+    # `false` and their APR / verdict are `null`: they cannot be placed in an
+    # APR ranking, so they are carried here instead of being sorted to the
+    # bottom of `recommendations` at a fabricated 0.00 %. They contribute to no
+    # total and are never selected; each carries a real `roi.savings`.
+    unrankable: list[OptimizerRecommendation] = Field(default_factory=list)
 
 
 class BulkNegotiationRequest(BaseModel):

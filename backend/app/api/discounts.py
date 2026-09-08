@@ -147,14 +147,25 @@ def _response(
     offer: DiscountOffer,
     vmap: dict[uuid.UUID, str],
     imap: dict[uuid.UUID, tuple[str, str | None]],
+    *,
+    today: date | None = None,
 ) -> DiscountOfferResponse:
+    """Map one offer onto the wire shape, reporting its EFFECTIVE status.
+
+    An `offered` row whose `valid_until` has passed is expired whether or not
+    the auto-capture sweep (off by default) has written that to the column —
+    see `services/discount_offers.effective_status`.
+    """
     vendor_name = vmap.get(offer.vendor_id) if offer.vendor_id else None
     invoice_number = None
     if offer.invoice_id and offer.invoice_id in imap:
         invoice_number, inv_vendor = imap[offer.invoice_id]
         vendor_name = vendor_name or inv_vendor
     return DiscountOfferResponse.from_db(
-        offer, vendor_name=vendor_name, invoice_number=invoice_number
+        offer,
+        vendor_name=vendor_name,
+        invoice_number=invoice_number,
+        effective_status=offers_svc.effective_status(offer, as_of=today or utc_today()),
     )
 
 
@@ -175,7 +186,14 @@ async def _build_opportunity(
     if tier is None:
         return None
     pay_by = _tier_deadline(offer, tier, today)
-    due_date = await _resolve_due_date(db, offer) or offer.valid_until or pay_by
+    # `pay_by` is deliberately NOT the last fallback. It used to be, and it made
+    # `days_accelerated` exactly 0 for any offer with no schedule/invoice due
+    # date and no `valid_until` — every bulk negotiation — producing an ROI that
+    # contradicted itself: a 0.00 % APR and `worthwhile: false` beside a
+    # positive `net_benefit`, so the offer was permanently unrecommendable.
+    # `None` means "no horizon"; the optimizer reports it as unrankable rather
+    # than ranking it at zero.
+    due_date = await _resolve_due_date(db, offer) or offer.valid_until
     return OfferOpportunity(
         offer_id=str(offer.id),
         invoice_id=str(offer.invoice_id) if offer.invoice_id else None,
@@ -205,6 +223,7 @@ def _roi_response(roi) -> DiscountROIResponse:
         opportunity_cost=roi.opportunity_cost,
         net_benefit=roi.net_benefit,
         worthwhile=roi.worthwhile,
+        horizon_known=roi.horizon_known,
     )
 
 
@@ -235,6 +254,12 @@ async def list_offers(
     user: User = Depends(require_roles(*_READ_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
+    today = utc_today()
+    # The EFFECTIVE status, not the stored column: a lapsed `offered` row is
+    # `expired` from the calendar alone, and the only writer of that column is
+    # the auto-capture sweep, which is off by default. Filtering on the column
+    # put every lapsed offer in the "open" chip forever and none in "missed".
+    live_status = offers_svc.effective_status_sql(today)
     query = apply_entity_scope(select(DiscountOffer), DiscountOffer, entity_id)
     if status_filter:
         # UI "missed" bucket = declined + expired.
@@ -246,7 +271,7 @@ async def list_offers(
             elif s:
                 wanted.append(s)
         if wanted:
-            query = query.where(DiscountOffer.status.in_(wanted))
+            query = query.where(live_status.in_(wanted))
     if scope:
         query = query.where(DiscountOffer.scope == scope)
     if vendor_id:
@@ -260,7 +285,7 @@ async def list_offers(
     )
     rows = list((await db.execute(query)).scalars().all())
     vmap, imap = await _name_maps(db, rows)
-    items = [_response(o, vmap, imap) for o in rows]
+    items = [_response(o, vmap, imap, today=today) for o in rows]
     return paginated(items, total, pagination)
 
 
@@ -593,8 +618,7 @@ async def optimize_discounts(
         reporting_currency=_org_currency(org),
     )
 
-    recs: list[OptimizerRecommendation] = []
-    for r in result.recommendations:
+    def _rec(r) -> OptimizerRecommendation:
         offer = offer_by_id.get(r.opportunity.offer_id)
         vendor_name = None
         invoice_number = None
@@ -604,26 +628,30 @@ async def optimize_discounts(
             if offer.invoice_id and offer.invoice_id in imap:
                 invoice_number, inv_vendor = imap[offer.invoice_id]
                 vendor_name = vendor_name or inv_vendor
-        recs.append(
-            OptimizerRecommendation(
-                offer_id=r.opportunity.offer_id,
-                invoice_id=r.opportunity.invoice_id,
-                vendor_id=r.opportunity.vendor_id,
-                vendor_name=vendor_name,
-                invoice_number=invoice_number,
-                tier_days=r.opportunity.tier_days,
-                discount_percent=r.opportunity.discount_percent,
-                pay_by=r.opportunity.pay_by.isoformat(),
-                roi=_roi_response(r.roi),
-                # THIS row's currency — `roi.savings` comes off the offer's own
-                # `base_amount`, so it is the offer's currency, which is the
-                # response-level `currency` only when `unconvertible` is False.
-                currency=r.opportunity.currency,
-                selected=r.selected,
-                cumulative_outlay=r.cumulative_outlay,
-                unconvertible=r.unconvertible,
-            )
+        return OptimizerRecommendation(
+            offer_id=r.opportunity.offer_id,
+            invoice_id=r.opportunity.invoice_id,
+            vendor_id=r.opportunity.vendor_id,
+            vendor_name=vendor_name,
+            invoice_number=invoice_number,
+            tier_days=r.opportunity.tier_days,
+            discount_percent=r.opportunity.discount_percent,
+            pay_by=r.opportunity.pay_by.isoformat(),
+            roi=_roi_response(r.roi),
+            # THIS row's currency — `roi.savings` comes off the offer's own
+            # `base_amount`, so it is the offer's currency, which is the
+            # response-level `currency` only when `unconvertible` is False.
+            currency=r.opportunity.currency,
+            selected=r.selected,
+            cumulative_outlay=r.cumulative_outlay,
+            unconvertible=r.unconvertible,
         )
+
+    recs = [_rec(r) for r in result.recommendations]
+    # Offers with no resolvable net due date: real `savings`, no APR, no
+    # verdict. Carried apart from the ranking rather than sorted to the bottom
+    # of it at a fabricated 0.00 %.
+    unrankable = [_rec(r) for r in result.unrankable]
 
     return OptimizerResponse(
         cash_budget=cash_budget,
@@ -634,6 +662,7 @@ async def optimize_discounts(
         total_outlay_selected=result.total_outlay_selected,
         unconvertible_count=result.unconvertible_count,
         recommendations=recs,
+        unrankable=unrankable,
     )
 
 
@@ -754,6 +783,15 @@ async def dashboard(
     def _in_reporting_currency(q):
         return q.where(func.upper(DiscountOffer.currency) == reporting_currency)
 
+    # Every bucket below is keyed on the EFFECTIVE status, not the stored
+    # column. An `offered` row whose `valid_until` has passed is expired by the
+    # calendar; the only writer of that column is the auto-capture sweep, which
+    # is OFF by default. Reading the column left every lapsed offer in the
+    # `open` bucket and none in `missed`, so `capture_rate_pct` —
+    # captured / (captured + missed) — reported 100.00 on one capture out of
+    # ten offers. See `services/discount_offers` § Expiry is DERIVED, not read.
+    live_status = offers_svc.effective_status_sql(today)
+
     # Captured — counted and summed only in the reporting currency.
     captured_count, captured_amount = (
         await db.execute(
@@ -762,7 +800,7 @@ async def dashboard(
                     select(
                         func.count(),
                         func.coalesce(func.sum(DiscountOffer.captured_amount), 0),
-                    ).where(DiscountOffer.status == OFFER_STATUS_CAPTURED)
+                    ).where(live_status == OFFER_STATUS_CAPTURED)
                 )
             )
         )
@@ -771,22 +809,23 @@ async def dashboard(
         await db.execute(
             _scope(
                 select(func.count()).where(
-                    DiscountOffer.status == OFFER_STATUS_CAPTURED,
+                    live_status == OFFER_STATUS_CAPTURED,
                     func.upper(DiscountOffer.currency) != reporting_currency,
                 )
             )
         )
     ).scalar() or 0
 
-    # Missed (declined + expired) — count + the discount that *would* have been
-    # captured at each offer's best tier.
+    # Missed (declined + expired, incl. a lapsed `offered` row) — count + the
+    # discount that *would* have been captured at each offer's best tier.
+    missed_statuses = [OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED]
     missed_rows = list(
         (
             await db.execute(
                 _scope(
                     _in_reporting_currency(
                         select(DiscountOffer.base_amount, DiscountOffer.tiers).where(
-                            DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED])
+                            live_status.in_(missed_statuses)
                         )
                     )
                 )
@@ -797,7 +836,7 @@ async def dashboard(
         await db.execute(
             _scope(
                 select(func.count()).where(
-                    DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED]),
+                    live_status.in_(missed_statuses),
                     func.upper(DiscountOffer.currency) != reporting_currency,
                 )
             )
@@ -814,13 +853,12 @@ async def dashboard(
         if best is not None:
             missed_amount += offers_svc.discount_savings(base_amount, {"days": 0, "percent": best})
 
-    # Open offers + projected savings (optimizer, unconstrained cash).
+    # Open offers + projected savings (optimizer, unconstrained cash). `open`
+    # is the effective status too, so a lapsed offer is not counted as still on
+    # the table — it has already been counted as missed above, and counting it
+    # in both places is what let the two buckets overlap.
     open_offers = list(
-        (
-            await db.execute(
-                _scope(select(DiscountOffer).where(DiscountOffer.status == OFFER_STATUS_OFFERED))
-            )
-        )
+        (await db.execute(_scope(select(DiscountOffer).where(live_status == OFFER_STATUS_OFFERED))))
         .scalars()
         .all()
     )

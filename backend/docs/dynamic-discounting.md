@@ -59,14 +59,62 @@ on this one module so the economics agree everywhere.
 Cost of capital: per-org `Organization.settings.discounting.cost_of_capital_pct`
 → falls back to `FEOH_DISCOUNT_COST_OF_CAPITAL_PCT` (default 8.0).
 
+### An unknown horizon is `null`, not `0`
+
+Every one of those answers except `savings` is horizon-relative. A vendor-scoped
+bulk offer spans many invoices and has no single net due date, so for one with
+no `valid_until` either there is **nothing to accelerate against** — the APR has
+no value, not a value of zero.
+
+`_build_opportunity` used to end its due-date chain at `or pay_by`, substituting
+the discount deadline for the missing due date. That is `days_accelerated == 0`,
+and the object it produced contradicted itself:
+
+```
+savings:               500.00
+opportunity_cost:        0.00   <- holding cash for 0 days costs nothing...
+net_benefit:           500.00   <- ...so the net benefit is positive
+annualized_return_pct:   0.00   <- but the "measured" return is nil
+worthwhile:             false   <- so it never ranks, ever
+```
+
+A reader cannot tell that `0.00` apart from a genuine zero return, and
+`worthwhile: false` reads as a verdict when the truth is that no verdict is
+available. Every bulk-negotiated offer without a `valid_until` was therefore
+permanently unrecommendable.
+
+`compute_roi(days_accelerated=None)` now withholds instead of defaulting:
+
+| Field | Horizon known | Horizon unknown |
+|---|---|---|
+| `savings` | figure | figure (a % of the base needs no horizon) |
+| `days_accelerated` | int | `null` |
+| `annualized_return_pct` | figure | `null` |
+| `opportunity_cost` / `net_benefit` | figure | `null` |
+| `worthwhile` | `true` / `false` | `null` — *cannot rank*, not *no* |
+| `horizon_known` | `true` | `false` |
+
+`horizon_known` is the explicit marker, so a consumer never has to infer meaning
+from a null. `DiscountROI.as_dict()` (which lands in an append-only audit row)
+emits JSON `null` for each — never `"None"`, never a placeholder `"0.00"`.
+
+`optimize()` carries such an opportunity on `OptimizationResult.unrankable`
+(surfaced as `unrankable[]` on `POST /optimize`) rather than sorting it to the
+bottom of `recommendations` — that list is a ranking *by APR*, and something
+without an APR has no position in it. Unrankable rows are never selected and
+contribute to no total, and keeping them out is what lets every downstream
+consumer of `recommendations` keep assuming a real number there. The auto-capture
+sweep skips an unknown-horizon offer explicitly for the same reason: surfacing
+the gap beats a plausible-looking wrong figure (`docs/decisions.md` §18).
+
 ## Services
 
 | Module | Responsibility |
 |--------|----------------|
 | `discount_roi.py` | annualized-return primitive (above) |
-| `discount_offers.py` | tier normalization/selection (`best_tier_for_date`, `select_tier` / `select_tier_for_date`), savings math, lifecycle mutators (`accept_offer` / `decline_offer` / `mark_captured` / `expire_if_past`), and `build_bulk_offer` (sum a vendor's open balances into a vendor-scoped offer). Pure — never commits |
+| `discount_offers.py` | tier normalization/selection (`best_tier_for_date`, `select_tier` / `select_tier_for_date`), savings math, lifecycle mutators (`accept_offer` / `decline_offer` / `mark_captured` / `expire_if_past`), the **derived-expiry** rule (`has_lapsed` / `effective_status` + its SQL mirror `effective_status_sql`), and `build_bulk_offer` (sum a vendor's open balances into a vendor-scoped offer). Pure — never commits |
 | `discount_optimizer.py` | `optimize(opportunities, cash_budget, cost_of_capital_pct, today, reporting_currency=None)` — scores each opportunity, ranks by APR desc (tie-break savings, then id), and **greedily** selects the highest-yield `worthwhile` + still-capturable ones until the cash budget is exhausted (capture vs. cash preservation). `cash_budget=None` selects every worthwhile one. Pure. See [Currency](#currency--the-totals-are-sums) for `reporting_currency` |
-| `discount_auto_trigger.py` | background sweep — auto-accepts open offers whose ROI clears `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal` (per-tenant fan-out, fresh engine, one failure never halts the sweep). Also the sole place `expire_if_past` runs — flips an `offered` row whose `valid_until` has passed to `expired` before it's ever considered for auto-accept. **Money-path boundary: only flags `offered → accepted`; never creates a `Payment`/`PaymentRun`** — actual funding still flows through the CFO-gated payment run. The status guard is the dedupe |
+| `discount_auto_trigger.py` | background sweep — auto-accepts open offers whose ROI clears `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal` (per-tenant fan-out, fresh engine, one failure never halts the sweep). Also *materializes* expiry (`expire_if_past` + a `discount_offer.expired` audit row) before an offer is considered for auto-accept — a tidy-up, not the definition: expiry is derived on read (§ Expiry is derived, not swept), because this sweep is off by default. **Money-path boundary: only flags `offered → accepted`; never creates a `Payment`/`PaymentRun`** — actual funding still flows through the CFO-gated payment run. The status guard is the dedupe |
 
 ### Currency — the totals are sums
 
@@ -186,13 +234,13 @@ down, and must report an unavailable probe.
 
 | Method + path | Roles | Purpose |
 |---|---|---|
-| `GET /offers` | all four | list (filters: `status` — `missed` = declined+expired — `scope`, `vendor_id`; paginated, entity-scoped) |
+| `GET /offers` | all four | list (filters: `status` — `missed` = declined+expired — `scope`, `vendor_id`; paginated, entity-scoped). Both the filter and the reported `status` use the **effective** status (`effective_status_sql`), so a lapsed `offered` row is filtered and rendered as `expired` |
 | `POST /offers` | admin, ap_manager | create an offer (invoice base_amount defaults from the invoice) |
 | `GET /offers/{id}` | all four | detail (entity-scoped) |
 | `POST /offers/{id}/accept` | admin, ap_manager, **cfo** | accept at a tier (`tier_days` or best tier today) |
 | `POST /offers/{id}/decline` | admin, ap_manager, **cfo** | decline |
 | `GET /invoices/{id}/roi` | all four | annualized ROI of paying the invoice early (open offer's best tier, else the static `PaymentSchedule` term) |
-| `POST /optimize` | all four | rank open offers by ROI and select within an optional `{cash_budget}` |
+| `POST /optimize` | all four | rank open offers by ROI and select within an optional `{cash_budget}`. Offers with no resolvable net due date come back on `unrankable[]` with a `null` APR and `roi.horizon_known: false` — never a fabricated `0.00` (§ An unknown horizon is `null`, not `0`) |
 | `POST /bulk-negotiate` | admin, ap_manager | one vendor-scoped offer across the vendor's open invoices |
 | `GET /dashboard` | all four | captured / missed / capture-rate / open-offers / projected-savings rollup |
 
@@ -304,16 +352,16 @@ See `supplier-portal.md` § Early-payment discount offers.
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `FEOH_DISCOUNT_OPTIMIZATION_ENABLED` | `false` | master switch for the auto-capture background sweep — keep `false` in local dev, flip on in deployed envs |
+| `FEOH_DISCOUNT_OPTIMIZATION_ENABLED` | `false` | master switch for the auto-capture background sweep — keep `false` in local dev, flip on in deployed envs. It gates the auto-accept *decision* only; offer **expiry** does not depend on it (§ Expiry is derived, not swept) |
 | `FEOH_DISCOUNT_OPTIMIZATION_INTERVAL_SECONDS` | `3600` | sweep interval |
 | `FEOH_DISCOUNT_OPTIMIZATION_BATCH_SIZE` | `200` | **page** size for the sweep's keyset pagination over a tenant's `offered` offers — not a per-tick cap. The sweep pages (`WHERE id > :cursor ORDER BY id`) until the tenant is exhausted, locking one offer at a time. Capping is not available here: an offer skipped for a below-threshold ROI stays `offered`, so a `LIMIT` would re-serve the same lowest-id offers every tick and never reach the tail. See `background-sweeps.md` § Locking. |
 | `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD` | `12.0` | annualized return (APR %) an offer must clear for the sweep to auto-accept it |
 | `FEOH_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | platform-default annual cost of capital; per-org override `settings.discounting.cost_of_capital_pct` |
 
-The ROI calculator, offer lifecycle, optimizer, and dashboard run
-unconditionally; only the *auto-accept sweep* is gated (and it never moves
-money). Local-first: the financing adapter defaults to `mock`, so `pnpm dev`
-needs no credential.
+The ROI calculator, offer lifecycle, optimizer, dashboard **and offer expiry**
+run unconditionally; only the *auto-accept decision* is gated (and it never
+moves money). Local-first: the financing adapter defaults to `mock`, so
+`pnpm dev` needs no credential.
 
 The sweep reads a tenant's candidates a page at a time rather than in one
 unbounded `SELECT` — it used to select every `offered` offer id for the tenant
@@ -343,10 +391,28 @@ portal nav.
 
 - `tests/test_discount_roi.py` (foundation), `test_discount_offers.py`,
   `test_discount_optimizer.py`, `test_financing_adapters.py` — pure unit.
+  `test_discount_roi.py` pins the unknown-horizon contract
+  (`compute_roi(days_accelerated=None)` withholds every horizon-relative answer,
+  `as_dict()` carries nulls rather than placeholders into the audit row, and a
+  measured 0 % APR stays distinguishable from an unknown one);
+  `test_discount_offers.py` pins the derived-expiry rule (`has_lapsed` /
+  `effective_status`, the window's own last day, and agreement with
+  `expire_if_past`); `test_discount_optimizer.py` pins that an unrankable
+  opportunity leaves the ranking, is never selected, and never consumes a cash
+  budget.
+- `test_discount_currency_integrity.py` / `test_discount_currency_resolution.py`
+  — the offer/invoice currency guards and the reporting-currency resolution
+  chain.
 - `test_discount_auto_trigger.py` — sweep fan-out + real-DB mutation
-  (worthwhile→accept, threshold gate, money-path boundary, idempotency, audit).
+  (worthwhile→accept, threshold gate, money-path boundary, idempotency, audit),
+  plus expiry: it moves no money, writes a `discount_offer.expired` audit row,
+  and is counted apart from `captured`.
 - `test_discounts_api.py` — router end-to-end (lifecycle, ROI, optimizer, bulk,
-  dashboard, RBAC, tenant isolation).
+  dashboard, RBAC, tenant isolation), the effective-status reads (a lapsed
+  offer renders `expired`, filters as `missed`, counts as missed rather than
+  open, and `capture_rate_pct` reports 10 % on 1 captured of 10 — never
+  100 %), the SQL-vs-Python drift guard on `effective_status_sql`, and
+  `unrankable[]` on `POST /optimize`.
 - `test_portal_discount_offers.py` — supplier-portal list + accept/decline
   (real-DB): vendor scoping (own vendor + own invoices, never another vendor),
   per-tier savings, accept flips status without creating a `Payment`/`PaymentRun`,
@@ -416,7 +482,7 @@ field in it aggregates only rows denominated in that code:
 | Field | Population |
 |---|---|
 | `captured_amount` / `captured_count` | captured offers in the reporting currency |
-| `missed_amount` / `missed_count` | declined + expired offers in the reporting currency |
+| `missed_amount` / `missed_count` | declined + **effectively** expired offers in the reporting currency — a lapsed `offered` row counts here, not in `open_offer_count` |
 | `projected_savings` | open offers in the reporting currency (via the optimizer) |
 | `excluded_captured_count` / `excluded_missed_count` / `unconvertible_offer_count` | how many rows each figure left out |
 
@@ -477,3 +543,65 @@ purpose: holding `FOR UPDATE` across the whole loop would keep a growing lock
 set open across unrelated awaits, the pattern `payment_reconciler` is already
 flagged for in `docs/followups.md`. Expiry (`expire_if_past`) takes the same
 claim — it is a status write too.
+
+## Expiry is derived, not swept
+
+An offer whose `valid_until` has passed is off the table. That is a fact about
+the calendar — nobody decides it, and no background process is needed to make it
+true.
+
+It used to be true only if one had run. `expire_if_past` had exactly one caller,
+the auto-capture sweep, and that sweep is behind
+`FEOH_DISCOUNT_OPTIMIZATION_ENABLED`, which is `false` by default. So in local
+dev, in tests, and in any deployment that had not turned auto-capture on:
+
+* a lapsed offer sat at `offered` forever — the `open` chip kept counting it,
+  and it was never in `missed`;
+* the dashboard's `capture_rate_pct` is `captured / (captured + missed)`, so
+  with nine offers quietly lapsing and one captured it reported **100.00 %**;
+* and both the config comment and this document claimed only *auto-capture* was
+  gated, which was the more expensive half of the bug — the behaviour was
+  invisible because the documentation said it could not happen.
+
+The two operations were sharing one switch and should not have been. Auto-capture
+is a **money-adjacent policy** decision: it reads an ROI, a threshold and a cost
+of capital, and an operator legitimately wants it off. Expiry is a
+**correctness** operation with no policy in it at all.
+
+### Why derive rather than add a second always-on sweep
+
+`services/discount_offers` now owns the rule directly:
+
+| Helper | Answers |
+|---|---|
+| `has_lapsed(offer, as_of=…)` | is this stored-`offered` row past its window? |
+| `effective_status(offer, as_of=…)` | `expired` if lapsed, else the stored status |
+| `effective_status_sql(as_of)` | the same `CASE`, for `WHERE` / `GROUP BY` |
+
+Every read surface classifies through those — `GET /offers` (filter *and*
+reported status), `GET /offers/{id}`, and all three dashboard buckets
+(`captured` / `missed` / `open`). `tests/test_discount_offers.py` pins the SQL
+mirror against the Python predicate so the pair cannot drift.
+
+A second always-on background loop was the alternative and is worse: it would
+still leave the truth dependent on a process having run, which is exactly the
+dependency that produced the bug, and it would be wrong in every context where
+no sweep runs at all (a test, a one-shot CLI, `pnpm dev`). Deriving is also the
+shape the money path already settled on — a payment run's status is recomputed
+from its own payments rather than read from its column (`docs/decisions.md`
+§41).
+
+### What the sweep's write still does
+
+`expire_if_past` stays in the sweep as a **materialization**: when auto-capture
+is enabled it writes the durable `expired` row state and — new — an append-only
+`discount_offer.expired` audit row (a status change writes an audit row; this
+one used to commit silently). Nothing that has to be correct depends on it, and
+it moves no money: it takes no ROI, no threshold and no cost of capital, and it
+touches no `Payment` / `PaymentRun`. `AutoTriggerResult.offers_expired` counts
+it separately from `offers_captured` so the two are never conflated in a log
+line.
+
+The supplier portal (`/api/portal/discount-offers`) still renders the stored
+column, so a lapsed offer reads `offered` to the supplier until the sweep
+materializes it. Tracked in `docs/followups.md`.
