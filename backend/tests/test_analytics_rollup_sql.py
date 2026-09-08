@@ -44,6 +44,7 @@ import ast
 import operator
 import pathlib
 import random
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -419,31 +420,214 @@ async def test_drill_through_reports_unconverted_per_row_and_for_the_period(real
 
 
 # ---------------------------------------------------------------------------
-# 3. Drift guard — no call site may reintroduce the Python fold
+# 3. The assistant's `get_vendor_spend` — the fifth consumer of the same rollup
 # ---------------------------------------------------------------------------
 
 
-def test_no_module_folds_per_invoice_rows_into_the_vendor_rollup():
-    """`vendor_rollup_to_reporting_currency` takes ONE DICT PER INVOICE.
+@pytest.mark.asyncio
+async def test_assistant_vendor_spend_keeps_same_named_vendors_apart(realdb):
+    """The assistant tool groups by `vendor_id`, not just by name.
 
-    Calling it from a request or sweep path means the period's invoices were
-    transferred and reduced in Python, on the event loop, growing with the
-    invoice table — the shape §103 removed from the dashboard tile and this
-    change removed from its four siblings. `vendor_spend_grouped_select` +
-    `vendor_rollup_from_grouped_rows` do the same reduction over
-    ``vendors x currencies`` pre-aggregated rows.
-
-    The helper is kept as the readable statement of the rule (and as this
-    file's reference implementation), so the guard is on its CALLERS, not on
-    its existence.
+    It RETURNS the id, so merging two vendor records that happen to share a
+    `vendor_name` — an unmatched extraction beside a verified master record —
+    would attribute one supplier's spend to the other and hand back an id that
+    does not own the number beside it. `include_vendor_id=True` is what keeps
+    them apart; the four AP surfaces group by name alone, deliberately, because
+    they only label.
     """
-    app_dir = pathlib.Path(__file__).resolve().parents[1] / "app"
+    from app.models.vendor import Vendor
+    from app.services.assistant.tools.schemas import VendorSpendParams
+    from app.services.assistant.tools.vendor_spend import get_vendor_spend
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    today = date.today()
+    ids = []
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        for i, amount in enumerate((Decimal("400.00"), Decimal("100.00"))):
+            v = Vendor(
+                organization_id=org_id,
+                entity_id=ent,
+                name="Twinned Supplies",
+                code=f"TWIN-{i}",
+                status="verified" if i == 0 else "unverified",
+            )
+            s.add(v)
+            await s.flush()
+            ids.append(str(v.id))
+            s.add(
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    vendor_id=v.id,
+                    invoice_number=f"TWIN-{i}",
+                    vendor_name="Twinned Supplies",
+                    amount=amount,
+                    currency="USD",
+                    status=InvoiceStatus.approved,
+                    invoice_date=today,
+                )
+            )
+        await s.commit()
+
+    async with mk() as s:
+        result = await get_vendor_spend(
+            s,
+            org_id=org_id,
+            entity_id=None,
+            current_user_id=uuid.uuid4(),
+            params=VendorSpendParams(period="ytd", top_n=10),
+        )
+
+    twins = [r for r in result.vendors if r.vendor_name == "Twinned Supplies"]
+    assert len(twins) == 2, "same-named vendors must not be merged into one row"
+    assert {r.vendor_id for r in twins} == set(ids)
+    assert sorted(r.amount for r in twins) == [Decimal("100.00"), Decimal("400.00")]
+    # `total_spend` is still the WHOLE set's total, so the shares add up.
+    assert result.total_spend >= Decimal("500.00")
+
+
+@pytest.mark.asyncio
+async def test_assistant_vendor_spend_converts_before_summing(realdb):
+    """A rate-locked foreign invoice converts; an unlockable one falls back to
+    face value — the same rule the AP surfaces apply, because it is the same
+    expression."""
+    from app.services.assistant.tools.schemas import VendorSpendParams
+    from app.services.assistant.tools.vendor_spend import get_vendor_spend
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    today = date.today()
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        for num, amount, cur, rep_cur, rep_amt in (
+            ("ASST-1", Decimal("1000.00"), "USD", None, None),
+            ("ASST-2", Decimal("1000.00"), "EUR", "USD", Decimal("1086.96")),
+            ("ASST-3", Decimal("400.00"), "GBP", None, None),
+        ):
+            s.add(
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    invoice_number=num,
+                    vendor_name="Assistant Co",
+                    amount=amount,
+                    currency=cur,
+                    reporting_currency=rep_cur,
+                    reporting_amount=rep_amt,
+                    status=InvoiceStatus.approved,
+                    invoice_date=today,
+                )
+            )
+        await s.commit()
+
+    async with mk() as s:
+        result = await get_vendor_spend(
+            s,
+            org_id=org_id,
+            entity_id=None,
+            current_user_id=uuid.uuid4(),
+            params=VendorSpendParams(period="ytd", top_n=10),
+        )
+
+    row = next(r for r in result.vendors if r.vendor_name == "Assistant Co")
+    # 1000 + 1086.96 (locked) + 400 (face) — not the naive 2400.
+    assert row.amount == Decimal("2486.96")
+
+
+# ---------------------------------------------------------------------------
+# 4. Drift guard — no call site may reintroduce the Python fold
+# ---------------------------------------------------------------------------
+
+
+def _app_dir() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[1] / "app"
+
+
+#: The row-at-a-time reducers. Both COLLAPSE a list of per-invoice dicts into
+#: totals, which is the whole shape being guarded against: to call either from
+#: a request or sweep path, the period's invoices must first be transferred and
+#: reduced in Python, on the event loop, growing with the invoice table.
+#: `invoice_currency_rollup_select` / `vendor_currency_rollup_select` do the
+#: same reduction in SQL. They are kept as the readable statement of the rule
+#: and as this file's reference implementations, so the guard is on their
+#: CALLERS, not on their existence.
+_COLLAPSING_REDUCERS = {
+    "rollup_to_reporting_currency",
+    "vendor_rollup_to_reporting_currency",
+}
+
+#: The row-at-a-time CONVERTER. Unlike the reducers above it has legitimate
+#: uses — projecting one output row per input row (`_commitment_rows`' cash
+#: commitments, the dashboard's ten upcoming payments, its per-row discount
+#: economics). What is never legitimate is using it to build a per-KEY TOTAL,
+#: because that is an aggregate a `GROUP BY` should have produced.
+_ROW_CONVERTER = "reporting_amount_for_row"
+
+
+def _called_names(node) -> set[str]:
+    return {
+        f.id if isinstance(f, ast.Name) else f.attr
+        for n in ast.walk(node)
+        if isinstance(n, ast.Call)
+        for f in [n.func]
+        if isinstance(f, ast.Name | ast.Attribute)
+    }
+
+
+def _has_keyed_accumulation(node) -> bool:
+    """Does this loop body accumulate into a SUBSCRIPT — i.e. per key?
+
+    Catches both spellings of the fold:
+
+        totals[key] += converted                     # AugAssign
+        totals[key] = totals.get(key, 0) + converted  # Assign of a BinOp
+
+    A scalar `total += x` is deliberately NOT matched: summing an
+    already-bounded, already-materialised set into one figure is a different
+    question from grouping, and the two remaining cases in `app/` are bounded
+    by their own `LIMIT` / window.
+    """
+    for n in ast.walk(node):
+        if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Subscript):
+            return True
+        if (
+            isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Subscript) for t in n.targets)
+            and isinstance(n.value, ast.BinOp)
+            and isinstance(n.value.op, ast.Add)
+        ):
+            return True
+    return False
+
+
+def test_no_module_collapses_per_invoice_rows_in_python():
+    """Nothing under `app/` may build a reporting-currency TOTAL by folding
+    per-invoice rows in Python.
+
+    Two shapes, because the previous version of this guard scanned for one
+    function NAME and that is exactly why it missed the fifth instance: the
+    assistant's `get_vendor_spend` never called the vendor rollup helper — it
+    hand-rolled the same fold out of `reporting_amount_for_row` and a dict.
+
+      1. any call to a collapsing reducer (`_COLLAPSING_REDUCERS`);
+      2. a call to `reporting_amount_for_row` inside a loop or comprehension
+         whose body accumulates into a per-key subscript — the hand-rolled
+         `GROUP BY`.
+
+    Fix either by grouping in SQL: `invoice_currency_rollup_select` for a
+    whole-population rollup, `vendor_currency_rollup_select` for a per-vendor
+    one, then `rollup_from_grouped_rows` / `vendor_rollup_from_grouped_rows`.
+    """
+    app_dir = _app_dir()
     owner = app_dir / "services" / "currency_conversion.py"
 
     offenders: list[str] = []
     for path in sorted(app_dir.rglob("*.py")):
         if path == owner:
             continue
+        rel = path.relative_to(app_dir.parent)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -455,16 +639,74 @@ def test_no_module_folds_per_invoice_rows_into_the_vendor_rollup():
                     if isinstance(fn, ast.Attribute)
                     else None
                 )
-                if name == "vendor_rollup_to_reporting_currency":
-                    offenders.append(f"{path.relative_to(app_dir.parent)}:{node.lineno}")
+                if name in _COLLAPSING_REDUCERS:
+                    offenders.append(f"{rel}:{node.lineno} calls {name}()")
+                continue
+            is_loop = isinstance(
+                node, ast.For | ast.AsyncFor | ast.ListComp | ast.DictComp | ast.SetComp
+            )
+            if not is_loop:
+                continue
+            if _ROW_CONVERTER in _called_names(node) and _has_keyed_accumulation(node):
+                offenders.append(
+                    f"{rel}:{node.lineno} folds {_ROW_CONVERTER}() into a per-key total"
+                )
 
     assert not offenders, (
-        "per-invoice vendor fold reintroduced at: "
-        f"{offenders}. Use vendor_spend_grouped_select + "
-        "vendor_rollup_from_grouped_rows from app/services/currency_conversion.py, "
-        "which group in SQL and return EVERY vendor (slice for display after "
-        "compute_supplier_concentration has taken its denominator)."
+        "per-invoice reporting-currency fold at: "
+        f"{offenders}. Group in SQL instead — see "
+        "app/services/currency_conversion.py's *_rollup_select builders."
     )
+
+
+def test_the_drift_guard_actually_detects_both_shapes():
+    """The guard above passes on a clean tree, so prove it can fail.
+
+    Without this, deleting the detector's body would leave a green suite. Both
+    shapes are exercised on synthetic source, including the hand-rolled dict
+    fold the name-only version of this guard could not see.
+    """
+    reducer_call = ast.parse("entries = vendor_rollup_to_reporting_currency(rows, x=1)")
+    assert any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id in _COLLAPSING_REDUCERS
+        for n in ast.walk(reducer_call)
+    )
+
+    aug = ast.parse(
+        "for r in rows:\n"
+        "    converted, _ = reporting_amount_for_row(amount=r.amount)\n"
+        "    totals[r.vendor] += converted\n"
+    ).body[0]
+    assert _ROW_CONVERTER in _called_names(aug)
+    assert _has_keyed_accumulation(aug)
+
+    get_default = ast.parse(
+        "for r in rows:\n"
+        "    converted, _ = reporting_amount_for_row(amount=r.amount)\n"
+        "    totals[r.vendor] = totals.get(r.vendor, 0) + converted\n"
+    ).body[0]
+    assert _has_keyed_accumulation(get_default)
+
+    # A projection — one output row per input row — must NOT match, or the
+    # guard would force three legitimate call sites into SQL they can't be
+    # expressed in.
+    projection = ast.parse(
+        "for r in rows:\n"
+        "    converted, unconverted = reporting_amount_for_row(amount=r.amount)\n"
+        "    out.append({'amount': converted, 'unconverted': unconverted})\n"
+    ).body[0]
+    assert _ROW_CONVERTER in _called_names(projection)
+    assert not _has_keyed_accumulation(projection)
+
+    # ...and neither must a bounded scalar total.
+    scalar = ast.parse(
+        "for r in rows:\n"
+        "    converted, _ = reporting_amount_for_row(amount=r.amount)\n"
+        "    total += converted\n"
+    ).body[0]
+    assert not _has_keyed_accumulation(scalar)
 
 
 def test_grouped_vendor_select_is_never_limited_in_sql():

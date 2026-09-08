@@ -617,6 +617,12 @@ class VendorSpendEntry:
     amount: Decimal  # in reporting currency
     invoice_count: int
     currencies: list[str]  # every distinct original currency this vendor billed in
+    # The `vendors` row this spend is attributed to, when the caller grouped by
+    # it. Two DISTINCT vendor records can carry the same `vendor_name` (an
+    # unmatched extraction beside a verified master record), so a surface that
+    # links its rows must key on the id or it merges two suppliers into one.
+    # `None` for the surfaces that group by name alone.
+    vendor_id: str | None = None
     # How many of this vendor's invoices went into `amount` at FACE value
     # because no rate lock bridged them (`reporting_amount_for_row`'s flagged
     # fallback). Non-zero means the total is part-converted; a consumer that
@@ -657,12 +663,12 @@ def vendor_rollup_to_reporting_currency(
     to feed straight into `analytics.compute_supplier_concentration` or a CSV
     writer.
     """
-    by_vendor: dict[str, list[dict]] = {}
+    by_vendor: dict[tuple[str, str | None], list[dict]] = {}
     for r in rows:
-        by_vendor.setdefault(r["vendor"], []).append(r)
+        by_vendor.setdefault((r["vendor"], r.get("vendor_id")), []).append(r)
 
     entries = []
-    for vendor, vendor_rows in by_vendor.items():
+    for (vendor, vendor_id), vendor_rows in by_vendor.items():
         rollup = rollup_to_reporting_currency(vendor_rows, reporting_currency=reporting_currency)
         entries.append(
             VendorSpendEntry(
@@ -671,6 +677,7 @@ def vendor_rollup_to_reporting_currency(
                 invoice_count=rollup.total_count,
                 currencies=sorted({e.currency for e in rollup.by_currency}),
                 unconverted_count=rollup.unconverted_count,
+                vendor_id=vendor_id,
             )
         )
     entries.sort(key=_vendor_sort_key)
@@ -712,12 +719,14 @@ def vendor_rollup_from_grouped_rows(
     it stays flat as the invoice table grows. Equivalence with the row-at-a-time
     path is pinned by `tests/test_analytics_rollup_sql.py`.
     """
-    by_vendor: dict[str, list[dict]] = {}
+    by_vendor: dict[tuple[str, str | None], list[dict]] = {}
     for g in groups:
-        by_vendor.setdefault(g["vendor"], []).append(g)
+        vendor_id = g.get("vendor_id")
+        key = (g["vendor"] or "", str(vendor_id) if vendor_id is not None else None)
+        by_vendor.setdefault(key, []).append(g)
 
     entries = []
-    for vendor, vendor_groups in by_vendor.items():
+    for (vendor, vendor_id), vendor_groups in by_vendor.items():
         rollup = rollup_from_grouped_rows(vendor_groups, reporting_currency=reporting_currency)
         entries.append(
             VendorSpendEntry(
@@ -726,6 +735,7 @@ def vendor_rollup_from_grouped_rows(
                 invoice_count=rollup.total_count,
                 currencies=sorted({e.currency for e in rollup.by_currency}),
                 unconverted_count=rollup.unconverted_count,
+                vendor_id=vendor_id,
             )
         )
     entries.sort(key=_vendor_sort_key)
@@ -763,13 +773,57 @@ def invoice_currency_rollup_select(*, reporting_currency: str):
     ).group_by(rep.currency_key)
 
 
+def vendor_currency_rollup_select(*, reporting_currency: str, include_vendor_id: bool = False):
+    """The per-``(vendor, currency)`` `GROUP BY` behind every per-vendor rollup.
+
+    The sibling of `invoice_currency_rollup_select`, one grouping level finer.
+    It states no population — the caller adds its own `.where(...)` and entity
+    scope — because the four AP spend surfaces and the assistant's
+    `get_vendor_spend` tool answer deliberately different questions ("spend,
+    excluding rejected" vs "committed spend"). What must NOT be respelled per
+    surface is the grouping and the conversion, and that is what lives here.
+
+    ``include_vendor_id`` adds `vendors.id` to the key. Two distinct vendor
+    records can share a `vendor_name` — an unmatched extraction beside a
+    verified master record — so a surface that links its rows must group by the
+    id or it silently merges two suppliers; a surface that only labels them
+    groups by name, which is what makes its top-N read as one row per supplier
+    name. `vendor_rollup_from_grouped_rows` reduces either shape.
+
+    Selects exactly the columns that reducer consumes, plus the key.
+    """
+    from app.models.invoice import Invoice
+
+    rep = invoice_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        amount=Invoice.amount,
+        currency=Invoice.currency,
+        persisted_reporting_amount=Invoice.reporting_amount,
+        persisted_reporting_currency=Invoice.reporting_currency,
+    )
+    key_columns = [Invoice.vendor_name.label("vendor")]
+    if include_vendor_id:
+        key_columns.append(Invoice.vendor_id.label("vendor_id"))
+    return select(
+        *key_columns,
+        rep.currency_key.label("currency"),
+        func.coalesce(func.sum(Invoice.amount), 0).label("original_amount"),
+        func.coalesce(func.sum(rep.amount), 0).label("reporting_amount"),
+        func.count().label("count"),
+        func.coalesce(func.sum(rep.unconverted), 0).label("unconverted_count"),
+    ).group_by(
+        *(c.element if hasattr(c, "element") else c for c in key_columns),
+        rep.currency_key,
+    )
+
+
 def vendor_spend_grouped_select(
     *,
     reporting_currency: str,
     period_start: date,
     entity_id: uuid.UUID | None = None,
 ):
-    """The ONE query every per-vendor spend surface runs.
+    """The ONE query every per-vendor AP spend surface runs.
 
     Four call sites — the CFO supplier-concentration tile, its drill-through,
     the `vendor_spend` CSV export and the emailed scheduled report — each
@@ -799,27 +853,12 @@ def vendor_spend_grouped_select(
     from app.models.invoice import Invoice, InvoiceStatus
     from app.tenant import apply_entity_scope
 
-    rep = invoice_reporting_amount_sql(
-        reporting_currency=reporting_currency,
-        amount=Invoice.amount,
-        currency=Invoice.currency,
-        persisted_reporting_amount=Invoice.reporting_amount,
-        persisted_reporting_currency=Invoice.reporting_currency,
-    )
-    stmt = select(
-        Invoice.vendor_name.label("vendor"),
-        rep.currency_key.label("currency"),
-        func.coalesce(func.sum(Invoice.amount), 0).label("original_amount"),
-        func.coalesce(func.sum(rep.amount), 0).label("reporting_amount"),
-        func.count().label("count"),
-        func.coalesce(func.sum(rep.unconverted), 0).label("unconverted_count"),
-    ).where(
+    stmt = vendor_currency_rollup_select(reporting_currency=reporting_currency).where(
         Invoice.invoice_date >= period_start,
         Invoice.vendor_name.isnot(None),
         Invoice.vendor_name != "",
         Invoice.status != InvoiceStatus.rejected.value,
     )
-    stmt = stmt.group_by(Invoice.vendor_name, rep.currency_key)
     return apply_entity_scope(stmt, Invoice, entity_id)
 
 
