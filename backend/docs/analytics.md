@@ -238,14 +238,23 @@ back in DB scan order: which of two took rank 10 — and which fell off the
 `vendor_name ASC`, so the tile is reproducible. Nothing else about the answer
 changed; `tests/test_dashboard_vendor_spend.py` is the equivalence proof.
 
-**Unconvertible rows still fold at face value, silently.** A foreign invoice
-with no usable rate lock falls through at its face `amount` — exactly as the
-Python fold did, and exactly as `aging_reporting` and `monthly_trend` do. The
-`vendor_spend` response shape is `{vendor, amount}` with nowhere to report it,
-so only the whole-book `reporting` rollup on the same response carries an
-`unconverted_count`. Surfacing it per vendor needs a schema field on
-`VendorSpendEntry` (and the same question answered for the two sibling blocks),
-so it is tracked as a follow-up rather than solved unilaterally here.
+**Unconvertible rows still fold at face value, silently — on this endpoint.**
+A foreign invoice with no usable rate lock falls through at its face `amount`
+— exactly as the Python fold did, and exactly as `aging_reporting` and
+`monthly_trend` do. `DashboardResponse`'s `VendorSpendEntry` is `{vendor,
+amount}` with nowhere to report it, so only the whole-book `reporting` rollup
+on the same response carries an `unconverted_count`. Surfacing it needs a field
+on that schema plus the two sibling blocks, and remains a tracked follow-up.
+
+The CFO surfaces answering the same question **do** disclose it — see
+§ Per-vendor spend is one query, and it says what it could not convert. The
+`unconverted` half of the expression is available for the dashboard's three
+blocks the moment they want it: `currency_conversion.invoice_reporting_amount_sql`
+now owns both CASEs. Two inline copies of that rule remain, and should adopt the
+helper on their next touch — `api/dashboard.py`'s `_rep_expr` / `_unconv_expr`
+and `api/payments.py::_queue_summary_rows`' `rep_expr` / `unconv_expr` (whose
+lock test also omits the `reporting_currency IS NOT NULL` leg the helper states
+explicitly; see its docstring for why that matters).
 
 ### Touchless rate — what the number means
 
@@ -471,6 +480,7 @@ Response:
   `api/analytics._received_amount`.)
 - `working_capital_impact_5_days` — `avg_daily_outflow × 5`
 - `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor **reaches or** exceeds 25% (configurable; the boundary is inclusive on purpose — a risk flag that stays dark at exactly the configured limit is the wrong direction to be wrong in). **Every share is computed against the whole period's spend**, never a top-N subtotal: `compute_supplier_concentration` derives its denominator from the list it is handed and takes its own `[:10]`/`[:50]` cuts, so the caller must pass the full vendor set and slice only for display. Passing a pre-sliced top-50 made `total_spend` the top-50 subtotal, inflated `top_10_share_pct` / `largest_vendor_share_pct` (and with them `flagged`), and pinned `top_50_share_pct` at exactly `100.0` on any tenant with 50+ vendors. The same rule governs `/drill/spend_concentration`, whose `total_spend` and `share_pct` are computed before `?limit=` is applied — otherwise `limit` silently rebased both and the drill disagreed with the tile it was opened from. Excludes `rejected` invoices (never real spend) — the SAME population its drill-through and the `vendor_spend` export/scheduled report use, so clicking from the tile into either agrees with the number the CFO started from. Also the SAME reporting-currency rollup as the dashboard's `vendor_spend` (see above) — a vendor's multi-currency invoices are converted before summing, never naively added across currencies
+- `supplier_concentration.unconverted_count` — invoices folded into `total_spend`, and therefore into every share above and into `flagged`, at **face value** because no locked exchange rate bridged them into the reporting currency. A count, not money; `0` on a single-currency tenant. See § Per-vendor spend is one query below
 - `fraud_rate_trend` — exceptions / invoices × 100 per month. **`rate_pct` is
   `null` (with `insufficient_data: true`) for a month that booked no
   invoices** — an empty denominator makes the rate not computable, and
@@ -490,6 +500,96 @@ Response:
   $432k annual run-rate against a truth of ~1% and ~$12k. Filtered on
   `CardRebate.created_at` (when the rebate was booked); the `period` column is a
   display label, not a filter key.
+
+### Per-vendor spend is one query, and it says what it could not convert
+
+Four surfaces answer "what did we spend, by vendor":
+
+| Surface | Route / module |
+|---|---|
+| CFO supplier-concentration tile | `GET /api/analytics/cfo` |
+| its drill-through | `GET /api/analytics/drill/spend_concentration` |
+| CSV export | `GET /api/analytics/export/vendor_spend` |
+| emailed scheduled report | `services/scheduled_reports.py` |
+
+All four run **one** builder, `currency_conversion.vendor_spend_grouped_select`,
+and reduce its output with `vendor_rollup_from_grouped_rows`:
+
+```sql
+SELECT vendor_name,
+       upper(coalesce(currency, :tgt))                  AS currency,
+       coalesce(sum(amount), 0)                         AS original_amount,
+       coalesce(sum(<rep_expr>), 0)                     AS reporting_amount,
+       count(*)                                         AS count,
+       coalesce(sum(<unconv_expr>), 0)                  AS unconverted_count
+  FROM invoices
+ WHERE invoice_date >= :period_start
+   AND vendor_name IS NOT NULL AND vendor_name <> '' AND status <> 'rejected'
+   AND <entity scope>
+ GROUP BY vendor_name, upper(coalesce(currency, :tgt))
+```
+
+`<rep_expr>` / `<unconv_expr>` come from
+`currency_conversion.invoice_reporting_amount_sql` — the SQL statement of the
+rule `reporting_amount_for_row` applies a row at a time, so the two cannot
+drift. Grouping by `(vendor, currency)` rather than vendor alone is what keeps
+the CSV's `currencies` column and the per-vendor `unconverted_count` derivable
+without a second query; the extra rows are *vendors × currencies*, never
+invoices.
+
+**No `LIMIT`, deliberately.** `compute_supplier_concentration` derives
+`total_spend` and every `*_pct` from the list it is handed, so a pre-sliced
+query would rebase every share onto the slice and pin `top_50_share_pct` at
+`100.0` by construction. Slicing happens after the rollup, for display only.
+
+**What this replaced.** Each of the four selected five columns of every invoice
+in the period and folded them in Python through
+`vendor_rollup_to_reporting_currency` — a synchronous per-row loop inside an
+`async def`, the shape the *"blocking work does not run on the event loop"*
+invariant forbids and the one `docs/decisions.md` §103 removed from the
+dashboard's own top-vendor tile. Materially less bad than the dashboard's
+version (date-bounded by `period_days` rather than all-time) but identical in
+kind, and one of the four runs on a background sweep where nothing bounds it.
+
+Measured on a scratch tenant of exactly 190 000 invoices across 400 vendors,
+local Postgres 16, `period_days=365` (159 476 in-period non-rejected rows), mean
+of 5 warm runs:
+
+| | rows transferred | DB | Python | total |
+|---|---|---|---|---|
+| Select-all + Python fold | 159 476 | 415.2 ms | **547.1 ms** | 962.3 ms |
+| `GROUP BY (vendor, currency)` | 1 600 | 53.4 ms | 7.6 ms | **61.0 ms** |
+
+15.8× end to end, and the 547 ms of event-loop-blocking CPU is gone outright —
+which is the part that matters most, because during it *every other request on
+that worker waits*. The transferred-row count is the reason it scales: 1 600 is
+`vendors x currencies` and moves only when the tenant adds a vendor or a
+currency, while 159 476 grows with every invoice booked.
+
+The helper is kept as the readable statement of the conversion rule and as the
+reference the grouped path is equivalence-tested against;
+`tests/test_analytics_rollup_sql.py` fails if any module under `app/` calls it
+again, so a fifth surface cannot reintroduce the fold.
+
+**Unconvertible rows are disclosed, not absorbed.** `VendorSpendEntry` carries
+an `unconverted_count`, and both API surfaces publish it: the tile as one
+whole-population count beside the shares it distorts, the drill-through both
+per row and — like `total_spend`, and for the same reason — for the whole
+period *before* `?limit=` is applied. A fallback nobody reports is just a wrong
+number (`docs/decisions.md` §35). The `/cfo` UI should render it through the
+shared `role="alert"` skipped-rows note the cash-position and AP-balance cards
+already use (`CfoMetrics.svelte`); the field is already declared on
+`frontend/src/lib/types/analytics.ts`'s `CfoSupplierConcentration`.
+
+The CSV export does **not** yet carry a column for it — `report_export.export_vendor_spend`
+owns that header, and adding one changes a downloaded file's shape, so it is
+called out here rather than done silently.
+
+Three sibling rollups on the same handler moved to the same shape in the same
+change, through `currency_conversion.invoice_currency_rollup_select`:
+`reporting_spend`, `reporting_accounts_payable_balance`, and
+`/analytics/by-entity`'s `reporting_outstanding_amount` — the last of which ran
+its four-columns-of-every-open-invoice fold **once per entity**.
 
 ### DPO trend + drill-through — one population, one calculation
 
@@ -966,6 +1066,21 @@ than the drift it replaces. Catch-up for `monthly` counts whole months from the
 anchor — a schedule dormant for three years still resolves to a single next
 slot, not one send per skipped month.
 
+### `vendor_spend` runs the same query the API does
+
+`_materialise_rows`' `vendor_spend` branch calls
+`currency_conversion.vendor_spend_grouped_select` — the identical builder behind
+the CFO tile, its drill-through and `GET /api/analytics/export/vendor_spend` —
+so the emailed CSV, the export a CFO downloads and the tile they clicked from
+agree about the population (no `rejected`), the conversion rule, and the tie
+order. It passes `entity_id=None` deliberately: `ScheduledReport` has no entity,
+so the emailed CSV is whole-tenant by construction, like every other branch here.
+
+It used to stream every in-period invoice into a Python fold. That mattered more
+here than on the API sites: this runs on a background sweep against every tenant
+in turn, where no request timeout bounds it. Nothing else about the branch moved
+— recipients, `next_run_at` and the five-strike auto-disable are untouched.
+
 ### "Today" is UTC
 
 `_materialise_rows` slices each report's `period_days` window — and the
@@ -1066,4 +1181,5 @@ the cadence anchoring).
 | `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
 | `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |
 | `tests/test_analytics_money_serialization.py` | Money serialisation — a **structural** guard over `/cfo`, the cash-flow trio, both drill-throughs, `/forecast_variance` and `/by-entity`: every response is walked and any JSON *number* whose key isn't in the declared day-count / percentage / count roster fails, so a new money field added as a float can't land silently. Plus the zero-population `/cfo` response (where `0` and `"0"` both read as "nothing here"), the `null` cash-position threshold, and the exact seeded figures surviving the round trip |
+| `tests/test_analytics_rollup_sql.py` | The per-vendor spend `GROUP BY` (§ Per-vendor spend is one query) — equivalence against the row-at-a-time `vendor_rollup_to_reporting_currency` over three seeds of an independently-randomised book covering all four rate-lock cases, a rejected-and-blank-vendor exclusion and the vendor-name tiebreak at a tie; the `unconverted_count` disclosure per vendor, on `/cfo`'s `supplier_concentration` (non-zero AND zero-on-a-clean-book, so the field can distinguish), and on `/drill/spend_concentration` both per row and whole-period-before-`?limit=`; plus two structural guards — an AST scan failing any `app/` caller that reintroduces the per-invoice fold, and shape assertions that the builder carries no `LIMIT` and does its conversion inside the aggregates |
 | `tests/test_analytics_by_entity.py` | `/by-entity` — per-entity spend/invoice-count scoping for two entities; `consolidated` equals the cross-entity sum; open-exceptions scope per entity; single-entity tenant returns a coherent one-row breakdown; RBAC (ap_clerk/ap_manager 403, cfo 200); the endpoint ignores `X-Entity-ID` |

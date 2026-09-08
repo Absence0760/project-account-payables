@@ -28,16 +28,20 @@ Design choices that keep the numbers honest:
 
 The functions here are pure-ish: the FX adapter is handed in, mirroring
 `international_payments`, so the rollup logic is unit-testable against the mock
-adapter without HTTP.
+adapter without HTTP. That includes the SQL side — `invoice_reporting_amount_sql`
+and the two `*_select` builders return SQLAlchemy expressions and never touch a
+session, so a caller runs them on its own tenant connection and the conversion
+rule still has exactly one owner.
 """
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import ColumnElement, and_, case, func, or_
+from sqlalchemy import ColumnElement, and_, case, func, not_, or_, select
 
 from app.config import settings
 from app.models.virtual_card import VirtualCard
@@ -453,6 +457,69 @@ def payment_reporting_amount_sql(
 
 
 @dataclass(frozen=True)
+class InvoiceReportingAmountSql:
+    """The three expressions an aggregate needs to roll invoices into one currency.
+
+    ``currency_key`` groups, ``amount`` sums, ``unconverted`` counts what the
+    sum could not honestly convert.
+    """
+
+    currency_key: ColumnElement
+    amount: ColumnElement
+    unconverted: ColumnElement
+
+
+def invoice_reporting_amount_sql(
+    *,
+    reporting_currency: str,
+    amount: ColumnElement,
+    currency: ColumnElement,
+    persisted_reporting_amount: ColumnElement,
+    persisted_reporting_currency: ColumnElement,
+) -> InvoiceReportingAmountSql:
+    """SQL counterpart of `reporting_amount_for_row` — the SAME rule, expressed
+    so Postgres can apply it inside a ``GROUP BY`` instead of the caller
+    streaming every invoice into Python to apply it a row at a time.
+
+    The rungs mirror that helper exactly:
+
+    1. the persisted, rate-locked ``reporting_amount`` when it is set AND its
+       ``reporting_currency`` is the org's target — a figure fixed at lock
+       time, so a market move can't rewrite last quarter's spend;
+    2. otherwise the face ``amount`` — exact for a row already in the target
+       currency, and a **flagged fallback** for a foreign row with no usable
+       lock, which ``unconverted`` counts.
+
+    Unlike `payment_reporting_amount_sql` (which refuses to fall back, because
+    its consumers file regulated totals) this one does fall back, because its
+    consumers are spend displays where a slightly-mixed total that says so
+    beats a hole. Every caller must therefore surface ``unconverted`` — a
+    fallback nobody reports is just a wrong number (`docs/decisions.md` §35).
+
+    ``persisted_reporting_currency IS NOT NULL`` is stated explicitly rather
+    than left to ``UPPER(NULL) = tgt``: SQL three-valued logic would make the
+    lock test NULL for a row carrying an amount but no currency code, and
+    ``NOT NULL`` is NULL, so such a row would fall through the ``unconverted``
+    CASE and be counted as converted. `reporting_amount_for_row` requires both
+    columns, and this must not diverge from it.
+
+    Pure: builds SQLAlchemy expressions, touches no session and no clock.
+    """
+    tgt = (reporting_currency or "USD").strip().upper()
+    currency_key = func.upper(func.coalesce(currency, tgt))
+    has_lock = and_(
+        persisted_reporting_amount.isnot(None),
+        persisted_reporting_currency.isnot(None),
+        func.upper(persisted_reporting_currency) == tgt,
+    )
+    return InvoiceReportingAmountSql(
+        currency_key=currency_key,
+        amount=case((has_lock, persisted_reporting_amount), else_=amount),
+        unconverted=case((and_(not_(has_lock), currency_key != tgt), 1), else_=0),
+    )
+
+
+@dataclass(frozen=True)
 class CurrencyBreakdownEntry:
     currency: str
     original_amount: Decimal
@@ -550,6 +617,14 @@ class VendorSpendEntry:
     amount: Decimal  # in reporting currency
     invoice_count: int
     currencies: list[str]  # every distinct original currency this vendor billed in
+    # How many of this vendor's invoices went into `amount` at FACE value
+    # because no rate lock bridged them (`reporting_amount_for_row`'s flagged
+    # fallback). Non-zero means the total is part-converted; a consumer that
+    # renders `amount` without saying so is publishing a mixed-currency figure
+    # labelled with a single currency code. Defaults to 0 so the many
+    # single-currency callers and test doubles constructing this by keyword
+    # are unaffected.
+    unconverted_count: int = 0
 
 
 def vendor_rollup_to_reporting_currency(
@@ -561,19 +636,26 @@ def vendor_rollup_to_reporting_currency(
     currency before being added together — the per-vendor counterpart to
     `rollup_to_reporting_currency`.
 
-    Every per-vendor breakdown (CFO concentration tile, its drill-through,
-    the `vendor_spend` CSV export, the emailed scheduled report) used to do a
-    naive `SUM(Invoice.amount)` grouped by vendor — adding USD + EUR + GBP as
-    if they were one currency the moment a vendor (or the tenant as a whole)
-    billed in more than one. This groups the SAME per-invoice rows
-    `rollup_to_reporting_currency` takes (``{"amount", "currency",
-    "reporting_amount", "reporting_currency"}``, plus a ``"vendor"`` key) by
-    vendor and rolls each vendor's rows into the reporting currency, so a
-    multi-currency vendor's total is a real converted figure, not mixed
-    arithmetic.
+    Groups the SAME per-invoice rows `rollup_to_reporting_currency` takes
+    (``{"amount", "currency", "reporting_amount", "reporting_currency"}``, plus
+    a ``"vendor"`` key) by vendor and rolls each vendor's rows into the
+    reporting currency, so a multi-currency vendor's total is a real converted
+    figure rather than the naive `SUM(Invoice.amount)` that added USD + EUR +
+    GBP as if they were one currency.
 
-    Returns entries sorted by (converted) amount descending — ready to feed
-    straight into `analytics.compute_supplier_concentration` or a CSV writer.
+    **No production caller streams rows through this any more.** The four
+    per-vendor surfaces (CFO concentration tile, its drill-through, the
+    `vendor_spend` CSV export, the emailed scheduled report) go through
+    `vendor_spend_grouped_select` + `vendor_rollup_from_grouped_rows`, which
+    apply the identical rule inside a `GROUP BY`. This row-at-a-time version is
+    kept as the readable statement of that rule and as the reference the
+    grouped path is equivalence-tested against. `tests/test_analytics_rollup_sql.py`
+    holds both that equivalence and an AST scan that fails if a new call site
+    under `app/` reintroduces the fold.
+
+    Returns entries sorted by (converted amount DESC, vendor name ASC) — ready
+    to feed straight into `analytics.compute_supplier_concentration` or a CSV
+    writer.
     """
     by_vendor: dict[str, list[dict]] = {}
     for r in rows:
@@ -588,10 +670,157 @@ def vendor_rollup_to_reporting_currency(
                 amount=rollup.total_reporting_amount,
                 invoice_count=rollup.total_count,
                 currencies=sorted({e.currency for e in rollup.by_currency}),
+                unconverted_count=rollup.unconverted_count,
             )
         )
-    entries.sort(key=lambda e: e.amount, reverse=True)
+    entries.sort(key=_vendor_sort_key)
     return entries
+
+
+def _vendor_sort_key(entry: VendorSpendEntry) -> tuple[Decimal, str]:
+    """Order vendor entries by (converted total DESC, vendor name ASC).
+
+    The name tiebreak is not cosmetic. Sorting on the total alone leaves equal-
+    spend vendors in whatever order they were accumulated, so which of two took
+    the last slot of a `[:10]` / `[:limit]` cut could differ between two
+    identical requests. Same rule the dashboard's top-vendor tile adopted in
+    `docs/decisions.md` §103, so the two surfaces break ties alike.
+
+    ``or ""`` because this is a public helper over caller-supplied dicts: every
+    real caller filters `vendor_name IS NOT NULL` first, but a `None` slipping
+    through would make the tuple uncomparable and raise `TypeError` out of a
+    sort the caller never sees.
+    """
+    return (-entry.amount, entry.vendor or "")
+
+
+def vendor_rollup_from_grouped_rows(
+    groups: list[dict],
+    *,
+    reporting_currency: str,
+) -> list[VendorSpendEntry]:
+    """Same result as `vendor_rollup_to_reporting_currency`, but from rows the
+    DB has already aggregated per ``(vendor, currency)`` — the per-vendor
+    counterpart to `rollup_from_grouped_rows`, and the reason no caller has to
+    stream a period's invoices into Python to group them.
+
+    Each group dict carries what `vendor_spend_grouped_select` selects:
+        {"vendor": str, "currency": str, "original_amount": Decimal,
+         "reporting_amount": Decimal, "count": int, "unconverted_count": int}
+
+    The reduction here is over ``vendors x currencies`` rows, not invoices, so
+    it stays flat as the invoice table grows. Equivalence with the row-at-a-time
+    path is pinned by `tests/test_analytics_rollup_sql.py`.
+    """
+    by_vendor: dict[str, list[dict]] = {}
+    for g in groups:
+        by_vendor.setdefault(g["vendor"], []).append(g)
+
+    entries = []
+    for vendor, vendor_groups in by_vendor.items():
+        rollup = rollup_from_grouped_rows(vendor_groups, reporting_currency=reporting_currency)
+        entries.append(
+            VendorSpendEntry(
+                vendor=vendor,
+                amount=rollup.total_reporting_amount,
+                invoice_count=rollup.total_count,
+                currencies=sorted({e.currency for e in rollup.by_currency}),
+                unconverted_count=rollup.unconverted_count,
+            )
+        )
+    entries.sort(key=_vendor_sort_key)
+    return entries
+
+
+def invoice_currency_rollup_select(*, reporting_currency: str):
+    """The per-currency `GROUP BY` behind every whole-population invoice rollup.
+
+    Selects exactly the five columns `rollup_from_grouped_rows` consumes, over
+    the shared `invoice_reporting_amount_sql` rule. Callers add their own
+    population with `.where(...)` and their own entity scope — the grouping and
+    the conversion are what must not be respelled per surface.
+
+    Use it instead of selecting four columns of every invoice and folding them
+    through `rollup_to_reporting_currency`: that fold is a synchronous per-row
+    loop inside an `async def` whose cost grows with the invoice table, and on
+    the `/analytics/by-entity` path it ran once per entity.
+    """
+    from app.models.invoice import Invoice
+
+    rep = invoice_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        amount=Invoice.amount,
+        currency=Invoice.currency,
+        persisted_reporting_amount=Invoice.reporting_amount,
+        persisted_reporting_currency=Invoice.reporting_currency,
+    )
+    return select(
+        rep.currency_key.label("currency"),
+        func.coalesce(func.sum(Invoice.amount), 0).label("original_amount"),
+        func.coalesce(func.sum(rep.amount), 0).label("reporting_amount"),
+        func.count().label("count"),
+        func.coalesce(func.sum(rep.unconverted), 0).label("unconverted_count"),
+    ).group_by(rep.currency_key)
+
+
+def vendor_spend_grouped_select(
+    *,
+    reporting_currency: str,
+    period_start: date,
+    entity_id: uuid.UUID | None = None,
+):
+    """The ONE query every per-vendor spend surface runs.
+
+    Four call sites — the CFO supplier-concentration tile, its drill-through,
+    the `vendor_spend` CSV export and the emailed scheduled report — each
+    selected five columns of every invoice in the period and folded them in
+    Python through `vendor_rollup_to_reporting_currency`: a synchronous
+    per-row loop inside an `async def`, growing with the invoice table, the
+    shape `docs/decisions.md` §103 removed from the dashboard's own tile.
+
+    This groups in SQL instead, through `invoice_reporting_amount_sql` so the
+    conversion rule has one owner and a vendor's total is built by exactly the
+    rule the whole-book rollup uses. It returns **every** vendor, deliberately
+    un-`LIMIT`ed: `analytics.compute_supplier_concentration` derives its
+    denominator from what it is handed and takes its own top-10/top-50 cuts, so
+    a pre-sliced list turns `total_spend` into that slice's subtotal and
+    inflates every share. Slice for display *after* rolling up.
+
+    Grouping by ``(vendor, currency)`` rather than vendor alone is what keeps
+    `VendorSpendEntry.currencies` (the CSV's `currencies` column) and
+    `unconverted_count` derivable without a second query; the extra rows are
+    vendors x currencies, not invoices.
+
+    Population: the period, a non-empty vendor name, and not `rejected` —
+    rejected invoices were never real spend, and every one of the four sites
+    must agree on this or a drill-through disagrees with the tile it was
+    clicked from.
+    """
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.tenant import apply_entity_scope
+
+    rep = invoice_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        amount=Invoice.amount,
+        currency=Invoice.currency,
+        persisted_reporting_amount=Invoice.reporting_amount,
+        persisted_reporting_currency=Invoice.reporting_currency,
+    )
+    stmt = select(
+        Invoice.vendor_name.label("vendor"),
+        rep.currency_key.label("currency"),
+        func.coalesce(func.sum(Invoice.amount), 0).label("original_amount"),
+        func.coalesce(func.sum(rep.amount), 0).label("reporting_amount"),
+        func.count().label("count"),
+        func.coalesce(func.sum(rep.unconverted), 0).label("unconverted_count"),
+    ).where(
+        Invoice.invoice_date >= period_start,
+        Invoice.vendor_name.isnot(None),
+        Invoice.vendor_name != "",
+        Invoice.status != InvoiceStatus.rejected.value,
+    )
+    stmt = stmt.group_by(Invoice.vendor_name, rep.currency_key)
+    return apply_entity_scope(stmt, Invoice, entity_id)
 
 
 def rollup_from_grouped_rows(

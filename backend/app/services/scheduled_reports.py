@@ -272,7 +272,7 @@ async def _materialise_rows(
     """
     from datetime import datetime as _dt
 
-    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.invoice import Invoice
     from app.models.payment import Payment
     from app.utils.dates import utc_today
 
@@ -289,7 +289,8 @@ async def _materialise_rows(
     if schedule.report_type == "vendor_spend":
         from app.services.currency_conversion import (
             resolve_reporting_currency,
-            vendor_rollup_to_reporting_currency,
+            vendor_rollup_from_grouped_rows,
+            vendor_spend_grouped_select,
         )
 
         # Same as the cashflow branch below: the currency comes from the
@@ -297,37 +298,23 @@ async def _materialise_rows(
         # the tenant session it was handed.
         rollup_currency = reporting_currency or resolve_reporting_currency(None)
 
+        # The same builder the CFO concentration tile, its drill-through and
+        # the `/analytics/export/vendor_spend` route run — same population
+        # (rejected invoices were never real spend) and the same conversion
+        # rule, grouped in SQL instead of streaming the period's invoices into
+        # a Python fold. `entity_id=None` is deliberate and unchanged: the
+        # emailed CSV is whole-tenant by construction, like every other branch
+        # in this runner. See backend/docs/analytics.md § `vendor_spend` runs
+        # the same query the API does.
         rows = await db.execute(
-            select(
-                Invoice.vendor_name,
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(
-                Invoice.invoice_date >= period_start,
-                Invoice.vendor_name.isnot(None),
-                Invoice.vendor_name != "",
-                # Same population as the CFO concentration tile
-                # (get_cfo_analytics) and its API export — rejected invoices
-                # were never real spend.
-                Invoice.status != InvoiceStatus.rejected.value,
+            vendor_spend_grouped_select(
+                reporting_currency=rollup_currency,
+                period_start=period_start,
+                entity_id=None,
             )
         )
-        # Rolled into the org's reporting currency (not a naive SUM across
-        # currencies) — a vendor billing in more than one currency used to
-        # add e.g. USD + EUR as if they were one currency.
-        vendor_entries = vendor_rollup_to_reporting_currency(
-            [
-                {
-                    "vendor": vendor,
-                    "amount": amount,
-                    "currency": currency,
-                    "reporting_amount": rep_amt,
-                    "reporting_currency": rep_cur,
-                }
-                for vendor, amount, currency, rep_amt, rep_cur in rows.all()
-            ],
+        vendor_entries = vendor_rollup_from_grouped_rows(
+            [dict(r) for r in rows.mappings().all()],
             reporting_currency=rollup_currency,
         )
         return exporter(vendor_entries)
