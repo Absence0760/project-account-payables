@@ -130,7 +130,17 @@ async def test_import_vendors_happy_path():
     assert result.imported == 2
     assert result.skipped == 0
     assert result.errors == []
-    assert len(db.added) == 2
+    # The composition, not just the count: two Vendors, then the two
+    # `vendor.imported_csv` audit rows the importer writes for them (one per
+    # vendor actually created — see `backend/docs/csv-import.md` § Audit trail).
+    # A bare `len(db.added) == 2` passed for the wrong composition, which is how
+    # the audit rows could have been dropped without this test noticing.
+    assert [type(o).__name__ for o in db.added] == [
+        "Vendor",
+        "Vendor",
+        "AuditLog",
+        "AuditLog",
+    ]
     assert db.added[0].name == "Acme Supplies"
     assert db.added[0].accepts_virtual_cards is True
     assert db.added[1].accepts_virtual_cards is False
@@ -360,8 +370,11 @@ async def test_import_invoices_reuses_existing_vendor_by_code():
     result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
 
     assert result.imported == 1
-    # The vendor was reused — only an Invoice was added, no new Vendor.
-    assert [type(o).__name__ for o in db.added] == ["Invoice"]
+    # The vendor was reused — only an Invoice was added, no new Vendor. The
+    # `AuditLog` beside it is that invoice's own `invoice.imported_csv` row; a
+    # second `AuditLog` here would mean the importer had minted a vendor stub it
+    # should have found by code.
+    assert [type(o).__name__ for o in db.added] == ["Invoice", "AuditLog"]
     assert db.added[0].vendor_id == vendor.id
 
 
