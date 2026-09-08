@@ -805,6 +805,38 @@ async def test_cfo_can_decline_an_offer(realdb):
         assert row.entity_type == "discount_offer"
 
 
+async def test_ap_decline_refuses_a_lapsed_offer(realdb):
+    """The AP side takes the same guard as the portal — one rule in
+    `discount_offers.decline_offer`, so the buyer and the supplier can't diverge
+    on whether a dead offer is still refusable. A lapsed offer already reads
+    `expired` here; flipping it to `declined` would assert a refusal nobody made
+    on an append-only audit row."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    offer_id = await _add_offer_row(
+        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today() - timedelta(days=1)
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(f"/api/discounts/offers/{offer_id}/decline")
+    assert resp.status_code == 409, resp.text
+
+    async with mk() as s:
+        row = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == uuid.UUID(offer_id)))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_OFFERED
+        actions = {
+            a.action
+            for a in (
+                await s.execute(select(AuditLog).where(AuditLog.entity_id == uuid.UUID(offer_id)))
+            )
+            .scalars()
+            .all()
+        }
+        assert "discount_offer.declined" not in actions
+
+
 async def test_clerk_cannot_decline_an_offer(realdb):
     """Widening decline to the CFO must not widen it to everyone — a clerk is
     still refused, exactly as they are on accept."""

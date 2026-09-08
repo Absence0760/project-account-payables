@@ -369,8 +369,21 @@ def accept_offer(offer, *, tier: dict, actor_id, now: datetime) -> None:
     offer.status = OFFER_STATUS_ACCEPTED
 
 
-def decline_offer(offer, *, now: datetime) -> None:
-    """Transition ``offered`` → ``declined``. Raises if not ``offered``."""
+def decline_offer(offer, *, now: datetime, as_of: date) -> None:
+    """Transition ``offered`` → ``declined``. Raises if it is not declinable.
+
+    ``as_of`` is required, not defaulted, because the guard it feeds is the
+    point: an offer whose window has already closed is EXPIRED
+    (:func:`effective_status`), and letting it be declined records a supplier
+    (or AP) decision that never happened. Both land in the dashboard's
+    ``missed`` bucket, so nothing is double-counted — but ``declined`` asserts
+    somebody refused the offer, and the append-only audit row written beside it
+    cannot be corrected afterwards. Every caller is a route with a clock; a
+    default would let a future one silently skip the check, which is the
+    completeness obligation ``docs/decisions.md`` §41 argues against.
+    """
+    if has_lapsed(offer, as_of=as_of):
+        raise ValueError("cannot decline an offer whose validity window has closed (expired)")
     if offer.status != OFFER_STATUS_OFFERED:
         raise ValueError(f"cannot decline an offer in status {offer.status!r} (must be 'offered')")
     offer.status = OFFER_STATUS_DECLINED

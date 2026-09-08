@@ -66,6 +66,9 @@ async def _seed_vendor_and_user(mk, org_id, *, name="Acme Supply") -> tuple[uuid
     return vendor_id, vu_id
 
 
+_UNSET = object()
+
+
 async def _seed_vendor_offer(
     mk,
     org_id,
@@ -74,6 +77,8 @@ async def _seed_vendor_offer(
     base_amount="10000.00",
     status=OFFER_STATUS_OFFERED,
     tiers=None,
+    valid_from=_UNSET,
+    valid_until=_UNSET,
 ) -> uuid.UUID:
     """A vendor-scoped offer (scope=vendor) belonging to `vendor_id`."""
     offer_id = uuid.uuid4()
@@ -89,8 +94,10 @@ async def _seed_vendor_offer(
                 tiers=tiers if tiers is not None else _TIERS,
                 base_amount=Decimal(base_amount),
                 currency="USD",
-                valid_from=date.today(),
-                valid_until=date.today() + timedelta(days=30),
+                valid_from=(date.today() if valid_from is _UNSET else valid_from),
+                valid_until=(
+                    date.today() + timedelta(days=30) if valid_until is _UNSET else valid_until
+                ),
             )
         )
         await s.commit()
@@ -427,3 +434,150 @@ async def test_decline_foreign_offer_404(realdb):
     async with _portal_client(realdb, mine_vu, mine_vid) as client:
         resp = await client.post(f"/api/portal/discount-offers/{foreign_offer}/decline")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# A lapsed offer — the supplier and AP must never see it differently
+# ---------------------------------------------------------------------------
+#
+# `api/discounts` derives an offer's status from `valid_until` rather than
+# reading the column, because the column's only writer is the auto-capture
+# sweep and that sweep is off by default. The portal rendered the raw column,
+# so the same offer read `expired` to AP and `offered` to the supplier — who
+# could still act on it. These pin both halves of that split-brain shut.
+
+
+def _lapsed(**kw):
+    kw.setdefault("valid_from", date.today() - timedelta(days=60))
+    kw.setdefault("valid_until", date.today() - timedelta(days=1))
+    return kw
+
+
+@pytest.mark.asyncio
+async def test_lapsed_offer_reads_expired_to_the_supplier(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    lapsed_id = await _seed_vendor_offer(mk, org_id, vendor_id, **_lapsed())
+    live_id = await _seed_vendor_offer(mk, org_id, vendor_id)
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        rows = {
+            o["id"]: o for o in (await client.get("/api/portal/discount-offers")).json()["items"]
+        }
+    assert rows[str(lapsed_id)]["status"] == "expired"
+    # No headline "accept this" number on a dead offer.
+    assert rows[str(lapsed_id)]["best_tier"] is None
+    assert rows[str(live_id)]["status"] == OFFER_STATUS_OFFERED
+    assert rows[str(live_id)]["best_tier"] is not None
+
+    # Derived, never written — a supplier READ must not mutate the row.
+    async with mk() as s:
+        row = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == lapsed_id))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_OFFERED
+
+
+@pytest.mark.asyncio
+async def test_status_filter_uses_the_effective_status(realdb):
+    """`?status=offered` must not hand back an offer whose window closed."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    lapsed_id = await _seed_vendor_offer(mk, org_id, vendor_id, **_lapsed())
+    live_id = await _seed_vendor_offer(mk, org_id, vendor_id)
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        open_body = (await client.get("/api/portal/discount-offers?status=offered")).json()
+        expired_body = (await client.get("/api/portal/discount-offers?status=expired")).json()
+
+    assert [o["id"] for o in open_body["items"]] == [str(live_id)]
+    assert open_body["total"] == 1
+    assert [o["id"] for o in expired_body["items"]] == [str(lapsed_id)]
+    assert expired_body["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_portal_summary_does_not_count_a_lapsed_offer_as_open(realdb):
+    """The dashboard KPI sits above the same list, so it must count the same
+    population — telling a supplier they have two offers to act on when one
+    lapsed a month ago is the same split-brain one level up."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    await _seed_vendor_offer(mk, org_id, vendor_id, **_lapsed())
+    await _seed_vendor_offer(mk, org_id, vendor_id)
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        summary = (await client.get("/api/portal/summary")).json()
+    assert summary["open_discount_offers"] == 1
+
+
+@pytest.mark.asyncio
+async def test_accept_refuses_a_lapsed_offer(realdb):
+    """Accept already refuses one — no tier is capturable past `valid_until` —
+    and that must stay true, because it is the only thing stopping a supplier
+    from claiming a discount the calendar closed. Pinned explicitly rather than
+    left as a side effect of the tier-window rule."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id, **_lapsed())
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        best = await client.post(f"/api/portal/discount-offers/{offer_id}/accept")
+        named = await client.post(
+            f"/api/portal/discount-offers/{offer_id}/accept", json={"tier_days": 5}
+        )
+    assert best.status_code == 409, best.text
+    # Naming a rung explicitly must not get round the window either.
+    assert named.status_code == 422, named.text
+
+    async with mk() as s:
+        row = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_OFFERED
+        assert row.accepted_tier is None
+        assert (await s.execute(select(func.count()).select_from(Payment))).scalar_one() == 0
+        assert (await s.execute(select(func.count()).select_from(PaymentRun))).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_decline_refuses_a_lapsed_offer(realdb):
+    """Decline was the one path that could still write a decision onto a dead
+    offer: it checked only the stored status, so a lapsed offer became
+    `declined` — asserting a supplier refusal that never happened, on an
+    append-only audit row. It now 409s, and the row is untouched."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id, **_lapsed())
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{offer_id}/decline")
+    assert resp.status_code == 409, resp.text
+
+    async with mk() as s:
+        row = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_OFFERED  # not rewritten as `declined`
+        actions = {r.action for r in (await s.execute(select(AuditLog))).scalars().all()}
+        assert "discount_offer.declined_by_vendor" not in actions
+
+
+@pytest.mark.asyncio
+async def test_decline_still_works_on_the_last_day_of_the_window(realdb):
+    """The guard is `valid_until < today`, so the window's own last day is still
+    live — it must not eat a legitimate decline a day early."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id, valid_until=date.today())
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{offer_id}/decline")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "declined"

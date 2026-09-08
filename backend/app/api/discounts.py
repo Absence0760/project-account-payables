@@ -453,8 +453,14 @@ async def decline_offer(
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     offer = await _get_offer_scoped(db, offer_id, entity_id)
+    today = utc_today()
     try:
-        offers_svc.decline_offer(offer, now=datetime.now(UTC))
+        # `as_of` is what refuses a LAPSED offer. Accept already refuses one
+        # (no tier is capturable past `valid_until`); without this, decline was
+        # the one path that could still write a decision onto an offer the
+        # calendar had closed — and it would land as `declined`, asserting a
+        # refusal that never happened, on an append-only audit row.
+        offers_svc.decline_offer(offer, now=datetime.now(UTC), as_of=today)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await dispatch_audit(
@@ -470,7 +476,7 @@ async def decline_offer(
     await db.commit()
     await db.refresh(offer)
     vmap, imap = await _name_maps(db, [offer])
-    return _response(offer, vmap, imap)
+    return _response(offer, vmap, imap, today=today)
 
 
 # --------------------------------------------------------------------------- #

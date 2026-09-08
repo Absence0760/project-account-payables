@@ -606,9 +606,15 @@ touches no `Payment` / `PaymentRun`. `AutoTriggerResult.offers_expired` counts
 it separately from `offers_captured` so the two are never conflated in a log
 line.
 
-**Known gap:** the supplier portal (`/api/portal/discount-offers`,
-`api/portal.py` → `PortalDiscountOfferResponse`) still renders the stored
-column, so a lapsed offer reads `offered` to the supplier until the sweep
-materializes it. The fix is the same one-line substitution the AP router makes
-— `offers_svc.effective_status(offer, as_of=utc_today())` — on the portal's
-list, detail and status filter.
+The supplier portal (`/api/portal/discount-offers`) goes through the same rule:
+`effective_status` on the response, `effective_status_sql` on the `?status=`
+filter and on the `open_discount_offers` KPI. It has to — deriving on one side
+only would leave AP reading `expired` while the supplier read `offered` and
+still had a live button, which is a worse failure than the original bug. See
+`supplier-portal.md` § The supplier and AP see the same status.
+
+Acting on a dead offer is refused on both sides. Accept always was (no tier is
+capturable past `valid_until`); decline was not, so a lapsed offer could be
+flipped to `declined` — a refusal nobody made, recorded on an append-only audit
+row. `decline_offer` now takes a **required** `as_of` and refuses; required
+rather than defaulted so a future caller cannot silently skip it.

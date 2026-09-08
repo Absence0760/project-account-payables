@@ -242,14 +242,33 @@ def test_accept_offer_guard_rejects_non_offered():
 
 def test_decline_offer():
     offer = _offer()
-    do.decline_offer(offer, now=datetime.now(UTC))
+    do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 1))
     assert offer.status == OFFER_STATUS_DECLINED
 
 
 def test_decline_offer_guard():
     offer = _offer(status=OFFER_STATUS_CAPTURED)
     with pytest.raises(ValueError):
-        do.decline_offer(offer, now=datetime.now(UTC))
+        do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 1))
+
+
+def test_decline_offer_refuses_a_lapsed_offer():
+    """An offer whose window has closed is EXPIRED, and declining it would
+    record a refusal that never happened onto an append-only audit row. Accept
+    already refuses one (no tier is capturable past `valid_until`); decline was
+    the one path that could still write a decision onto a dead offer."""
+    offer = _offer(valid_until=date(2026, 1, 1))
+    with pytest.raises(ValueError, match="window has closed"):
+        do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 2))
+    assert offer.status == OFFER_STATUS_OFFERED  # unchanged
+
+
+def test_decline_offer_allows_the_last_day_of_the_window():
+    """`has_lapsed` is `valid_until < as_of`, so the window's own last day is
+    still live — the guard must not eat a legitimate decline a day early."""
+    offer = _offer(valid_until=date(2026, 1, 2))
+    do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 2))
+    assert offer.status == OFFER_STATUS_DECLINED
 
 
 def test_mark_captured_from_accepted():

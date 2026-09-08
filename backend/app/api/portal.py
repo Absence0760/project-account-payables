@@ -1685,10 +1685,21 @@ def _offer_tier(base_amount: Decimal, tier: dict | None) -> PortalDiscountTier |
 def _portal_offer_response(
     offer: DiscountOffer, *, invoice_number: str | None, today: date
 ) -> PortalDiscountOfferResponse:
+    """The vendor-facing view of one offer, reporting its EFFECTIVE status.
+
+    The supplier and the AP team must never be looking at the same offer in two
+    different states. `api/discounts` derives the status from `valid_until`
+    rather than reading the column (whose only writer is the auto-capture sweep,
+    off by default — see `services/discount_offers` § Expiry is DERIVED, not
+    read); rendering the raw column here would leave AP showing `expired` while
+    the supplier still saw `offered` and a Decline button.
+    """
     tiers = [_offer_tier(offer.base_amount, t) for t in (offer.tiers or [])]
-    # Best capturable tier today is only meaningful while the offer is still open.
+    status = offers_svc.effective_status(offer, as_of=today)
+    # Best capturable tier today is only meaningful while the offer is still
+    # open — and a lapsed offer is not, whatever the column says.
     best_tier = None
-    if offer.status == OFFER_STATUS_OFFERED:
+    if status == OFFER_STATUS_OFFERED:
         best = offers_svc.best_tier_for_date(
             offer.tiers or [],
             today,
@@ -1698,7 +1709,7 @@ def _portal_offer_response(
         best_tier = _offer_tier(offer.base_amount, best)
     return PortalDiscountOfferResponse(
         id=str(offer.id),
-        status=offer.status,
+        status=status,
         scope=offer.scope,
         invoice_id=str(offer.invoice_id) if offer.invoice_id else None,
         invoice_number=invoice_number,
@@ -1770,12 +1781,18 @@ async def list_my_discount_offers(
     Scoped to the vendor's own `vendor_id` and to offers on their own invoices —
     a vendor can never see another vendor's offers. Includes the per-tier
     savings + the best capturable tier today so the supplier sees the ROI of
-    accepting. Optional `?status=` filter (e.g. `offered`)."""
+    accepting. Optional `?status=` filter (e.g. `offered`).
+
+    The filter is applied to the EFFECTIVE status, matching what the rows
+    render: `?status=offered` must not hand the supplier an offer whose window
+    closed last month just because nothing has written `expired` to the column
+    yet."""
+    today = utc_today()
     query = select(DiscountOffer).where(_vendor_offer_filter(vu))
     if status_filter:
         wanted = [s.strip() for s in status_filter.split(",") if s.strip()]
         if wanted:
-            query = query.where(DiscountOffer.status.in_(wanted))
+            query = query.where(offers_svc.effective_status_sql(today).in_(wanted))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     query = (
@@ -1785,7 +1802,6 @@ async def list_my_discount_offers(
     )
     rows = list((await db.execute(query)).scalars().all())
     inv_nums = await _invoice_numbers(db, rows)
-    today = utc_today()
 
     return PortalDiscountOfferListResponse(
         items=[
@@ -1880,10 +1896,13 @@ async def decline_my_discount_offer(
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
     """Vendor declines an offered early-payment discount. Reuses
-    `discount_offers.decline_offer`; `409` if the offer is no longer `offered`."""
+    `discount_offers.decline_offer`; `409` if the offer is no longer `offered`
+    — including when its window has already closed, which the supplier now sees
+    as `expired` rather than as a live offer with a Decline button."""
     offer = await _portal_offer_or_404(db, offer_id, vu)
+    today = utc_today()
     try:
-        offers_svc.decline_offer(offer, now=datetime.now(UTC))
+        offers_svc.decline_offer(offer, now=datetime.now(UTC), as_of=today)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1904,7 +1923,6 @@ async def decline_my_discount_offer(
     await db.commit()
     await db.refresh(offer)
 
-    today = utc_today()
     invoice_number = None
     if offer.invoice_id:
         invoice_number = (await _invoice_numbers(db, [offer])).get(offer.invoice_id)
@@ -2413,11 +2431,17 @@ async def portal_summary(
         )
     ).all()
 
+    # Effective status, like the list this KPI sits above: an offer whose
+    # `valid_until` has passed is not still on the table, and counting it here
+    # told the supplier they had N offers to act on when some had lapsed.
     open_offers = (
         await db.execute(
             select(func.count())
             .select_from(DiscountOffer)
-            .where(_vendor_offer_filter(vu), DiscountOffer.status == OFFER_STATUS_OFFERED)
+            .where(
+                _vendor_offer_filter(vu),
+                offers_svc.effective_status_sql(utc_today()) == OFFER_STATUS_OFFERED,
+            )
         )
     ).scalar() or 0
 
