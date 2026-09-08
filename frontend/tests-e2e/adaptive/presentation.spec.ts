@@ -158,9 +158,12 @@ async function openAnomalies(page: Page) {
 	});
 	await page.goto('/adaptive');
 	await page.getByRole('tab', { name: 'Anomalies' }).click();
-	await expect(page.locator('#adaptive-panel-anomalies table tbody tr').first()).toBeVisible({
-		timeout: 15_000
-	});
+	// Count, not `.first()`: the DataTable renders a single loading/empty row
+	// before the response lands, and that row would satisfy a visibility wait.
+	await expect(page.locator('#adaptive-panel-anomalies table tbody tr')).toHaveCount(
+		ANOMALIES.flagged.length,
+		{ timeout: 15_000 }
+	);
 }
 
 async function openPatterns(page: Page, vendors: Array<Record<string, unknown>>) {
@@ -171,9 +174,14 @@ async function openPatterns(page: Page, vendors: Array<Record<string, unknown>>)
 	});
 	await page.goto('/adaptive');
 	await page.getByRole('tab', { name: 'Approval patterns' }).click();
-	await expect(page.locator('#adaptive-panel-patterns table').nth(1)).toBeVisible({
-		timeout: 15_000
-	});
+	// The vendors table is the second of the panel's two. Waiting on its ROW
+	// COUNT (callers always pass two vendors, the empty state is one row) is
+	// what makes the negative assertion below meaningful: waiting on the table
+	// element alone would be satisfied by the pre-response empty state, and
+	// "no disclosure rendered" would pass before the data arrived.
+	await expect(
+		page.locator('#adaptive-panel-patterns table').nth(1).locator('tbody tr')
+	).toHaveCount(vendors.length, { timeout: 15_000 });
 }
 
 test.describe('/adaptive — anomaly rows', () => {
