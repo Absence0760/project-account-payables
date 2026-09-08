@@ -817,6 +817,13 @@ export const messages = {
 	'recurring.col.nextRun': 'Próxima ejecución',
 	'recurring.col.generated': 'Generadas',
 	'recurring.col.status': 'Estado',
+	'recurring.status.active': 'Activa',
+	'recurring.status.paused': 'En pausa',
+	'recurring.status.ended': 'Finalizada',
+	'recurring.cadence.monthly': 'Mensual',
+	'recurring.cadence.quarterly': 'Trimestral',
+	'recurring.cadence.annual': 'Anual',
+
 	'recurring.dayOfPeriod': 'día {day}',
 	'recurring.empty': 'Ninguna plantilla recurrente coincide con sus filtros.',
 	'recurring.notFound': 'Plantilla no encontrada',

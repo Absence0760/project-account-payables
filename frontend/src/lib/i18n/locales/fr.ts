@@ -818,6 +818,13 @@ export const messages = {
 	'recurring.col.nextRun': 'Prochaine exécution',
 	'recurring.col.generated': 'Générées',
 	'recurring.col.status': 'Statut',
+	'recurring.status.active': 'Actif',
+	'recurring.status.paused': 'En pause',
+	'recurring.status.ended': 'Terminé',
+	'recurring.cadence.monthly': 'Mensuel',
+	'recurring.cadence.quarterly': 'Trimestriel',
+	'recurring.cadence.annual': 'Annuel',
+
 	'recurring.dayOfPeriod': 'jour {day}',
 	'recurring.empty': 'Aucun modèle récurrent ne correspond à vos filtres.',
 	'recurring.notFound': 'Modèle introuvable',

@@ -858,6 +858,15 @@ export const en = {
 	'recurring.col.nextRun': 'Next run',
 	'recurring.col.generated': 'Generated',
 	'recurring.col.status': 'Status',
+
+	// Recurring template status + cadence value labels ($lib/types/recurring.ts)
+	'recurring.status.active': 'Active',
+	'recurring.status.paused': 'Paused',
+	'recurring.status.ended': 'Ended',
+	'recurring.cadence.monthly': 'Monthly',
+	'recurring.cadence.quarterly': 'Quarterly',
+	'recurring.cadence.annual': 'Annual',
+
 	'recurring.dayOfPeriod': 'day {day}',
 	'recurring.empty': 'No recurring templates match your filters.',
 	'recurring.notFound': 'Template not found',

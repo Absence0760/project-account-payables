@@ -820,6 +820,13 @@ export const messages = {
 	'recurring.col.nextRun': 'Nächster Lauf',
 	'recurring.col.generated': 'Erstellt',
 	'recurring.col.status': 'Status',
+	'recurring.status.active': 'Aktiv',
+	'recurring.status.paused': 'Pausiert',
+	'recurring.status.ended': 'Beendet',
+	'recurring.cadence.monthly': 'Monatlich',
+	'recurring.cadence.quarterly': 'Vierteljährlich',
+	'recurring.cadence.annual': 'Jährlich',
+
 	'recurring.dayOfPeriod': 'Tag {day}',
 	'recurring.empty': 'Keine wiederkehrenden Vorlagen entsprechen Ihren Filtern.',
 	'recurring.notFound': 'Vorlage nicht gefunden',

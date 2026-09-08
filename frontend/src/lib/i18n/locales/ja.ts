@@ -809,6 +809,13 @@ export const messages = {
 	'recurring.col.nextRun': '次回実行',
 	'recurring.col.generated': '生成数',
 	'recurring.col.status': 'ステータス',
+	'recurring.status.active': '有効',
+	'recurring.status.paused': '一時停止',
+	'recurring.status.ended': '終了',
+	'recurring.cadence.monthly': '毎月',
+	'recurring.cadence.quarterly': '四半期ごと',
+	'recurring.cadence.annual': '毎年',
+
 	'recurring.dayOfPeriod': '{day}日',
 	'recurring.empty': 'フィルターに一致する定期請求テンプレートはありません。',
 	'recurring.notFound': 'テンプレートが見つかりません',
