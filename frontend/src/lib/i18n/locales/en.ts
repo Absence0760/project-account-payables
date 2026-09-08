@@ -485,6 +485,16 @@ export const en = {
 	'vendors.filter.unverified': 'Unverified',
 	'vendors.filter.active': 'Active',
 	'vendors.filter.rejected': 'Rejected',
+
+	// Vendor lifecycle status + source value labels ($lib/types/vendor.ts). The status wording matches the filter chips above on purpose — chip and row badge name the same state.
+	'vendors.status.active': 'Active',
+	'vendors.status.unverified': 'Unverified',
+	'vendors.status.inactive': 'Inactive',
+	'vendors.status.rejected': 'Rejected',
+	'vendors.source.manual': 'Manual',
+	'vendors.source.erpSync': 'ERP Sync',
+	'vendors.source.aiExtracted': 'AI Extracted',
+
 	'vendors.col.vendor': 'Vendor',
 	'vendors.col.code': 'Code',
 	'vendors.col.email': 'Email',

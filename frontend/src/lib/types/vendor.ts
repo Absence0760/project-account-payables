@@ -297,6 +297,50 @@ export const VENDOR_STATUS_TONES: Record<string, BadgeTone> = {
 	rejected: 'danger'
 };
 
+// Every lifecycle value `Vendor.status` can hold. The column is untyped on the
+// wire (hence the `string`-keyed tone map above), so this union is the
+// frontend's own vocabulary: it exists to make the label map below TOTAL, so a
+// status added here without a label is a compile error rather than a badge
+// that quietly falls back to its raw enum value.
+export type VendorStatus = 'active' | 'unverified' | 'inactive' | 'rejected';
+
+export const VENDOR_STATUSES: VendorStatus[] = ['active', 'unverified', 'inactive', 'rejected'];
+
+/**
+ * The i18n key carrying each lifecycle-status label — never the English string
+ * itself. It lived as a page-local English map on `/vendors`, whose STATUS
+ * FILTER CHIPS are translated, so the row badge read `Unverified` in English
+ * directly beside a chip that read `Nicht verifiziert`. It now sits beside the
+ * tone map for the same reason that one was hoisted: the label and the colour
+ * of one status belong together.
+ */
+export const VENDOR_STATUS_LABEL_KEYS: Record<VendorStatus, MessageKey> = {
+	active: 'vendors.status.active',
+	unverified: 'vendors.status.unverified',
+	inactive: 'vendors.status.inactive',
+	rejected: 'vendors.status.rejected'
+};
+
+/** The message key for a lifecycle status, or `null` for an unrecognised one. */
+export function vendorStatusLabelKey(status: string): MessageKey | null {
+	return VENDOR_STATUS_LABEL_KEYS[status as VendorStatus] ?? null;
+}
+
+// Where the vendor record came from (`Vendor.source`) — rendered as a muted
+// pill in the row beside the status badge, so it is keyed for the same reason.
+export type VendorSource = 'manual' | 'erp_sync' | 'ai_extracted';
+
+export const VENDOR_SOURCE_LABEL_KEYS: Record<VendorSource, MessageKey> = {
+	manual: 'vendors.source.manual',
+	erp_sync: 'vendors.source.erpSync',
+	ai_extracted: 'vendors.source.aiExtracted'
+};
+
+/** The message key for a vendor source, or `null` for an unrecognised one. */
+export function vendorSourceLabelKey(source: string): MessageKey | null {
+	return VENDOR_SOURCE_LABEL_KEYS[source as VendorSource] ?? null;
+}
+
 /**
  * The i18n key carrying each screening-status label — never the English string
  * itself. `ui/ScreeningBadge.svelte` renders this pill on the (extracted)

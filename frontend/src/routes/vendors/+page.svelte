@@ -35,7 +35,11 @@
 	import { PERM_VENDOR_MANAGE } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
 	import { importVendorsCsv, type PortalInviteResult } from '$lib/api/vendors';
-	import { VENDOR_STATUS_TONES } from '$lib/types/vendor';
+	import {
+		VENDOR_STATUS_TONES,
+		vendorSourceLabelKey,
+		vendorStatusLabelKey
+	} from '$lib/types/vendor';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 	import type { ImportResult } from '$lib/types/csvImport';
 	import { getVendorIds, bulkVendorStatus, bulkScreenVendors, exportVendorsCsv } from '$lib/api/vendors';
@@ -214,17 +218,18 @@
 	let statusCounts = $state<Record<string, number>>({});
 	let countsTotal = $state(0);
 
-	const STATUS_LABELS: Record<string, string> = {
-		active: 'Active',
-		unverified: 'Unverified',
-		inactive: 'Inactive',
-		rejected: 'Rejected',
+	// Status and source are message keys, not English literals — an
+	// unrecognised value from the API renders raw rather than blank. Both maps
+	// live in `$lib/types/vendor.ts` beside `VENDOR_STATUS_TONES`, so the badge
+	// can't name a status the tone map tints differently.
+	const statusLabel = (s: string) => {
+		const key = vendorStatusLabelKey(s);
+		return key ? m(key) : s;
 	};
 
-	const SOURCE_LABELS: Record<string, string> = {
-		manual: 'Manual',
-		erp_sync: 'ERP Sync',
-		ai_extracted: 'AI Extracted',
+	const sourceLabel = (s: string) => {
+		const key = vendorSourceLabelKey(s);
+		return key ? m(key) : s;
 	};
 
 	// Debounce timer for search input — mirrors the /invoices and /payments
@@ -654,7 +659,7 @@
 							tone={VENDOR_STATUS_TONES[v.status] ?? 'neutral'}
 							variant="status-badge {v.status}"
 						>
-							{STATUS_LABELS[v.status] ?? v.status}
+							{statusLabel(v.status)}
 						</Badge>
 					</td>
 					<td>
@@ -665,7 +670,7 @@
 						/>
 					</td>
 					<td>
-						<span class="source-badge">{SOURCE_LABELS[v.source] ?? v.source}</span>
+						<span class="source-badge">{sourceLabel(v.source)}</span>
 					</td>
 					<td class="mono">{v.invoice_count}</td>
 					<td>
