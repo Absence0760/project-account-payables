@@ -99,8 +99,10 @@ from a null. `DiscountROI.as_dict()` (which lands in an append-only audit row)
 emits JSON `null` for each — never `"None"`, never a placeholder `"0.00"`.
 
 `optimize()` carries such an opportunity on `OptimizationResult.unrankable`
-(surfaced as `unrankable[]` on `POST /optimize`) rather than sorting it to the
-bottom of `recommendations` — that list is a ranking *by APR*, and something
+(surfaced as `unrankable[]` on `POST /optimize`, and as `unrankable_count` on
+the copilot's `optimize_discount_capture` result — absent from a ranking is
+fine, absent *and uncounted* would have the copilot answer as though those
+offers did not exist) rather than sorting it to the bottom of `recommendations` — that list is a ranking *by APR*, and something
 without an APR has no position in it. Unrankable rows are never selected and
 contribute to no total, and keeping them out is what lets every downstream
 consumer of `recommendations` keep assuming a real number there. The auto-capture
