@@ -303,6 +303,15 @@ export const en = {
 	'payments.status.cancelled': 'Cancelled',
 	'payments.status.voided': 'Voided',
 
+	// Payment rail labels ($lib/types/payment.ts). BACS / Faster Payments / CHAPS are UK scheme NAMES and stay verbatim in every locale, like ACH.
+	'payments.method.ach': 'ACH',
+	'payments.method.wire': 'Wire',
+	'payments.method.check': 'Check',
+	'payments.method.virtualCard': 'Virtual Card',
+	'payments.method.bacs': 'BACS',
+	'payments.method.fasterPayments': 'Faster Payments',
+	'payments.method.chaps': 'CHAPS',
+
 	// Corridor quote comparison — advisory only (POST /api/payments/corridor-quotes)
 	'payments.quotes.open': 'Compare routes',
 	'payments.quotes.openAria': 'Compare payment routes for invoice {invoice}',

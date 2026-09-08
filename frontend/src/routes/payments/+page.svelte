@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { Payment, PaymentStatus, PaymentMethod } from '$lib/types/payment';
+	import type { Payment, PaymentStatus } from '$lib/types/payment';
 	import {
 		PAYMENT_STATUSES,
 		paymentStatusLabelKey,
-		PAYMENT_METHOD_LABELS,
+		paymentMethodLabelKey,
 		PAYMENT_STATUS_TONES,
 		runStatusTone
 	} from '$lib/types/payment';
@@ -1589,9 +1589,12 @@
 	}
 
 
+	// The rail name is a message key, not an English literal — a rail this
+	// build doesn't know renders raw rather than blank.
 	function methodLabel(method: string | null): string {
 		if (!method) return '—';
-		return PAYMENT_METHOD_LABELS[method as PaymentMethod] ?? method;
+		const key = paymentMethodLabelKey(method);
+		return key ? m(key) : method;
 	}
 
 	// The status name is a message key, not an English literal — an

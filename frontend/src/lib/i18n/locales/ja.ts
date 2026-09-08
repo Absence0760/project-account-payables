@@ -279,6 +279,13 @@ export const messages = {
 	'payments.status.failed': '失敗',
 	'payments.status.cancelled': 'キャンセル済み',
 	'payments.status.voided': '無効化済み',
+	'payments.method.ach': 'ACH',
+	'payments.method.wire': '電信送金',
+	'payments.method.check': '小切手',
+	'payments.method.virtualCard': 'バーチャルカード',
+	'payments.method.bacs': 'BACS',
+	'payments.method.fasterPayments': 'Faster Payments',
+	'payments.method.chaps': 'CHAPS',
 
 	'payments.quotes.open': '経路を比較',
 	'payments.quotes.openAria': '請求書 {invoice} の支払経路を比較',

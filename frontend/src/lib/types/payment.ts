@@ -156,15 +156,36 @@ export const PAYMENT_METHODS: PaymentMethod[] = [
 	'chaps'
 ];
 
-export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
-	ach: 'ACH',
-	wire: 'Wire',
-	check: 'Check',
-	virtual_card: 'Virtual Card',
-	bacs: 'BACS',
-	faster_payments: 'Faster Payments',
-	chaps: 'CHAPS'
+/**
+ * The i18n key carrying each rail's label — never the English string itself.
+ * The rail is a column on the (extracted) `/payments` History table and in
+ * `RunDetailModal`, one cell from the now-translated status badge.
+ *
+ * Several rails are proper NAMES rather than words — `ACH`, `BACS`, `Faster
+ * Payments`, `CHAPS` are scheme names and their catalogue entries are the
+ * same string in all six locales. That is deliberate: routing them through a
+ * key still costs nothing, and it means the day a locale does want to
+ * transliterate one, there is a place to put it.
+ */
+export const PAYMENT_METHOD_LABEL_KEYS: Record<PaymentMethod, MessageKey> = {
+	ach: 'payments.method.ach',
+	wire: 'payments.method.wire',
+	check: 'payments.method.check',
+	virtual_card: 'payments.method.virtualCard',
+	bacs: 'payments.method.bacs',
+	faster_payments: 'payments.method.fasterPayments',
+	chaps: 'payments.method.chaps'
 };
+
+/**
+ * The message key for a rail, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank cell). `Payment.method` is nullable on the wire and the backend can
+ * add a rail before this union does.
+ */
+export function paymentMethodLabelKey(method: string): MessageKey | null {
+	return PAYMENT_METHOD_LABEL_KEYS[method as PaymentMethod] ?? null;
+}
 
 export interface Payment {
 	id: string;

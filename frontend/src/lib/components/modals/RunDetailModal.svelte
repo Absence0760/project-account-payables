@@ -5,11 +5,12 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import {
-		PAYMENT_METHOD_LABELS,
+		paymentMethodLabelKey,
+		paymentStatusLabelKey,
 		PAYMENT_STATUS_TONES,
 		runStatusTone
 	} from '$lib/types/payment';
-	import type { PaymentMethod, PaymentStatus } from '$lib/types/payment';
+	import type { PaymentStatus } from '$lib/types/payment';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_PAYMENT_EXECUTE } from '$lib/types/admin';
 	import { formatMoney } from '$lib/utils/money';
@@ -234,9 +235,23 @@
 		});
 	}
 
-	function methodLabel(m: string | null): string {
-		if (!m) return '—';
-		return PAYMENT_METHOD_LABELS[m as PaymentMethod] ?? m;
+	// Rail and status are message keys, not English literals — a value this
+	// build doesn't know renders raw rather than blank. The parameter is
+	// `method`, not `m`: the i18n accessor is `m()` and a parameter of that
+	// name would shadow it inside the function that needs it.
+	function methodLabel(method: string | null): string {
+		if (!method) return '—';
+		const key = paymentMethodLabelKey(method);
+		return key ? m(key) : method;
+	}
+
+	// The per-payment badge rendered the RAW enum value (`payment_scheduled`,
+	// `pending_compliance`) while `/payments` rendered the same union through
+	// its label map one click away — so the dialog showed a snake_case status
+	// in an otherwise fully translated table.
+	function statusLabel(status: string): string {
+		const key = paymentStatusLabelKey(status);
+		return key ? m(key) : status;
 	}
 </script>
 
@@ -301,7 +316,7 @@
 								     default — which IS neutral — rather than a fallback
 								     restating it. -->
 								<td>
-									<Badge tone={PAYMENT_STATUS_TONES[p.status as PaymentStatus]} variant={p.status}>{p.status}</Badge>
+									<Badge tone={PAYMENT_STATUS_TONES[p.status as PaymentStatus]} variant={p.status}>{statusLabel(p.status)}</Badge>
 								</td>
 								<td class="mono muted">{p.reference ?? '—'}</td>
 							</tr>

@@ -278,6 +278,13 @@ export const messages = {
 	'payments.status.failed': 'Échec',
 	'payments.status.cancelled': 'Annulé',
 	'payments.status.voided': 'Invalidé',
+	'payments.method.ach': 'ACH',
+	'payments.method.wire': 'Virement',
+	'payments.method.check': 'Chèque',
+	'payments.method.virtualCard': 'Carte virtuelle',
+	'payments.method.bacs': 'BACS',
+	'payments.method.fasterPayments': 'Faster Payments',
+	'payments.method.chaps': 'CHAPS',
 
 	'payments.quotes.open': 'Comparer les routes',
 	'payments.quotes.openAria': 'Comparer les routes de paiement pour la facture {invoice}',
