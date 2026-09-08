@@ -56,6 +56,8 @@ export const en = {
 	'nav.entities': 'Entities',
 	'entity.all': 'All entities',
 	'entity.consolidated': 'Consolidated',
+	'entity.deactivated': 'Deactivated',
+	'entity.deactivatedNote': 'This entity was deactivated. You’re now viewing all entities.',
 	'entity.default': 'Default',
 	'entity.hint': 'Entity',
 	'entity.selectAria': 'Select entity',
@@ -4211,6 +4213,8 @@ export const en = {
 	'adaptive.patterns.error': 'Couldn’t load the approval patterns.',
 	'adaptive.patterns.heading': 'Approval patterns',
 	'adaptive.patterns.intro': 'How this tenant has actually approved, per approver and per supplier, over the last 180 days.',
+	'adaptive.patterns.unconverted':
+		'Partial: {n, plural, one {# approval} other {# approvals}} could not be expressed in {currency} and are excluded from the average, largest and median amounts below — the sample count still includes them. Book the missing rate to fold them in.',
 	'adaptive.patterns.vendors': 'By vendor',
 	'adaptive.retry': 'Retry',
 	'adaptive.routing.alreadyAssigned': 'Already assigned to the top-ranked approver — nothing changed.',

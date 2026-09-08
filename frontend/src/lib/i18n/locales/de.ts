@@ -47,6 +47,8 @@ export const messages = {
 	'nav.entities': 'Gesellschaften',
 	'entity.all': 'Alle Einheiten',
 	'entity.consolidated': 'Konsolidiert',
+	'entity.deactivated': 'Deaktiviert',
+	'entity.deactivatedNote': 'Diese Einheit wurde deaktiviert. Sie sehen jetzt alle Einheiten.',
 	'entity.default': 'Standard',
 	'entity.hint': 'Einheit',
 	'entity.selectAria': 'Einheit auswählen',
@@ -4104,6 +4106,8 @@ export const messages = {
 	'adaptive.patterns.error': 'Die Freigabemuster konnten nicht geladen werden.',
 	'adaptive.patterns.heading': 'Freigabemuster',
 	'adaptive.patterns.intro': 'Wie dieser Mandant in den letzten 180 Tagen tatsächlich freigegeben hat — je Freigebendem und je Lieferant.',
+	'adaptive.patterns.unconverted':
+		'Teilweise: {n, plural, one {# Genehmigung} other {# Genehmigungen}} konnten nicht in {currency} ausgedrückt werden und sind vom Durchschnitt, Höchst- und Medianbetrag unten ausgeschlossen — die Stichprobenzahl enthält sie weiterhin. Hinterlegen Sie den fehlenden Kurs, um sie einzubeziehen.',
 	'adaptive.patterns.vendors': 'Nach Lieferant',
 	'adaptive.retry': 'Erneut versuchen',
 	'adaptive.routing.alreadyAssigned': 'Bereits der bestplatzierten Person zugewiesen — nichts geändert.',

@@ -47,6 +47,9 @@ export const messages = {
 	'nav.entities': 'Entités',
 	'entity.all': 'Toutes les entités',
 	'entity.consolidated': 'Consolidé',
+	'entity.deactivated': 'Désactivée',
+	'entity.deactivatedNote':
+		'Cette entité a été désactivée. Vous consultez désormais toutes les entités.',
 	'entity.default': 'Par défaut',
 	'entity.hint': 'Entité',
 	'entity.selectAria': 'Sélectionner une entité',
@@ -4104,6 +4107,8 @@ export const messages = {
 	'adaptive.patterns.error': 'Impossible de charger les schémas d’approbation.',
 	'adaptive.patterns.heading': 'Schémas d’approbation',
 	'adaptive.patterns.intro': 'Comment ce locataire a réellement approuvé, par approbateur et par fournisseur, sur les 180 derniers jours.',
+	'adaptive.patterns.unconverted':
+		'Partiel : {n, plural, one {# approbation n’a pas pu être exprimée} other {# approbations n’ont pas pu être exprimées}} en {currency} et sont exclues de la moyenne, du maximum et de la médiane ci-dessous — le nombre d’échantillons les inclut toujours. Enregistrez le taux manquant pour les intégrer.',
 	'adaptive.patterns.vendors': 'Par fournisseur',
 	'adaptive.retry': 'Réessayer',
 	'adaptive.routing.alreadyAssigned': 'Déjà affectée à l’approbateur en tête — rien n’a changé.',

@@ -51,6 +51,8 @@ export const messages = {
 	'nav.entities': 'エンティティ',
 	'entity.all': 'すべての事業体',
 	'entity.consolidated': '連結',
+	'entity.deactivated': '無効',
+	'entity.deactivatedNote': 'この事業体は無効化されました。現在はすべての事業体を表示しています。',
 	'entity.default': '既定',
 	'entity.hint': '事業体',
 	'entity.selectAria': '事業体を選択',
@@ -4090,6 +4092,8 @@ export const messages = {
 	'adaptive.patterns.error': '承認パターンを読み込めませんでした。',
 	'adaptive.patterns.heading': '承認パターン',
 	'adaptive.patterns.intro': '直近 180 日間に、このテナントが実際にどう承認してきたかを承認者別・取引先別に示します。',
+	'adaptive.patterns.unconverted':
+		'一部除外: {n, plural, other {# 件の承認}}を {currency} で表現できなかったため、下の平均・最大・中央値からは除外されています（サンプル件数には含まれます）。不足している為替レートを登録すると集計に反映されます。',
 	'adaptive.patterns.vendors': '取引先別',
 	'adaptive.retry': '再試行',
 	'adaptive.routing.alreadyAssigned': 'すでに第 1 位の承認者に割り当て済みです。変更はありません。',

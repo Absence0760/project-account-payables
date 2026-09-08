@@ -47,6 +47,8 @@ export const messages = {
 	'nav.entities': 'Entidades',
 	'entity.all': 'Todas las entidades',
 	'entity.consolidated': 'Consolidado',
+	'entity.deactivated': 'Desactivada',
+	'entity.deactivatedNote': 'Esta entidad fue desactivada. Ahora está viendo todas las entidades.',
 	'entity.default': 'Predeterminada',
 	'entity.hint': 'Entidad',
 	'entity.selectAria': 'Seleccionar entidad',
@@ -4130,6 +4132,8 @@ export const messages = {
 	'adaptive.patterns.error': 'No se pudieron cargar los patrones de aprobación.',
 	'adaptive.patterns.heading': 'Patrones de aprobación',
 	'adaptive.patterns.intro': 'Cómo ha aprobado realmente este inquilino, por aprobador y por proveedor, en los últimos 180 días.',
+	'adaptive.patterns.unconverted':
+		'Parcial: {n, plural, one {# aprobación no pudo expresarse} other {# aprobaciones no pudieron expresarse}} en {currency} y se excluyen del promedio, el máximo y la mediana de abajo; el recuento de la muestra sigue incluyéndolas. Registre el tipo de cambio que falta para incorporarlas.',
 	'adaptive.patterns.vendors': 'Por proveedor',
 	'adaptive.retry': 'Reintentar',
 	'adaptive.routing.alreadyAssigned': 'Ya estaba asignada al aprobador mejor situado: nada cambió.',
