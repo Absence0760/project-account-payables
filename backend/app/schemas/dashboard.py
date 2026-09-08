@@ -37,6 +37,13 @@ class ReportingRollup(BaseModel):
 class VendorSpendEntry(BaseModel):
     vendor: str
     amount: MoneyAmount
+    #: Invoices summed into `amount` at FACE value because no locked exchange
+    #: rate bridged them into the org's reporting currency. A count, not money.
+    #: Non-zero means this vendor's total is a part-converted figure — which
+    #: matters here beyond the number itself, because the tile RANKS vendors
+    #: against each other and an unconverted total is not comparable to a
+    #: converted one.
+    unconverted_count: int = 0
 
 
 class AgingBuckets(BaseModel):
@@ -47,11 +54,28 @@ class AgingBuckets(BaseModel):
     days_90_plus: MoneyAmount
 
 
+class ReportingAgingBuckets(AgingBuckets):
+    """`aging_reporting` — the same five bands, in the reporting currency.
+
+    Carries the disclosure the bare `aging` deliberately does not: `aging` is a
+    face-value cross-currency sum in its entirety, so "N rows could not be
+    converted" would understate it, while these bands are converted apart from
+    the rows this counts. One count for the band set rather than five — see
+    `api/dashboard.py` for why.
+    """
+
+    unconverted_count: int = 0
+
+
 class MonthlyTrendEntry(BaseModel):
     month: str
     count: int
     amount: MoneyAmount
     reporting_amount: MoneyAmount
+    #: Invoices in THIS month summed into `reporting_amount` at face value for
+    #: want of a rate lock. Per month, not per series: a trend is read bar
+    #: against bar, so which step is part-converted is the useful fact.
+    unconverted_count: int = 0
 
 
 class UpcomingPayment(BaseModel):
@@ -141,7 +165,7 @@ class DashboardResponse(BaseModel):
     pipeline: dict[str, int]
     vendor_spend: list[VendorSpendEntry]
     aging: AgingBuckets
-    aging_reporting: AgingBuckets
+    aging_reporting: ReportingAgingBuckets
     monthly_trend: list[MonthlyTrendEntry]
     upcoming_payments: list[UpcomingPayment]
     upcoming_total_amount: MoneyAmount

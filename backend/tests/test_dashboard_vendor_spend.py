@@ -23,7 +23,10 @@ the answer:
 * the tie tests pin the ORDERING RULE, which the rewrite deliberately made
   stricter — see below.
 * the multi-currency tests pin the conversion rule, including the
-  unconvertible-row fallback.
+  unconvertible-row fallback — which is now REPORTED rather than silent: the
+  tile, the `aging_reporting` bands and each `monthly_trend` bar all carry an
+  `unconverted_count`, so a total that was part-built from face values says so
+  instead of presenting itself as fully converted.
 
 **Ties.** The Python fold sorted on the converted total alone, and Python's sort
 is stable, so equal-spend vendors came out in DB scan order — which of two took
@@ -141,6 +144,42 @@ def _actual_top10(body):
     return [(v["vendor"], Decimal(str(v["amount"]))) for v in body["vendor_spend"]]
 
 
+def _expected_counts(entries):
+    """Per-vendor `unconverted_count` the Python fold derives, top-10 slice.
+
+    `vendor_rollup_to_reporting_currency` has always tracked this internally —
+    `rollup_to_reporting_currency` counts every row that fell back to face
+    value — the tile just had nowhere to put it. Comparing against the fold
+    keeps the count honest the same way the amounts are kept honest.
+    """
+    ranked = sorted(entries, key=lambda e: (-e.amount, e.vendor))
+    return {e.vendor: e.unconverted_count for e in ranked[:10]}
+
+
+def _actual_counts(body):
+    return {v["vendor"]: v["unconverted_count"] for v in body["vendor_spend"]}
+
+
+async def _fold_counts_from_db(realdb, *, reporting_currency="USD", entity_id=None):
+    mk = realdb.sessionmaker(TENANT)
+    async with mk() as s:
+        q = select(
+            Invoice.vendor_name,
+            Invoice.amount,
+            Invoice.currency,
+            Invoice.reporting_amount,
+            Invoice.reporting_currency,
+        ).where(
+            Invoice.vendor_name.isnot(None),
+            Invoice.vendor_name != "",
+            Invoice.status != "rejected",
+        )
+        if entity_id is not None:
+            q = q.where(Invoice.entity_id == entity_id)
+        rows = (await s.execute(q)).all()
+    return _expected_counts(_python_fold_reference(rows, reporting_currency=reporting_currency))
+
+
 # ---------------------------------------------------------------------------
 # Equivalence over an independently-randomised book
 # ---------------------------------------------------------------------------
@@ -237,6 +276,14 @@ async def test_sql_grouping_matches_python_fold_over_randomised_book(realdb, see
     assert len(expected) == 10, "fixture must overflow the LIMIT for the cutoff to be tested"
     assert _actual_top10(body) == expected
     assert all(v["vendor"] != "" for v in body["vendor_spend"])
+
+    # The disclosure is held to the same standard as the money: per vendor,
+    # against what the fold counted, over the same three independently-drawn
+    # books. A quarter of the seeded rows are foreign-with-no-lock by
+    # construction, so this is not asserting a field that is always zero.
+    expected_counts = await _fold_counts_from_db(realdb)
+    assert _actual_counts(body) == expected_counts
+    assert sum(expected_counts.values()) > 0, "fixture must contain unconvertible rows"
 
 
 # ---------------------------------------------------------------------------
@@ -375,26 +422,136 @@ async def test_multi_currency_totals_match_the_python_fold(realdb):
     # Rate-locked EUR row converts: 1000.00 + 1086.96, not the naive 2000.00.
     assert by_vendor["CCY Locked Co"] == Decimal("2086.96")
     # Unconvertible foreign row falls back to FACE value — 500 + 400 — exactly
-    # as the Python fold did. The dashboard's `vendor_spend` schema is
-    # `{vendor, amount}` with nowhere to report it, so this fallback is silent
-    # here, the same way it is for `aging_reporting` and `monthly_trend`. Only
-    # the whole-book `reporting` rollup carries an `unconverted_count`.
+    # as the Python fold did.
     assert by_vendor["CCY Unlocked Co"] == Decimal("900.00")
     # A lock in a third currency is ignored, not read as the reporting figure.
     assert by_vendor["CCY Wrong Lock Co"] == Decimal("700.00")
 
+    # ...and the fallback is no longer SILENT. This assertion used to record
+    # that it was: `{vendor, amount}` had nowhere to report a face-value fold,
+    # so only the whole-book `reporting` rollup counted it. Each row now says
+    # how much of its own total it could not convert, which is what makes the
+    # ranking readable — an unconverted total is not comparable to a converted
+    # one, and the tile ranks them against each other.
+    counts = _actual_counts(body)
+    assert counts["CCY Locked Co"] == 0  # USD row + a genuinely locked EUR row
+    assert counts["CCY Unlocked Co"] == 1  # the GBP row with no lock
+    assert counts["CCY Wrong Lock Co"] == 1  # EUR row whose lock is in CHF
+    # Same numbers the row-at-a-time fold derives.
+    assert counts == await _fold_counts_from_db(realdb)
+
 
 @pytest.mark.asyncio
 async def test_unconverted_rows_are_counted_by_the_whole_book_rollup(realdb):
-    """The unconverted rows the vendor tile folds at face value are not
-    invisible platform-wide — the `reporting` rollup on the same response
-    counts them. Pinning it here so the silent fallback above stays a *known*
-    trade-off rather than a total blind spot."""
+    """The whole-book `reporting` rollup and the per-vendor tile count the
+    SAME rows.
+
+    Both read one expression — `currency_conversion.invoice_reporting_amount_sql`
+    — so the page cannot tell a CFO "2 invoices are unconverted" in the rollup
+    while the tile beside it accounts for a different number. This test is what
+    fails if the two ever stop sharing it."""
     await _seed_currency_cases(realdb)
     async with realdb.client(key=TENANT, role="admin") as c:
         body = (await c.get("/api/dashboard")).json()
     # CCY-4 (GBP, no lock) and CCY-5 (EUR, CHF lock) cannot be converted.
     assert body["reporting"]["unconverted_count"] == 2
+    # The tile accounts for exactly those two, split across the vendors that
+    # own them.
+    assert sum(_actual_counts(body).values()) == 2
+
+
+# ---------------------------------------------------------------------------
+# The two sibling blocks that folded silently alongside the tile
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aging_reporting_reports_its_unconverted_count(realdb):
+    """`aging_reporting` bands are part-converted, and now say so.
+
+    The bands summed foreign invoices at face value with no channel to report
+    it, so the five figures read as one currency when they were not. The
+    fixture's five invoices are all `approved` (in `OPEN_AP_STATUSES`) with no
+    due date, so they land in `current` and two of them are unconvertible.
+
+    The bare `aging` gets no count on purpose — it is a face-value
+    cross-currency sum in its ENTIRETY, so "2 rows could not be converted"
+    would understate it rather than describe it.
+    """
+    await _seed_currency_cases(realdb)
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert body["aging_reporting"]["unconverted_count"] == 2
+    assert "unconverted_count" not in body["aging"]
+    # Converted: 1000 + 1086.96 + 500 + 400(face) + 700(face).
+    assert Decimal(str(body["aging_reporting"]["current"])) == Decimal("3686.96")
+
+
+@pytest.mark.asyncio
+async def test_monthly_trend_reports_unconverted_per_month(realdb):
+    """Each BAR carries its own count, because a trend is read bar against bar.
+
+    A whole-series figure would say "something in here is unconverted" without
+    saying which step in the line not to trust.
+    """
+    await _seed_currency_cases(realdb)
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    this_month = date.today().strftime("%Y-%m")
+    by_month = {m["month"]: m for m in body["monthly_trend"]}
+    assert by_month[this_month]["unconverted_count"] == 2
+    # Every other bar in the six-month window is empty, so its count is a
+    # genuine zero rather than an absent field.
+    assert all(m["unconverted_count"] == 0 for k, m in by_month.items() if k != this_month)
+    assert all("unconverted_count" in m for m in body["monthly_trend"])
+
+
+@pytest.mark.asyncio
+async def test_a_lock_amount_without_a_lock_currency_counts_as_unconverted(realdb):
+    """A `reporting_amount` with no `reporting_currency` is not a lock.
+
+    This is the case SQL's three-valued logic used to get wrong here. The
+    endpoint spelled its own lock test as
+    `reporting_amount IS NOT NULL AND UPPER(reporting_currency) = tgt`; for a
+    NULL currency that comparison is NULL, so the whole test was NULL, `NOT
+    NULL` is NULL, and the `unconverted` CASE fell to its ELSE — reporting the
+    row as CONVERTED while its face value was what got added. Adopting
+    `currency_conversion.invoice_reporting_amount_sql`, which states
+    `reporting_currency IS NOT NULL` explicitly, fixes it; the money figure was
+    always the face amount and is unchanged.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                entity_id=ent,
+                invoice_number="HALFLOCK-DASH",
+                vendor_name="Half Lock Co",
+                amount=Decimal("250.00"),
+                currency="EUR",
+                reporting_currency=None,
+                reporting_amount=Decimal("275.00"),
+                status=InvoiceStatus.approved,
+                invoice_date=date.today(),
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+
+    assert dict(_actual_top10(body))["Half Lock Co"] == Decimal("250.00")
+    assert _actual_counts(body)["Half Lock Co"] == 1
+    assert body["reporting"]["unconverted_count"] == 1
+    assert body["aging_reporting"]["unconverted_count"] == 1
+    # And the row-at-a-time helper agrees — it has always required both
+    # columns, so this is the endpoint converging on it, not a new rule.
+    assert await _fold_counts_from_db(realdb) == {"Half Lock Co": 1}
 
 
 # ---------------------------------------------------------------------------
