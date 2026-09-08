@@ -13,6 +13,10 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+# `app.tenant_url` imports nothing (bar `os`), so it is safe on this
+# dotenv-free path where `app.database` — which reaches `app.config` — is not.
+from app.tenant_url import control_url_from_env, make_tenant_url
+
 
 def handler(event, context):
     """AWS Lambda entry point — processes SQS batch."""
@@ -28,9 +32,7 @@ async def _process_message(body: dict) -> None:
     actor_id = uuid.UUID(body["actor_id"])
 
     # Build DB connections from environment (Lambda uses env vars, not app.config)
-    import os
-
-    db_url = os.environ["DATABASE_URL"]
+    db_url = control_url_from_env()
 
     # Look up the org to find the tenant DB name
     control_engine = create_async_engine(db_url)
@@ -45,8 +47,9 @@ async def _process_message(body: dict) -> None:
             await control_engine.dispose()
             return
 
-    # Connect to the tenant DB
-    tenant_url = db_url.rsplit("/", 1)[0] + "/" + org.db_name
+    # Connect to the tenant DB. `org.db_name` comes off the resolved Organization
+    # row above — never off the SQS body.
+    tenant_url = make_tenant_url(db_url, org.db_name)
     tenant_engine = create_async_engine(tenant_url)
     tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 

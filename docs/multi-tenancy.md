@@ -59,26 +59,32 @@ So the construction discipline is asserted too, by
 **`backend/tests/test_tenant_engine_construction.py`** — a pure-AST scan over
 `backend/app/`, no database, sub-second. It enforces five things:
 
-1. **One builder.** `app/database.py` owns engine construction; `_make_tenant_url(db_name)`
-   is the single place a tenant DB name becomes a URL. Every engine built elsewhere
-   must be handed `_make_tenant_url(...)` (tenant) or `settings.database_url`
-   (control plane) — directly, or via a local assigned from one of them. The scan
-   follows renamed imports (`create_async_engine as make_engine`), covers the
-   synchronous `create_engine` twin, and treats a `**kwargs`-hidden or
-   later-mutated URL as unresolved, so the easy ways around it fail closed.
+1. **One builder, one body.** `app/tenant_url.py` owns the construction:
+   `make_tenant_url(base_url, db_name)` is the single place a tenant DB name
+   becomes a URL. `app/database.py` binds it to `settings.database_url` as
+   `_make_tenant_url(db_name)`, which is what the ~70 in-app call sites spell.
+   Every engine built elsewhere must be handed one of those two calls (tenant) or
+   the control-plane URL — `settings.database_url` in the app,
+   `control_url_from_env()` on a Lambda path (control). The scan follows renamed
+   imports (`create_async_engine as make_engine`), covers the synchronous
+   `create_engine` twin, and treats a `**kwargs`-hidden or later-mutated URL as
+   unresolved, so the easy ways around it fail closed.
 2. **The constructor is never renamed.** A constructor bound to another name
    (`engine_factory = create_async_engine`) or passed as a value takes every call
    through it *out of the enumeration* rather than into the offender list, so a
    non-call reference is refused outright.
 3. **No interpolated URLs.** No f-string, `%`, or `.format()` anywhere in an
-   engine's URL expression — the exempt modules included.
-4. **Narrow exemptions.** The three AWS Lambda handlers (`extraction_lambda`,
-   `erp_lambda`, `audit_lambda`) cannot import `app.database` (it reaches
-   `app.config`; see backend/CLAUDE.md on dotenv-free Lambda paths), so they read
-   the control URL from the environment and inline `_make_tenant_url`'s body.
-   They are exempt from the *helper*, not from the rule: the guard asserts each
-   still mirrors that body structurally, and a stale exemption on a module that
-   no longer builds an engine fails too.
+   engine's URL expression — the Lambda handlers included.
+4. **Nobody re-implements the builder.** The builder's body
+   (`<base>.rsplit("/", 1)[0] + "/" + <name>`) may appear in `app/tenant_url.py`
+   and nowhere else, and that module must stay import-free (`os` aside). Those two
+   rules are a pair: the three AWS Lambda handlers (`extraction_lambda`,
+   `erp_lambda`, `audit_lambda`) cannot import `app.database` — it reaches
+   `app.config`, and backend/CLAUDE.md forbids dotenv-reaching imports on a Lambda
+   path — so they used to carry their own copies of that line, and the guard held
+   all three to *mirroring* the original. A dependency-free
+   `app/tenant_url.py` lets them import the real thing, which turns a guard over a
+   permanent duplication into a guard against any duplication.
 5. **No hardcoded tenant DB names.** A `feoh_`-prefixed database-name literal
    appears nowhere outside `app/config.py`, which owns `tenant_db_prefix`.
 
@@ -93,7 +99,20 @@ What no static rule can prove is that a given `db_name` came from a *resolved
 row* rather than from the request. What the guard does prove is that every call
 site goes through the one helper whose only caller-visible input is a `db_name`,
 which turns reviewing a new engine site into a one-line question instead of an
-audit.
+audit. `make_tenant_url` additionally refuses a name that would *re-shape* the
+URL — one carrying `/`, `?`, `#`, `@`, `:`, `%` or whitespace would append a
+path, start a query, or move the authority section — so the weaker property that
+IS checkable is checked (`backend/tests/test_tenant_url.py`).
+
+**The SQS/Lambda workers re-derive too.** `audit_lambda` used to take
+`tenant_db_name` straight off the message body: the producer had resolved it from
+an `Organization` row at *publish* time, but the consumer's routing input was
+still a string on a queue. It now looks the org up from `organization_id` exactly
+as `extraction_lambda` and `erp_lambda` do, and ignores the field (which stays on
+the wire for in-flight messages). An unresolvable org **raises** rather than
+returning silently — unlike the other two handlers, whose message asks for work
+that can be re-requested, an audit message is the only copy of an append-only
+event, so it goes back to SQS and ultimately to the dead-letter queue.
 
 ### Custom-domain fallback (white-label vanity hostnames)
 

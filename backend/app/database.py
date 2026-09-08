@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
+from app.tenant_url import make_tenant_url
 
 # ---------------------------------------------------------------------------
 # Commit-before-response (read-after-write durability)
@@ -179,9 +180,15 @@ _tenant_engines: dict[str, AsyncEngine] = {}
 
 
 def _make_tenant_url(db_name: str) -> str:
-    """Replace the database name in the base URL."""
-    base = settings.database_url
-    return base.rsplit("/", 1)[0] + "/" + db_name
+    """Replace the database name in the control-plane URL.
+
+    A thin binding of `app.tenant_url.make_tenant_url` to `settings.database_url`
+    so ~70 in-app call sites keep spelling it `_make_tenant_url(db_name)`. The
+    construction itself lives in `app/tenant_url.py`, which imports nothing —
+    that is what lets the three AWS Lambda handlers share it instead of each
+    inlining a copy of this body (see that module's docstring).
+    """
+    return make_tenant_url(settings.database_url, db_name)
 
 
 def get_tenant_engine(db_name: str) -> AsyncEngine:
