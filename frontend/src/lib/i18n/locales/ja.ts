@@ -2016,6 +2016,12 @@ export const messages = {
 	'catalogs.punchout.start': 'パンチアウトを開始',
 	'catalogs.punchout.noRole': 'あなたのロールではパンチアウトセッションを開始できません。',
 	'catalogs.punchout.status': 'ステータス',
+	'catalogs.punchout.status.pending': 'カート待ち',
+	'catalogs.punchout.status.returned': 'カート受領',
+	'catalogs.punchout.status.converted': '変換済み',
+	'catalogs.punchout.status.expired': '期限切れ',
+	'catalogs.punchout.status.cancelled': 'キャンセル済み',
+
 	'catalogs.punchout.shoppingPrompt': 'サプライヤーで買い物中ですか?',
 	'catalogs.punchout.reopen': 'サプライヤーカタログを再度開く',
 	'catalogs.punchout.checking': '確認中…',

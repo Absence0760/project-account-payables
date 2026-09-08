@@ -2041,6 +2041,12 @@ export const messages = {
 	'catalogs.punchout.start': 'Iniciar punch-out',
 	'catalogs.punchout.noRole': 'Su rol no puede iniciar una sesión de punch-out.',
 	'catalogs.punchout.status': 'Estado',
+	'catalogs.punchout.status.pending': 'Esperando el carrito',
+	'catalogs.punchout.status.returned': 'Carrito recibido',
+	'catalogs.punchout.status.converted': 'Convertida',
+	'catalogs.punchout.status.expired': 'Vencida',
+	'catalogs.punchout.status.cancelled': 'Cancelada',
+
 	'catalogs.punchout.shoppingPrompt': '¿Comprando con el proveedor?',
 	'catalogs.punchout.reopen': 'Volver a abrir el catálogo del proveedor',
 	'catalogs.punchout.checking': 'Comprobando…',

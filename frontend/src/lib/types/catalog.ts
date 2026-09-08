@@ -10,6 +10,7 @@
 // into a float before any validator can intervene.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type CatalogType = 'internal' | 'punchout';
@@ -131,13 +132,30 @@ export type PunchoutSessionStatus =
 	| 'expired'
 	| 'cancelled';
 
-export const PUNCHOUT_STATUS_LABELS: Record<string, string> = {
-	pending: 'Awaiting cart',
-	returned: 'Cart returned',
-	converted: 'Converted',
-	expired: 'Expired',
-	cancelled: 'Cancelled'
+/**
+ * The i18n key carrying each session-status label — never the English string
+ * itself. `PunchoutModal` renders it beside its own translated Status label,
+ * so a hardcoded English map here was an untranslated badge one word away
+ * from a translated one.
+ *
+ * Keyed on the union (not `string`, as the label map used to be) so a new
+ * session status is a compile error rather than a badge that falls through to
+ * its raw enum value; `catalog.test.ts` proves every key exists in the
+ * catalogue. `PunchoutSession.status` is still a bare string on the wire —
+ * `punchoutStatusLabelKey` is the tolerant accessor for it.
+ */
+export const PUNCHOUT_STATUS_LABEL_KEYS: Record<PunchoutSessionStatus, MessageKey> = {
+	pending: 'catalogs.punchout.status.pending',
+	returned: 'catalogs.punchout.status.returned',
+	converted: 'catalogs.punchout.status.converted',
+	expired: 'catalogs.punchout.status.expired',
+	cancelled: 'catalogs.punchout.status.cancelled'
 };
+
+/** The message key for a session status, or `null` for an unrecognised one. */
+export function punchoutStatusLabelKey(status: string): MessageKey | null {
+	return PUNCHOUT_STATUS_LABEL_KEYS[status as PunchoutSessionStatus] ?? null;
+}
 
 // Badge tone per session status. Only `returned` and `converted` ever carried a
 // colour of their own; everything else shared one grey tint, and still does.

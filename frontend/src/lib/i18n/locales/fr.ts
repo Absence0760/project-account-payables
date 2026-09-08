@@ -2043,6 +2043,12 @@ export const messages = {
 	'catalogs.punchout.start': 'Démarrer le punch-out',
 	'catalogs.punchout.noRole': 'Votre rôle ne peut pas démarrer de session punch-out.',
 	'catalogs.punchout.status': 'Statut',
+	'catalogs.punchout.status.pending': 'En attente du panier',
+	'catalogs.punchout.status.returned': 'Panier reçu',
+	'catalogs.punchout.status.converted': 'Convertie',
+	'catalogs.punchout.status.expired': 'Expirée',
+	'catalogs.punchout.status.cancelled': 'Annulée',
+
 	'catalogs.punchout.shoppingPrompt': 'En train d’acheter chez le fournisseur ?',
 	'catalogs.punchout.reopen': 'Rouvrir le catalogue du fournisseur',
 	'catalogs.punchout.checking': 'Vérification…',

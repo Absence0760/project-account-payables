@@ -2113,6 +2113,14 @@ export const en = {
 	'catalogs.punchout.start': 'Start punch-out',
 	'catalogs.punchout.noRole': "Your role can't start a punch-out session.",
 	'catalogs.punchout.status': 'Status',
+
+	// Punch-out session status labels ($lib/types/catalog.ts)
+	'catalogs.punchout.status.pending': 'Awaiting cart',
+	'catalogs.punchout.status.returned': 'Cart returned',
+	'catalogs.punchout.status.converted': 'Converted',
+	'catalogs.punchout.status.expired': 'Expired',
+	'catalogs.punchout.status.cancelled': 'Cancelled',
+
 	'catalogs.punchout.shoppingPrompt': 'Shopping at the supplier?',
 	'catalogs.punchout.reopen': 'Re-open supplier catalog',
 	'catalogs.punchout.checking': 'Checking…',

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Catalog, PunchoutSession } from '$lib/types/catalog';
-	import { PUNCHOUT_STATUS_LABELS, punchoutStatusTone } from '$lib/types/catalog';
+	import { punchoutStatusLabelKey, punchoutStatusTone } from '$lib/types/catalog';
 	import { auth } from '$lib/stores/auth.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -31,6 +31,13 @@
 	let starting = $state(false);
 	let refreshing = $state(false);
 	let converting = $state(false);
+
+	// The session status is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = punchoutStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
 
 	const returned = $derived(session?.status === 'returned');
 	const converted = $derived(session?.status === 'converted');
@@ -103,7 +110,7 @@
 			<div class="status-row">
 				<span class="label">{m('catalogs.punchout.status')}</span>
 				<Badge tone={punchoutStatusTone(session.status)} variant={session.status}>
-					{PUNCHOUT_STATUS_LABELS[session.status] ?? session.status}
+					{statusLabel(session.status)}
 				</Badge>
 			</div>
 
