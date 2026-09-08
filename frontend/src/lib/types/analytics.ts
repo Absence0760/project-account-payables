@@ -151,6 +151,15 @@ export interface CfoSupplierConcentration {
 	largest_vendor: string | null;
 	largest_vendor_share_pct: number;
 	flagged: boolean;
+	/**
+	 * Invoices folded into `total_spend` — and therefore into every share above,
+	 * and into `flagged` — at FACE value, because no locked exchange rate bridged
+	 * them into the reporting currency. A count, not money. Non-zero means these
+	 * percentages are computed over a part-converted denominator; render the
+	 * shared `role="alert"` skipped-rows note beside them, as the cash-position
+	 * and AP-balance cards do for theirs.
+	 */
+	unconverted_count: number;
 }
 
 export interface CfoFraudTrendPoint {
