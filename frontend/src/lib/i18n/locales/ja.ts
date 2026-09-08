@@ -2343,6 +2343,11 @@ export const messages = {
 	'positivePay.col.account': '口座',
 	'positivePay.col.created': '作成日',
 	'positivePay.col.status': 'ステータス',
+	'positivePay.fileType.checkIssue': '小切手発行',
+	'positivePay.fileType.achAuthorization': 'ACH認可',
+	'positivePay.status.generated': '生成済み',
+	'positivePay.status.returnedProcessed': '返戻処理済み',
+
 	'positivePay.runLabel': 'バッチ {id}',
 	'positivePay.fileLabel': '{type} {id}',
 	'positivePay.empty': 'フィルターに一致するポジティブペイファイルがありません。',

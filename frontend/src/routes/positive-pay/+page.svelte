@@ -3,8 +3,8 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import {
-		POSITIVE_PAY_FILE_TYPE_LABELS,
-		POSITIVE_PAY_STATUS_LABELS,
+		POSITIVE_PAY_FILE_TYPE_LABEL_KEYS,
+		positivePayStatusLabelKey,
 		POSITIVE_PAY_STATUS_TONES
 	} from '$lib/types/positivePay';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -35,6 +35,13 @@
 	import { formatDate } from '$lib/utils/time';
 
 	const canCreate = $derived(auth.isManager);
+
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = positivePayStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
 
 	// file_type chips (single-select). "All" first.
 	const TYPE_CHIPS = $derived([
@@ -75,7 +82,10 @@
 	function fileLabel(f: PositivePayFile): string {
 		return f.file_type === 'check_issue' && f.payment_run_id
 			? m('positivePay.runLabel', { id: f.payment_run_id.slice(0, 8) })
-			: m('positivePay.fileLabel', { type: POSITIVE_PAY_FILE_TYPE_LABELS[f.file_type], id: f.id.slice(0, 8) });
+			: m('positivePay.fileLabel', {
+					type: m(POSITIVE_PAY_FILE_TYPE_LABEL_KEYS[f.file_type]),
+					id: f.id.slice(0, 8)
+				});
 	}
 
 	// `search` is a SERVER filter — `GET /api/positive-pay` matches the bank
@@ -353,7 +363,7 @@
 							{fileLabel(file)}
 						</RowLink>
 					</td>
-					<td class="muted">{POSITIVE_PAY_FILE_TYPE_LABELS[file.file_type]}</td>
+					<td class="muted">{m(POSITIVE_PAY_FILE_TYPE_LABEL_KEYS[file.file_type])}</td>
 					<td class="muted">{file.bank_format}</td>
 					<td class="right mono">{file.item_count}</td>
 					<td class="right mono"><Money amount={file.total_amount} currency={file.currency ?? orgCurrency.currency} /></td>
@@ -361,7 +371,7 @@
 					<td class="muted">{formatDate(file.created_at)}</td>
 					<td>
 						<Badge tone={POSITIVE_PAY_STATUS_TONES[file.status]} variant={file.status}>
-							{POSITIVE_PAY_STATUS_LABELS[file.status]}
+							{statusLabel(file.status)}
 						</Badge>
 					</td>
 					<td class="actions">

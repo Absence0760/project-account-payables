@@ -2447,6 +2447,13 @@ export const en = {
 	'positivePay.col.account': 'Account',
 	'positivePay.col.created': 'Created',
 	'positivePay.col.status': 'Status',
+
+	// Positive Pay file-type + status value labels ($lib/types/positivePay.ts). The type also interpolates into positivePay.fileLabel below, so an English literal would land mid-sentence.
+	'positivePay.fileType.checkIssue': 'Check issue',
+	'positivePay.fileType.achAuthorization': 'ACH authorization',
+	'positivePay.status.generated': 'Generated',
+	'positivePay.status.returnedProcessed': 'Return processed',
+
 	'positivePay.runLabel': 'Run {id}',
 	'positivePay.fileLabel': '{type} {id}',
 	'positivePay.empty': 'No Positive Pay files match your filters.',

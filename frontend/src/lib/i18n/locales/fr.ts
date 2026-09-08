@@ -2377,6 +2377,11 @@ export const messages = {
 	'positivePay.col.account': 'Compte',
 	'positivePay.col.created': 'Créé le',
 	'positivePay.col.status': 'Statut',
+	'positivePay.fileType.checkIssue': 'Émission de chèques',
+	'positivePay.fileType.achAuthorization': 'Autorisation ACH',
+	'positivePay.status.generated': 'Généré',
+	'positivePay.status.returnedProcessed': 'Retour traité',
+
 	'positivePay.runLabel': 'Lot {id}',
 	'positivePay.fileLabel': '{type} {id}',
 	'positivePay.empty': 'Aucun fichier Positive Pay ne correspond à vos filtres.',

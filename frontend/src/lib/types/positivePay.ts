@@ -8,6 +8,7 @@
 // response; a `PresentedItem` carries only a check number + amount.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 // --- File type ------------------------------------------------------------
@@ -19,10 +20,19 @@ export const POSITIVE_PAY_FILE_TYPES: PositivePayFileType[] = [
 	'ach_authorization'
 ];
 
-export const POSITIVE_PAY_FILE_TYPE_LABELS: Record<PositivePayFileType, string> = {
-	check_issue: 'Check issue',
-	ach_authorization: 'ACH authorization'
+// The file type is a table cell, a modal title AND the `{type}` interpolated
+// into the translated `positivePay.fileLabel` row label — so an English
+// literal here shows up mid-sentence in a German list, the same defect the
+// intake type labels had.
+export const POSITIVE_PAY_FILE_TYPE_LABEL_KEYS: Record<PositivePayFileType, MessageKey> = {
+	check_issue: 'positivePay.fileType.checkIssue',
+	ach_authorization: 'positivePay.fileType.achAuthorization'
 };
+
+/** The message key for a file type, or `null` for an unrecognised one. */
+export function positivePayFileTypeLabelKey(fileType: string): MessageKey | null {
+	return POSITIVE_PAY_FILE_TYPE_LABEL_KEYS[fileType as PositivePayFileType] ?? null;
+}
 
 // --- File status ----------------------------------------------------------
 
@@ -30,10 +40,23 @@ export type PositivePayStatus = 'generated' | 'returned_processed';
 
 export const POSITIVE_PAY_STATUSES: PositivePayStatus[] = ['generated', 'returned_processed'];
 
-export const POSITIVE_PAY_STATUS_LABELS: Record<PositivePayStatus, string> = {
-	generated: 'Generated',
-	returned_processed: 'Return processed'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ * Both surfaces that render it (the `/positive-pay` list and
+ * `PositivePayModal`'s detail header) sit beside translated type chips, so a
+ * hardcoded English map here read as a gap in the row.
+ * `Record<PositivePayStatus, MessageKey>` makes a new status a compile error
+ * rather than a blank badge; `positivePay.test.ts` proves the keys exist.
+ */
+export const POSITIVE_PAY_STATUS_LABEL_KEYS: Record<PositivePayStatus, MessageKey> = {
+	generated: 'positivePay.status.generated',
+	returned_processed: 'positivePay.status.returnedProcessed'
 };
+
+/** The message key for a status, or `null` for one this frontend doesn't know. */
+export function positivePayStatusLabelKey(status: string): MessageKey | null {
+	return POSITIVE_PAY_STATUS_LABEL_KEYS[status as PositivePayStatus] ?? null;
+}
 
 // Badge tone per status, so the list page and the modal can't tint the same
 // status two different shades — which is exactly what they did (the list's

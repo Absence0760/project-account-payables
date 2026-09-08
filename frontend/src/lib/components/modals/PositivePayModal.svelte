@@ -6,13 +6,14 @@
 		PresentedItemInput
 	} from '$lib/types/positivePay';
 	import {
-		POSITIVE_PAY_FILE_TYPE_LABELS,
-		POSITIVE_PAY_STATUS_LABELS,
+		positivePayFileTypeLabelKey,
+		positivePayStatusLabelKey,
 		POSITIVE_PAY_STATUS_TONES,
 		BANK_FORMATS,
 		BANK_FORMAT_LABELS
 	} from '$lib/types/positivePay';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { api } from '$lib/api';
 	import Badge from '$lib/components/ui/Badge.svelte';
@@ -195,8 +196,18 @@
 		}
 	}
 
+	// Both value maps are message keys, not English literals — an unrecognised
+	// value renders raw rather than blank. (The rest of this dialog's copy is
+	// not yet extracted; these two come from the shared types module, which the
+	// extracted /positive-pay list reads too.)
 	function fileTypeLabel(t: string): string {
-		return POSITIVE_PAY_FILE_TYPE_LABELS[t as PositivePayFileType] ?? t;
+		const key = positivePayFileTypeLabelKey(t);
+		return key ? m(key) : t;
+	}
+
+	function statusLabel(s: string): string {
+		const key = positivePayStatusLabelKey(s);
+		return key ? m(key) : s;
 	}
 
 	const returnSummary = $derived(detail?.meta?.return_summary ?? null);
@@ -288,7 +299,7 @@
 		<!-- Detail view -->
 		<div class="status-row">
 			<Badge tone={POSITIVE_PAY_STATUS_TONES[detail.status]} variant={detail.status}>
-				{POSITIVE_PAY_STATUS_LABELS[detail.status]}
+				{statusLabel(detail.status)}
 			</Badge>
 			<span class="meta-pill">{fileTypeLabel(detail.file_type)}</span>
 			<span class="meta-pill">{detail.bank_format}</span>
