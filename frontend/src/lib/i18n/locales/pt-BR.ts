@@ -4090,6 +4090,11 @@ export const messages = {
 	'discounts.opt.selectedOutlay': 'Desembolso selecionado:',
 	'discounts.opt.selectedSavings': 'Economia selecionada:',
 	'discounts.opt.sub': 'Classifica as ofertas abertas por retorno em relação ao seu custo de capital e, em seguida, seleciona de forma gulosa dentro de um orçamento de caixa opcional.',
+	'discounts.opt.unrankableHeading': 'Sem classificação — TIR desconhecida',
+	'discounts.opt.unrankableNote': '{n, plural, one {# oferta não tem} other {# ofertas não têm}} data de vencimento líquida, portanto não há horizonte para anualizar o retorno. A economia é real e aparece abaixo; a TIR fica retida em vez de ser informada como 0 %. Elas não entram em nenhum total acima e nunca foram selecionadas — registre a data de vencimento da fatura para classificá-las.',
+	'discounts.opt.aprUnknown': 'TIR desconhecida — sem data de vencimento',
+	'discounts.opt.notRanked': 'Sem classificação',
+
 	'discounts.redirecting': 'Redirecionando…',
 	'discounts.row.accept': 'Aceitar',
 	'discounts.row.acceptAria': 'Aceitar desconto para {vendor}',

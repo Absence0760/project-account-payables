@@ -4047,6 +4047,11 @@ export const messages = {
 	'discounts.opt.selectedOutlay': '選択された支出：',
 	'discounts.opt.selectedSavings': '選択された節約額：',
 	'discounts.opt.sub': '未処理の提示を資本コストに対する利回りで順位付けし、任意の現金予算内で貪欲法により選択します。',
+	'discounts.opt.unrankableHeading': 'ランキング対象外 — 年率不明',
+	'discounts.opt.unrankableNote': '{n, plural, other {# 件の割引}}に正味支払期日がないため、年率換算する期間が定まりません。割引額は実数で表示していますが、年率は 0 % と報告せずに保留しています。上のどの合計にも含まれず、選択もされていません。請求書の支払期日を登録するとランキングに入ります。',
+	'discounts.opt.aprUnknown': '年率不明 — 支払期日なし',
+	'discounts.opt.notRanked': '対象外',
+
 	'discounts.redirecting': 'リダイレクト中…',
 	'discounts.row.accept': '承諾',
 	'discounts.row.acceptAria': '{vendor} の割引を承諾',

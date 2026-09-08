@@ -4062,6 +4062,11 @@ export const messages = {
 	'discounts.opt.selectedOutlay': 'Dépense sélectionnée :',
 	'discounts.opt.selectedSavings': 'Économies sélectionnées :',
 	'discounts.opt.sub': 'Classe les offres ouvertes selon le rendement par rapport à votre coût du capital, puis sélectionne de façon gloutonne dans un budget de trésorerie optionnel.',
+	'discounts.opt.unrankableHeading': 'Non classée — TAEG inconnu',
+	'discounts.opt.unrankableNote': '{n, plural, one {# offre n’a pas} other {# offres n’ont pas}} de date d’échéance nette : il n’y a donc pas d’horizon sur lequel annualiser le rendement. L’économie est réelle et affichée ; le TAEG est retenu plutôt que rapporté à 0 %. Elles n’entrent dans aucun total ci-dessus et n’ont jamais été sélectionnées — renseignez la date d’échéance de la facture pour les classer.',
+	'discounts.opt.aprUnknown': 'TAEG inconnu — pas de date d’échéance',
+	'discounts.opt.notRanked': 'Non classée',
+
 	'discounts.redirecting': 'Redirection…',
 	'discounts.row.accept': 'Accepter',
 	'discounts.row.acceptAria': 'Accepter l\'escompte pour {vendor}',

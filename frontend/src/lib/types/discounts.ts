@@ -106,21 +106,45 @@ export interface DiscountDashboard {
 	excluded_missed_count: number;
 }
 
-/** Per-invoice ROI / cost-of-capital comparison for accepting early payment. */
+/**
+ * Per-invoice ROI / cost-of-capital comparison for accepting early payment.
+ *
+ * **Every horizon-relative field is nullable**, because the horizon itself can
+ * be unknown: a vendor-scoped bulk offer spans many invoices and has no single
+ * net due date (`schemas/discount.py::DiscountROIResponse`). `horizon_known`
+ * is the marker — when it is `false`, `days_accelerated` /
+ * `annualized_return_pct` / `opportunity_cost` / `net_benefit` are `null` and
+ * `worthwhile` is `null` meaning *cannot rank*, which is NOT the same answer
+ * as `false` (*ranked, and it loses*).
+ *
+ * These were typed non-nullable while the server substituted the discount
+ * deadline for a missing due date, which reported a fabricated `0.00 %` APR.
+ * Now that the server withholds instead, a non-nullable type here would let a
+ * caller write `roi.annualized_return_pct.toFixed(1)` and render `0.0% APR`
+ * for "we don't know" — the exact claim the backend change exists to stop.
+ */
 export interface DiscountRoi {
 	base_amount: MoneyAmount;
 	discount_percent: number;
-	days_accelerated: number;
+	days_accelerated: number | null;
+	/** Horizon-FREE — a percentage of the base amount, so it is real even when
+	 *  nothing else here is. It is the one figure an unrankable offer shows. */
 	savings: MoneyAmount;
-	annualized_return_pct: number;
+	annualized_return_pct: number | null;
 	cost_of_capital_pct: number;
 	opportunity_cost: MoneyAmount;
 	/**
 	 * The server's own savings-minus-opportunity-cost verdict. Rendered, never
-	 * re-derived: `worthwhile` beside it is the boolean the UI branches on.
+	 * re-derived: `worthwhile` beside it is the boolean the UI branches on —
+	 * and it is tri-state, so branch on `=== true`, never on truthiness alone
+	 * where `null` would silently read as "not worthwhile".
 	 */
 	net_benefit: MoneyAmount;
-	worthwhile: boolean;
+	worthwhile: boolean | null;
+	/** `false` = no net due date to accelerate against; read the nulls above as
+	 *  "unknown", never as zero. Optional so a response predating the field
+	 *  still parses — absent means the horizon WAS known (the old contract). */
+	horizon_known?: boolean;
 }
 
 /** One ranked recommendation in an optimization run. */
@@ -166,6 +190,18 @@ export interface DiscountOptimization {
 	 *  `unconvertible_offer_count` — two responses, two field names. */
 	unconvertible_count: number;
 	recommendations: DiscountRecommendation[];
+	/**
+	 * Offers with no resolvable net due date. Their `roi.horizon_known` is
+	 * `false` and their APR / verdict are `null`: they cannot be placed in an
+	 * APR ranking, so the server carries them here instead of sorting them to
+	 * the bottom of `recommendations` at a fabricated 0.00 %. They are in no
+	 * total and were never selected; each carries a real `roi.savings`.
+	 *
+	 * Optional because a response predating the field must still parse — the
+	 * page renders `?? []`, so an older backend shows no section rather than
+	 * throwing.
+	 */
+	unrankable?: DiscountRecommendation[];
 }
 
 /** Status-filter keys the dashboard's FilterChips drive. `missed` maps to the

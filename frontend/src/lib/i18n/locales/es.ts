@@ -4087,6 +4087,11 @@ export const messages = {
 	'discounts.opt.selectedOutlay': 'Desembolso seleccionado:',
 	'discounts.opt.selectedSavings': 'Ahorros seleccionados:',
 	'discounts.opt.sub': 'Clasifica las ofertas abiertas por rentabilidad frente a su coste de capital y luego selecciona de forma voraz dentro de un presupuesto de efectivo opcional.',
+	'discounts.opt.unrankableHeading': 'Sin clasificar: TAE desconocida',
+	'discounts.opt.unrankableNote': '{n, plural, one {# oferta no tiene} other {# ofertas no tienen}} fecha de vencimiento neta, por lo que no hay horizonte sobre el que anualizar el rendimiento. El ahorro es real y se muestra; la TAE se omite en lugar de informarse como 0 %. No entran en ningún total de arriba y nunca se seleccionaron: registre la fecha de vencimiento de la factura para clasificarlas.',
+	'discounts.opt.aprUnknown': 'TAE desconocida: sin fecha de vencimiento',
+	'discounts.opt.notRanked': 'Sin clasificar',
+
 	'discounts.redirecting': 'Redirigiendo…',
 	'discounts.row.accept': 'Aceptar',
 	'discounts.row.acceptAria': 'Aceptar descuento para {vendor}',

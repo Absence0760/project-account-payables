@@ -4176,6 +4176,13 @@ export const en = {
 	'discounts.opt.selectedOutlay': 'Selected outlay:',
 	'discounts.opt.selectedSavings': 'Selected savings:',
 	'discounts.opt.sub': 'Ranks open offers by ROI vs your cost of capital, then greedily selects within an optional cash budget.',
+
+	// Offers the optimizer could not RANK — no net due date, so the ROI horizon is unknown (POST /api/discounts/optimize → unrankable[])
+	'discounts.opt.unrankableHeading': 'Not ranked — APR unknown',
+	'discounts.opt.unrankableNote': '{n, plural, one {# offer has} other {# offers have}} no net due date, so there is no horizon to annualize the return over. The saving is real and shown; the APR is withheld rather than reported as 0%. They are in no total above and were never selected — set the invoice due date to rank them.',
+	'discounts.opt.aprUnknown': 'APR unknown — no due date',
+	'discounts.opt.notRanked': 'Not ranked',
+
 	'discounts.redirecting': 'Redirecting…',
 	'discounts.row.accept': 'Accept',
 	'discounts.row.acceptAria': 'Accept discount for {vendor}',

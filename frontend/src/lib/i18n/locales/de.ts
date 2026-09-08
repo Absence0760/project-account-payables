@@ -4061,6 +4061,11 @@ export const messages = {
 	'discounts.opt.selectedOutlay': 'Ausgewählte Auszahlung:',
 	'discounts.opt.selectedSavings': 'Ausgewählte Einsparungen:',
 	'discounts.opt.sub': 'Ordnet offene Angebote nach Rendite im Verhältnis zu Ihren Kapitalkosten und wählt dann gierig innerhalb eines optionalen Liquiditätsbudgets aus.',
+	'discounts.opt.unrankableHeading': 'Nicht bewertet — Rendite unbekannt',
+	'discounts.opt.unrankableNote': '{n, plural, one {# Angebot hat} other {# Angebote haben}} kein Nettofälligkeitsdatum, also gibt es keinen Zeitraum, über den sich die Rendite hochrechnen lässt. Die Ersparnis ist real und wird angezeigt; die Rendite wird zurückgehalten statt als 0 % gemeldet. Sie fließen in keine Summe oben ein und wurden nie ausgewählt — hinterlegen Sie das Rechnungsfälligkeitsdatum, um sie zu bewerten.',
+	'discounts.opt.aprUnknown': 'Rendite unbekannt — kein Fälligkeitsdatum',
+	'discounts.opt.notRanked': 'Nicht bewertet',
+
 	'discounts.redirecting': 'Weiterleitung…',
 	'discounts.row.accept': 'Annehmen',
 	'discounts.row.acceptAria': 'Skonto für {vendor} annehmen',
