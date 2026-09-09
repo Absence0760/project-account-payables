@@ -55,7 +55,12 @@ from app.models.procurement import (
 )
 from app.models.recurring_invoice import RecurringInvoiceTemplate
 from app.models.vendor import Vendor
-from app.models.vendor_statement_recon import VendorStatementReconciliation
+from app.models.vendor_statement_recon import (
+    RESOLUTION_RESOLVED,
+    RESOLUTION_UNRESOLVED,
+    VendorStatementReconciliation,
+    VendorStatementReconLine,
+)
 from app.utils.dates import utc_today
 
 pytestmark = pytest.mark.asyncio
@@ -1371,9 +1376,23 @@ def _vsr_expect(
 
 
 def _vsr_discrepancies(rows: list[dict]) -> int:
+    """The expected `open_discrepancies` — ACTIONABLE lines still unresolved.
+
+    Deliberately not `amount_mismatch + missing_our_side + missing_their_side`,
+    which is what this returned while the endpoint summed the run's import-time
+    counter columns. Two things were wrong with that and both are load-bearing
+    here: `missing_on_their_side` is not in `_ACTIONABLE_CLASSES` (it never
+    blocks a run from resolving), and a counter column is never decremented, so
+    the figure could not fall as a clerk cleared lines.
+
+    A `resolved` run has no unresolved actionable lines by construction — see
+    `_seed_vendor_statements`, which seeds the lines its counters describe
+    rather than leaving the run a bare set of counters no line backs up.
+    """
     return sum(
-        r["amount_mismatch_count"] + r["missing_our_side_count"] + r["missing_their_side_count"]
+        r["amount_mismatch_count"] + r["missing_our_side_count"]
         for r in rows
+        if r["status"] == "open"
     )
 
 
@@ -1399,23 +1418,45 @@ async def _seed_vendor_statements(realdb, key="a", *, entity_id=None, rows=None)
         await s.flush()
         for spec in specs:
             spec["vendor_id"] = vendor_ids[spec["vendor"]]
-            s.add(
-                VendorStatementReconciliation(
-                    organization_id=org_id,
-                    entity_id=eid,
-                    vendor_id=spec["vendor_id"],
-                    vendor_name=spec["vendor_name"],
-                    statement_date=_TODAY,
-                    statement_reference=spec["statement_reference"],
-                    currency="USD",
-                    status=spec["status"],
-                    line_count=5,
-                    matched_count=2,
-                    amount_mismatch_count=spec["amount_mismatch_count"],
-                    missing_our_side_count=spec["missing_our_side_count"],
-                    missing_their_side_count=spec["missing_their_side_count"],
-                )
+            run = VendorStatementReconciliation(
+                organization_id=org_id,
+                entity_id=eid,
+                vendor_id=spec["vendor_id"],
+                vendor_name=spec["vendor_name"],
+                statement_date=_TODAY,
+                statement_reference=spec["statement_reference"],
+                currency="USD",
+                status=spec["status"],
+                line_count=5,
+                matched_count=2,
+                amount_mismatch_count=spec["amount_mismatch_count"],
+                missing_our_side_count=spec["missing_our_side_count"],
+                missing_their_side_count=spec["missing_their_side_count"],
             )
+            s.add(run)
+            await s.flush()
+            # Seed the LINES the counters describe. The rollup counts lines, not
+            # counters, so a run seeded as bare counters is not a run the import
+            # path can produce — and a fixture that cannot occur in production
+            # tests nothing about it. A `resolved` run's lines are resolved, or
+            # the run's status would contradict its own contents.
+            resolution = RESOLUTION_UNRESOLVED if spec["status"] == "open" else RESOLUTION_RESOLVED
+            for classification, count in (
+                ("amount_mismatch", spec["amount_mismatch_count"]),
+                ("missing_on_our_side", spec["missing_our_side_count"]),
+                ("missing_on_their_side", spec["missing_their_side_count"]),
+            ):
+                for n in range(count):
+                    s.add(
+                        VendorStatementReconLine(
+                            organization_id=org_id,
+                            entity_id=eid,
+                            reconciliation_id=run.id,
+                            statement_invoice_number=f"{spec['statement_reference']}-{classification[:4]}-{n}",
+                            classification=classification,
+                            resolution_status=resolution,
+                        )
+                    )
         await s.commit()
     return specs
 
