@@ -12,7 +12,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/organization getting-started strip', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders above the Company Profile section with the expected links', async ({ page }) => {

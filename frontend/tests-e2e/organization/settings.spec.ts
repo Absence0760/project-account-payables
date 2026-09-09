@@ -54,7 +54,6 @@ async function patchOrg(
 test.describe('/organization settings', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('all section cards render with their headings', async ({ page }) => {
@@ -171,7 +170,6 @@ test.describe('/organization settings', () => {
 			// Reload — page hydrates from /api/organization, so the textarea
 			// should be repopulated with the new value.
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await expect(
 				page
 					.locator('section.card', {
@@ -220,7 +218,6 @@ test.describe('/organization settings', () => {
 			// initial load — reload and confirm it still renders from a fresh
 			// GET too.
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByTestId('mfa-enforcement-inactive')).toBeVisible();
 		} finally {
 			await patchOrg(page, { settings: { mfa: { required: false } } });

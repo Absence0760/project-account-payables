@@ -70,7 +70,6 @@ test.describe('/organization email intake', () => {
 		// address can only mean the platform has no intake domain — which is the
 		// committed dev default, so this is the honest local state, not a stub.
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 		const minted = await page.request.post(
 			`${API_BASE}/api/organization/email-intake/rotate-token`,
 			{ headers: await authedTenantHeaders(page) }
@@ -80,7 +79,6 @@ test.describe('/organization email intake', () => {
 		expect((await minted.json()) as { address: string | null }).toEqual({ address: null });
 
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 
 		const card = panel(page);
 		await expect(card.getByTestId('email-intake-unavailable')).toBeVisible();
@@ -98,7 +96,6 @@ test.describe('/organization email intake', () => {
 	test('an admin sees the intake address with a copy control', async ({ page }) => {
 		await mockIntake(page, { address: CONFIGURED, enabled: true });
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 
 		const card = panel(page);
 		await expect(card.getByTestId('email-intake-address')).toHaveText(CONFIGURED);
@@ -110,7 +107,6 @@ test.describe('/organization email intake', () => {
 	test('rotate needs the armed second click and yields a different address', async ({ page }) => {
 		await mockIntake(page, { address: CONFIGURED, enabled: true });
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 
 		const card = panel(page);
 		const rotate = card.getByRole('button', { name: 'Rotate the email intake address' });
@@ -151,7 +147,6 @@ test.describe('/organization email intake', () => {
 	test('an unprovisioned tenant is offered create, never rotate', async ({ page }) => {
 		await mockIntake(page, { address: null, enabled: false });
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 
 		const card = panel(page);
 		await expect(card.getByTestId('email-intake-unprovisioned')).toBeVisible();
@@ -169,7 +164,6 @@ test.describe('/organization email intake', () => {
 	}) => {
 		await signInAndWait(page, tenantClerk);
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 
 		await expect(page.getByTestId('org-readonly-banner')).toBeVisible();
 

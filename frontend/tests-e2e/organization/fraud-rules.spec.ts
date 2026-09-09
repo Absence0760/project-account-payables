@@ -66,7 +66,6 @@ test.describe('/organization — fraud rules', () => {
 	test.beforeEach(async ({ page }) => {
 		await clearFraudOverrides(page);
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test.afterAll(async ({ browser }) => {
