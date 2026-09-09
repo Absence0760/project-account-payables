@@ -544,6 +544,12 @@ export const en = {
 	'vendors.screening.blocked': 'Blocked',
 	'vendors.screening.adverseMedia': 'Negative news',
 	'vendors.screening.adverseMediaTitle': 'Adverse-media (negative news) hit — review the relationship',
+	// Screening-hit taxonomy ($lib/types/vendor.ts). Fixed, PII-free vocabulary —
+	// the adapters normalise every provider's own wording into these four.
+	'vendors.screening.category.sanctions': 'Sanctions list',
+	'vendors.screening.category.pep': 'Politically exposed person',
+	'vendors.screening.category.adverseMedia': 'Negative news',
+	'vendors.screening.category.highRiskCountry': 'High-risk jurisdiction',
 
 	// Vendor risk level + the two composed pill strings, and the enrichable-field names ($lib/types/vendor.ts)
 	'vendors.risk.low': 'Low',
