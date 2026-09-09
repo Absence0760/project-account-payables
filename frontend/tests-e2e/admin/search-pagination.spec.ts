@@ -56,6 +56,27 @@ function purgeE2EUsers(): void {
 }
 
 /**
+ * The list fetch `/admin` issues on mount: `GET /api/admin/users` with no
+ * `search`. Register it BEFORE the navigation and await it after.
+ *
+ * It is not interchangeable with waiting on the table: `DataTable` renders a
+ * placeholder row while the fetch is in flight, so `table tbody tr` is
+ * satisfied before the real list exists — and a mount fetch still in flight
+ * when a test starts typing lands AFTER the debounced search response and
+ * replaces the filtered list with the unfiltered one.
+ */
+function mountUsersFetch(page: import('@playwright/test').Page) {
+	return page.waitForResponse((r) => {
+		const url = new URL(r.url());
+		return (
+			r.request().method() === 'GET' &&
+			url.pathname.endsWith('/api/admin/users') &&
+			!url.searchParams.get('search')
+		);
+	});
+}
+
+/**
  * /admin user list — search + pagination. The list endpoint defaults
  * to page_size=20, supports ?search= against full_name + email
  * (case-insensitive), and the UI exposes both a debounced search
@@ -65,7 +86,6 @@ function purgeE2EUsers(): void {
 test.describe('/admin user search + pagination', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/admin');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test.afterEach(() => {
@@ -92,8 +112,9 @@ test.describe('/admin user search + pagination', () => {
 				)
 			);
 
+			const loaded = mountUsersFetch(page);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
+			await loaded;
 
 			const searchInput = page.getByPlaceholder('Search name or email...');
 			await expect(searchInput).toBeVisible();
@@ -131,8 +152,9 @@ test.describe('/admin user search + pagination', () => {
 				)
 			);
 
+			const loaded = mountUsersFetch(page);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
+			await loaded;
 
 			const filtered = page.waitForResponse(
 				(r) =>
@@ -160,8 +182,9 @@ test.describe('/admin user search + pagination', () => {
 					'Clear Test'
 				)
 			);
+			const loaded = mountUsersFetch(page);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
+			await loaded;
 
 			const baseCount = await page.locator('table tbody tr').count();
 
@@ -206,8 +229,9 @@ test.describe('/admin user search + pagination', () => {
 
 			// Filter to just our throwaway batch so the test is independent
 			// of how many users the seed has.
+			const loaded = mountUsersFetch(page);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
+			await loaded;
 			await page.getByPlaceholder('Search name or email...').fill(`e2e-search-page-${ts}`);
 			await page.waitForResponse(
 				(r) => r.url().includes('/api/admin/users') && r.url().includes('search=')

@@ -84,7 +84,6 @@ test.describe('/bank-reconciliation — Statements search', () => {
 		const ids: string[] = [];
 		try {
 			await page.goto('/bank-reconciliation?tab=statements');
-			await page.waitForLoadState('networkidle');
 
 			for (const [account, marker] of [
 				[needleAccount, `op-${tag}`],
@@ -96,7 +95,6 @@ test.describe('/bank-reconciliation — Statements search', () => {
 			}
 
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			const needleRow = page.getByRole('button', {
 				name: new RegExp(`Open bank statement ${needleAccount}`)
@@ -130,7 +128,6 @@ test.describe('/bank-reconciliation — Statements search', () => {
 			// A reload restores the filter from the URL — the term, the rows and
 			// the footer all come back together.
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByLabel('Search bank statements')).toHaveValue(needleAccount);
 			await expect(needleRow).toBeVisible({ timeout: 10_000 });
 			await expect(otherRow).toHaveCount(0);
@@ -194,7 +191,6 @@ test.describe('/bank-reconciliation — Statements search', () => {
 		let id: string | null = null;
 		try {
 			await page.goto('/bank-reconciliation?tab=statements');
-			await page.waitForLoadState('networkidle');
 
 			const resp = await importStatement(page, account, `em-${tag}`);
 			expect(resp.status()).toBe(201);
@@ -241,7 +237,6 @@ test.describe('/bank-reconciliation — Statements search', () => {
 		let id: string | null = null;
 		try {
 			await page.goto('/bank-reconciliation?tab=statements');
-			await page.waitForLoadState('networkidle');
 
 			const resp = await importStatement(page, account, `tb-${tag}`);
 			expect(resp.status()).toBe(201);
@@ -289,7 +284,6 @@ test.describe('/bank-reconciliation — Statements search (clerk)', () => {
 	test('ap_clerk can search — read is all four roles', async ({ page, tenantClerk }) => {
 		await signInAndWait(page, tenantClerk);
 		await page.goto('/bank-reconciliation?tab=statements');
-		await page.waitForLoadState('networkidle');
 
 		const box = page.getByLabel('Search bank statements');
 		await expect(box).toBeVisible();

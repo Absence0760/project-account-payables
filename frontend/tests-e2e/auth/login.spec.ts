@@ -15,7 +15,6 @@ test.use({ storageState: { cookies: [], origins: [] } });
 test.describe('/login', () => {
 	test('renders the sign-in form for an anon visitor', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 
 		await expect(page.getByRole('heading', { name: 'FeohLedger' })).toBeVisible();
 		await expect(page.locator('input[type="email"]')).toBeVisible();
@@ -51,7 +50,10 @@ test.describe('/ (no-tenant landing)', () => {
 
 	test('shows the marketing landing, not the login form', async ({ page }) => {
 		await page.goto('/');
-		await page.waitForLoadState('networkidle');
+
+		// Anchor on the marketing hero first. Without it the absence check
+		// below would pass on a page that had rendered nothing at all.
+		await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 
 		// Login form should NOT be present on the no-tenant route.
 		await expect(page.locator('input[type="password"]')).toHaveCount(0);

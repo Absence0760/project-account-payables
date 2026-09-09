@@ -86,24 +86,29 @@ test.describe('entity switcher — a deactivated entity', () => {
 		const slug = `${SLUG_PREFIX}-live-${suffix}`;
 
 		await page.goto('/');
-		await page.waitForLoadState('networkidle');
 		const entityId = await createEntity(page, name, slug);
 
 		// Pick it up in the switcher and select it — the state a real user is in
 		// when an admin archives the entity out from under them.
+		//
+		// The reload's OWN dashboard fetch has to land before the scoped waiter
+		// is armed, or the waiter captures that request instead of the one the
+		// selection triggers: `entityStore.select()` calls
+		// window.location.reload(), so the scoped request comes from a fresh
+		// page load rather than an in-place re-fetch.
+		const firstDashboard = page.waitForResponse((r) => r.url().includes('/api/dashboard'));
 		await page.reload();
-		await page.waitForLoadState('networkidle');
+		await firstDashboard;
+
 		const scopedReq = page.waitForRequest((r) => r.url().includes('/api/dashboard'));
 		await page.locator('.entity-btn').click();
 		await page.locator('.entity-option', { hasText: name }).click();
 		expect((await scopedReq).headers()['x-entity-id']).toBe(entityId);
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('.entity-name')).toHaveText(name);
 
 		// The admin archives it.
 		await deactivateEntity(page, entityId);
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 
 		// The scope falls back to the consolidated view rather than sitting on a
 		// retired subsidiary.
@@ -141,12 +146,10 @@ test.describe('entity switcher — a deactivated entity', () => {
 		const slug = `${SLUG_PREFIX}-cold-${suffix}`;
 
 		await page.goto('/');
-		await page.waitForLoadState('networkidle');
 		const entityId = await createEntity(page, name, slug);
 		await deactivateEntity(page, entityId);
 
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 
 		// The switcher still renders — the tenant HAS more than one entity, and
 		// the consolidated view is the only way to read the archived one's

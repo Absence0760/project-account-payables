@@ -54,7 +54,6 @@ test.describe('/payments cards pagination', () => {
 		seedCards(22);
 
 		await page.goto('/payments');
-		await page.waitForLoadState('networkidle');
 		// The wait is armed BEFORE the click, not after it. `waitForResponse`
 		// only observes responses that arrive after it is called, so awaiting it
 		// afterwards loses a race the local dev stack wins routinely — the fetch
