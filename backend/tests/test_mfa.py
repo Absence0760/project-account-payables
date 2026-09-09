@@ -393,6 +393,57 @@ async def test_verify_mfa_challenge_token_rejects_replay():
         assert exc.value.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_enroll_and_disable_mfa_write_audit_actions():
+    """A second factor being ADDED or REMOVED is at least as audit-worthy as
+    the step-up failures around it. `enroll_mfa_verify` / `disable_mfa` used to
+    write no audit row on success, unlike the passkey register/remove path."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from unittest.mock import patch as _patch
+
+    import pyotp
+
+    from app.api import auth as auth_mod
+    from app.schemas.auth import MFADisableRequest, MFAEnrollVerifyRequest
+
+    secret = pyotp.random_base32()
+    user = _mfa_user(enrolled=False)
+    db = _single_user_db(user)
+    audit_calls: list[str] = []
+
+    async def _fake_audit(**kwargs):
+        audit_calls.append(kwargs["action"])
+
+    fake_mfa = SimpleNamespace(
+        read_pending_totp_secret=AsyncMock(return_value=secret),
+        verify_totp=AsyncMock(return_value=True),
+        clear_pending_totp_secret=AsyncMock(),
+        org_requires_mfa=lambda _s: False,
+    )
+
+    with (
+        _patch.object(auth_mod, "dispatch_auth_audit", _fake_audit),
+        _patch.object(auth_mod, "mfa", fake_mfa),
+        _patch.object(
+            auth_mod, "_load_user_org", AsyncMock(return_value=SimpleNamespace(settings={}))
+        ),
+        _patch.object(auth_mod, "_user_response", lambda u, o: {"ok": True}),
+        _patch.object(auth_mod, "_relying_party", AsyncMock(return_value=None)),
+        _patch.object(auth_mod, "_throttle_step_up", AsyncMock()),
+        _patch.object(auth_mod, "_step_up_satisfied", AsyncMock(return_value=True)),
+        _patch.object(auth_mod.settings, "mfa_enabled", True),
+    ):
+        await auth_mod.enroll_mfa_verify(MFAEnrollVerifyRequest(code="123456"), user, db)
+        assert "auth.mfa.enrolled" in audit_calls
+
+        user.mfa_enabled = True
+        user.mfa_secret = secret
+        audit_calls.clear()
+        await auth_mod.disable_mfa(MFADisableRequest(code=pyotp.TOTP(secret).now()), user, db, None)
+        assert "auth.mfa.disabled" in audit_calls
+
+
 # --- tiny local helpers for the two tests above ----------------------
 
 
