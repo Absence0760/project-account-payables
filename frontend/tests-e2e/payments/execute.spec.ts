@@ -104,12 +104,18 @@ test.describe('/payments execute', () => {
 		// configuration (single-operator accounts). SoD enforcement is tested
 		// in run-cfo-signoff.spec.ts.
 		await patchOrg(page, { payments: { require_run_segregation: false } });
-		// Wait for the page to settle before navigating — avoids ERR_ABORTED
-		// when the pre-navigated tenant root still has in-flight HMR/redirect
-		// requests outstanding from the storageState fixture's initial goto.
+		// KEPT deliberately. Wait for the page to settle before navigating —
+		// avoids ERR_ABORTED when the pre-navigated tenant root still has
+		// in-flight HMR/redirect requests outstanding from the storageState
+		// fixture's initial goto. Unlike every other `networkidle` in this
+		// directory this one is about the OUTGOING page, not about content
+		// arriving, so there is no single request to name in its place.
+		//
+		// The one that used to sit after the navigation is gone: every test in
+		// this describe opens with a `page.request` call, whose only
+		// precondition is the same-origin document `goto` already guarantees.
 		await page.waitForLoadState('networkidle');
 		await page.goto('/payments');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test.afterEach(async ({ page, tenantAdmin }) => {
@@ -211,7 +217,6 @@ test.describe('/payments execute', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await page.locator('.tab', { hasText: 'Runs' }).click();
 			await page
 				.getByRole('button', { name: `View payment run ${runId.slice(0, 8)}` })
@@ -255,7 +260,6 @@ test.describe('/payments execute', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await page.locator('.tab', { hasText: 'Runs' }).click();
 			await page
 				.getByRole('button', { name: `View payment run ${runId.slice(0, 8)}` })
