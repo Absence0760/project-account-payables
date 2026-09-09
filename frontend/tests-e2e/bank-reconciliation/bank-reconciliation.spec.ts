@@ -78,7 +78,6 @@ async function deleteStatement(page: Page, id: string) {
 test.describe('/bank-reconciliation (admin)', () => {
 	test('renders the outstanding worksheet — heading, KPIs, tabs, filters', async ({ page }) => {
 		await page.goto('/bank-reconciliation');
-		await page.waitForLoadState('networkidle');
 
 		await expect(page.getByRole('heading', { name: 'Bank Reconciliation', level: 1 })).toBeVisible();
 
@@ -104,7 +103,6 @@ test.describe('/bank-reconciliation (admin)', () => {
 
 	test('the age filter is a SERVER filter and is URL-backed', async ({ page }) => {
 		await page.goto('/bank-reconciliation');
-		await page.waitForLoadState('networkidle');
 
 		const respPromise = page.waitForResponse(
 			(r) =>
@@ -118,7 +116,6 @@ test.describe('/bank-reconciliation (admin)', () => {
 
 		// And a reload restores the same filter from the URL.
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('.filter-chip.active', { hasText: 'Over 30 days' })).toBeVisible();
 	});
 
@@ -127,7 +124,6 @@ test.describe('/bank-reconciliation (admin)', () => {
 		let id: string | null = null;
 		try {
 			await page.goto('/bank-reconciliation');
-			await page.waitForLoadState('networkidle');
 
 			const resp = await importStatement(page, account, unmatchableCsv(`E2E-${account}`));
 			expect(resp.status()).toBe(201);
@@ -143,7 +139,6 @@ test.describe('/bank-reconciliation (admin)', () => {
 			expect(((await again.json()) as ImportedStatement).id).toBe(id);
 
 			await page.goto('/bank-reconciliation?tab=statements');
-			await page.waitForLoadState('networkidle');
 
 			const openRow = page.getByRole('button', { name: new RegExp(`Open bank statement ${account}`) });
 			await expect(openRow).toBeVisible({ timeout: 10_000 });
@@ -172,7 +167,6 @@ test.describe('/bank-reconciliation (admin)', () => {
 		let id: string | null = null;
 		try {
 			await page.goto('/bank-reconciliation');
-			await page.waitForLoadState('networkidle');
 
 			const resp = await importStatement(page, account, unmatchableCsv(`E2E-${account}`));
 			expect(resp.status()).toBe(201);
@@ -287,7 +281,6 @@ test.describe('/bank-reconciliation (admin)', () => {
 		let id: string | null = null;
 		try {
 			await page.goto('/bank-reconciliation');
-			await page.waitForLoadState('networkidle');
 
 			const resp = await importStatement(page, account, unmatchableCsv(`E2E-${account}`));
 			expect(resp.status()).toBe(201);
@@ -353,7 +346,6 @@ test.describe('/bank-reconciliation (clerk — reads, cannot mutate)', () => {
 		// group, so it surfaces as a section tab on that group's pages, not as a
 		// top-level sidebar link (see tests-e2e/smoke/section-nav.spec.ts).
 		await page.goto('/bank-reconciliation');
-		await page.waitForLoadState('networkidle');
 		await expect(
 			page.locator('.section-tabs a.section-tab[href="/bank-reconciliation"]')
 		).toBeVisible();
@@ -364,9 +356,11 @@ test.describe('/bank-reconciliation (clerk — reads, cannot mutate)', () => {
 		// …and no import control anywhere on the page.
 		await expect(page.getByRole('button', { name: '+ Import statement' })).toHaveCount(0);
 
-		// Nor on the empty state's call to action.
+		// Nor on the empty state's call to action. Anchor on the statements
+		// panel first — the absence check below proves nothing until the tab
+		// this claim is about has actually rendered.
 		await page.goto('/bank-reconciliation?tab=statements');
-		await page.waitForLoadState('networkidle');
+		await expect(page.locator('#bank-recon-panel-statements')).toBeVisible();
 		await expect(page.getByRole('button', { name: '+ Import statement' })).toHaveCount(0);
 
 		// And the backend refuses the mutate regardless — `require_roles` runs
