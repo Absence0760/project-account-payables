@@ -291,20 +291,30 @@ That distinction is what decides which commands are safe:
 | `python main.py` | the script's dir = `<worktree>/backend` | worktree ✅ |
 | `pytest tests/x.py` | pytest prepends `<worktree>/backend` | worktree ✅ |
 | `alembic upgrade head` / `revision --autogenerate` | `alembic.ini` prepends `<worktree>/backend` | worktree ✅ |
-| `python scripts/seed.py` | `<worktree>/backend/scripts` | **primary ❌** |
+| `python scripts/seed.py` (and `migrate_all_tenants.py`) | the script anchors `<worktree>/backend` | worktree ✅ |
 | `uvicorn app.main:app` | the venv's `bin/` | **primary ❌** |
 | `pytest --import-mode=importlib tests/x.py` | no prepend at all | **primary ❌** |
 
-Only the alembic row is safe *by design* — `backend/alembic.ini` sets
-`prepend_sys_path = %(here)s`, because `alembic/env.py` imports `app.config` and
-`app.models`, so an autogenerate against the wrong tree writes a migration file
-that looks entirely plausible and is wrong. (`%(here)s`, not the `.` alembic's
-template suggests: the value is spliced onto `sys.path` verbatim, so `.` follows
-the process CWD rather than the ini.) The other two ✅ rows are safe by
-accident: `python main.py` because a script's own directory lands on `sys.path`,
-and `pytest` only because the default `prepend` import mode walks up past
-`tests/__init__.py` to `<worktree>/backend` — the last row is that same console
-script with that one default changed, silently testing the primary checkout.
+The middle two ✅ rows are safe *by design*, and each fixes itself:
+
+- `backend/alembic.ini` sets `prepend_sys_path = %(here)s`, because
+  `alembic/env.py` imports `app.config` and `app.models` — an autogenerate
+  against the wrong tree writes a migration file that looks entirely plausible
+  and is wrong. `%(here)s`, not the `.` alembic's own template suggests: the
+  value is spliced onto `sys.path` verbatim, so `.` follows the process CWD
+  rather than the ini.
+- `scripts/seed.py` and `scripts/migrate_all_tenants.py` carry a two-line
+  anchor in their import prologue (`sys.path.insert(1, <this backend/>)`,
+  guarded on presence). `pnpm seed` and `pnpm migrate:all` are the first
+  commands a contributor runs, so they must be right without anyone having
+  opted into the shim. Index 1, never 0 — `seed.py` imports `seed_extras`
+  bare and needs `scripts/` to stay first.
+
+The other two ✅ rows are safe by *accident*: `python main.py` because a
+script's own directory lands on `sys.path`, and `pytest` only because the
+default `prepend` import mode walks up past `tests/__init__.py` to
+`<worktree>/backend` — the last row is that same console script with that one
+default changed, silently testing the primary checkout.
 
 **The fix — one env var, and it covers every row:**
 
