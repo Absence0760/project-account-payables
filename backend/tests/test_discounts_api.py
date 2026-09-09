@@ -138,6 +138,32 @@ async def test_create_invoice_offer_defaults_base_amount_and_audits(realdb):
         assert audit.entity_type == "discount_offer"
 
 
+async def test_create_offer_422s_a_malformed_id(realdb):
+    """A bad id is a 422, not the 500 an unguarded `uuid.UUID(str)` raised.
+
+    `DiscountOfferCreate` types `invoice_id` / `vendor_id` as `UUID`, so the
+    refusal happens in the schema before any query — the same fix
+    `BulkNegotiationRequest.vendor_id` carries. A valid uuid string still
+    coerces, so no existing caller changes.
+    """
+    async with realdb.client(key="a", role="ap_manager") as c:
+        by_invoice = await c.post(
+            "/api/discounts/offers",
+            json={"scope": "invoice", "invoice_id": "not-a-uuid", "tiers": _tiers()},
+        )
+        by_vendor = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "vendor",
+                "vendor_id": "not-a-uuid",
+                "base_amount": "1000.00",
+                "tiers": _tiers(),
+            },
+        )
+    assert by_invoice.status_code == 422, by_invoice.text
+    assert by_vendor.status_code == 422, by_vendor.text
+
+
 async def test_accept_offer_picks_best_tier_and_audits(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id

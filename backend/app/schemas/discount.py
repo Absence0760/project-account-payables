@@ -66,9 +66,22 @@ class DiscountTier(BaseModel):
 
 
 class DiscountOfferCreate(BaseModel):
+    """Create one discount offer.
+
+    `invoice_id` / `vendor_id` are real `UUID`s for the same reason
+    `BulkNegotiationRequest.vendor_id` is: the router parsed them with an
+    unguarded `uuid.UUID(...)`, so a malformed id raised `ValueError` and
+    surfaced as a 500 instead of the 422 a bad request deserves. A valid uuid
+    string still coerces, so no caller changes.
+
+    Deliberately NOT `extra="forbid"` — unlike the caller-less
+    `BulkNegotiationRequest`, this endpoint has live callers, and tightening
+    what they may send is a separate, breaking decision.
+    """
+
     scope: OfferScope = OfferScope.invoice
-    invoice_id: str | None = None
-    vendor_id: str | None = None
+    invoice_id: UUID | None = None
+    vendor_id: UUID | None = None
     source: OfferSource = OfferSource.supplier
     tiers: list[DiscountTier] = Field(..., min_length=1)
     # Digits match `discount_offers.base_amount` Numeric(15, 2).

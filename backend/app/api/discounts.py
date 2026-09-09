@@ -320,7 +320,7 @@ async def create_offer(
         invoice = (
             await db.execute(
                 apply_entity_scope(
-                    select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)),
+                    select(Invoice).where(Invoice.id == body.invoice_id),
                     Invoice,
                     scope_entity_id,
                 )
@@ -345,8 +345,10 @@ async def create_offer(
         organization_id=org_id,
         entity_id=entity_id,
         scope=body.scope,
-        invoice_id=uuid.UUID(body.invoice_id) if body.invoice_id else None,
-        vendor_id=uuid.UUID(body.vendor_id) if body.vendor_id else None,
+        # Already `UUID`s — the schema parses them, so a malformed id is a 422
+        # rather than the 500 an unguarded `uuid.UUID(str)` used to raise.
+        invoice_id=body.invoice_id,
+        vendor_id=body.vendor_id,
         source=body.source,
         status=OFFER_STATUS_OFFERED,
         tiers=tiers,
