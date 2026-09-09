@@ -9,6 +9,11 @@ import {
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
+import {
+	markSeededWorkflowVersions,
+	purgeSeededWorkflowVersions,
+	type SeededVersionMark
+} from './seededWorkflowVersions';
 
 interface WorkflowResponse {
 	id: string;
@@ -157,9 +162,20 @@ function hardDeleteInvoice(id: string): void {
  */
 
 test.describe('workflow deactivation snapshot semantics', () => {
+	// Both tests PATCH the seeded default's steps and PATCH them back, and each
+	// of those writes an auto-saved `workflow_versions` row. `deleteWorkflowsWhere`
+	// already clears the versions of the definitions IT sweeps, but it cannot
+	// reach these: they hang off a SEEDED definition, which its `is_default =
+	// false` seatbelt exists to protect. See `seededWorkflowVersions.ts`.
+	let seededVersions: SeededVersionMark;
+	test.beforeEach(() => {
+		seededVersions = markSeededWorkflowVersions();
+	});
+
 	test.afterEach(() => {
 		deleteInvoicesWhere(`invoice_number LIKE '${INVOICE_MARKER}%'`);
 		deleteWorkflowsWhere(MARKER);
+		purgeSeededWorkflowVersions(seededVersions);
 	});
 
 	test('deactivated workflow keeps routing its in-flight invoices; new invoices use the now-active one', async ({
