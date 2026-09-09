@@ -1505,6 +1505,60 @@ abstract class AppLocalizations {
   /// **'selected'**
   String get payQueueSelected;
 
+  /// No description provided for @payQueueBlockedDuplicate.
+  ///
+  /// In en, this message translates to:
+  /// **'Possible duplicate — unresolved'**
+  String get payQueueBlockedDuplicate;
+
+  /// No description provided for @payQueueBlockedFraudFlag.
+  ///
+  /// In en, this message translates to:
+  /// **'Fraud flag — unresolved'**
+  String get payQueueBlockedFraudFlag;
+
+  /// No description provided for @payQueueBlockedLineTotalMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Line totals don’t match — unresolved'**
+  String get payQueueBlockedLineTotalMismatch;
+
+  /// No description provided for @payQueueBlockedPaymentReconciliation.
+  ///
+  /// In en, this message translates to:
+  /// **'Earlier payment unreconciled — may still be in flight'**
+  String get payQueueBlockedPaymentReconciliation;
+
+  /// No description provided for @payQueueBlockedFullyCredited.
+  ///
+  /// In en, this message translates to:
+  /// **'Fully covered by credit memos — nothing to pay'**
+  String get payQueueBlockedFullyCredited;
+
+  /// No description provided for @payQueueBlockedLiveVirtualCard.
+  ///
+  /// In en, this message translates to:
+  /// **'A live virtual card claims this invoice — pay it by card'**
+  String get payQueueBlockedLiveVirtualCard;
+
+  /// No description provided for @payQueueBlockedGeneric.
+  ///
+  /// In en, this message translates to:
+  /// **'Unresolved exception blocks payment'**
+  String get payQueueBlockedGeneric;
+
+  /// No description provided for @payQueueBlockedAnnounce.
+  ///
+  /// In en, this message translates to:
+  /// **'can’t be paid: {reason}'**
+  String payQueueBlockedAnnounce(String reason);
+
+  /// No description provided for @payQueuePinnedMethod.
+  ///
+  /// In en, this message translates to:
+  /// **'Pay by {method}'**
+  String payQueuePinnedMethod(String method);
+
   /// No description provided for @payMethodLabel.
   ///
   /// In en, this message translates to:

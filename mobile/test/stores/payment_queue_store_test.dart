@@ -6,10 +6,22 @@ import 'package:http/testing.dart';
 
 import 'package:feohledger_mobile/api/api_client.dart';
 import 'package:feohledger_mobile/models/payment.dart';
+import 'package:feohledger_mobile/models/payment_queue.dart';
 import 'package:feohledger_mobile/services/offline_store.dart';
 import 'package:feohledger_mobile/stores/payment_queue_store.dart';
 
-Map<String, dynamic> _queueItem(String id, {double amount = 100}) => {
+/// One row of `GET /api/payments/queue`, mirroring the dict
+/// `app/api/payments.py::payment_queue` builds — including the three refusal
+/// fields (`blocked` / `blocked_reason` / `required_method`) it stamps from
+/// `services/payment_runs.run_refusal_reasons`.
+Map<String, dynamic> _queueItem(
+  String id, {
+  double amount = 100,
+  bool blocked = false,
+  String? blockedReason,
+  String? requiredMethod,
+}) =>
+    {
       'id': id,
       'invoice_number': 'INV-$id',
       'vendor_name': 'Vendor $id',
@@ -19,7 +31,25 @@ Map<String, dynamic> _queueItem(String id, {double amount = 100}) => {
       'status': 'approved',
       'is_overdue': false,
       'discount_eligible': false,
+      'blocked': blocked,
+      'blocked_reason': blockedReason,
+      'required_method': requiredMethod,
     };
+
+/// The parsed row, for the store methods that take the item rather than a bare
+/// id (the pin and the blocked verdict travel with the data).
+PaymentQueueItem _item(
+  String id, {
+  bool blocked = false,
+  String? blockedReason,
+  String? requiredMethod,
+}) =>
+    PaymentQueueItem.fromJson(_queueItem(
+      id,
+      blocked: blocked,
+      blockedReason: blockedReason,
+      requiredMethod: requiredMethod,
+    ));
 
 const _summary = {
   'total_paid': 1000.0,
@@ -96,7 +126,7 @@ void main() {
     test('drops a selection for an invoice that left the queue', () async {
       ApiClient().debugConfigure(client: makeClient(queue: [_queueItem('1')]));
       await store.fetch();
-      store.toggleSelection('1');
+      store.toggleSelection(_item('1'));
       expect(store.isSelected('1'), isTrue);
 
       // Next fetch returns an empty queue — the stale selection is cleared.
@@ -124,27 +154,152 @@ void main() {
 
   group('selection', () {
     test('toggle adds with ACH default, toggle again removes', () {
-      store.toggleSelection('a');
+      store.toggleSelection(_item('a'));
       expect(store.isSelected('a'), isTrue);
-      expect(store.methodFor('a'), PaymentMethod.ach);
+      expect(store.methodFor(_item('a')), PaymentMethod.ach);
       expect(store.selectedCount, 1);
 
-      store.toggleSelection('a');
+      store.toggleSelection(_item('a'));
       expect(store.isSelected('a'), isFalse);
       expect(store.selectedCount, 0);
     });
 
     test('setMethod implicitly selects and records the method', () {
-      store.setMethod('b', PaymentMethod.wire);
+      store.setMethod(_item('b'), PaymentMethod.wire);
       expect(store.isSelected('b'), isTrue);
-      expect(store.methodFor('b'), PaymentMethod.wire);
+      expect(store.methodFor(_item('b')), PaymentMethod.wire);
     });
 
     test('clearSelection empties the map', () {
-      store.toggleSelection('a');
-      store.toggleSelection('b');
+      store.toggleSelection(_item('a'));
+      store.toggleSelection(_item('b'));
       store.clearSelection();
       expect(store.hasSelection, isFalse);
+    });
+  });
+
+  // The queue lists rows a payment run would refuse so an operator can see what
+  // to go and clear — but `create_payment_run_for_invoices` hard-409s the WHOLE
+  // batch on one of them, so they must be impossible to select. The rail-pinned
+  // row is the other half: payable, but on exactly one rail.
+  group('refusal verdict (blocked / required_method)', () {
+    test('a blocked row cannot be ticked', () {
+      final blocked = _item('1', blocked: true, blockedReason: 'duplicate');
+
+      store.toggleSelection(blocked);
+
+      expect(store.isSelected('1'), isFalse);
+      expect(store.hasSelection, isFalse);
+    });
+
+    test('a blocked row cannot be selected by picking a method either', () {
+      final blocked =
+          _item('1', blocked: true, blockedReason: 'fully_credited');
+
+      store.setMethod(blocked, PaymentMethod.wire);
+
+      expect(store.isSelected('1'), isFalse);
+    });
+
+    test('a rail pinned to a code this build cannot name is unselectable', () {
+      // Fail-closed: the backend named a rail we have no `PaymentMethod` for,
+      // so honouring it is impossible and guessing ACH would stage the run on
+      // the very rail the backend just refused.
+      final pinnedUnknown = _item(
+        '1',
+        blockedReason: 'live_virtual_card',
+        requiredMethod: 'rtp_instant',
+      );
+
+      store.toggleSelection(pinnedUnknown);
+
+      expect(store.isSelected('1'), isFalse);
+    });
+
+    test('ticking a pinned row seeds its rail, not the ACH default', () {
+      final pinned = _item(
+        '1',
+        blockedReason: 'live_virtual_card',
+        requiredMethod: 'virtual_card',
+      );
+
+      store.toggleSelection(pinned);
+
+      expect(store.isSelected('1'), isTrue);
+      expect(store.methodFor(pinned), PaymentMethod.virtualCard);
+    });
+
+    test('setMethod on a pinned row ignores the requested rail', () {
+      final pinned = _item(
+        '1',
+        blockedReason: 'live_virtual_card',
+        requiredMethod: 'virtual_card',
+      );
+
+      store.setMethod(pinned, PaymentMethod.ach);
+
+      expect(store.isSelected('1'), isTrue);
+      expect(store.methodFor(pinned), PaymentMethod.virtualCard);
+    });
+
+    test('a fetch drops a selection for a row that became blocked', () async {
+      ApiClient().debugConfigure(client: makeClient(queue: [_queueItem('1')]));
+      await store.fetch();
+      store.toggleSelection(_item('1'));
+      expect(store.isSelected('1'), isTrue);
+
+      // An exception was raised on it between refreshes.
+      ApiClient().debugConfigure(
+        client: makeClient(queue: [
+          _queueItem('1', blocked: true, blockedReason: 'fraud_flag'),
+        ]),
+      );
+      await store.fetch();
+
+      expect(store.isSelected('1'), isFalse);
+    });
+
+    test('a fetch re-pins a selected row that gained a required rail',
+        () async {
+      ApiClient().debugConfigure(client: makeClient(queue: [_queueItem('1')]));
+      await store.fetch();
+      store.setMethod(_item('1'), PaymentMethod.wire);
+      expect(store.methodFor(_item('1')), PaymentMethod.wire);
+
+      // A virtual card was issued against it between refreshes.
+      ApiClient().debugConfigure(
+        client: makeClient(queue: [
+          _queueItem('1',
+              blockedReason: 'live_virtual_card',
+              requiredMethod: 'virtual_card'),
+        ]),
+      );
+      await store.fetch();
+
+      expect(store.isSelected('1'), isTrue);
+      expect(store.methodFor(store.queue.first), PaymentMethod.virtualCard);
+    });
+
+    test('the offline cache round-trips the verdict', () async {
+      ApiClient().debugConfigure(
+        client: makeClient(queue: [
+          _queueItem('1', blocked: true, blockedReason: 'duplicate'),
+        ]),
+      );
+      await store.fetch();
+
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => throw Exception('offline')),
+      );
+      await store.fetch();
+
+      expect(store.fromCache, isTrue);
+      final cachedRow = store.queue.single;
+      expect(cachedRow.blocked, isTrue);
+      expect(cachedRow.blockedReason, 'duplicate');
+      // …and it is still unselectable offline, not a fresh working checkbox.
+      store.toggleSelection(cachedRow);
+      expect(store.isSelected('1'), isFalse);
     });
   });
 
@@ -170,8 +325,8 @@ void main() {
         ),
       );
 
-      store.setMethod('1', PaymentMethod.wire);
-      store.setMethod('2', PaymentMethod.check);
+      store.setMethod(_item('1'), PaymentMethod.wire);
+      store.setMethod(_item('2'), PaymentMethod.check);
 
       final message = await store.createRunFromSelection();
 
@@ -187,6 +342,39 @@ void main() {
       };
       expect(byInvoice['1'], 'wire');
       expect(byInvoice['2'], 'check');
+    });
+
+    test('sends a pinned row on its required rail, never the stored pick',
+        () async {
+      http.Request? captured;
+      ApiClient().debugConfigure(
+        client: makeClient(
+          queue: [
+            _queueItem('1',
+                blockedReason: 'live_virtual_card',
+                requiredMethod: 'virtual_card'),
+          ],
+          onPost: (req) {
+            if (req.url.path.endsWith('/payments/runs')) {
+              captured = req;
+              return _json({'id': 'run1', 'message': 'Payment run created'});
+            }
+            return _json({'items': [], 'total': 0});
+          },
+        ),
+      );
+      await store.fetch();
+
+      // The operator asks for ACH; the backend accepts only the card rail for
+      // this invoice, so ACH must never reach the wire.
+      store.setMethod(store.queue.single, PaymentMethod.ach);
+      expect(await store.createRunFromSelection(), isNotNull);
+
+      final items =
+          (jsonDecode(captured!.body) as Map<String, dynamic>)['items'] as List;
+      expect(items, hasLength(1));
+      expect(items.single['invoice_id'], '1');
+      expect(items.single['method'], 'virtual_card');
     });
 
     test('returns null and keeps the selection when nothing is selected',
@@ -208,7 +396,7 @@ void main() {
         ),
       );
 
-      store.toggleSelection('1');
+      store.toggleSelection(_item('1'));
       final message = await store.createRunFromSelection();
 
       expect(message, isNull);
