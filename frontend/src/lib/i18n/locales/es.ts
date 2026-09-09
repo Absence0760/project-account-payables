@@ -252,6 +252,8 @@ export const messages = {
 	'payments.queue.blocked.fraudFlag': 'Alerta de fraude, sin resolver',
 	'payments.queue.blocked.lineTotalMismatch': 'Los totales de línea no cuadran, sin resolver',
 	'payments.queue.blocked.paymentReconciliation': 'Pago anterior sin conciliar, puede seguir en curso',
+	'payments.queue.blocked.fullyCredited': 'Cubierta por completo con notas de crédito — nada que pagar',
+	'payments.queue.blocked.liveVirtualCard': 'Una tarjeta virtual activa reclama esta factura — págala con la tarjeta',
 	'payments.queue.blocked.generic': 'Una excepción sin resolver bloquea el pago',
 	'payments.queue.discountSave': 'Ahorra {amount}',
 	'payments.queue.discountBy': '{percent}% hasta el {date}',

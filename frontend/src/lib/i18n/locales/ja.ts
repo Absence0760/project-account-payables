@@ -256,6 +256,8 @@ export const messages = {
 	'payments.queue.blocked.fraudFlag': '不正フラグ — 未解決',
 	'payments.queue.blocked.lineTotalMismatch': '明細合計の不一致 — 未解決',
 	'payments.queue.blocked.paymentReconciliation': '過去の支払いが未消込 — 処理中の可能性があります',
+	'payments.queue.blocked.fullyCredited': 'クレジットメモで全額相殺済み — 支払う金額はありません',
+	'payments.queue.blocked.liveVirtualCard': '有効なバーチャルカードがこの請求書を確保しています — カードで支払ってください',
 	'payments.queue.blocked.generic': '未解決の例外により支払いがブロックされています',
 	'payments.queue.discountSave': '{amount} 節約',
 	'payments.queue.discountBy': '{date}までに{percent}%',

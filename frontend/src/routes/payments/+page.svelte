@@ -215,22 +215,32 @@
 		// discount_percent is a rate, not money — stays a JSON number.
 		discount_percent: number | null;
 		discount_amount: string | null;
-		// --- Payment-blocking exceptions -------------------------------------
-		// OPTIONAL, and deliberately so: `GET /api/payments/queue` does not send
-		// these yet (see `docs/followups.md` item 12 for the contract this is
-		// written against). `services/payment_runs.create_payment_run_for_invoices`
-		// refuses the WHOLE run with a 409 when any selected invoice carries an
-		// unresolved `duplicate` / `fraud_flag` / `line_total_mismatch`
-		// exception, so those rows must not be selectable — but until the field
-		// ships, an absent `blocked` must leave this page behaving exactly as it
-		// does today. Every read goes through `isBlocked()` below, which treats
-		// "absent" as "not blocked".
+		// --- What a payment run would refuse ---------------------------------
+		// `services/payment_runs.run_refusal_reasons` is the ONE predicate set
+		// `create_payment_run_for_invoices` enforces, and the queue reports its
+		// verdict per row so the page can never offer something the run builder
+		// then 409s (which refuses the WHOLE batch, with no way to bisect it).
+		//
+		// `blocked` — refused on EVERY rail (an unresolved payment-blocking
+		// exception, or an invoice fully covered by applied credit memos). The
+		// checkbox is disabled.
+		//
+		// `required_method` — refused on every rail BUT this one: a live virtual
+		// card already claims the invoice, and `virtual_card` converges onto
+		// that card instead of opening a second outflow. NOT blocked — the row
+		// stays selectable with its rail pinned, because refusing it outright
+		// would break the documented mint-a-card-then-run-it flow.
+		//
+		// All three stay OPTIONAL so an older backend leaves this page behaving
+		// exactly as it does today: every read goes through `isBlocked()` /
+		// `requiredMethod()` below, which treat "absent" as "no refusal".
 		//
 		// `blocked_reason` is a CODE from the backend's fixed, PII-free
-		// `PAYMENT_BLOCKING_EXCEPTION_TYPES` vocabulary — never prose — so it
-		// can be rendered in all six shipped locales.
+		// vocabulary (an exception TYPE, or one of `payment_runs`' own reason
+		// constants) — never prose — so it renders in all six shipped locales.
 		blocked?: boolean;
 		blocked_reason?: string | null;
+		required_method?: string | null;
 	}
 
 	// Per-currency slice of the WHOLE queue (or of the whole selectable set, on
@@ -307,20 +317,36 @@
 	// and when clicking a row in the Runs tab.
 	let activeRunId = $state<string | null>(null);
 
-	/** Does this row carry an unresolved payment-blocking exception?
+	/** Would a payment run refuse this row on EVERY rail?
 	 *
-	 *  The single read of `blocked`, so "the backend doesn't send the field
-	 *  yet" is answered in exactly one place: an absent / non-`true` value is
+	 *  The single read of `blocked`, so "an older backend doesn't send the
+	 *  field" is answered in exactly one place: an absent / non-`true` value is
 	 *  NOT blocked, which is byte-for-byte today's behaviour. */
 	function isBlocked(item: QueueItem): boolean {
 		return item.blocked === true;
 	}
 
-	/** Localised sentence for why a row can't be paid.
+	/** The one rail this row can still be paid on, or `null` for "any".
 	 *
-	 *  Maps the backend's fixed `PAYMENT_BLOCKING_EXCEPTION_TYPES` codes; an
-	 *  unrecognised or missing code falls back to the generic reason rather
-	 *  than rendering a raw identifier at the operator. */
+	 *  Non-null means a run would refuse every OTHER rail (today: a live
+	 *  virtual card already claims the invoice). The row stays selectable; its
+	 *  method is pinned to this value everywhere a method is chosen or sent. */
+	function requiredMethod(item: QueueItem): string | null {
+		return item.required_method || null;
+	}
+
+	/** The method to send for a queue row: the operator's pick, unless the
+	 *  backend pinned the rail — a pinned row is the only rail the run builder
+	 *  accepts, so an operator's stale pick must never win over it. */
+	function methodFor(item: QueueItem): string {
+		return requiredMethod(item) ?? paymentMethods[item.id] ?? 'ach';
+	}
+
+	/** Localised sentence for why a run would refuse — or constrain — a row.
+	 *
+	 *  Maps the backend's fixed reason vocabulary; an unrecognised or missing
+	 *  code falls back to the generic reason rather than rendering a raw
+	 *  identifier at the operator. */
 	function blockedReason(item: QueueItem): string {
 		switch (item.blocked_reason) {
 			case 'duplicate':
@@ -336,6 +362,12 @@
 				// generic string and told the operator nothing actionable. The
 				// default arm stays for codes this build genuinely doesn't know.
 				return m('payments.queue.blocked.paymentReconciliation');
+			case 'fully_credited':
+				return m('payments.queue.blocked.fullyCredited');
+			case 'live_virtual_card':
+				// Not a block — the row is pinned to the card rail. Its own
+				// sentence says so, rather than the "can't be paid" generic.
+				return m('payments.queue.blocked.liveVirtualCard');
 			default:
 				return m('payments.queue.blocked.generic');
 		}
@@ -466,7 +498,10 @@
 		if (next.has(item.id)) next.delete(item.id);
 		else next.add(item.id);
 		selectedQueue = next;
-		if (!paymentMethods[item.id]) paymentMethods[item.id] = 'ach';
+		// Seed the method from the row's own pin when it has one — a
+		// card-claimed invoice is only payable on that rail, so defaulting it
+		// to ACH would stage a run the backend refuses.
+		if (!paymentMethods[item.id]) paymentMethods[item.id] = methodFor(item);
 	}
 
 	function toggleQueueSelectAll() {
@@ -477,7 +512,7 @@
 		} else {
 			selectedQueue = new Set(selectableQueue.map(q => q.id));
 			for (const q of selectableQueue) {
-				if (!paymentMethods[q.id]) paymentMethods[q.id] = 'ach';
+				if (!paymentMethods[q.id]) paymentMethods[q.id] = methodFor(q);
 			}
 		}
 	}
@@ -534,10 +569,18 @@
 		createRunError = '';
 		creatingRun = true;
 		try {
-			const items = [...selectedQueue].map((id) => ({
-				invoice_id: id,
-				method: paymentMethods[id] || 'ach',
-			}));
+			// A pinned row's rail wins over the stored pick. `/queue/ids`
+			// already excludes pinned rows from "select all N matching", so an
+			// id we never loaded can't be one — but a row selected by hand and
+			// then re-fetched with a fresh pin must still go out on it.
+			const byId = new Map(queue.map((q) => [q.id, q]));
+			const items = [...selectedQueue].map((id) => {
+				const row = byId.get(id);
+				return {
+					invoice_id: id,
+					method: row ? methodFor(row) : paymentMethods[id] || 'ach',
+				};
+			});
 
 			// Create as a draft. The backend always creates with status='draft';
 			// a separate /execute call moves money. The modal lets the user
@@ -1783,12 +1826,24 @@
 								     run is staged — the one place the figure lost its code. -->
 								<td class="right mono">{formatRowMoney(item.amount, item.currency)}</td>
 								<td>
-									<select class="method-select" aria-label={`Payment method for ${item.invoice_number}`} value={paymentMethods[item.id] || 'ach'} onchange={(e) => (paymentMethods[item.id] = e.currentTarget.value)}>
-										<option value="ach">ACH</option>
-										<option value="wire">Wire</option>
-										<option value="check">Check</option>
-										<option value="virtual_card">Virtual Card</option>
-									</select>
+									<!-- A rail-pinned row (a live virtual card already claims the
+									     invoice) offers only that rail: every other one is a 409
+									     from the run builder, so a select that can only produce a
+									     refusal is worse than no choice. The reason renders
+									     beside it. -->
+									{#if requiredMethod(item)}
+										<span class="pinned-method" data-testid="queue-pinned-method">
+											{m(paymentMethodLabelKey(requiredMethod(item)!) ?? 'payments.quotes.method.default')}
+										</span>
+										<span class="pinned-method-why">{blockedReason(item)}</span>
+									{:else}
+										<select class="method-select" aria-label={`Payment method for ${item.invoice_number}`} value={paymentMethods[item.id] || 'ach'} onchange={(e) => (paymentMethods[item.id] = e.currentTarget.value)}>
+											<option value="ach">ACH</option>
+											<option value="wire">Wire</option>
+											<option value="check">Check</option>
+											<option value="virtual_card">Virtual Card</option>
+										</select>
+									{/if}
 								</td>
 							</tr>
 						{/each}
@@ -1930,6 +1985,13 @@
 							<StatusBadge status={item.status as import('$lib/types/invoice').InvoiceStatus} />
 							{#if isBlocked(item)}
 								<span class="blocked-chip" data-testid="queue-blocked-chip">
+									{blockedReason(item)}
+								</span>
+							{:else if requiredMethod(item)}
+								<!-- Not blocked — payable, but only on one rail. Its own chip,
+								     because reusing the blocked one would read as "can't be
+								     paid" for a row whose checkbox works. -->
+								<span class="pinned-chip" data-testid="queue-pinned-chip">
 									{blockedReason(item)}
 								</span>
 							{/if}
@@ -3282,6 +3344,37 @@
 		font-size: 0.72rem;
 		font-weight: 600;
 		white-space: normal;
+	}
+
+	/* The rail-pinned sibling of `.blocked-chip` — same shape, ACCENT tone, not
+	   danger: this row is payable, just only on one rail, and a red chip on a
+	   selectable row would read as a refusal. Same `-tint` / `-on-tint` pair
+	   rule, and the same `white-space: normal` for the same 1.4.10 reason. */
+	.pinned-chip {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 2px 8px;
+		border-radius: 10px;
+		background: var(--accent-tint);
+		color: var(--accent-on-tint);
+		font-size: 0.72rem;
+		font-weight: 600;
+		white-space: normal;
+	}
+
+	/* The review panel's method cell for a pinned row: the rail as plain text
+	   (there is no choice to offer) plus the reason beneath it, so the operator
+	   isn't left guessing why this row's select vanished. */
+	.pinned-method {
+		display: block;
+		font-size: 0.85rem;
+		color: var(--text);
+	}
+
+	.pinned-method-why {
+		display: block;
+		font-size: 0.72rem;
+		color: var(--text-muted);
 	}
 
 	.blocked-banner {
