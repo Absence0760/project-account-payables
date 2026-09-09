@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 /**
- * Source guard: no spec deletes an invoice or a vendor by hand.
+ * Source guard: no spec deletes an invoice, a vendor or a workflow definition
+ * by hand.
  *
  * `invoices` is referenced by 16 foreign keys and **none of them cascade**, so
  * a bare `DELETE FROM invoices WHERE …` only succeeds while that invoice
@@ -17,7 +18,13 @@ import { expect, test } from '@playwright/test';
  * `vendors` is the same trap one table over: 17 foreign keys, only two of them
  * cascading, and seventeen specs each carrying its own partial child list
  * (`vendors/import-csv` knew about `sanctions_checks`, most knew about
- * nothing). Both tables now have exactly one owner in `fixtures/helpers.ts`.
+ * nothing).
+ *
+ * `workflow_definitions` is the trap's other shape: three non-cascading
+ * references and ten workflow specs carrying a byte-identical copy of the same
+ * walk, differing only in the marker swept by — correct today, and ten places
+ * to miss the next child in. All three tables now have exactly one owner in
+ * `fixtures/helpers.ts`.
  *
  * Every call site goes through those owners; this guard is what stops the next
  * spec re-introducing the pattern, because the failure it causes is a teardown
@@ -44,11 +51,16 @@ const EXEMPT = new Set([
 	join('meta', 'teardown-guard.spec.ts')
 ]);
 
-/** One guarded table: the statement to hunt for, the helper that owns it, and
- *  why the hand-rolled version is a trap. */
+/** One guarded table: the statement to hunt for, the helper that owns it, how
+ *  that helper is called, and why the hand-rolled version is a trap. The
+ *  `signature` is spelled out because the three owners do NOT agree on it —
+ *  `deleteWorkflowsWhere` takes a name prefix, not a WHERE clause body — and a
+ *  failure message that guessed would send the next author down the wrong
+ *  path. */
 type GuardedTable = {
 	readonly table: string;
 	readonly helper: string;
+	readonly signature: string;
 	readonly why: string;
 };
 
@@ -56,6 +68,7 @@ const GUARDED: readonly GuardedTable[] = [
 	{
 		table: 'invoices',
 		helper: 'deleteInvoicesWhere',
+		signature: 'deleteInvoicesWhere(predicate, slug?)',
 		why:
 			'`invoices` has 16 non-cascading foreign keys, so a bare ' +
 			'`DELETE FROM invoices` only works until the invoice acquires a child ' +
@@ -64,11 +77,25 @@ const GUARDED: readonly GuardedTable[] = [
 	{
 		table: 'vendors',
 		helper: 'deleteVendorsWhere',
+		signature: 'deleteVendorsWhere(predicate, slug?)',
 		why:
 			'`vendors` has 17 foreign keys and only two of them cascade, so a bare ' +
 			'`DELETE FROM vendors` only works until the vendor acquires a child ' +
 			'the spec did not anticipate — a purchase order, a contract, a catalog, ' +
 			'a sanctions check, a virtual card.'
+	},
+	{
+		table: 'workflow_definitions',
+		helper: 'deleteWorkflowsWhere',
+		signature: 'deleteWorkflowsWhere(namePrefix, slug?)',
+		why:
+			'`workflow_definitions` has three non-cascading foreign keys — ' +
+			'`workflow_versions`, `workflow_experiments` and `workflow_instances`, ' +
+			'the last itself referenced by `workflow_steps` — so a bare ' +
+			'`DELETE FROM workflow_definitions` only works until the definition ' +
+			'acquires a child the spec did not anticipate, and the helper also ' +
+			'carries the `is_default = false` seatbelt that keeps a marker typo ' +
+			'away from the seeded default.'
 	}
 ];
 
@@ -103,7 +130,7 @@ function typescriptFiles(dir: string): string[] {
 }
 
 test.describe('e2e teardown discipline', () => {
-	for (const { table, helper, why } of GUARDED) {
+	for (const { table, helper, signature, why } of GUARDED) {
 		test(`no spec deletes ${table} without going through ${helper}`, () => {
 			const offenders = typescriptFiles(E2E_ROOT)
 				.map((file) => relative(E2E_ROOT, file))
@@ -112,7 +139,7 @@ test.describe('e2e teardown discipline', () => {
 
 			expect(
 				offenders,
-				`${why} Use \`${helper}(predicate, slug?)\` from fixtures/helpers.ts, ` +
+				`${why} Use \`${signature}\` from fixtures/helpers.ts, ` +
 					'which owns the whole graph.'
 			).toEqual([]);
 		});
@@ -166,5 +193,20 @@ test.describe('e2e teardown discipline', () => {
 
 		expect(hasHandRolledDelete(badVendor, 'vendors')).toBe(true);
 		expect(hasHandRolledDelete(goodVendor, 'vendors')).toBe(false);
+
+		// The workflow half. The near-miss that must NOT trip it is the child
+		// sweep a spec is still free to write: `workflows/delete-safety` and
+		// `workflows/bulk-delete` each wedge a definition with a synthetic
+		// instance and clear it by id.
+		const badWorkflow =
+			"tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);";
+		const goodWorkflow = [
+			"import { deleteWorkflowsWhere } from '../fixtures/helpers';",
+			"tenantPsql(`DELETE FROM workflow_instances WHERE id='${instanceId}'`);",
+			'deleteWorkflowsWhere(MARKER);'
+		].join('\n');
+
+		expect(hasHandRolledDelete(badWorkflow, 'workflow_definitions')).toBe(true);
+		expect(hasHandRolledDelete(goodWorkflow, 'workflow_definitions')).toBe(false);
 	});
 });

@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteWorkflowsWhere,
 	expect,
 	tenantPsql,
 	test
@@ -18,28 +19,12 @@ import {
  * a body that dies before the `finally` deactivates it leaks a row the API
  * cannot remove at all.
  *
- * `workflow_definitions` is FK-referenced by `workflow_versions`,
- * `workflow_instances` (itself referenced by `workflow_steps`) and
- * `workflow_experiments`, none of them cascading, so the children go first —
- * which is also what clears the synthetic instance the second test wedges its
- * definition with. `is_default = false` keeps a marker typo away from the
- * seeded default that `fixtures/globalSetup.ts` asserts the suite against.
+ * `deleteWorkflowsWhere` owns the walk below the definition — which is also
+ * what clears the synthetic instance the second test wedges its definition
+ * with — and the `is_default = false` seatbelt that keeps a marker typo away
+ * from the seeded default.
  */
 const MARKER = 'WF Delete Safety ';
-
-function purgeWorkflows(): void {
-	const doomed =
-		`SELECT id FROM workflow_definitions ` +
-		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
-	tenantPsql(
-		`DELETE FROM workflow_steps WHERE instance_id IN ` +
-			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
-	);
-	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
-}
 
 async function createWorkflow(
 	page: import('@playwright/test').Page,
@@ -93,7 +78,7 @@ async function patchWorkflow(
  */
 
 test.describe('/workflows delete cascade safety', () => {
-	test.afterEach(() => purgeWorkflows());
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
 
 	test('refuses delete of an active (non-default) workflow', async ({ page }) => {
 		// Create a new workflow + activate it. Activation deactivates the

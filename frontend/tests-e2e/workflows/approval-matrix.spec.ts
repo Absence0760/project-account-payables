@@ -1,4 +1,10 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Every workflow definition this spec creates is named `${MARKER}…`.
@@ -9,27 +15,11 @@ import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixt
  * POST landed leaves the new row unreferenced, and the stale `workflowId`
  * then deletes nothing that still exists. Sweeping by name needs no id.
  *
- * `workflow_definitions` is FK-referenced by `workflow_versions`,
- * `workflow_instances` (itself referenced by `workflow_steps`) and
- * `workflow_experiments`, none of them cascading, so the children go first.
- * `is_default = false` keeps a marker typo away from the seeded default that
- * `fixtures/globalSetup.ts` asserts the whole suite against.
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children — and the `is_default = false` seatbelt that keeps a
+ * marker typo away from the seeded default.
  */
 const MARKER = 'e2e-matrix-';
-
-function purgeWorkflows(): void {
-	const doomed =
-		`SELECT id FROM workflow_definitions ` +
-		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
-	tenantPsql(
-		`DELETE FROM workflow_steps WHERE instance_id IN ` +
-			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
-	);
-	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
-}
 
 async function apiHeaders(page: import('@playwright/test').Page) {
 	return {
@@ -131,7 +121,7 @@ test.describe('/workflows/[id] — approval matrix editor', () => {
 	test.afterEach(async ({ page }) => {
 		if (workflowId) await deleteWorkflow(page, workflowId);
 		// Backstop for anything the id-based delete could not reach.
-		purgeWorkflows();
+		deleteWorkflowsWhere(MARKER);
 	});
 
 	test('routing_rules + parallel_mode + escalation round-trip through PATCH', async ({
