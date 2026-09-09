@@ -1393,6 +1393,15 @@ async def _stage_change(
         vendor_id=vendor.id,
         organization_id=vendor.organization_id,
         requested_by_vendor_user_id=vu.id,
+        # Freeze WHO (if anyone) on the AP side handed this portal identity its
+        # password. `approve_change_request` refuses when that is the approver —
+        # otherwise one ap_manager could invite a portal user, sign in as it,
+        # stage a bank redirect and approve their own request, because the AP
+        # requester column is NULL on every portal submission. Copied instead of
+        # joined at approval time so deleting the portal user afterwards can't
+        # erase the evidence. NULL for a supplier who holds their own
+        # credential, which is the normal case.
+        requester_provisioned_by_user_id=vu.provisioned_by_user_id,
         change_type=change_type,
         status="pending",
         proposed_value=proposed_value,

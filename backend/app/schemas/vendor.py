@@ -318,6 +318,11 @@ class VendorChangeRequestResponse(BaseModel):
     # Exactly one requester is set: the portal VendorUser, or the AP User.
     requested_by_vendor_user_id: str | None = None
     requested_by_user_id: str | None = None
+    # The AP actor (if any) who provisioned the portal identity that submitted
+    # this request — frozen at staging. Surfaced so the review UI can explain,
+    # BEFORE the approve click 403s, that this reviewer is not an independent
+    # second party to it. An actor id, never an address: PII-free.
+    requester_provisioned_by_user_id: str | None = None
     reviewed_by_user_id: str | None = None
     reviewed_at: str | None = None
     review_note: str | None = None
@@ -342,6 +347,11 @@ class VendorChangeRequestResponse(BaseModel):
             ),
             requested_by_user_id=(
                 str(r.requested_by_user_id) if getattr(r, "requested_by_user_id", None) else None
+            ),
+            requester_provisioned_by_user_id=(
+                str(r.requester_provisioned_by_user_id)
+                if getattr(r, "requester_provisioned_by_user_id", None)
+                else None
             ),
             reviewed_by_user_id=str(r.reviewed_by_user_id) if r.reviewed_by_user_id else None,
             reviewed_at=r.reviewed_at.isoformat() if r.reviewed_at else None,
