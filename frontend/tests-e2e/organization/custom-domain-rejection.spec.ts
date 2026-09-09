@@ -50,7 +50,6 @@ function panel(page: import('@playwright/test').Page) {
 test.describe('/organization custom-domain refusals', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('the panel points at the provisioning runbook', async ({ page }) => {
