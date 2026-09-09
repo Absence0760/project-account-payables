@@ -290,15 +290,21 @@ That distinction is what decides which commands are safe:
 | --- | --- | --- |
 | `python main.py` | the script's dir = `<worktree>/backend` | worktree ✅ |
 | `pytest tests/x.py` | pytest prepends `<worktree>/backend` | worktree ✅ |
+| `alembic upgrade head` / `revision --autogenerate` | `alembic.ini` prepends `<worktree>/backend` | worktree ✅ |
 | `python scripts/seed.py` | `<worktree>/backend/scripts` | **primary ❌** |
-| `alembic upgrade head` | the venv's `bin/` | **primary ❌** |
 | `uvicorn app.main:app` | the venv's `bin/` | **primary ❌** |
 | `pytest --import-mode=importlib tests/x.py` | no prepend at all | **primary ❌** |
 
-The two ✅ rows are safe *by accident*, not by design. `pytest`'s only comes
-from the default `prepend` import mode walking up past `tests/__init__.py` to
-`<worktree>/backend`; the last row is the same console script with that one
-default changed, and it silently tests the primary checkout.
+Only the alembic row is safe *by design* — `backend/alembic.ini` sets
+`prepend_sys_path = %(here)s`, because `alembic/env.py` imports `app.config` and
+`app.models`, so an autogenerate against the wrong tree writes a migration file
+that looks entirely plausible and is wrong. (`%(here)s`, not the `.` alembic's
+template suggests: the value is spliced onto `sys.path` verbatim, so `.` follows
+the process CWD rather than the ini.) The other two ✅ rows are safe by
+accident: `python main.py` because a script's own directory lands on `sys.path`,
+and `pytest` only because the default `prepend` import mode walks up past
+`tests/__init__.py` to `<worktree>/backend` — the last row is that same console
+script with that one default changed, silently testing the primary checkout.
 
 **The fix — one env var, and it covers every row:**
 

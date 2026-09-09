@@ -11,8 +11,11 @@ That is fine right up until `<worktree>/backend` is missing from `sys.path`,
 which happens more often than it sounds:
 
     cd <worktree>/backend && python scripts/seed.py    # sys.path[0] = .../scripts
-    cd <worktree>/backend && alembic upgrade head      # sys.path[0] = .../venv/bin
     cd <worktree>/backend && uvicorn app.main:app      # sys.path[0] = .../venv/bin
+
+(`alembic` was a third until `backend/alembic.ini` gained
+`prepend_sys_path = %(here)s`, which fixes that one console script on its own —
+this shim covers the rest.)
 
 `PathFinder` then finds nothing, the editable finder answers, and the command
 runs the **primary checkout's** code while every message on screen names the
