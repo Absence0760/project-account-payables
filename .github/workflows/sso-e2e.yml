@@ -170,6 +170,8 @@ jobs:
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
+          # Mirrors ci.yml's e2e build — see that job for why.
+          PUBLIC_PLATFORM_DOMAINS: localhost
         run: pnpm build
 
       - name: Cache Playwright browsers

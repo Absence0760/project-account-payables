@@ -304,7 +304,16 @@ simply stay unreachable until an operator opts in.
 
 `tenantSlugUsage.test.ts` ratchets both invariants: nothing re-derives the slug
 by hand, and the list of files still reading `PUBLIC_API_URL` directly may only
-ever shrink.
+ever shrink. **Both host kinds are covered end-to-end** by
+`tests-e2e/tenant/vanity-host.spec.ts`: `PUBLIC_PLATFORM_DOMAINS` reaches the
+dev server through `playwright.config.ts`'s `webServer.env` and CI's preview
+bundle through the `pnpm build` step's env (both from
+`fixtures/env.ts::PLATFORM_DOMAINS`, so they cannot disagree), and the vanity
+origin is the loopback **IP literal** — no `*.localhost` name can be a vanity
+host while `localhost` is the declared platform domain. `vite.config.ts` proxies
+`/api` on the same origin (`changeOrigin: false`) so the vanity `Host` survives
+to the backend, which is the operator requirement a real custom domain carries
+and the only way to exercise one on a laptop.
 
 ### Stores (`src/lib/stores/`) — Svelte 5 rune stores
 

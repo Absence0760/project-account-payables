@@ -32,8 +32,15 @@ raised in one place and not another is worse than not raising it. See
 | Variable         | Default                 | Description                         |
 |------------------|-------------------------|-------------------------------------|
 | `PUBLIC_API_URL` | `http://localhost:8000` | Backend API URL (embedded at build time) |
-| `PUBLIC_PLATFORM_DOMAINS` | `localhost` (dev); unset elsewhere | Comma-separated registrable domains the **platform** serves (e.g. `feohledger.com,localhost`). A host under one of these carries the tenant slug as its first label; a bare one is the marketing/signup host; **any other host is a tenant's white-label vanity domain**, where the SPA sends no `X-Tenant-Slug` and calls `/api` same-origin so the backend resolves the tenant from `Host`. Unset is legal and replays the pre-vanity-domain rule, so an existing build is unchanged — set it (and proxy `/api` on the vanity origin) to enable custom domains. See [white-label.md](white-label.md) § Custom domains. |
+| `PUBLIC_PLATFORM_DOMAINS` | `localhost` (dev); unset elsewhere | Comma-separated registrable domains the **platform** serves (e.g. `feohledger.com,localhost`). A host under one of these carries the tenant slug as its first label; a bare one is the marketing/signup host; **any other host is a tenant's white-label vanity domain**, where the SPA sends no `X-Tenant-Slug` and calls `/api` same-origin so the backend resolves the tenant from `Host`. Unset is legal and replays the pre-vanity-domain rule, so an existing build is unchanged — set it (and proxy `/api` on the vanity origin) to enable custom domains. See [white-label.md](white-label.md) § Custom domains. **Also a TEST-time variable**: `frontend/tests-e2e/playwright.config.ts` passes it to the dev server and CI's frontend `pnpm build` steps bake it into the preview bundle, both from `tests-e2e/fixtures/env.ts::PLATFORM_DOMAINS` — the two run modes disagreeing is what kept the vanity-host e2e half uncovered. |
 | `BASE_PATH`      | (empty)                 | URL prefix for GitHub Pages deploys |
+
+`frontend/vite.config.ts` also proxies **`/api` on the same origin** to
+`PUBLIC_API_URL` in both `vite dev` and `vite preview` (`changeOrigin: false`, so
+the request's `Host` survives). A platform host never uses it — the SPA calls the
+build-time API origin cross-origin — but it is the operator requirement a
+white-label vanity domain carries, and without it a custom domain cannot be
+exercised locally at all.
 
 `frontend/.env.development` is **committed** with the safe local default above
 and Vite loads it automatically in dev mode — no setup step. Because `tenant.ts`
