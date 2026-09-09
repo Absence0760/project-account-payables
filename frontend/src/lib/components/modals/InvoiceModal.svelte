@@ -71,15 +71,16 @@
 		type PeppolSendResult,
 		type PeppolTransmissionSummary,
 	} from '$lib/api/einvoice';
+	import EInvoiceIssueList from '$lib/components/EInvoiceIssueList.svelte';
 
 	/*
-	 * There is deliberately NO code→prose map here any more. The 422 body is now
-	 * the backend's structured error list, so each row carries the server's own
-	 * PII-free sentence (and, where the failure is an EN 16931 / PEPPOL rule,
-	 * the rule id that a receiving Access Point's validator names). A map here
-	 * could only ever cover the codes it happened to know about — most rows fell
-	 * through to "was rejected (BR-CO-09)" — and a second copy of the same
-	 * wording is a second thing to keep in step with the standard.
+	 * There is still no HAND-WRITTEN code→prose map here, and there never will
+	 * be: the one §95 deleted covered 4 codes out of dozens and drifted. The
+	 * refusal rows are localized again, through a map GENERATED from the
+	 * backend's own rule set — see `EInvoiceIssueList.svelte` and
+	 * `api/einvoiceRuleMessages.generated.ts`. The wording lives in the locale
+	 * catalogues, the mapping is derived, and CI fails when the validator gains
+	 * a code the catalogue has no key for.
 	 */
 
 	/** PEPPOL failure codes the send route returns as a bare token (everything
@@ -2398,15 +2399,7 @@
 											})}
 								</p>
 								{#if einvoiceError.issues.length > 0}
-									<ul class="einvoice-issues">
-										{#each einvoiceError.issues as issue (issue.field + issue.message)}
-											<li>
-												{issue.message}
-												<code class="einvoice-issue-field">{issue.field}</code>
-											</li>
-										{/each}
-									</ul>
-									<p class="einvoice-error-hint">{m('invoices.modal.einvoice.invalidHint')}</p>
+									<EInvoiceIssueList issues={einvoiceError.issues} />
 								{:else if einvoiceError.detail}
 									<p class="einvoice-error-detail">{einvoiceError.detail}</p>
 								{/if}
@@ -2530,15 +2523,7 @@
 									<div class="einvoice-error" role="alert" data-testid="peppol-error">
 										<p class="einvoice-error-title">{m('invoices.modal.peppol.failed')}</p>
 										{#if peppolError.issues.length > 0}
-											<ul class="einvoice-issues">
-												{#each peppolError.issues as issue (issue.field + issue.message)}
-													<li>
-														{issue.message}
-														<code class="einvoice-issue-field">{issue.field}</code>
-													</li>
-												{/each}
-											</ul>
-											<p class="einvoice-error-hint">{m('invoices.modal.einvoice.invalidHint')}</p>
+											<EInvoiceIssueList issues={peppolError.issues} />
 										{:else}
 											<p class="einvoice-error-detail">{peppolError.detail}</p>
 										{/if}
@@ -3485,25 +3470,9 @@
 		color: var(--text);
 	}
 
-	.einvoice-issues {
-		margin: 8px 0 0;
-		padding-left: 18px;
-		font-size: 0.78rem;
-		line-height: 1.5;
-		color: var(--text);
-	}
-
-	/* The server's sentence is the explanation; the field path stays visible
-	   because it is what says WHICH line or tax row is at fault. */
-	.einvoice-issue-field {
-		display: block;
-		margin-top: 1px;
-		font-family: var(--font-mono);
-		font-size: 0.7rem;
-		color: var(--text-muted);
-	}
-
-	.einvoice-error-hint,
+	/* The per-field reason rows (and their hint) live in
+	   `EInvoiceIssueList.svelte` — styles travel with the markup, since Svelte
+	   scoping would not reach a child component from here. */
 	.einvoice-error-detail {
 		margin: 8px 0 0;
 		font-size: 0.76rem;

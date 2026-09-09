@@ -106,6 +106,17 @@ jobs:
       - name: Format check
         run: ruff format --check .
 
+      # The frontend's e-invoice rule-code → message-key catalogue is GENERATED
+      # from `app/services/e_invoice/rule_catalog.py` (decisions.md §95). This
+      # regenerates it and fails if the committed file differs — the same
+      # "regenerating would change this ⇒ fail" shape as `ruff format --check`
+      # one step up. It lives in the BACKEND job because the generator needs
+      # Python and the backend source; the two guards it hands off to are on the
+      # frontend side (`pnpm check` rejects a key `en.ts` lacks, and the locale
+      # parity test rejects one the other five lack).
+      - name: E-invoice message catalogue is in sync with the validators
+        run: python scripts/gen_einvoice_rule_messages.py --check
+
   # The backend pytest suite (~3900 tests against a real Postgres/Redis/MinIO)
   # ran ~27 min as one serial job — the longest job in CI. It's sharded the same
   # way the Playwright e2e job below is: a matrix of runners, each booting its

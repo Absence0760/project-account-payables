@@ -4659,6 +4659,51 @@ export const messages = {
 		'Corrigez ces champs sur la facture, puis relancez le téléchargement.',
 	'invoices.modal.einvoice.failed':
 		'Impossible de générer la facture électronique au format {format}.',
+	// EN 16931 / PEPPOL refusal sentences. The code→key map is GENERATED from
+	// the backend's own rule set (`api/einvoiceRuleMessages.generated.ts`), so
+	// a rule the validator gains cannot quietly render as a bare id — see
+	// decisions.md §95. The per-category families share one key each: the row
+	// already shows the rule id and the field beside the wording.
+	'invoices.modal.einvoice.rule.brCl01':
+		'Le code de type de facture n’est pas reconnu par la norme EN 16931 (UNTDID 1001).',
+	'invoices.modal.einvoice.rule.brCl03':
+		'La devise de la facture n’est pas un code ISO 4217 valide.',
+	'invoices.modal.einvoice.rule.brCl14':
+		'Le code pays n’est pas un code ISO 3166-1 alpha-2 valide.',
+	'invoices.modal.einvoice.rule.brCl16':
+		'Le code de moyen de paiement n’est pas un code UNCL4461 valide.',
+	'invoices.modal.einvoice.rule.brCl17':
+		'Le code de catégorie de TVA de la ventilation fiscale est hors du sous-ensemble UNCL5305 de l’EN 16931.',
+	'invoices.modal.einvoice.rule.brCl18':
+		'Le code de catégorie de TVA de cette ligne est hors du sous-ensemble UNCL5305 de l’EN 16931.',
+	'invoices.modal.einvoice.rule.brCl23':
+		'L’unité de mesure n’est pas un code valide de la recommandation 20 de l’UN/ECE.',
+	'invoices.modal.einvoice.rule.brCo09':
+		'Le numéro de TVA doit commencer par le code pays à deux lettres du pays qui l’a délivré.',
+	'invoices.modal.einvoice.rule.brCo10':
+		'La somme des montants nets des lignes ne correspond pas au total des lignes de la facture.',
+	'invoices.modal.einvoice.rule.brCo13':
+		'Le total hors TVA doit être égal au total des lignes, moins les remises, plus les frais.',
+	'invoices.modal.einvoice.rule.brCo14':
+		'Le total de TVA de la facture doit être égal à la somme des montants de la ventilation.',
+	'invoices.modal.einvoice.rule.brCo15':
+		'Le total TTC doit être égal au total hors TVA plus le total de TVA.',
+	'invoices.modal.einvoice.rule.brCo16': 'Le montant à payer doit être égal au total TTC.',
+	'invoices.modal.einvoice.rule.brCo17':
+		'Un montant de la ventilation de TVA doit être égal à sa base imposable multipliée par son taux.',
+	'invoices.modal.einvoice.rule.brCo25':
+		'Une facture comportant un montant à payer nécessite une date d’échéance ou des conditions de paiement.',
+	'invoices.modal.einvoice.rule.brCo26':
+		'Le vendeur doit disposer d’un numéro d’immatriculation légale ou d’un numéro de TVA.',
+	'invoices.modal.einvoice.rule.brS05':
+		'Une ligne au taux normal nécessite un taux de TVA supérieur à zéro.',
+	'invoices.modal.einvoice.rule.peppolEn16931R120':
+		'Le montant net d’une ligne doit être égal à sa quantité multipliée par son prix unitaire.',
+	'invoices.modal.einvoice.rule.vatCategory01':
+		'Chaque catégorie de TVA utilisée sur une ligne nécessite son propre groupe dans la ventilation de TVA.',
+	'invoices.modal.einvoice.rule.vatCategory05': 'Cette catégorie de TVA exige un taux nul.',
+	'invoices.modal.einvoice.rule.vatCategory08':
+		'Une base imposable de la ventilation de TVA doit être égale à la somme des lignes de cette catégorie.',
 	'invoices.modal.peppol.title': 'PEPPOL',
 	'invoices.modal.peppol.hint':
 		'Transmet la facture sur le réseau PEPPOL vers le point d\'accès du destinataire.',

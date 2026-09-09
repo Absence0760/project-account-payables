@@ -4643,6 +4643,33 @@ export const messages = {
 	'invoices.modal.einvoice.invalidHint':
 		'請求書のこれらの項目を修正してから、もう一度ダウンロードしてください。',
 	'invoices.modal.einvoice.failed': '{format} 形式の電子請求書を生成できませんでした。',
+	// EN 16931 / PEPPOL refusal sentences. The code→key map is GENERATED from
+	// the backend's own rule set (`api/einvoiceRuleMessages.generated.ts`), so
+	// a rule the validator gains cannot quietly render as a bare id — see
+	// decisions.md §95. The per-category families share one key each: the row
+	// already shows the rule id and the field beside the wording.
+	'invoices.modal.einvoice.rule.brCl01':
+		'請求書タイプコードが EN 16931 規格 (UNTDID 1001) で認められているものではありません。',
+	'invoices.modal.einvoice.rule.brCl03': '請求書の通貨が有効な ISO 4217 通貨コードではありません。',
+	'invoices.modal.einvoice.rule.brCl14': '国コードが有効な ISO 3166-1 alpha-2 コードではありません。',
+	'invoices.modal.einvoice.rule.brCl16': '支払手段コードが有効な UNCL4461 コードではありません。',
+	'invoices.modal.einvoice.rule.brCl17': '税内訳の VAT 区分コードが EN 16931 の UNCL5305 サブセットに含まれていません。',
+	'invoices.modal.einvoice.rule.brCl18': 'この明細行の VAT 区分コードが EN 16931 の UNCL5305 サブセットに含まれていません。',
+	'invoices.modal.einvoice.rule.brCl23': '単位が有効な UN/ECE 勧告 20 のコードではありません。',
+	'invoices.modal.einvoice.rule.brCo09': 'VAT 識別番号は、発行した国の 2 文字の国コードで始まる必要があります。',
+	'invoices.modal.einvoice.rule.brCo10': '明細行の正味金額の合計が、請求書の明細合計と一致しません。',
+	'invoices.modal.einvoice.rule.brCo13': 'VAT 抜き合計は、明細合計から値引きを差し引き、諸掛りを加えた金額と一致する必要があります。',
+	'invoices.modal.einvoice.rule.brCo14': '請求書の VAT 合計は、VAT 内訳の金額の合計と一致する必要があります。',
+	'invoices.modal.einvoice.rule.brCo15': 'VAT 込み合計は、VAT 抜き合計に VAT 合計を加えた金額と一致する必要があります。',
+	'invoices.modal.einvoice.rule.brCo16': '支払金額は VAT 込み合計と一致する必要があります。',
+	'invoices.modal.einvoice.rule.brCo17': 'VAT 内訳の金額は、その課税標準額に税率を乗じた金額と一致する必要があります。',
+	'invoices.modal.einvoice.rule.brCo25': '支払金額のある請求書には、支払期日または支払条件が必要です。',
+	'invoices.modal.einvoice.rule.brCo26': '売り手には、法人登記番号または VAT 識別番号が必要です。',
+	'invoices.modal.einvoice.rule.brS05': '標準税率の明細行には、0 を超える VAT 税率が必要です。',
+	'invoices.modal.einvoice.rule.peppolEn16931R120': '明細行の正味金額は、数量に単価を乗じた金額と一致する必要があります。',
+	'invoices.modal.einvoice.rule.vatCategory01': '明細行で使用されている VAT 区分ごとに、VAT 内訳に専用のグループが必要です。',
+	'invoices.modal.einvoice.rule.vatCategory05': 'この VAT 区分では税率 0 が必要です。',
+	'invoices.modal.einvoice.rule.vatCategory08': 'VAT 内訳の課税標準額は、その区分の明細行の合計と一致する必要があります。',
 	'invoices.modal.peppol.title': 'PEPPOL',
 	'invoices.modal.peppol.hint':
 		'請求書を PEPPOL ネットワーク経由で受信者のアクセスポイントに送信します。',
