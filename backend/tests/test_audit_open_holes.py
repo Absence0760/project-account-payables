@@ -187,17 +187,31 @@ async def _make_vendor(realdb, key: str, name: str) -> uuid.UUID:
 
 
 @pytest.mark.asyncio
-async def test_invite_portal_user_audits_without_the_email_or_temp_password(realdb):
+async def test_invite_portal_user_audits_without_the_email_or_temp_password(realdb, monkeypatch):
     """Minting a supplier credential is the provisioning half of the
     segregation-of-duties chain: this account can submit invoices and stage
     bank-detail changes. `vendor_user.deleted` already audited the revoke, so
     without this the trail recorded the end of a credential's life but not its
     start. The row names the actor, the vendor and the new VendorUser — never
-    the login address, and never the temp password the response carries.
+    the login address, and never the temp password.
+
+    The password is read out of the DELIVERED EMAIL rather than the response:
+    the response no longer carries it at all (see
+    `test_vendor_bank_change_provisioner_sod.py`), and the audit row must stay
+    clear of the credential wherever it travelled.
     """
     vendor_id = await _make_vendor(realdb, "a", "Portal Invite Co")
     info = realdb.info("a")
     supplier_email = "ap-contact@portal-invite-co.example"
+
+    outbox: list = []
+
+    async def _fake_send(self, message):  # noqa: ANN001
+        outbox.append(message)
+
+    from app.services.email_adapters.console_adapter import ConsoleAdapter
+
+    monkeypatch.setattr(ConsoleAdapter, "send", _fake_send, raising=True)
 
     async with realdb.client(key="a") as client:
         resp = await client.post(
@@ -206,7 +220,12 @@ async def test_invite_portal_user_audits_without_the_email_or_temp_password(real
         )
     assert resp.status_code == 201, resp.text
     payload = resp.json()
-    temp_password = payload["temp_password"]
+    assert "temp_password" not in payload
+    temp_password = next(
+        line.split("Password:", 1)[1].strip()
+        for line in outbox[0].body_text.splitlines()
+        if line.strip().startswith("Password:")
+    )
     vendor_user_id = payload["user"]["id"]
 
     rows = await _audit_rows(realdb, "a", "vendor_user.invited")
