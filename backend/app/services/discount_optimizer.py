@@ -74,7 +74,11 @@ class OfferOpportunity:
     tier_days: int
     discount_percent: Decimal
     pay_by: date  # discount/tier deadline — latest pay date that still earns the tier
-    due_date: date  # invoice net due date — the baseline you'd otherwise pay on
+    # Invoice net due date — the baseline you'd otherwise pay on. ``None`` when
+    # no baseline could be established (a vendor-scoped bulk offer spanning many
+    # invoices, carrying no ``valid_until``), which makes the acceleration
+    # horizon UNKNOWN rather than zero. See `optimize`'s `horizon_unknown`.
+    due_date: date | None
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,12 @@ class Recommendation:
     # still meaningful (a percentage is currency-free) — it is the SUMS that
     # aren't. See `optimize`'s `reporting_currency`.
     unconvertible: bool = False
+    # No net-due baseline could be established, so this opportunity's yield is
+    # unknown rather than low. It is never selected — there is nothing to
+    # compare against the hurdle rate — but it IS listed, because the previous
+    # behaviour (collapse to a 0% return, `worthwhile: False`) made it
+    # indistinguishable from one that had been evaluated and rejected.
+    horizon_unknown: bool = False
 
 
 @dataclass
@@ -109,6 +119,12 @@ class OptimizationResult:
     # How many ranked opportunities were left out of the totals above because
     # their currency isn't the one the totals are in.
     unconvertible_count: int = 0
+    # How many were left out because their acceleration horizon is unknown, so
+    # no yield could be computed for them. Counted separately from
+    # `unconvertible_count` because the remedy differs: a currency needs a rate,
+    # a horizon needs a due date (set the offer's `valid_until`, or give the
+    # invoices it spans a payment schedule).
+    unknown_horizon_count: int = 0
 
 
 def optimize(
@@ -159,10 +175,14 @@ def optimize(
     # Score every opportunity with the shared ROI primitive.
     scored: list[tuple[OfferOpportunity, DiscountROI, bool, bool]] = []
     for opp in opportunities:
+        # `None` (no baseline) is NOT zero days. Passing it through keeps the
+        # distinction all the way to the response instead of collapsing an
+        # unmeasurable yield into an apparently-measured 0%.
+        horizon = days_between(opp.pay_by, opp.due_date) if opp.due_date is not None else None
         roi = compute_roi(
             base_amount=opp.base_amount,
             discount_percent=opp.discount_percent,
-            days_accelerated=days_between(opp.pay_by, opp.due_date),
+            days_accelerated=horizon,
             cost_of_capital_pct=cost_of_capital_pct,
         )
         # Capturable only while the discount deadline has not elapsed.
@@ -187,10 +207,16 @@ def optimize(
     total_savings_selected = _ZERO
     cumulative_outlay = _ZERO  # running discounted cash across *selected* opps only
     unconvertible_count = 0
+    unknown_horizon_count = 0
 
     for opp, roi, capturable, unconvertible in scored:
         # Eligible = a worthwhile discount we can still capture (deadline open).
+        # `roi.worthwhile` is already False for an unknown horizon, so this
+        # excludes it without a second rule; the count below is what makes the
+        # exclusion visible instead of silent.
         eligible = roi.worthwhile and capturable
+        if not roi.horizon_known:
+            unknown_horizon_count += 1
         if unconvertible:
             unconvertible_count += 1
         elif eligible:
@@ -221,6 +247,7 @@ def optimize(
                 selected=selected,
                 cumulative_outlay=cumulative_outlay,
                 unconvertible=unconvertible,
+                horizon_unknown=not roi.horizon_known,
             )
         )
 
@@ -231,4 +258,5 @@ def optimize(
         total_outlay_selected=cumulative_outlay,
         recommendations=recommendations,
         unconvertible_count=unconvertible_count,
+        unknown_horizon_count=unknown_horizon_count,
     )

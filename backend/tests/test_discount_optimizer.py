@@ -243,3 +243,97 @@ def test_no_reporting_currency_disables_the_guard():
     assert result.unconvertible_count == 0
     assert result.total_savings_selected == Decimal("20.00")
     assert result.recommendations[0].unconvertible is False
+
+
+# --------------------------------------------------------------------------- #
+# An unknown horizon is not a zero one
+# --------------------------------------------------------------------------- #
+
+
+def _no_horizon_opp(offer_id: str, *, base: str, percent: str, pay_by: date) -> OfferOpportunity:
+    """An opportunity with NO net-due baseline — a vendor-scoped bulk offer with
+    no `valid_until`, which is what `build_bulk_offer` produces by default."""
+    return OfferOpportunity(
+        offer_id=offer_id,
+        invoice_id=None,
+        vendor_id=f"ven-{offer_id}",
+        vendor_name=f"Vendor {offer_id}",
+        invoice_number=None,
+        base_amount=Decimal(base),
+        currency="USD",
+        tier_days=10,
+        discount_percent=Decimal(percent),
+        pay_by=pay_by,
+        due_date=None,
+    )
+
+
+def test_unknown_horizon_is_listed_counted_and_never_selected():
+    """The defect: an unknown horizon was collapsed into `days_accelerated=0`,
+    which yields `annualized_return_pct: 0.00` and `worthwhile: False` — in the
+    same object as a POSITIVE `net_benefit`. `optimize` selects only
+    `worthwhile` opportunities, so such an offer was permanently
+    unrecommendable while the response claimed it had been assessed.
+
+    It is still not selected — there is genuinely nothing to compare against the
+    hurdle rate — but it is now visibly EXCLUDED rather than silently rejected.
+    """
+    result = optimize(
+        [_no_horizon_opp("bulk", base="100000.00", percent="2.00", pay_by=_TODAY)],
+        cash_budget=None,
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+    )
+
+    assert len(result.recommendations) == 1
+    rec = result.recommendations[0]
+    assert rec.horizon_unknown is True
+    assert rec.selected is False
+    assert result.unknown_horizon_count == 1
+    # Distinct from the currency exclusion — different cause, different remedy.
+    assert result.unconvertible_count == 0
+
+    # The savings are real; only the YIELD is unknown.
+    assert rec.roi.horizon_known is False
+    assert rec.roi.savings == Decimal("2000.00")
+    assert rec.roi.net_benefit == Decimal("2000.00")
+    # And it contributes to no total, because it was never established as worthwhile.
+    assert result.total_savings_available == Decimal("0.00")
+    assert result.total_savings_selected == Decimal("0.00")
+
+
+def test_a_known_horizon_is_unaffected():
+    """The control: the ordinary path keeps its yield, its selection and its flags."""
+    result = optimize(
+        [_opp("known", base="100000.00", percent="2.00", pay_by=_TODAY)],
+        cash_budget=None,
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+    )
+    rec = result.recommendations[0]
+    assert rec.horizon_unknown is False
+    assert rec.roi.horizon_known is True
+    assert rec.selected is True
+    assert result.unknown_horizon_count == 0
+    assert rec.roi.annualized_return_pct > Decimal("0")
+
+
+def test_unknown_horizon_does_not_displace_a_rankable_offer():
+    """An unknown-horizon row sorts last (0% return) and takes no budget.
+
+    Worth pinning because the two are ranked in one list: a large unknown offer
+    must not consume the cash budget a smaller, genuinely-worthwhile one needs.
+    """
+    result = optimize(
+        [
+            _no_horizon_opp("bulk", base="100000.00", percent="2.00", pay_by=_TODAY),
+            _opp("real", base="10000.00", percent="2.00", pay_by=_TODAY),
+        ],
+        cash_budget=Decimal("20000.00"),
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+    )
+    picked = {r.opportunity.offer_id: r.selected for r in result.recommendations}
+    assert picked == {"real": True, "bulk": False}
+    assert result.unknown_horizon_count == 1
+    assert result.total_savings_selected == Decimal("200.00")

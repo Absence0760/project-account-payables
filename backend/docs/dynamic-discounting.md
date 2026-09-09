@@ -503,3 +503,47 @@ purpose: holding `FOR UPDATE` across the whole loop would keep a growing lock
 set open across unrelated awaits, the pattern `payment_reconciler` is already
 flagged for in `docs/followups.md`. Expiry (`expire_if_past`) takes the same
 claim — it is a status write too.
+
+## An unknown horizon is not a zero one
+
+`compute_roi(days_accelerated=None)` means **no net-due baseline could be
+established**, and the result carries `horizon_known=False`. That is a different
+statement from `days_accelerated=0`, which is a measurement ("this captures no
+time value").
+
+The two were collapsed. `_build_opportunity` and the auto-capture sweep both
+resolved the horizon as `payment_schedule.due_date or offer.valid_until or
+pay_by`, and that last rung makes `days_between(pay_by, pay_by) == 0`. For a
+vendor-scoped bulk offer with no `valid_until` — which is what
+`build_bulk_offer` produces by default, since `as_offer_kwargs` sets no
+`valid_from`/`valid_until` — the response then read:
+
+```
+annualized_return_pct: 0.00     worthwhile: false     net_benefit: 2000.00
+```
+
+An internally contradictory object: a positive net benefit that the same
+response calls not worthwhile. And because `optimize` selects only `worthwhile`
+opportunities, that offer was **permanently unrecommendable** while appearing to
+have been assessed and rejected.
+
+Now the unknown propagates:
+
+| Layer | Field |
+|---|---|
+| `DiscountROI` | `horizon_known: bool` |
+| `OfferOpportunity` | `due_date: date \| None` |
+| `Recommendation` | `horizon_unknown: bool` |
+| `OptimizationResult` | `unknown_horizon_count: int` |
+| `DiscountROIResponse` / `OptimizerRecommendation` / `OptimizerResponse` | the same three |
+
+Such an opportunity is still **never selected** — there is genuinely nothing to
+compare against the hurdle rate — but it is listed and counted, so it reads as
+*excluded* rather than *rejected*. `unknown_horizon_count` is deliberately
+separate from `unconvertible_count`: the remedies differ. A currency needs a
+rate; a horizon needs a due date (set the offer's `valid_until`, or give the
+invoices it spans a payment schedule).
+
+**The auto-capture sweep accepts exactly what it accepted before.** An unknown
+horizon is never `worthwhile`, precisely as a 0% return was never above the ROI
+threshold — so no money-path behaviour changes, only the reason recorded for it.

@@ -156,6 +156,13 @@ class DiscountROIResponse(BaseModel):
     opportunity_cost: MoneyAmount
     net_benefit: MoneyAmount
     worthwhile: bool
+    # `False` = no net-due baseline was established, so `days_accelerated`,
+    # `annualized_return_pct`, `opportunity_cost` and `worthwhile` are
+    # placeholders rather than measurements. `base_amount` / `savings` /
+    # `net_benefit` still hold. Read `worthwhile: false` together with this:
+    # alone it cannot distinguish "evaluated and rejected" from "could not be
+    # evaluated", and the two call for opposite actions.
+    horizon_known: bool = True
 
 
 class OptimizerRecommendation(BaseModel):
@@ -182,6 +189,11 @@ class OptimizerRecommendation(BaseModel):
     # excluded from every total (and, when a cash budget binds, from selection).
     # Its ROI percentages remain meaningful — a rate is currency-free.
     unconvertible: bool = False
+    # No net-due baseline, so this row's yield is unknown rather than low. It is
+    # listed but never selected. Rendering it as an ordinary 0%-return row is
+    # what made a bulk offer with no `valid_until` permanently unrecommendable
+    # while appearing to have been assessed.
+    horizon_unknown: bool = False
 
 
 class OptimizerRequest(BaseModel):
@@ -220,6 +232,11 @@ class OptimizerResponse(BaseModel):
     total_outlay_selected: MoneyAmount
     # Ranked offers left out of the totals because they are in another currency.
     unconvertible_count: int = 0
+    # Ranked offers left out because no acceleration horizon could be
+    # established, so no yield exists to rank them by. Separate from
+    # `unconvertible_count` because the remedy differs: a currency needs a rate,
+    # a horizon needs a due date.
+    unknown_horizon_count: int = 0
     recommendations: list[OptimizerRecommendation]
 
 

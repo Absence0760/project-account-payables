@@ -373,11 +373,20 @@ async def _sweep_tenant(
                         # deadline instead of at the invoice's net due date
                         # (days_between(pay_by, due_date)), NOT the discount period.
                         pay_by = _tier_deadline(offer, tier, ref_today)
-                        due_date = await _resolve_due_date(db, offer) or offer.valid_until or pay_by
+                        # `None` when neither a payment-schedule due date nor a
+                        # `valid_until` establishes a baseline. The old `or pay_by`
+                        # fallback made that case look like a measured 0% yield;
+                        # passing the unknown through changes NOTHING this sweep
+                        # accepts (an unknown horizon is never `worthwhile`, exactly
+                        # as a 0% return was never above the threshold) — it only
+                        # stops the reason being a fiction.
+                        due_date = await _resolve_due_date(db, offer) or offer.valid_until
                         roi = compute_roi(
                             base_amount=offer.base_amount,
                             discount_percent=Decimal(str(tier["percent"])),
-                            days_accelerated=days_between(pay_by, due_date),
+                            days_accelerated=(
+                                days_between(pay_by, due_date) if due_date is not None else None
+                            ),
                             cost_of_capital_pct=cost_of_capital,
                         )
 

@@ -176,7 +176,11 @@ async def _build_opportunity(
     if tier is None:
         return None
     pay_by = _tier_deadline(offer, tier, today)
-    due_date = await _resolve_due_date(db, offer) or offer.valid_until or pay_by
+    # No `or pay_by` fallback: with neither a payment-schedule due date nor a
+    # `valid_until`, the horizon is genuinely unknown, and defaulting it to the
+    # tier deadline makes `days_accelerated` zero — an apparently-measured 0%
+    # yield that the optimizer then declines to select, permanently.
+    due_date = await _resolve_due_date(db, offer) or offer.valid_until
     return OfferOpportunity(
         offer_id=str(offer.id),
         invoice_id=str(offer.invoice_id) if offer.invoice_id else None,
@@ -206,6 +210,7 @@ def _roi_response(roi) -> DiscountROIResponse:
         opportunity_cost=roi.opportunity_cost,
         net_benefit=roi.net_benefit,
         worthwhile=roi.worthwhile,
+        horizon_known=roi.horizon_known,
     )
 
 
@@ -623,6 +628,7 @@ async def optimize_discounts(
                 selected=r.selected,
                 cumulative_outlay=r.cumulative_outlay,
                 unconvertible=r.unconvertible,
+                horizon_unknown=r.horizon_unknown,
             )
         )
 
@@ -634,6 +640,7 @@ async def optimize_discounts(
         total_savings_selected=result.total_savings_selected,
         total_outlay_selected=result.total_outlay_selected,
         unconvertible_count=result.unconvertible_count,
+        unknown_horizon_count=result.unknown_horizon_count,
         recommendations=recs,
     )
 

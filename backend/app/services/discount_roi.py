@@ -58,6 +58,14 @@ class DiscountROI:
     opportunity_cost: Decimal  # cost of parting with cash `days_accelerated` early
     net_benefit: Decimal  # savings - opportunity_cost
     worthwhile: bool  # annualized_return_pct > cost_of_capital_pct
+    # Was the acceleration horizon actually KNOWN? `False` means no net-due
+    # baseline could be established for this opportunity, so `days_accelerated`
+    # / `annualized_return_pct` / `opportunity_cost` / `worthwhile` are all
+    # placeholder zeros rather than measurements. `base_amount`, `savings` and
+    # `net_benefit` remain meaningful — the discount is real, only its *yield*
+    # is unknown. Callers must not read `worthwhile: False` here as "evaluated
+    # and rejected"; see `compute_roi`.
+    horizon_known: bool = True
 
     def as_dict(self) -> dict:
         """JSON-/audit-friendly view — money + percents as Decimal-strings."""
@@ -71,6 +79,7 @@ class DiscountROI:
             "opportunity_cost": str(self.opportunity_cost),
             "net_benefit": str(self.net_benefit),
             "worthwhile": self.worthwhile,
+            "horizon_known": self.horizon_known,
         }
 
 
@@ -98,7 +107,7 @@ def compute_roi(
     *,
     base_amount: Decimal,
     discount_percent: Decimal,
-    days_accelerated: int,
+    days_accelerated: int | None,
     cost_of_capital_pct: Decimal,
 ) -> DiscountROI:
     """Evaluate one early-payment discount opportunity.
@@ -109,11 +118,23 @@ def compute_roi(
     (``(due_date - pay_date).days``; clamp negatives to 0 at the call site if
     you prefer, this function treats <= 0 as "no time value captured").
     ``cost_of_capital_pct`` — the org's annual cost of capital (hurdle rate).
+
+    ``days_accelerated=None`` means the horizon is **unknown** — no net-due
+    baseline could be established — and is not the same as zero. Zero is a
+    measurement ("this captures no time value"); None is the absence of one. The
+    result carries ``horizon_known=False`` so a caller can tell them apart,
+    because collapsing the two is a real defect: a vendor-scoped bulk offer with
+    no ``valid_until`` and no single invoice due date produced
+    ``annualized_return_pct: 0.00`` and ``worthwhile: False`` in the same object
+    as a POSITIVE ``net_benefit``, and the optimizer selects only ``worthwhile``
+    opportunities — so that offer could never be recommended, while the response
+    said it had been evaluated and found unprofitable.
     """
     base_amount = Decimal(base_amount)
     discount_percent = Decimal(discount_percent)
     cost_of_capital_pct = Decimal(cost_of_capital_pct)
-    days = max(0, int(days_accelerated))
+    horizon_known = days_accelerated is not None
+    days = max(0, int(days_accelerated)) if horizon_known else 0
 
     savings = _q_money(base_amount * discount_percent / _HUNDRED)
     apr = annualized_return(discount_percent, days)
@@ -132,7 +153,11 @@ def compute_roi(
         cost_of_capital_pct=_q_pct(cost_of_capital_pct),
         opportunity_cost=opportunity_cost,
         net_benefit=net_benefit,
-        worthwhile=apr > cost_of_capital_pct,
+        # An unknown horizon can never be established as worthwhile — there is
+        # nothing to compare against the hurdle rate. It is excluded rather than
+        # rejected, and `horizon_known` is what says which.
+        worthwhile=horizon_known and apr > cost_of_capital_pct,
+        horizon_known=horizon_known,
     )
 
 
