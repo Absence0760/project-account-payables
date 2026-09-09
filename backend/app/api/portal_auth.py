@@ -594,6 +594,14 @@ async def portal_mfa_challenge(
     await _audit_portal_mfa_event(
         vu, action="portal.mfa.verify.success", details={"method": factor, "ip": ip}
     )
+    # AND the sign-in row, the same as the password-only path above. The factor
+    # row says which second factor was used; it does not say a session was
+    # minted, and an auditor asking "who signed in?" should not have to know
+    # that supplier sign-ins are recorded under two different action names
+    # depending on whether the account happens to carry a factor. The employee
+    # twin already writes both (`auth.mfa.verify.success` + `auth.login.success`,
+    # `api/auth.verify_mfa`); this is the portal reaching parity with it.
+    await _audit_portal_login_success(vu, ip=ip, method=f"password+mfa:{factor}")
     return session
 
 

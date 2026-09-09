@@ -398,6 +398,20 @@ def _audit_rows(spy) -> list[dict]:
     return [call.kwargs for call in spy.await_args_list]
 
 
+def _audit_row(spy, action: str) -> dict:
+    """The one row for `action`, asserting there is exactly one.
+
+    A successful MFA challenge writes TWO rows — `portal.mfa.verify.success`
+    (which factor) and `portal.login.success` (a session was minted), matching
+    what the employee twin writes. So a bare single-row unpack no longer says
+    what it used to; select by action instead, and keep the "exactly one"
+    assertion that made the unpack worth writing.
+    """
+    rows = [r for r in _audit_rows(spy) if r["action"] == action]
+    assert len(rows) == 1, f"expected exactly one {action} row, got {len(rows)}"
+    return rows[0]
+
+
 async def _challenge(vu, code, monkeypatch, *, method="totp", ip="203.0.113.9", validated=True):
     """Drive `portal_mfa_challenge` directly.
 
@@ -437,7 +451,7 @@ async def test_challenge_verify_success_is_audited(mfa_on, monkeypatch):
     code = pyotp.TOTP(secret).now()
     await _challenge(vu, code, monkeypatch)
 
-    (row,) = _audit_rows(spy)
+    row = _audit_row(spy, "portal.mfa.verify.success")
     assert row["action"] == "portal.mfa.verify.success"
     assert row["organization_id"] == vu.organization_id
     # Subject is the vendor user on both axes, matching every other portal MFA
@@ -448,6 +462,59 @@ async def test_challenge_verify_success_is_audited(mfa_on, monkeypatch):
     # The row is about a credential; it must never carry one.
     assert secret not in repr(row)
     assert code not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_an_mfa_sign_in_is_also_a_sign_in(mfa_on, monkeypatch):
+    """A supplier who carries a second factor still appears in `login.success`.
+
+    Without this the action returned only the password-only subset, which is a
+    BIASED SAMPLE rather than a gap: an auditor querying successful supplier
+    sign-ins would silently miss exactly the accounts that are best protected,
+    and nothing in the result would say so. That is why it was not half-fixed
+    when the password-only row landed.
+
+    The factor row and the sign-in row answer different questions — *which
+    second factor* versus *a session was minted* — and the employee twin
+    already writes both (`auth.mfa.verify.success` + `auth.login.success`).
+    """
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    spy = _audit_spy(monkeypatch)
+
+    code = pyotp.TOTP(secret).now()
+    await _challenge(vu, code, monkeypatch)
+
+    assert {r["action"] for r in _audit_rows(spy)} == {
+        "portal.mfa.verify.success",
+        "portal.login.success",
+    }
+
+    row = _audit_row(spy, "portal.login.success")
+    assert row["organization_id"] == vu.organization_id
+    assert row["actor_id"] == vu.id
+    assert row["entity_id"] == vu.id
+    # The method names the factor actually used, so the two rows can be
+    # reconciled without joining them; the shape mirrors the employee twin's
+    # `password+mfa:{factor}`.
+    assert row["details"] == {"ip": "203.0.113.9", "method": "password+mfa:totp"}
+    # PII-free and closed, the same rule the password-only row is held to.
+    assert set(row["details"]) == {"ip", "method"}
+    assert vu.email not in repr(row)
+    assert secret not in repr(row)
+    assert code not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_no_sign_in_row_when_the_second_factor_is_wrong(mfa_on, monkeypatch):
+    """A refused factor is not a sign-in, so it gets no sign-in row."""
+    vu = _vendor_user(mfa_secret=pyotp.random_base32(), mfa_enabled=True)
+    spy = _audit_spy(monkeypatch)
+
+    with pytest.raises(HTTPException):
+        await _challenge(vu, "000000", monkeypatch)
+
+    assert [r["action"] for r in _audit_rows(spy)] == ["portal.mfa.verify.failure"]
 
 
 @pytest.mark.asyncio
@@ -482,7 +549,7 @@ async def test_challenge_verify_records_which_factor_was_used(mfa_on, monkeypatc
 
     await _challenge(vu, "123456", monkeypatch, method="email")
 
-    (row,) = _audit_rows(spy)
+    row = _audit_row(spy, "portal.mfa.verify.success")
     assert row["action"] == "portal.mfa.verify.success"
     assert row["details"]["method"] == "email"
 
@@ -535,9 +602,11 @@ async def test_the_audited_factor_is_the_branch_taken_not_the_caller_s_string(mf
         vu, pyotp.TOTP(secret).now(), monkeypatch, method="EMAIL</b>x", validated=False
     )
 
-    (row,) = _audit_rows(spy)
+    row = _audit_row(spy, "portal.mfa.verify.success")
     assert row["details"]["method"] == "totp"
     assert "EMAIL</b>x" not in repr(row)
+    # The sign-in row derives its method from the same branch, never the caller.
+    assert "EMAIL</b>x" not in repr(_audit_row(spy, "portal.login.success"))
 
 
 @pytest.mark.asyncio
