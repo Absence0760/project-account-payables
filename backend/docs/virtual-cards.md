@@ -197,11 +197,20 @@ lifecycle table. See § Rebate status lifecycle → The UI.
 > too"). A standalone Cancel button would kill the card while leaving that
 > `Payment` row and its invoice claiming money is in flight on a rail that is
 > now dead — two controls that both close a card but leave the ledger in
-> different states. The residual gap is narrower and is a *visibility* one: the
-> void's card leg is best-effort and its `card_outcome` lands only on the
-> `payment.voided` audit row, never in the response, so an operator cannot tell
-> from the app whether the card was actually closed. Surfacing `card_outcome`
-> on the void response is the durable fix, not a second cancel path.
+> different states. The residual gap was narrower and was a *visibility* one:
+> the void's card leg is best-effort and its `card_outcome` landed only on the
+> `payment.voided` audit row, so an operator could not tell from the app whether
+> the card was actually closed — and a failed leg left a live, bearer-spendable
+> card with no reachable remedy.
+>
+> **That gap is closed, on the void rather than beside it.** `PaymentResponse`
+> now carries `void_card_outcome` plus the verdict `void_card_disposition`
+> (`closed` / `no_card` / `not_closed_final` / `not_closed_retryable`), the void
+> dialog renders it, and `POST /api/payments/{id}/void/retry-card-cancel`
+> re-attempts the card close for an **already-voided** payment — same
+> `payment.void` gate, idempotent, audited, moves no money, and 409s on anything
+> still live, so it cannot become the divergent second control §96 refused. See
+> `payments.md` § The outcome is on the response, and so is the remedy.
 
 ### Card Generation in Payment Run
 
@@ -262,7 +271,7 @@ screen, **each caller decides what the refusal means**:
 | `POST /api/cards/generate` | 409 up front, naming the bad value and the registered alternatives. Per-invoice refusal alone would report `total: 0`, indistinguishable from "nothing was eligible" — which is how the misconfiguration stayed invisible. |
 | `GET /api/cards/{id}/details` | 409 — the caller must never receive the fixture PAN believing it came from a real issuer. |
 | `POST /api/cards/{id}/cancel` | 409, and the row stays `active`. `mock.cancel_card` returns `True`, so the fallback marked the row cancelled while the real card stayed live and chargeable — the exact direction this endpoint's provider-first ordering exists to prevent. |
-| `card_issuance.cancel_card_at_provider` (payment void) | `card_provider_not_configured`, distinct from `cards_not_configured` (cards switched off). Best-effort like every other outcome here: recorded on the `payment.voided` audit row, never raised, and never a claimed cancel. |
+| `card_issuance.cancel_card_at_provider` (payment void) | `card_provider_not_configured`, distinct from `cards_not_configured` (cards switched off). Best-effort like every other outcome here: recorded on the `payment.voided` audit row, never raised, and never a claimed cancel. Both classify as `not_closed_retryable`, so the void dialog surfaces them and offers the card-close retry once the provider name is fixed. |
 | `GET /portal/cards/{token}` (vendor reveal) | The PII-free degraded body (`pan`/`cvv` `None` + a warning), same as a provider outage. The single-use token stays spent — a link that survives a failed reveal is indistinguishable from a twice-revealable one. |
 
 The dispatcher imports the three built-in adapter modules itself, so the refusal
@@ -818,7 +827,11 @@ only moving our books — a live card left behind is still bearer-spendable with
 no payment naming it. Unlike this endpoint it is *best-effort*: a card-provider
 outage is recorded as the `card_outcome` on the `payment.voided` audit row
 rather than raised, because a provider outage must not block the accounting
-void. See `payments.md` § Voiding a card payment cancels the card.
+void. It also travels on the response as `void_card_outcome` +
+`void_card_disposition`, and a leg that left the card LIVE is retried through
+`POST /api/payments/{id}/void/retry-card-cancel` — never through this endpoint,
+which is reachable on a live payment and would leave the ledger and the card
+disagreeing. See `payments.md` § Voiding a card payment cancels the card.
 
 #### Settling against an existing card
 

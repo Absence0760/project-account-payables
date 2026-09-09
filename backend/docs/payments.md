@@ -651,7 +651,67 @@ void. The outcome lands on the `payment.voided` audit row as `card_outcome`:
 | `card_cancelled` | closed at the provider and in our DB |
 | `card_already_charged` | already spent — the provider cannot un-spend it; AP must chase the refund. `card_settlement_block` is what then stops a later run settling against it |
 | `card_already_cancelled` / `no_card_linked` | nothing to do |
-| `cards_not_configured` / `card_cancel_rejected` / `card_cancel_error:<Type>` | the provider could not confirm; the card is left live (unverified cancels are never recorded) |
+| `cards_not_configured` / `card_provider_not_configured` / `card_cancel_rejected` / `card_cancel_error:<Type>` | the provider could not confirm; the card is left live (unverified cancels are never recorded) |
+
+`virtual_cards.payment_id` is **not** unique — a cancel-then-reissue leaves the
+dead row pointing at the same payment — so the lookup orders live-first (at most
+one non-`cancelled` card can exist per invoice, per
+`uq_virtual_cards_one_live_per_invoice`) then newest. An unordered `LIMIT 1`
+could otherwise hand back the cancelled row and report `card_already_cancelled`
+while the spendable card stayed open, which is the exact failure this leg
+exists to prevent. The row is also taken `FOR UPDATE`, which is what makes the
+retry below idempotent under concurrency.
+
+#### The outcome is on the response, and so is the remedy
+
+Both figures ride `PaymentResponse`: `void_card_outcome` (the tag above) and
+`void_card_disposition` — the **verdict**
+(`card_issuance.card_cancel_disposition`), which is what the UI branches on:
+
+| `void_card_disposition` | Meaning | UI |
+|---|---|---|
+| `closed` | dead at the provider | nothing to report; the dialog closes |
+| `no_card` | this payment issued no card | nothing to report |
+| `not_closed_final` | already **charged** — it can never be closed | shown, with **no** retry (one could only fail forever) |
+| `not_closed_retryable` | still LIVE and bearer-spendable | shown, with a retry |
+| `null` | the leg never ran (not a card payment, or not a void read) | nothing to report |
+
+A client must never enumerate the outcome *tags*: it mis-reads every tag added
+later, and it fails in the dangerous direction — rendering a live card as shut.
+`card_cancel_disposition` classifies an unrecognised tag as
+`not_closed_retryable` for the same reason.
+
+**`POST /payments/{payment_id}/void/retry-card-cancel`** is the remedy for a
+`not_closed_retryable` card. It re-runs `_cancel_card_for_void`'s exact
+provider-first path (`via: payment_void_retry` on the `card.cancelled` row) and:
+
+- **409s on anything but an already-`voided` `virtual_card` payment.** That is
+  what keeps it from becoming a second way to close a card: `POST
+  /api/cards/{id}/cancel` is reachable on a LIVE payment, where it would kill
+  the card while the payment and its invoice still claim money is in flight
+  (`docs/decisions.md` §96, §130). This one can only ever *finish* a reversal.
+- **Gates on `payment.void`** — the permission of the void it completes, not the
+  card router's bare `require_roles(ADMIN, AP_MANAGER, CFO)`, so an org that
+  split the duties keeps the reversal's other half behind the same gate.
+- **Is idempotent by construction.** The card row is locked `FOR UPDATE`; an
+  already-`cancelled` row short-circuits to `card_already_cancelled` with no
+  provider call and no second `card.cancelled` row, and every card adapter
+  treats an already-closed card at the provider as a confirmed cancel. A second
+  retry is a no-op, not an error.
+- **Moves no money and re-touches nothing else.** The payment stays `voided`,
+  the invoice is not transitioned, and the payment rail is not re-asked — so
+  `void_adapter_outcome` is `null` on this response, because this call did not
+  ask it.
+- **Records the attempt either way.** Every call writes a PII-free
+  `payment.void_card_cancel_retried` audit row carrying the outcome and its
+  disposition — an operator needs to see that a retry happened and what the
+  provider said, not only the retries that changed something.
+
+The `/payments` History tab's void dialog renders this: on a non-closed verdict
+it stays open, states that the card is still live (or that it was already
+charged and cannot be closed), shows the labelled outcome — falling back to the
+raw tag, which is PII-free by construction — and offers **Retry closing the
+card** only where a retry can work.
 
 ### Sanctions / compliance hold resolution
 
