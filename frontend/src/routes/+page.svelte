@@ -13,6 +13,7 @@
 		type MoneyAmount
 	} from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
+	import { partialLabels, totalUnconverted } from '$lib/utils/dashboardPartials';
 	import type { DashboardDiscountCapture } from '$lib/types/analytics';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -23,6 +24,15 @@
 		days_60: number;
 		days_90: number;
 		days_90_plus: number;
+	}
+
+	interface ReportingAgingBuckets extends AgingBuckets {
+		/** Invoices summed into these five bands at FACE value because no
+		 *  locked rate bridged them into the reporting currency. ONE count for
+		 *  the band set, not five — the actionable fact is the same either way.
+		 *  The bare `aging` deliberately carries none: it is a face-value
+		 *  cross-currency sum in its entirety, so a count would understate it. */
+		unconverted_count: number;
 	}
 
 	interface DashboardData {
@@ -54,15 +64,26 @@
 		stale_approvals: number;
 		open_exceptions: number;
 		pipeline: Record<string, number>;
-		vendor_spend: Array<{ vendor: string; amount: MoneyAmount }>;
+		vendor_spend: Array<{
+			vendor: string;
+			amount: MoneyAmount;
+			// This vendor's invoices that entered `amount` at face value for
+			// want of a rate lock. Per vendor, and it matters here beyond the
+			// number: the tile RANKS vendors against each other, and an
+			// unconverted total is not comparable to a converted one.
+			unconverted_count: number;
+		}>;
 		aging: AgingBuckets;
 		// Reporting-currency counterpart of `aging`.
-		aging_reporting: AgingBuckets;
+		aging_reporting: ReportingAgingBuckets;
 		monthly_trend: Array<{
 			month: string;
 			count: number;
 			amount: MoneyAmount;
 			reporting_amount: MoneyAmount;
+			// Per MONTH, not per series: a trend is read bar against bar, so
+			// which step in the line is part-converted is the useful fact.
+			unconverted_count: number;
 		}>;
 		upcoming_payments: Array<{
 			id: string;
@@ -197,6 +218,19 @@
 				data.total_pending_unconverted_count > 0
 			: false
 	);
+
+	// The three CHART disclosures. `hasUnconvertedRows` above covers the KPI
+	// row; each chart carries its own because each answers a different
+	// question about the same fallback — which vendor's rank is unreliable,
+	// how much of the aging picture is part-converted, which month's bar not
+	// to trust. A single page-level banner would say "something here mixes
+	// currencies" and leave the reader to guess where (decisions §35).
+	// The rules live in `utils/dashboardPartials` so they have one owner and
+	// their test asserts behaviour rather than restating its own `reduce`.
+	let vendorSpendUnconverted = $derived(totalUnconverted(data?.vendor_spend));
+	let vendorSpendPartialNames = $derived(partialLabels(data?.vendor_spend, (v) => v.vendor));
+	let trendUnconverted = $derived(totalUnconverted(data?.monthly_trend));
+	let trendPartialMonths = $derived(partialLabels(data?.monthly_trend, (t) => t.month));
 </script>
 
 <PageHeader title={m('dashboard.title')}>
@@ -305,6 +339,20 @@
 			<!-- Spend by Vendor -->
 			<div class="chart-card">
 				<h2>{m('dashboard.chart.topVendors')}</h2>
+				<!-- A vendor whose invoices could not all be converted is ranked
+				     on a total that is not in the same currency as the ones
+				     above and below it. The card-level notice names those
+				     vendors; the row itself is marked so the eye finds them in
+				     the bars. -->
+				{#if vendorSpendUnconverted > 0}
+					<p class="dashboard-skipped" role="alert" data-testid="unconverted-vendor-spend">
+						{m('dashboard.vendorSpend.unconverted', {
+							n: vendorSpendUnconverted,
+							currency: data.reporting.reporting_currency,
+							vendors: vendorSpendPartialNames.join(', ')
+						})}
+					</p>
+				{/if}
 				{#if data.vendor_spend.length > 0}
 					<div class="vendor-bars">
 						{#each data.vendor_spend as v}
@@ -313,10 +361,13 @@
 								<div class="vendor-bar-bg">
 									<div
 										class="vendor-bar"
+										class:partial={v.unconverted_count > 0}
 										style="width:{(parseMoneyForLayout(v.amount) / maxVendorSpend) * 100}%"
 									></div>
 								</div>
-								<span class="vendor-amount">{fmt(v.amount)}</span>
+								<span class="vendor-amount" class:partial-amount={v.unconverted_count > 0}>
+									{fmt(v.amount)}
+								</span>
 							</div>
 						{/each}
 					</div>
@@ -328,6 +379,19 @@
 			<!-- Aging -->
 			<div class="chart-card">
 				<h2>{m('dashboard.chart.aging')}</h2>
+				<!-- ONE notice for the band set, matching the single
+				     `aging_reporting.unconverted_count` the API returns: the
+				     actionable fact ("some of this is unconverted") is the same
+				     whichever band the row fell into, and the invoices behind it
+				     are listable from /invoices. -->
+				{#if data.aging_reporting.unconverted_count > 0}
+					<p class="dashboard-skipped" role="alert" data-testid="unconverted-aging">
+						{m('dashboard.aging.unconverted', {
+							n: data.aging_reporting.unconverted_count,
+							currency: data.reporting.reporting_currency
+						})}
+					</p>
+				{/if}
 					{#if agingTotal > 0}
 					<div class="aging-bar">
 						{#each agingBuckets as bucket}
@@ -444,12 +508,26 @@
 			{#if data.monthly_trend.length > 0}
 				<div class="chart-card wide">
 					<h2>{m('dashboard.chart.monthlyVolume')}</h2>
+					<!-- Named months, not a series total. A single foreign
+					     vendor onboarding in March contaminates March, and the
+					     chart is read bar against bar — a whole-series count
+					     would not say which step not to trust. -->
+					{#if trendUnconverted > 0}
+						<p class="dashboard-skipped" role="alert" data-testid="unconverted-trend">
+							{m('dashboard.trend.unconverted', {
+								n: trendUnconverted,
+								currency: data.reporting.reporting_currency,
+								months: trendPartialMonths.join(', ')
+							})}
+						</p>
+					{/if}
 					<div class="trend-chart">
 						{#each data.monthly_trend as month}
 							<div class="trend-bar-group">
 								<div class="trend-bar-wrap">
 									<div
 										class="trend-bar"
+										class:partial={month.unconverted_count > 0}
 										style="height:{maxTrendAmount > 0
 											? (parseMoneyForLayout(month.reporting_amount) / maxTrendAmount) * 100
 											: 0}%"
@@ -457,7 +535,10 @@
 									></div>
 								</div>
 								<span class="trend-label">{month.month.slice(5)}</span>
-								<span class="trend-value">{fmt(month.reporting_amount)}</span>
+								<span
+									class="trend-value"
+									class:partial-amount={month.unconverted_count > 0}
+								>{fmt(month.reporting_amount)}</span>
 							</div>
 						{/each}
 					</div>
@@ -689,6 +770,26 @@
 		width: 70px;
 		text-align: right;
 		flex-shrink: 0;
+	}
+
+	/* A bar or figure whose reporting-currency total was built partly from
+	   face values, because no locked rate bridged some of its rows. The
+	   authoritative statement is the `role="alert"` notice at the top of the
+	   card — this only points at WHICH row or bar it means, which is why it is
+	   a texture and an underline rather than a colour: colour alone would fail
+	   WCAG 1.4.1 and carry no meaning to a screen reader either way. */
+	.vendor-bar.partial,
+	.trend-bar.partial {
+		background-image: repeating-linear-gradient(
+			135deg,
+			transparent 0 4px,
+			var(--surface) 4px 7px
+		);
+	}
+
+	.partial-amount {
+		text-decoration: underline dotted;
+		text-underline-offset: 3px;
 	}
 
 	/* Aging */

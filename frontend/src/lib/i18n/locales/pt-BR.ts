@@ -121,6 +121,12 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Reembolsos obtidos',
 	'dashboard.reporting.unconverted':
 		'Alguns totais acima excluem linhas sem taxa de câmbio travada para {currency} — trate-os como um piso, não um valor exato.',
+	'dashboard.vendorSpend.unconverted':
+		'Parcial: {n, plural, one {# nota fiscal} other {# notas fiscais}} sem taxa de câmbio para {currency}, contabilizadas pelo valor de face — por isso estes fornecedores não estão todos classificados na mesma moeda. Afetados: {vendors}. Registre a taxa que falta antes de agir com base na ordem.',
+	'dashboard.aging.unconverted':
+		'Parcial: {n, plural, one {# nota fiscal} other {# notas fiscais}} sem taxa de câmbio para {currency}, contabilizadas pelo valor de face — nessa medida as faixas abaixo misturam moedas.',
+	'dashboard.trend.unconverted':
+		'Parcial: {n, plural, one {# nota fiscal} other {# notas fiscais}} sem taxa de câmbio para {currency}, contabilizadas pelo valor de face. Meses afetados: {months}. Compare as demais barras tendo isso em conta.',
 	'dashboard.kpi.rebatesExcluded':
 		'{n, plural, one {# cashback} other {# cashbacks}} em outra moeda excluídos — este valor é apenas {currency}.',
 	'dashboard.chart.pipeline': 'Pipeline de faturas',

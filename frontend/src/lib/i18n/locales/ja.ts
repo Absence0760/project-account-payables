@@ -123,6 +123,12 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': '獲得リベート',
 	'dashboard.reporting.unconverted':
 		'上記の一部の合計には、{currency} への為替レートが未確定の項目は含まれていません。正確な数値ではなく下限としてお考えください。',
+	'dashboard.vendorSpend.unconverted':
+		'一部未換算：{currency} への為替レートがない請求書 {n, plural, other {# 件}} を額面のまま計上しているため、これらの取引先は同一通貨で並べられていません。該当：{vendors}。順位を判断する前に不足しているレートを登録してください。',
+	'dashboard.aging.unconverted':
+		'一部未換算：{currency} への為替レートがない請求書 {n, plural, other {# 件}} を額面のまま計上しているため、下の各区分はその分だけ通貨が混在しています。',
+	'dashboard.trend.unconverted':
+		'一部未換算：{currency} への為替レートがない請求書 {n, plural, other {# 件}} を額面のまま計上しています。該当月：{months}。他の月と比較する際はご注意ください。',
 	'dashboard.kpi.rebatesExcluded':
 		'他通貨建ての{n, plural, other {# 件のリベート}}を除外。この金額は {currency} のみです。',
 	'dashboard.chart.pipeline': '請求書パイプライン',

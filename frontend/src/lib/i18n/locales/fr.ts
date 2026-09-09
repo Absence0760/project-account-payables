@@ -120,6 +120,12 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Remises obtenues',
 	'dashboard.reporting.unconverted':
 		'Certains totaux ci-dessus excluent les lignes sans taux de change verrouillé vers {currency} — à considérer comme un plancher, pas un montant exact.',
+	'dashboard.vendorSpend.unconverted':
+		'Partiel : {n, plural, one {# facture} other {# factures}} sans taux de change vers {currency}, comptabilisées à leur valeur faciale — ces fournisseurs ne sont donc pas tous classés dans la même devise. Concernés : {vendors}. Enregistrez le taux manquant avant de vous fier au classement.',
+	'dashboard.aging.unconverted':
+		'Partiel : {n, plural, one {# facture} other {# factures}} sans taux de change vers {currency}, comptabilisées à leur valeur faciale — les tranches ci-dessous mélangent les devises d’autant.',
+	'dashboard.trend.unconverted':
+		'Partiel : {n, plural, one {# facture} other {# factures}} sans taux de change vers {currency}, comptabilisées à leur valeur faciale. Mois concernés : {months}. Comparez les autres barres en gardant cela à l’esprit.',
 	'dashboard.kpi.rebatesExcluded':
 		'{n, plural, one {# remise} other {# remises}} dans une autre devise exclue — ce montant ne concerne que {currency}.',
 	'dashboard.chart.pipeline': 'Pipeline des factures',

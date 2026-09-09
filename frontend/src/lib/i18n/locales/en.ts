@@ -138,6 +138,12 @@ export const en = {
 	'dashboard.kpi.rebatesEarned': 'Rebates Earned',
 	'dashboard.reporting.unconverted':
 		'Some totals above exclude rows with no locked exchange rate into {currency} — treat them as a floor, not an exact figure.',
+	'dashboard.vendorSpend.unconverted':
+		'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value — so these vendors are not all ranked in the same currency. Affected: {vendors}. Book the missing rate before acting on the order.',
+	'dashboard.aging.unconverted':
+		'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value — the bands below mix currencies by that much.',
+	'dashboard.trend.unconverted':
+		'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value. Affected months: {months}. Compare the other bars against those with that in mind.',
 	'dashboard.kpi.rebatesExcluded':
 		'{n, plural, one {# rebate} other {# rebates}} in another currency excluded — this figure is {currency} only.',
 	'dashboard.chart.pipeline': 'Invoice Pipeline',

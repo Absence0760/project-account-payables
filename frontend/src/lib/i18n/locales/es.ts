@@ -119,6 +119,12 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Reembolsos obtenidos',
 	'dashboard.reporting.unconverted':
 		'Algunos totales anteriores excluyen filas sin tipo de cambio fijado a {currency}; considérelos un mínimo, no una cifra exacta.',
+	'dashboard.vendorSpend.unconverted':
+		'Parcial: {n, plural, one {# factura} other {# facturas}} sin tipo de cambio a {currency}, contabilizadas por su valor nominal, por lo que estos proveedores no están todos clasificados en la misma moneda. Afectados: {vendors}. Registre el tipo que falta antes de actuar según el orden.',
+	'dashboard.aging.unconverted':
+		'Parcial: {n, plural, one {# factura} other {# facturas}} sin tipo de cambio a {currency}, contabilizadas por su valor nominal: en esa medida los tramos inferiores mezclan monedas.',
+	'dashboard.trend.unconverted':
+		'Parcial: {n, plural, one {# factura} other {# facturas}} sin tipo de cambio a {currency}, contabilizadas por su valor nominal. Meses afectados: {months}. Compare las demás barras teniéndolo en cuenta.',
 	'dashboard.kpi.rebatesExcluded':
 		'{n, plural, one {# reembolso} other {# reembolsos}} en otra moneda excluidos: esta cifra es solo {currency}.',
 	'dashboard.chart.pipeline': 'Flujo de facturas',

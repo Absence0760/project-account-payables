@@ -119,6 +119,12 @@ export const messages = {
 	'dashboard.kpi.rebatesEarned': 'Erzielte Rückvergütungen',
 	'dashboard.reporting.unconverted':
 		'Einige der obigen Summen schließen Zeilen ohne festgelegten Wechselkurs in {currency} aus – behandeln Sie sie als Untergrenze, nicht als exakten Wert.',
+	'dashboard.vendorSpend.unconverted':
+		'Teilweise: {n, plural, one {# Rechnung} other {# Rechnungen}} ohne Wechselkurs in {currency}, zum Nennwert erfasst – diese Lieferanten sind daher nicht alle in derselben Währung gereiht. Betroffen: {vendors}. Erfassen Sie den fehlenden Kurs, bevor Sie sich auf die Reihenfolge stützen.',
+	'dashboard.aging.unconverted':
+		'Teilweise: {n, plural, one {# Rechnung} other {# Rechnungen}} ohne Wechselkurs in {currency}, zum Nennwert erfasst – in diesem Umfang mischen die Bänder unten Währungen.',
+	'dashboard.trend.unconverted':
+		'Teilweise: {n, plural, one {# Rechnung} other {# Rechnungen}} ohne Wechselkurs in {currency}, zum Nennwert erfasst. Betroffene Monate: {months}. Vergleichen Sie die übrigen Balken mit diesem Vorbehalt.',
 	'dashboard.kpi.rebatesExcluded':
 		'{n, plural, one {# Rückvergütung} other {# Rückvergütungen}} in anderer Währung ausgeschlossen — dieser Wert umfasst nur {currency}.',
 	'dashboard.chart.pipeline': 'Rechnungs-Pipeline',
