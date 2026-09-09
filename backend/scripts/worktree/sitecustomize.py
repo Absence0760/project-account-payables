@@ -75,7 +75,8 @@ _MAX_ANCESTORS = 12
 _MAX_TAIL_PARTS = 3
 
 # Returned when an anchor proves we are inside the checkout the editable
-# install already points at — the signal to leave everything alone.
+# install already points at — the signal to leave everything alone. Not an
+# absolute path, so it can never collide with a resolved candidate.
 SAME_CHECKOUT = "same-checkout"
 
 
@@ -204,7 +205,7 @@ def resolve(mapping: dict[str, str], anchors: list[str]) -> str | None:
     """The local package root to use, or None to leave the finder alone."""
     for anchor in anchors:
         result = resolve_from_anchor(anchor, mapping)
-        if result is SAME_CHECKOUT:
+        if result == SAME_CHECKOUT:
             return None
         if result:
             return result
