@@ -486,6 +486,28 @@ export function tenantPsql(query: string, slug?: string): string {
 }
 
 /**
+ * Run a synchronous `psql -c <query>` against the CONTROL-plane database.
+ *
+ * The sibling of `tenantPsql` for the rows that do not live in a tenant DB —
+ * organizations, users, roles, API keys, plans, subscriptions, webhook
+ * subscriptions. Same connection defaults, same synchronous shape.
+ *
+ * **Scope every statement to the ids the test itself created.** A tenant DB is
+ * per-worker, so a `LIKE 'e2e-%'` sweep there can only ever hit that worker's
+ * own rows; the control plane is shared by every worker AND every tenant, so
+ * the same sweep would delete a concurrent worker's in-flight row. Delete by
+ * primary key.
+ */
+export function controlPsql(query: string): string {
+	const out = execFileSync(
+		'psql',
+		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', 'feohledger', '-tAc', query],
+		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
+	);
+	return out.toString();
+}
+
+/**
  * Delete the invoices matching `predicate`, and everything that references them.
  *
  * `invoices` is referenced by 16 foreign keys and none of them cascade, so a

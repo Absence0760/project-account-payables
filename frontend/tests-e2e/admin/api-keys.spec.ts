@@ -1,4 +1,13 @@
-import { API_BASE, authedTenantHeaders, currentTenantSlug, expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	controlPsql,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	TENANT_ROOT_URL,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /admin/api-keys — Developer-API key management (admin only).
@@ -33,6 +42,31 @@ interface ApiKeyResponse {
 async function revoke(page: import('@playwright/test').Page, id: string) {
 	const headers = await apiHeaders(page);
 	await page.request.delete(`${API_BASE}/api/api-keys/${id}`, { headers });
+}
+
+/**
+ * Remove a minted key from the control plane entirely.
+ *
+ * `DELETE /api/api-keys/{id}` is a SOFT revoke by design — the row survives so
+ * the key's history stays auditable — which means revoking is not teardown.
+ * Every run of this file was leaving two or three permanently-`Revoked` rows in
+ * a control plane shared by every tenant, and they render on `/admin/api-keys`
+ * forever; 20 of them had accumulated on this machine. `api_key_usage` is
+ * `ON DELETE CASCADE`, so one statement clears the meter rows with it.
+ *
+ * The predicate is the prefix AND the worker's own organization, which is what
+ * makes it both self-healing (a run clears what earlier runs stranded) and safe
+ * under parallel workers. A bare `name LIKE 'e2e-%'` sweep — the shape used in
+ * a per-worker TENANT database, where it can only reach that worker's rows —
+ * would here delete a concurrently-running worker's in-flight key, because the
+ * control plane is shared across workers as well as tenants. The id is passed
+ * so a failure names the key the caller meant.
+ */
+function purgeKey(id: string) {
+	controlPsql(
+		`DELETE FROM api_keys WHERE (id = '${id}' OR name LIKE 'e2e-%') ` +
+			`AND organization_id = (SELECT id FROM organizations WHERE slug = '${currentTenantSlug()}')`
+	);
 }
 
 test.describe('/admin/api-keys (admin)', () => {
@@ -89,7 +123,10 @@ test.describe('/admin/api-keys (admin)', () => {
 			await page.request.get(`${API_BASE}/api/api-keys`, { headers })
 		).json()) as ApiKeyResponse[];
 		const created = list.find((k) => k.name === name);
-		if (created) await revoke(page, created.id);
+		if (created) {
+			await revoke(page, created.id);
+			purgeKey(created.id);
+		}
 	});
 
 	test('revoke disables the key (idempotent) and the row flips to Revoked', async ({ page }) => {
@@ -126,6 +163,10 @@ test.describe('/admin/api-keys (admin)', () => {
 		expect(after.find((k) => k.id === id)?.revoked_at).not.toBeNull();
 		const repeat = await page.request.delete(`${API_BASE}/api/api-keys/${id}`, { headers });
 		expect(repeat.ok()).toBe(true);
+
+		// Revocation is what this test asserts, so the purge comes after the last
+		// assertion that needs the row to still exist.
+		purgeKey(id);
 	});
 
 	/**
@@ -211,6 +252,7 @@ test.describe('/admin/api-keys (admin)', () => {
 			await expect(usageModal).toBeHidden();
 		} finally {
 			await revoke(page, created.api_key.id);
+			purgeKey(created.api_key.id);
 		}
 	});
 
@@ -244,6 +286,7 @@ test.describe('/admin/api-keys (admin)', () => {
 		await expect(usageModal).toBeHidden();
 
 		await revoke(page, created.api_key.id);
+		purgeKey(created.api_key.id);
 	});
 });
 
