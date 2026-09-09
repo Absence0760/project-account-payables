@@ -2693,6 +2693,14 @@
 
 	.color-field input[type='text'] {
 		flex: 1;
+		/* WCAG 2.2 AA 2.5.8 (target size). `flex: 1` alone lets this field
+		   absorb every pixel the row is short: the 40px swatch and the 8px gap
+		   come out of a `1fr` grid column first, and whatever remains is the
+		   target. In the two-column branding panel that left 22px — under the
+		   24px minimum, and too narrow to show the six-digit hex it holds.
+		   A min-width makes the target size a property of the field rather
+		   than of whatever column it lands in; `7ch` is `#638cff` exactly. */
+		min-width: 7ch;
 	}
 
 	/* Custom domains */
