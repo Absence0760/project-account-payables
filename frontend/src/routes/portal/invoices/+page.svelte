@@ -16,7 +16,7 @@
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
 	import {
-		portalInvoiceStatusLabel,
+		portalInvoiceStatusLabelKey,
 		PORTAL_INVOICE_PHASES,
 		type PortalInvoicePhase,
 	} from '$lib/types/portalStatus';
@@ -61,11 +61,15 @@
 	const hasMore = $derived(items.length < total);
 
 	/* URL-backed filter state. The portal home deep-links here (e.g.
-	 * `?phase=Rejected` from "these need your attention"), and a supplier who
+	 * `?phase=rejected` from "these need your attention"), and a supplier who
 	 * bookmarks or reloads a filtered list keeps it — the same treatment
 	 * `/invoices`, `/payments` and `/vendors` already have. `phase` is validated
 	 * against the known chips so a hand-edited URL cannot select a bucket the
-	 * backend would not recognise. */
+	 * backend would not recognise.
+	 *
+	 * The value is the phase ID (`rejected`), never its label: the ids are
+	 * stable across locales, so a bookmarked link keeps working when the
+	 * supplier switches language — which a label-keyed URL could not do. */
 	const seededPhase = (() => {
 		const raw = $page.url.searchParams.get('phase');
 		if (!raw) return null;
@@ -345,7 +349,7 @@
 
 	<PortalListFilters
 		bind:this={filtersEl}
-		chips={PORTAL_INVOICE_PHASES.map((c) => ({ key: c.phase, label: c.phase }))}
+		chips={PORTAL_INVOICE_PHASES.map((c) => ({ key: c.phase, label: m(c.labelKey) }))}
 		allLabel={m('portal.invoices.filterAll')}
 		groupLabel={m('portal.invoices.col.status')}
 		searchLabel={m('portal.invoices.searchLabel')}
@@ -424,7 +428,7 @@
 						<td>{formatDate(inv.due_date, m('portal.common.dash'))}</td>
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
 						<td>
-							<span class="status s-{inv.status}">{portalInvoiceStatusLabel(inv.status)}</span>
+							<span class="status s-{inv.status}">{m(portalInvoiceStatusLabelKey(inv.status))}</span>
 							{#if inv.waiting_on}
 								<div class="waiting-on">
 									{m(WAITING_ON_KEY[inv.waiting_on])}{#if (inv.waiting_on_days ?? 0) > 0}

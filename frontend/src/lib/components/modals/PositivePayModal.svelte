@@ -10,8 +10,10 @@
 		positivePayStatusLabelKey,
 		POSITIVE_PAY_STATUS_TONES,
 		BANK_FORMATS,
-		BANK_FORMAT_LABELS
+		BANK_FORMAT_LABEL_KEYS,
+		bankFormatLabelKey
 	} from '$lib/types/positivePay';
+	import { runStatusLabelKey } from '$lib/types/payment';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -107,11 +109,11 @@
 				fileType === 'check_issue'
 					? await generateCheckIssue(runId.trim(), bankFormat)
 					: await generateAchAuthorization(bankFormat);
-			toast('Positive Pay file generated', 'success');
+			toast(m('positivePay.modal.toast.generated'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, 'Generation failed');
+			handleError(err, m('positivePay.modal.toast.generateFailed'));
 		} finally {
 			saving = false;
 		}
@@ -148,15 +150,11 @@
 		if (!detail) return;
 		const { items, badLine } = parsePresented();
 		if (badLine !== null) {
-			toast(
-				`Line ${badLine}: the amount must be a plain number (e.g. 1234.56). ` +
-					'Fix it and re-paste — an unreadable amount would be sent as no amount at all.',
-				'error'
-			);
+			toast(m('positivePay.modal.toast.badAmount', { line: badLine }), 'error');
 			return;
 		}
 		if (items.length === 0) {
-			toast('Paste at least one presented item (check#,amount per line)', 'error');
+			toast(m('positivePay.modal.toast.noItems'), 'error');
 			return;
 		}
 		processing = true;
@@ -168,8 +166,11 @@
 			const flagged = result.amount_mismatches + result.not_on_file;
 			toast(
 				flagged > 0
-					? `Return processed — ${flagged} flagged, ${result.exceptions_created} exception(s) raised`
-					: 'Return processed — no discrepancies',
+					? m('positivePay.modal.toast.returnFlagged', { flagged }) +
+							m('positivePay.modal.toast.returnExceptions', {
+								exceptions: result.exceptions_created
+							})
+					: m('positivePay.modal.toast.returnClean'),
 				flagged > 0 ? 'error' : 'success'
 			);
 		} catch (err) {
@@ -179,7 +180,7 @@
 			} catch {
 				/* keep the existing snapshot */
 			}
-			handleError(err, 'Could not process return');
+			handleError(err, m('positivePay.modal.toast.returnFailed'));
 		} finally {
 			processing = false;
 		}
@@ -192,14 +193,14 @@
 		try {
 			await downloadPositivePayFile(detail.id, filename);
 		} catch (err) {
-			handleError(err, 'Download failed');
+			handleError(err, m('positivePay.modal.toast.downloadFailed'));
 		}
 	}
 
-	// Both value maps are message keys, not English literals — an unrecognised
-	// value renders raw rather than blank. (The rest of this dialog's copy is
-	// not yet extracted; these two come from the shared types module, which the
-	// extracted /positive-pay list reads too.)
+	// Every value map is message keys, not English literals — an unrecognised
+	// value renders raw rather than blank. All three come from the shared types
+	// module, which the extracted /positive-pay list reads too, so the row and
+	// the dialog it opens cannot disagree.
 	function fileTypeLabel(t: string): string {
 		const key = positivePayFileTypeLabelKey(t);
 		return key ? m(key) : t;
@@ -210,13 +211,32 @@
 		return key ? m(key) : s;
 	}
 
+	// `bank_format` is a bare string on the wire (the backend's formatter
+	// registry is pluggable), so a format this build has never seen renders its
+	// raw value rather than a blank pill.
+	function bankFormatLabel(fmt: string): string {
+		const key = bankFormatLabelKey(fmt);
+		return key ? m(key) : fmt;
+	}
+
+	// The run picker's option text. `PaymentRun.status` is DERIVED on read
+	// (decisions.md §41), so it is a bare string here too — same tolerant read,
+	// reusing the map `/payments` and `RunDetailModal` already share rather than
+	// printing `completed` mid-option in a translated dialog.
+	function runStatusLabel(s: string): string {
+		const key = runStatusLabelKey(s);
+		return key ? m(key) : s;
+	}
+
 	const returnSummary = $derived(detail?.meta?.return_summary ?? null);
 
 	const modalTitle = $derived(
-		isCreate ? 'Generate Positive Pay File' : `Positive Pay — ${fileTypeLabel(detail?.file_type ?? '')}`
+		isCreate
+			? m('positivePay.modal.generateTitle')
+			: m('positivePay.modal.detailTitle', { type: fileTypeLabel(detail?.file_type ?? '') })
 	);
 	const ariaLabel = $derived(
-		isCreate ? 'Generate positive pay file' : 'Positive pay file detail'
+		isCreate ? m('positivePay.modal.generateAria') : m('positivePay.modal.detailAria')
 	);
 </script>
 
@@ -225,44 +245,51 @@
 		<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 			<div class="form-grid">
 				<label>
-					<span>File type <em class="required">*</em></span>
+					<span>{m('positivePay.modal.fileType')} <em class="required">*</em></span>
 					<select bind:value={fileType} disabled={!canEdit}>
-						<option value="check_issue">Check issue (per payment run)</option>
-						<option value="ach_authorization">ACH authorization (org-wide)</option>
+						<option value="check_issue">{m('positivePay.modal.fileType.checkIssue')}</option>
+						<option value="ach_authorization"
+							>{m('positivePay.modal.fileType.achAuthorization')}</option
+						>
 					</select>
 				</label>
 				<label>
-					<span>Bank format</span>
+					<span>{m('positivePay.modal.bankFormat')}</span>
 					<select bind:value={bankFormat} disabled={!canEdit}>
 						{#each BANK_FORMATS as fmt (fmt)}
-							<option value={fmt}>{BANK_FORMAT_LABELS[fmt]}</option>
+							<option value={fmt}>{m(BANK_FORMAT_LABEL_KEYS[fmt])}</option>
 						{/each}
 					</select>
 				</label>
 				{#if fileType === 'check_issue'}
 					<label class="full-width">
-						<span>Payment run <em class="required">*</em></span>
+						<span>{m('positivePay.modal.paymentRun')} <em class="required">*</em></span>
 						{#if runs.length > 0}
-							<select bind:value={runId} required disabled={!canEdit} aria-label="Payment run">
-								<option value="">Select a payment run…</option>
+							<select
+								bind:value={runId}
+								required
+								disabled={!canEdit}
+								aria-label={m('positivePay.modal.paymentRun')}
+							>
+								<option value="">{m('positivePay.modal.selectRun')}</option>
 								{#each runs as run (run.id)}
 									<option value={run.id}>
-										{run.id.slice(0, 8)} · {run.status} · {formatDate(run.executed_at)}
+										{run.id.slice(0, 8)} · {runStatusLabel(run.status)} · {formatDate(
+											run.executed_at
+										)}
 									</option>
 								{/each}
 							</select>
 						{:else if runsLoaded}
 							<p class="field-note" data-testid="no-executed-runs">
-								No executed payment runs yet. A check-issue file lists the cheques a run
-								actually issued, so the run has to be executed before its file can be
-								generated.
+								{m('positivePay.modal.noExecutedRuns')}
 							</p>
 						{:else}
 							<input
 								type="text"
 								bind:value={runId}
-								placeholder="Payment run id (UUID)"
-								aria-label="Payment run id"
+								placeholder={m('positivePay.modal.runIdPlaceholder')}
+								aria-label={m('positivePay.modal.runIdAria')}
 								required
 								disabled={!canEdit}
 							/>
@@ -273,24 +300,23 @@
 
 			<p class="intake-hint">
 				{#if fileType === 'check_issue'}
-					Renders every cheque in the selected run into the bank's Positive Pay format.
-					Only executed runs are listed — a draft has issued no cheques. Generation is
-					idempotent per (run, format) — re-running returns the existing file.
+					{m('positivePay.modal.hintCheckIssue')}
 				{:else}
-					Lists every active vendor with ACH bank details as an authorized originator for
-					debit-block filtering.
+					{m('positivePay.modal.hintAchAuthorization')}
 				{/if}
 			</p>
 
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={onclose}
+					>{m('positivePay.modal.cancel')}</button
+				>
 				{#if canEdit}
 					<button
 						type="submit"
 						class="btn-primary"
 						disabled={saving || (fileType === 'check_issue' && !runId.trim())}
 					>
-						{saving ? 'Generating…' : 'Generate'}
+						{saving ? m('positivePay.modal.generating') : m('positivePay.modal.generate')}
 					</button>
 				{/if}
 			</div>
@@ -302,21 +328,21 @@
 				{statusLabel(detail.status)}
 			</Badge>
 			<span class="meta-pill">{fileTypeLabel(detail.file_type)}</span>
-			<span class="meta-pill">{detail.bank_format}</span>
+			<span class="meta-pill">{bankFormatLabel(detail.bank_format)}</span>
 			<span class="meta-pill">{formatDate(detail.created_at)}</span>
 		</div>
 
 		<div class="totals-row">
 			<div class="total-box">
-				<span class="total-label">Items</span>
+				<span class="total-label">{m('positivePay.modal.items')}</span>
 				<span class="total-value">{detail.item_count}</span>
 			</div>
 			<div class="total-box">
-				<span class="total-label">Total amount</span>
+				<span class="total-label">{m('positivePay.modal.totalAmount')}</span>
 				<span class="total-value"><Money amount={detail.total_amount} currency={detail.currency ?? orgCurrency.currency} mono /></span>
 			</div>
 			<div class="total-box">
-				<span class="total-label">Account</span>
+				<span class="total-label">{m('positivePay.modal.account')}</span>
 				<span class="total-value mono">
 					{detail.account_last4 ? `••••${detail.account_last4}` : '—'}
 				</span>
@@ -325,24 +351,43 @@
 
 		<div class="download-row">
 			<button type="button" class="btn-cancel" onclick={handleDownload}>
-				Download file
+				{m('positivePay.modal.download')}
 			</button>
 		</div>
 
 		{#if returnSummary}
 			<div class="return-section">
-				<div class="section-title">Return summary</div>
+				<div class="section-title">{m('positivePay.modal.returnSummary')}</div>
 				<div class="stat-chips">
-					<span class="stat-chip">{returnSummary.presented_count} presented</span>
-					<span class="stat-chip ok">{returnSummary.matched_ok} matched</span>
-					<span class="stat-chip warn">{returnSummary.amount_mismatches} altered</span>
-					<span class="stat-chip flag">{returnSummary.not_on_file} not on file</span>
-					<span class="stat-chip flag">{returnSummary.exceptions_created} exceptions</span>
+					<span class="stat-chip"
+						>{m('positivePay.modal.chip.presented', {
+							count: returnSummary.presented_count
+						})}</span
+					>
+					<span class="stat-chip ok"
+						>{m('positivePay.modal.chip.matched', { count: returnSummary.matched_ok })}</span
+					>
+					<span class="stat-chip warn"
+						>{m('positivePay.modal.chip.altered', {
+							count: returnSummary.amount_mismatches
+						})}</span
+					>
+					<span class="stat-chip flag"
+						>{m('positivePay.modal.chip.notOnFile', { count: returnSummary.not_on_file })}</span
+					>
+					<span class="stat-chip flag"
+						>{m('positivePay.modal.chip.exceptions', {
+							count: returnSummary.exceptions_created
+						})}</span
+					>
 				</div>
 				{#if returnSummary.exceptions_created > 0}
+					<!-- Split around the inline link rather than embedding markup in a
+					     message, the same shape the org page's Merge.dev hint uses. -->
 					<p class="intake-hint">
-						Fraud signals were raised as <a href="/exceptions?type=fraud_flag">fraud exceptions</a> —
-						including never-issued cheques (which have no invoice).
+						{m('positivePay.modal.fraudNotePre')}<a href="/exceptions?type=fraud_flag"
+							>{m('positivePay.modal.fraudNoteLink')}</a
+						>{m('positivePay.modal.fraudNotePost')}
 					</p>
 				{/if}
 			</div>
@@ -350,16 +395,19 @@
 
 		{#if detail.file_type === 'check_issue' && canEdit}
 			<div class="return-section">
-				<div class="section-title">Process bank return</div>
+				<div class="section-title">{m('positivePay.modal.processReturn')}</div>
+				<!-- `check#,amount` is a literal input format, not prose — it stays
+				     verbatim between the two halves of the hint. -->
 				<p class="intake-hint">
-					Paste the items the bank reports as presented — one per line, <code>check#,amount</code>.
-					Altered or never-issued cheques raise a fraud exception.
+					{m('positivePay.modal.returnHintPre')}<code>check#,amount</code>{m(
+						'positivePay.modal.returnHintPost'
+					)}
 				</p>
 				<textarea
 					bind:value={presentedText}
 					rows="5"
 					placeholder={'1001,1200.00\n1002,850.00'}
-					aria-label="Presented items"
+					aria-label={m('positivePay.modal.presentedAria')}
 					disabled={processing}
 				></textarea>
 				<div class="return-actions">
@@ -369,14 +417,18 @@
 						onclick={handleProcessReturn}
 						disabled={processing || !presentedText.trim()}
 					>
-						{processing ? 'Processing…' : 'Process return'}
+						{processing
+							? m('positivePay.modal.processing')
+							: m('positivePay.modal.processReturnAction')}
 					</button>
 				</div>
 			</div>
 		{/if}
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}
+				>{m('positivePay.modal.close')}</button
+			>
 		</div>
 	{/if}
 </Modal>

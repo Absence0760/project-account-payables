@@ -5,7 +5,8 @@
 	import {
 		POSITIVE_PAY_FILE_TYPE_LABEL_KEYS,
 		positivePayStatusLabelKey,
-		POSITIVE_PAY_STATUS_TONES
+		POSITIVE_PAY_STATUS_TONES,
+		bankFormatLabelKey
 	} from '$lib/types/positivePay';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -41,6 +42,15 @@
 	const statusLabel = (s: string) => {
 		const key = positivePayStatusLabelKey(s);
 		return key ? m(key) : s;
+	};
+
+	// The Format cell printed the raw `fixed_width` while the generate dialog's
+	// picker one click away said "Fixed width". `bank_format` is a bare string
+	// on the wire (pluggable formatter registry), so an unknown one still
+	// renders its raw value rather than a blank cell.
+	const bankFormatLabel = (f: string) => {
+		const key = bankFormatLabelKey(f);
+		return key ? m(key) : f;
 	};
 
 	// file_type chips (single-select). "All" first.
@@ -364,7 +374,7 @@
 						</RowLink>
 					</td>
 					<td class="muted">{m(POSITIVE_PAY_FILE_TYPE_LABEL_KEYS[file.file_type])}</td>
-					<td class="muted">{file.bank_format}</td>
+					<td class="muted">{bankFormatLabel(file.bank_format)}</td>
 					<td class="right mono">{file.item_count}</td>
 					<td class="right mono"><Money amount={file.total_amount} currency={file.currency ?? orgCurrency.currency} /></td>
 					<td class="mono muted">{file.account_last4 ? `••••${file.account_last4}` : '—'}</td>

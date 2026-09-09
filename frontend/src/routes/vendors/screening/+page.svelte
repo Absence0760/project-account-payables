@@ -20,7 +20,7 @@
 	import {
 		screeningStatusLabelKey,
 		riskLevelLabelKey,
-		formatScreeningCategories as formatCategories
+		screeningCategoryLabels
 	} from '$lib/types/vendor';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -54,6 +54,16 @@
 	const riskLabel = (level: string) => {
 		const key = riskLevelLabelKey(level);
 		return key ? m(key) : level;
+	};
+
+	// Hit categories read as one phrase beside the (translated) verdict and risk
+	// level, so they are resolved the same way: a known kind through its key, an
+	// unrecognised one through its de-underscored raw label — never dropped,
+	// which is the one outcome a compliance reviewer must not get.
+	const formatCategories = (categories: string[] | null | undefined) => {
+		const parts = screeningCategoryLabels(categories);
+		if (!parts.length) return '—';
+		return parts.map((p) => (p.key ? m(p.key) : p.fallback)).join(', ');
 	};
 	const canRescreen = $derived(auth.isManager);
 

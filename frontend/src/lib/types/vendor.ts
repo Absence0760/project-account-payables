@@ -402,20 +402,77 @@ export function riskLevelLabelKey(level: string): MessageKey | null {
 	return RISK_LEVEL_LABEL_KEYS[level as RiskLevel] ?? null;
 }
 
-// The screening-hit taxonomy (`SanctionsCheck.categories`). The backend's
-// vocabulary is fixed but open-ended — a future provider may report a label we
-// have no wording for, so `formatScreeningCategories` falls back to a
-// de-underscored version of the raw label rather than dropping it.
-export const SCREENING_CATEGORY_LABELS: Record<string, string> = {
-	sanctions: 'Sanctions list',
-	pep: 'Politically exposed person',
-	adverse_media: 'Negative news',
-	high_risk_country: 'High-risk jurisdiction'
+// The screening-hit taxonomy (`SanctionsCheck.categories`). The vocabulary is
+// FIXED and PII-free by construction — the adapters normalise every provider's
+// own wording into these four labels (`backend/app/services/
+// sanctions_categories.py`), so the union is total and a category with no
+// label is a compile error, the way `PaymentRunStatus` works.
+export const SCREENING_CATEGORIES = [
+	'sanctions',
+	'pep',
+	'adverse_media',
+	'high_risk_country'
+] as const;
+
+export type ScreeningCategory = (typeof SCREENING_CATEGORIES)[number];
+
+/**
+ * The i18n key carrying each hit kind's label — never the English string
+ * itself. These render in the screening-review modal's "Hit categories" row
+ * and inline in every history line, both beside the already-translated
+ * screening verdict and risk level, so a hardcoded map read as a gap in the
+ * sentence. `vendor.test.ts` proves each key resolves in the catalogue.
+ */
+export const SCREENING_CATEGORY_LABEL_KEYS: Record<ScreeningCategory, MessageKey> = {
+	sanctions: 'vendors.screening.category.sanctions',
+	pep: 'vendors.screening.category.pep',
+	adverse_media: 'vendors.screening.category.adverseMedia',
+	high_risk_country: 'vendors.screening.category.highRiskCountry'
 };
 
-export function formatScreeningCategories(categories: string[] | null | undefined): string {
-	if (!categories?.length) return '—';
-	return categories.map((c) => SCREENING_CATEGORY_LABELS[c] ?? c.replace(/_/g, ' ')).join(', ');
+/**
+ * The message key for a hit kind, or `null` for one this frontend doesn't
+ * know. `sanctions_checks.raw_response` is JSONB read back by a deliberately
+ * tolerant parser (`categories_from_raw_response` accepts any list of
+ * strings), so a provider adapter can widen the taxonomy before this map
+ * catches up — the caller then renders {@link screeningCategoryFallback}
+ * rather than dropping the hit, which is the one outcome a compliance reviewer
+ * must never get.
+ */
+export function screeningCategoryLabelKey(category: string): MessageKey | null {
+	return SCREENING_CATEGORY_LABEL_KEYS[category as ScreeningCategory] ?? null;
+}
+
+/** Readable stand-in for an unrecognised category: the raw label, de-underscored. */
+export function screeningCategoryFallback(category: string): string {
+	return category.replace(/_/g, ' ');
+}
+
+export interface ScreeningCategoryLabel {
+	category: string;
+	/** The message key, or `null` when this build has no wording for the hit. */
+	key: MessageKey | null;
+	/** What to render when `key` is `null`. */
+	fallback: string;
+}
+
+/**
+ * Resolve a screening result's categories for display — one entry per hit, in
+ * the order the provider reported them.
+ *
+ * This replaced a `formatScreeningCategories` that returned a finished English
+ * string: joining is the caller's job now, because only the caller can reach
+ * `m()`. The resolution rule (known → key, unknown → de-underscored raw) stays
+ * here so the two call sites can't drift.
+ */
+export function screeningCategoryLabels(
+	categories: string[] | null | undefined
+): ScreeningCategoryLabel[] {
+	return (categories ?? []).map((category) => ({
+		category,
+		key: screeningCategoryLabelKey(category),
+		fallback: screeningCategoryFallback(category)
+	}));
 }
 
 // ---------------------------------------------------------------------------
