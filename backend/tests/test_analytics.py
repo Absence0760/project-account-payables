@@ -32,6 +32,8 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.analytics import (
     ReceivedPO,
     apply_payment_timing_scenario,
@@ -50,6 +52,7 @@ from app.services.analytics import (
     compute_supplier_concentration,
     compute_working_capital_impact,
     detect_threshold_breaches,
+    discount_capture_from_grouped_rows,
     value_received_goods,
 )
 
@@ -213,6 +216,101 @@ def test_discount_capture_empty_reports_no_rate_not_a_reassuring_zero():
     assert d.eligible_count == 0
     assert d.capture_rate_pct is None
     assert d.insufficient_data is True
+
+
+# ---------------------------------------------------------------------------
+# Discount capture — the grouped reducer `api/dashboard` actually calls
+# ---------------------------------------------------------------------------
+#
+# `discount_capture_from_grouped_rows` exists so the dashboard can let Postgres
+# do the per-row classification instead of streaming every discount-scheduled
+# invoice into Python. `compute_discount_capture` above stays as the reference
+# implementation: these tests drive BOTH over the same population and require
+# an identical `DiscountCaptureMetrics`, which is what stops the two drifting.
+
+
+def _group(bucket, count, amount, *, reporting=None, unconverted=0):
+    return {
+        "bucket": bucket,
+        "count": count,
+        "amount": Decimal(amount),
+        "reporting_amount": Decimal(reporting if reporting is not None else amount),
+        "unconverted_count": unconverted,
+    }
+
+
+def _rowwise(bucket, amount, *, reporting=None, unconverted=False):
+    """One per-invoice row in the bucket the SQL CASE would assign it."""
+    return SimpleNamespace(
+        discount_eligible=True,
+        discount_amount=Decimal(amount),
+        discount_amount_reporting=Decimal(reporting if reporting is not None else amount),
+        unconverted=unconverted,
+        paid_before_discount_date=bucket == "captured",
+        discount_window_elapsed=bucket == "missed",
+    )
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        # Nothing at all — the empty state must survive the port.
+        [],
+        # Only pending: no window has closed, so there is no rate to report.
+        [("pending", "40.00"), ("pending", "60.00")],
+        # A decided population, mixed.
+        [("captured", "100.00"), ("missed", "50.00"), ("pending", "25.00")],
+        # Every bucket populated more than once, so the reducer has to add.
+        [
+            ("captured", "10.00"),
+            ("captured", "0.01"),
+            ("missed", "7.77"),
+            ("missed", "0.03"),
+            ("pending", "1.00"),
+        ],
+        # Perfect capture — the rate must be 100, not None.
+        [("captured", "5.00")],
+        # Nothing captured but a window HAS closed: 0 % is the right answer
+        # here, and must not be confused with the undecided case above.
+        [("missed", "5.00")],
+    ],
+)
+def test_grouped_reducer_matches_the_row_at_a_time_fold(rows):
+    per_row = [_rowwise(b, a) for b, a in rows]
+    grouped = [
+        _group(bucket, sum(1 for b, _ in rows if b == bucket), sum_amount)
+        for bucket in ("captured", "missed", "pending")
+        if (sum_amount := str(sum((Decimal(a) for b, a in rows if b == bucket), Decimal("0"))))
+        and any(b == bucket for b, _ in rows)
+    ]
+    assert compute_discount_capture(per_row) == discount_capture_from_grouped_rows(grouped)
+
+
+def test_grouped_reducer_carries_the_reporting_figures_and_unconverted_count():
+    """The reporting amounts and the fallback count are per-bucket sums, not
+    re-derived here — a bucket whose rows could not be converted must still say
+    so, or the tile shows a part-converted total as a converted one
+    (`docs/decisions.md` §35)."""
+    d = discount_capture_from_grouped_rows(
+        [
+            _group("captured", 2, "100.00", reporting="120.00", unconverted=1),
+            _group("missed", 1, "50.00", reporting="50.00"),
+        ]
+    )
+    assert d.captured_amount == Decimal("100.00")
+    assert d.captured_amount_reporting == Decimal("120.00")
+    assert d.missed_amount_reporting == Decimal("50.00")
+    # Counted across every bucket — the disclosure is about the whole tile.
+    assert d.unconverted_count == 1
+    assert d.capture_rate_pct == Decimal("66.7")
+
+
+def test_grouped_reducer_refuses_a_bucket_it_does_not_recognise():
+    """The query's CASE is exhaustive, so an unknown key means the caller and
+    this function have drifted. Dropping it silently would understate every
+    figure in the tile — including the capture rate's denominator."""
+    with pytest.raises(ValueError, match="unknown discount-capture bucket"):
+        discount_capture_from_grouped_rows([_group("expired", 1, "10.00")])
 
 
 # ---------------------------------------------------------------------------

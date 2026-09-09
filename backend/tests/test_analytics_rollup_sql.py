@@ -556,13 +556,25 @@ def _app_dir() -> pathlib.Path:
 _COLLAPSING_REDUCERS = {
     "rollup_to_reporting_currency",
     "vendor_rollup_to_reporting_currency",
+    # The dashboard's discount-capture tile. It was deliberately absent when
+    # this guard was written, on the reasoning that the fold needs a per-ROW
+    # verdict (captured / missed / still-capturable) rather than a per-currency
+    # sum, so it could not become a plain `GROUP BY`. True of a per-currency
+    # GROUP BY, but the verdict is two comparisons and expresses fine as a
+    # `CASE` — see `api/dashboard`, which now groups by that CASE and reduces
+    # via `discount_capture_from_grouped_rows`. Streaming every
+    # discount-scheduled invoice into Python (no LIMIT, no date bound) is the
+    # same unbounded shape as the five vendor-spend folds, so it is guarded the
+    # same way. `compute_discount_capture` itself stays as the readable rule +
+    # the equivalence test's reference implementation.
+    "compute_discount_capture",
 }
 
 #: The row-at-a-time CONVERTER. Unlike the reducers above it has legitimate
 #: uses — projecting one output row per input row (`_commitment_rows`' cash
-#: commitments, the dashboard's ten upcoming payments, its per-row discount
-#: economics). What is never legitimate is using it to build a per-KEY TOTAL,
-#: because that is an aggregate a `GROUP BY` should have produced.
+#: commitments, the dashboard's ten upcoming payments). What is never
+#: legitimate is using it to build a per-KEY TOTAL, because that is an
+#: aggregate a `GROUP BY` should have produced.
 _ROW_CONVERTER = "reporting_amount_for_row"
 
 

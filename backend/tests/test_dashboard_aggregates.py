@@ -27,7 +27,7 @@ truncates all tables sequentially.
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -144,6 +144,7 @@ async def _seed_discount_invoice(
     currency: str = "USD",
     amount: Decimal = _USD_FACE,
     reporting_amount: Decimal | None = None,
+    paid_at: datetime | None = None,
 ) -> None:
     """One invoice on 10%-early-pay terms whose discount deadline is
     `discount_offset_days` from today (negative = elapsed)."""
@@ -184,8 +185,8 @@ async def _seed_discount_invoice(
                     method="ach",
                     provider="mock",
                     status="completed",
-                    # Paid inside the window.
-                    completed_at=ddate - timedelta(days=1),
+                    # Paid inside the window unless the caller pins an instant.
+                    completed_at=paid_at if paid_at is not None else ddate - timedelta(days=1),
                 )
             )
         await s.commit()
@@ -278,6 +279,87 @@ async def test_discount_capture_unconvertible_row_is_disclosed(realdb):
 
     assert d["captured_count"] == 1
     assert d["unconverted_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_discount_capture_partitions_every_bucket_in_one_request(realdb):
+    """All three buckets, several rows each, mixed currencies, one response.
+
+    The classification moved out of a Python `for` loop and into a SQL `CASE`
+    + `GROUP BY`, so this is the shape that would catch the port going wrong:
+    a mis-built CASE puts rows in the wrong bucket, a mis-built GROUP BY
+    collapses two buckets into one, and either shows up as counts that don't
+    add back to `eligible_count`.
+    """
+    # Captured: paid inside a window that has since closed.
+    await _seed_discount_invoice(realdb, discount_offset_days=-5, paid=True)
+    await _seed_discount_invoice(
+        realdb,
+        discount_offset_days=-3,
+        paid=True,
+        currency="EUR",
+        amount=_EUR_FACE,
+        reporting_amount=_EUR_AS_USD,
+    )
+    # Missed: the window closed unused.
+    await _seed_discount_invoice(realdb, discount_offset_days=-7, paid=False)
+    # ...one of them unconvertible, so the disclosure survives the grouping.
+    await _seed_discount_invoice(
+        realdb,
+        discount_offset_days=-9,
+        paid=False,
+        currency="EUR",
+        amount=_EUR_FACE,
+        reporting_amount=None,
+    )
+    # Pending: the deadline is still ahead.
+    await _seed_discount_invoice(realdb, discount_offset_days=6, paid=False)
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        d = (await c.get("/api/dashboard")).json()["discount_capture"]
+
+    assert d["eligible_count"] == 5
+    assert d["captured_count"] == 2
+    assert d["missed_count"] == 2
+    assert d["pending_count"] == 1
+    # 10% of 1000.00 per row, in each row's own currency.
+    assert Decimal(str(d["captured_amount"])) == Decimal("200.00")
+    assert Decimal(str(d["missed_amount"])) == Decimal("200.00")
+    assert Decimal(str(d["pending_amount"])) == Decimal("100.00")
+    # The reporting leg converts what it can: 100.00 USD + 108.70 (10% of the
+    # locked 1086.96) captured; 100.00 USD + an unconvertible 100.00 EUR at
+    # face value missed.
+    assert Decimal(str(d["captured_amount_reporting"])) == Decimal("208.70")
+    assert Decimal(str(d["missed_amount_reporting"])) == Decimal("200.00")
+    assert d["unconverted_count"] == 1
+    # 2 captured of 4 decided — the pending row is not in the denominator.
+    assert d["capture_rate_pct"] == 50.0
+    assert d["insufficient_data"] is False
+
+
+@pytest.mark.asyncio
+async def test_discount_capture_counts_a_payment_on_the_deadline_itself(realdb):
+    """The window's own last day still captures, and "day" means the UTC day.
+
+    `completed_at` is `timestamptz`. The Python fold compared
+    `paid_at.date()` — the UTC date, because asyncpg hands back UTC-aware
+    datetimes — against `discount_date`. A bare `::date` in the SQL port would
+    read the Postgres SESSION's TimeZone instead, so a payment at 23:30 UTC on
+    the deadline reads as the NEXT day (and misses) on any server configured
+    east of UTC. The conversion is explicit for that reason; this pins it.
+    """
+    ddate = utc_today() - timedelta(days=2)
+    await _seed_discount_invoice(
+        realdb,
+        discount_offset_days=-2,
+        paid=True,
+        paid_at=datetime.combine(ddate, time(23, 30), tzinfo=UTC),
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        d = (await c.get("/api/dashboard")).json()["discount_capture"]
+
+    assert d["captured_count"] == 1
+    assert d["missed_count"] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import case, func, not_, select
+from sqlalchemy import Date, and_, case, cast, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -21,7 +21,6 @@ from app.services.analytics import (
     OPEN_AP_STATUSES,
     TOUCHLESS_REVIEW_EVIDENCE_STATUSES,
     compute_touchless_rate,
-    discount_window_open,
 )
 from app.services.csv_import import (
     imported_invoice_clause,
@@ -57,22 +56,6 @@ class SimpleNamespaceStep:
     assigned_to: object | None
     created_at: datetime | None
     assignee_name: str | None
-
-
-@dataclass
-class SimpleNamespaceDiscount:
-    discount_eligible: bool
-    discount_amount: Decimal
-    # Same discount expressed in the org's reporting currency — the bare
-    # `discount_amount` is a share of the invoice's FACE amount and mixes
-    # currencies the moment one eligible invoice is foreign.
-    discount_amount_reporting: Decimal
-    unconverted: bool
-    paid_before_discount_date: bool
-    # The window definitively closed without the discount being taken. A row
-    # that is neither captured nor elapsed is still capturable — it has not
-    # missed anything yet. See `analytics.discount_window_open`.
-    discount_window_elapsed: bool
 
 
 @router.get("", response_model=DashboardResponse)
@@ -687,23 +670,54 @@ async def get_dashboard(
     bottleneck_rows = compute_approval_bottleneck(pending_steps)
 
     # ----- Discount capture rate ------------------------------------
-    # Join Invoice → PaymentSchedule → Payment(completed). Eligible
-    # iff `discount_percent` is set; captured iff paid before
-    # discount_date. The fold itself is in analytics so the dashboard
-    # response stays JSON-thin.
+    # Join Invoice → PaymentSchedule → Payment(completed) and sort every
+    # discount-scheduled invoice into captured / missed / still-capturable.
+    #
+    # Grouped in SQL, like every other figure on this page — three rows come
+    # back, one per bucket. This block used to stream EVERY discount-scheduled
+    # invoice (`WHERE discount_percent IS NOT NULL`, no LIMIT, no date bound)
+    # into a synchronous Python projection inside an `async def`, occupying the
+    # event loop for its whole duration and growing without bound as a tenant
+    # books more discount terms. It was the last unbounded fold on this page.
+    #
+    # It resisted the plain per-currency `GROUP BY` its five neighbours got for
+    # a real reason: the fold needs a per-ROW verdict, not a per-currency sum.
+    # But that verdict is only two comparisons, so it becomes a CASE and the
+    # aggregation happens around it. What stays in Python is what was never
+    # per-row — the bucket vocabulary, the capture rate, and the
+    # `insufficient_data` state — via `discount_capture_from_grouped_rows`, the
+    # same reference-implementation-plus-grouped-reducer pair
+    # `currency_conversion.rollup_from_grouped_rows` established for the
+    # whole-book rollup, with an equivalence test pinning the two together.
     from app.models.payment import PaymentSchedule
-    from app.services.analytics import compute_discount_capture
+    from app.services.analytics import discount_capture_from_grouped_rows
 
+    # The discount is a percentage of the invoice, so the reporting figure is
+    # the same percentage of the invoice's REPORTING amount — `_rep_expr`, the
+    # rate-locked one when it exists and face value (counted by `_unconv_expr`)
+    # when it does not, exactly as every other money rollup on this page.
+    #
+    # Rounded to cents PER ROW, where the Python fold rounded: quantize-then-sum,
+    # not sum-then-quantize. Postgres `round(numeric, 2)` breaks an exact
+    # half-cent tie away from zero where `Decimal.quantize`'s default context
+    # broke it to even, so a discount landing on exactly x.xx5 now rounds up.
+    # That is the project's documented money convention (`ROUND_HALF_UP` —
+    # "matches what auditors expect") and it is what `discount_offers.
+    # discount_savings` already uses for this very quantity, base × percent ÷
+    # 100; this tile was the one place computing it the other way.
+    _disc_amount = func.round(Invoice.amount * PaymentSchedule.discount_percent / 100, 2)
+    _disc_amount_reporting = func.round(_rep_expr * PaymentSchedule.discount_percent / 100, 2)
     try:
-        sched_rows = await db.execute(
+        # Per invoice-and-schedule, with the completed payments collapsed to the
+        # earliest `completed_at`. The GROUP BY is the fold's, unchanged: an
+        # invoice carrying two schedules on different terms is still two rows.
+        eligible = (
             _inv(
                 select(
-                    Invoice.amount,
-                    Invoice.currency,
-                    Invoice.reporting_amount,
-                    Invoice.reporting_currency,
-                    PaymentSchedule.discount_percent,
-                    PaymentSchedule.discount_date,
+                    _disc_amount.label("discount_amount"),
+                    _disc_amount_reporting.label("discount_amount_reporting"),
+                    _unconv_expr.label("unconverted"),
+                    PaymentSchedule.discount_date.label("discount_date"),
                     func.min(Payment.completed_at).label("paid_at"),
                 )
                 .join(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
@@ -722,49 +736,63 @@ async def get_dashboard(
                     PaymentSchedule.discount_date,
                 )
             )
+        ).subquery()
+        # `completed_at` is `timestamptz`, and asyncpg handed Python a UTC-aware
+        # datetime whose `.date()` was therefore the UTC date. A bare `::date`
+        # would read the SESSION's TimeZone instead, so the conversion is spelled
+        # out: this is a payment-against-deadline comparison, and taking it off
+        # the server's local calendar is the class of bug `utils/dates.utc_today`
+        # exists to prevent.
+        _paid_on = cast(func.timezone("UTC", eligible.c.paid_at), Date)
+        # An invoice whose discount deadline has NOT passed has missed nothing
+        # yet — it is still capturable, and the four other consumers of these
+        # economics all gate on that. This surface was the one that didn't, so
+        # the dashboard reported a growing pile of "missed" savings that were in
+        # fact still on the table. A row with no `discount_date` has no window
+        # that can be shown to have elapsed, so it is undecided too, never a
+        # miss. The second leg is `analytics.discount_window_open` negated; the
+        # first is the paid-before-the-deadline test — both in SQL.
+        bucket = case(
+            (
+                and_(
+                    eligible.c.paid_at.isnot(None),
+                    eligible.c.discount_date.isnot(None),
+                    _paid_on <= eligible.c.discount_date,
+                ),
+                "captured",
+            ),
+            (
+                and_(
+                    eligible.c.discount_date.isnot(None),
+                    eligible.c.discount_date < today,
+                ),
+                "missed",
+            ),
+            else_="pending",
         )
-        discount_input = []
-        for amount, currency, rep_amt, rep_cur, pct, ddate, paid_at in sched_rows.all():
-            pct_frac = Decimal(str(pct)) / Decimal("100")
-            discount_amt = (Decimal(str(amount)) * pct_frac).quantize(Decimal("0.01"))
-            # The discount is a percentage of the invoice, so the reporting
-            # figure is the same percentage of the invoice's REPORTING amount —
-            # the rate-locked one when it exists, face value (flagged) when it
-            # does not, exactly as every other money rollup on this page.
-            base_reporting, unconverted = reporting_amount_for_row(
-                amount=amount,
-                currency=currency,
-                reporting_currency=reporting_currency,
-                persisted_reporting_currency=rep_cur,
-                persisted_reporting_amount=rep_amt,
-            )
-            discount_amt_reporting = (base_reporting * pct_frac).quantize(Decimal("0.01"))
-            paid_before = bool(
-                paid_at is not None and ddate is not None and paid_at.date() <= ddate
-            )
-            # An invoice whose discount deadline has NOT passed has missed
-            # nothing yet — it is still capturable, and the four other
-            # consumers of these economics all gate on that. This surface was
-            # the one that didn't, so the dashboard reported a growing pile of
-            # "missed" savings that were in fact still on the table (and every
-            # newly-scheduled discount landed straight in it). A row with no
-            # `discount_date` has no window that can be shown to have elapsed,
-            # so it is undecided too, never a miss.
-            window_elapsed = ddate is not None and not discount_window_open(ddate, today)
-            discount_input.append(
-                SimpleNamespaceDiscount(
-                    discount_eligible=True,
-                    discount_amount=discount_amt,
-                    discount_amount_reporting=discount_amt_reporting,
-                    unconverted=unconverted,
-                    paid_before_discount_date=paid_before,
-                    discount_window_elapsed=window_elapsed,
-                )
-            )
+        bucket_rows = await db.execute(
+            select(
+                bucket.label("bucket"),
+                func.count(),
+                func.coalesce(func.sum(eligible.c.discount_amount), 0),
+                func.coalesce(func.sum(eligible.c.discount_amount_reporting), 0),
+                func.coalesce(func.sum(eligible.c.unconverted), 0),
+            ).group_by(bucket)
+        )
+        discount_groups = [
+            {
+                "bucket": row[0],
+                "count": row[1],
+                "amount": row[2],
+                "reporting_amount": row[3],
+                "unconverted_count": row[4],
+            }
+            for row in bucket_rows.all()
+        ]
     except Exception:  # noqa: BLE001
         await db.rollback()
-        discount_input = []
-    discount = compute_discount_capture(discount_input)
+        discount_groups = []
+    discount = discount_capture_from_grouped_rows(discount_groups)
 
     return {
         "total_invoices": total_invoices or 0,
