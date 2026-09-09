@@ -230,10 +230,27 @@ async def test_actual_leg_can_use_the_dimension_index(realdb, dimension, index_n
     `cost_center` / `gl_account`, asserted identically for the two that already
     had it.
 
-    `enable_seqscan = off` is deliberate: it asks "is this index SHAPED for this
-    predicate", which is deterministic, rather than "would the planner pick it
-    at this row count", which at the harness's handful of rows would be a
-    fiction."""
+    The probe is `_invoice_scan_narrowing`'s predicate ALONE, not the whole
+    joined leg, and that is the point rather than a simplification. That helper
+    exists precisely "so the `invoices` scan can use an index"; an index on the
+    column it narrows is exactly the property under test, and it is the only
+    index that can serve that predicate — so a plan naming it is a statement
+    about the index's SHAPE, which is deterministic.
+
+    EXPLAINing the whole joined leg was not. `enable_seqscan = off` removes the
+    sequential path but leaves every OTHER index on `invoices`
+    (`organization_id`, `status`, `entity_id`, `invoice_date`, …) as a candidate,
+    so which one won was still a cost decision — the very "fiction" the file
+    docstring says this test avoids. And the costs it decided on were degenerate:
+    the probe `Budget` is deliberately never inserted, so the outer relation
+    estimates at zero rows and every inner path costs about nothing. It happened
+    to pick the dimension index on a developer's seeded database and a
+    status-index-plus-Filter on CI's near-empty one — the same test, the same
+    schema, opposite answers, and it went red on `main` twice for that reason.
+
+    The predicate is built through `_invoice_scan_narrowing` rather than written
+    out here, so it cannot drift from what production actually applies; a
+    sibling assertion below pins that the leg still uses it."""
     budget = Budget(
         id=uuid.uuid4(),
         name="idx probe",
@@ -242,14 +259,46 @@ async def test_actual_leg_can_use_the_dimension_index(realdb, dimension, index_n
         amount=1000,
         currency="USD",
         organization_id=realdb.info(TENANT).org_id,
+        # Entity-less on purpose: `_invoice_scan_narrowing` then returns the
+        # dimension predicate alone, so the probe is single-column.
         entity_id=None,
     )
-    sql = str(
-        _actual_leg_query(dimension, budget).compile(
-            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
-        )
-    )
+    match_col = _DIMENSION_MATCH_COLUMN[dimension]
+    narrowing = _invoice_scan_narrowing(match_col, [budget])
+    assert len(narrowing) == 1, "probe must be the dimension predicate alone"
+    probe = select(Invoice.id).where(*narrowing)
+    sql = str(probe.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
     async with realdb.sessionmaker(TENANT)() as s:
         await s.execute(text("SET LOCAL enable_seqscan = off"))
         plan = "\n".join((await s.execute(text(f"EXPLAIN {sql}"))).scalars().all())
     assert index_name in plan, f"plan for {dimension.value} did not use {index_name}:\n{plan}"
+
+
+@pytest.mark.parametrize("dimension", list(BudgetDimension))
+def test_the_actual_leg_still_narrows_on_the_dimension_column(dimension):
+    """The probe above is only meaningful while the production leg really does
+    apply `_invoice_scan_narrowing` to `invoices`.
+
+    Without this, narrowing could be dropped from `_actual_invoice_legs` and the
+    index test would keep passing green against a predicate nothing issues.
+    """
+    budget = Budget(
+        id=uuid.uuid4(),
+        name="shape probe",
+        dimension=dimension,
+        dimension_value="PROBE-VALUE",
+        amount=1000,
+        currency="USD",
+        organization_id=uuid.uuid4(),
+        entity_id=None,
+    )
+    leg_sql = str(
+        _actual_leg_query(dimension, budget).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    column = _DIMENSION_MATCH_COLUMN[dimension].key
+    assert f"invoices.{column} IN " in leg_sql, (
+        f"the actual leg no longer narrows invoices on {column}; the index probe "
+        f"above is testing a predicate production does not issue:\n{leg_sql}"
+    )
