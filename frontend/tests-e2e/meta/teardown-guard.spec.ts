@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 /**
- * Source guard: no spec deletes invoices by hand.
+ * Source guard: no spec deletes an invoice or a vendor by hand.
  *
  * `invoices` is referenced by 16 foreign keys and **none of them cascade**, so
  * a bare `DELETE FROM invoices WHERE …` only succeeds while that invoice
@@ -14,21 +14,25 @@ import { expect, test } from '@playwright/test';
  * extraction began succeeding and writing line items — the invoice grew a child
  * the spec's hand-maintained delete list didn't know about.
  *
- * `fixtures/helpers.ts::deleteInvoicesWhere` owns the whole child graph. Every
- * call site now goes through it; this guard is what stops the twentieth spec
- * re-introducing the pattern, because the failure it causes is a teardown
+ * `vendors` is the same trap one table over: 17 foreign keys, only two of them
+ * cascading, and seventeen specs each carrying its own partial child list
+ * (`vendors/import-csv` knew about `sanctions_checks`, most knew about
+ * nothing). Both tables now have exactly one owner in `fixtures/helpers.ts`.
+ *
+ * Every call site goes through those owners; this guard is what stops the next
+ * spec re-introducing the pattern, because the failure it causes is a teardown
  * error in an unrelated file weeks later.
  *
  * Detection is deliberately source-level rather than type-level: the SQL is a
  * template literal, so no compiler can see it. Comments are stripped first so
- * prose *about* the pattern (this file, and the helper's own docstring) doesn't
+ * prose *about* the pattern (this file, and the helpers' own docstrings) doesn't
  * trip it.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E_ROOT = join(HERE, '..');
 
-/** The one file allowed to issue the statement — it is the implementation. */
+/** The one file allowed to issue the statements — it is the implementation. */
 const OWNER = join('fixtures', 'helpers.ts');
 
 /** Files the scan skips, and why. Kept to exactly two: widening this set is
@@ -40,8 +44,38 @@ const EXEMPT = new Set([
 	join('meta', 'teardown-guard.spec.ts')
 ]);
 
-/** `DELETE FROM invoices`, in any casing, with any run of whitespace. */
-const HAND_ROLLED = /delete\s+from\s+invoices\b/i;
+/** One guarded table: the statement to hunt for, the helper that owns it, and
+ *  why the hand-rolled version is a trap. */
+type GuardedTable = {
+	readonly table: string;
+	readonly helper: string;
+	readonly why: string;
+};
+
+const GUARDED: readonly GuardedTable[] = [
+	{
+		table: 'invoices',
+		helper: 'deleteInvoicesWhere',
+		why:
+			'`invoices` has 16 non-cascading foreign keys, so a bare ' +
+			'`DELETE FROM invoices` only works until the invoice acquires a child ' +
+			'the spec did not anticipate.'
+	},
+	{
+		table: 'vendors',
+		helper: 'deleteVendorsWhere',
+		why:
+			'`vendors` has 17 foreign keys and only two of them cascade, so a bare ' +
+			'`DELETE FROM vendors` only works until the vendor acquires a child ' +
+			'the spec did not anticipate — a purchase order, a contract, a catalog, ' +
+			'a sanctions check, a virtual card.'
+	}
+];
+
+/** `DELETE FROM <table>`, in any casing, with any run of whitespace. */
+function handRolledDelete(table: string): RegExp {
+	return new RegExp(`delete\\s+from\\s+${table}\\b`, 'i');
+}
 
 /**
  * Strip `//` line and block comments so prose describing the anti-pattern is
@@ -52,9 +86,9 @@ export function stripComments(source: string): string {
 	return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
 }
 
-/** Does this file issue a hand-rolled invoice delete? */
-export function hasHandRolledInvoiceDelete(source: string): boolean {
-	return HAND_ROLLED.test(stripComments(source));
+/** Does this file issue a hand-rolled delete against `table`? */
+export function hasHandRolledDelete(source: string, table: string): boolean {
+	return handRolledDelete(table).test(stripComments(source));
 }
 
 function typescriptFiles(dir: string): string[] {
@@ -69,27 +103,29 @@ function typescriptFiles(dir: string): string[] {
 }
 
 test.describe('e2e teardown discipline', () => {
-	test('no spec deletes invoices without going through deleteInvoicesWhere', () => {
-		const offenders = typescriptFiles(E2E_ROOT)
-			.map((file) => relative(E2E_ROOT, file))
-			.filter((file) => !EXEMPT.has(file))
-			.filter((file) => hasHandRolledInvoiceDelete(readFileSync(join(E2E_ROOT, file), 'utf8')));
+	for (const { table, helper, why } of GUARDED) {
+		test(`no spec deletes ${table} without going through ${helper}`, () => {
+			const offenders = typescriptFiles(E2E_ROOT)
+				.map((file) => relative(E2E_ROOT, file))
+				.filter((file) => !EXEMPT.has(file))
+				.filter((file) => hasHandRolledDelete(readFileSync(join(E2E_ROOT, file), 'utf8'), table));
 
-		expect(
-			offenders,
-			'`invoices` has 16 non-cascading foreign keys, so a bare ' +
-				'`DELETE FROM invoices` only works until the invoice acquires a child ' +
-				'the spec did not anticipate. Use `deleteInvoicesWhere(predicate, slug?)` ' +
-				'from fixtures/helpers.ts, which owns the whole graph.'
-		).toEqual([]);
-	});
+			expect(
+				offenders,
+				`${why} Use \`${helper}(predicate, slug?)\` from fixtures/helpers.ts, ` +
+					'which owns the whole graph.'
+			).toEqual([]);
+		});
+	}
 
-	test('the helper still owns the statement it is exempted for', () => {
-		// If `deleteInvoicesWhere` is ever gutted, the guard above would pass
-		// vacuously. Pin that the owner really is the owner.
-		const helper = readFileSync(join(E2E_ROOT, OWNER), 'utf8');
-		expect(hasHandRolledInvoiceDelete(helper)).toBe(true);
-		expect(helper).toContain('export function deleteInvoicesWhere(');
+	test('the helpers still own the statements they are exempted for', () => {
+		// If either helper is ever gutted, its guard above would pass vacuously.
+		// Pin that the owner really is the owner.
+		const helperSource = readFileSync(join(E2E_ROOT, OWNER), 'utf8');
+		for (const { table, helper } of GUARDED) {
+			expect(hasHandRolledDelete(helperSource, table)).toBe(true);
+			expect(helperSource).toContain(`export function ${helper}(`);
+		}
 	});
 
 	test('the detector flags a known-bad file and clears a known-good one', () => {
@@ -112,9 +148,23 @@ test.describe('e2e teardown discipline', () => {
 			'});'
 		].join('\n');
 
-		expect(hasHandRolledInvoiceDelete(bad)).toBe(true);
-		expect(hasHandRolledInvoiceDelete(badLowercase)).toBe(true);
-		expect(hasHandRolledInvoiceDelete(badWrapped)).toBe(true);
-		expect(hasHandRolledInvoiceDelete(good)).toBe(false);
+		expect(hasHandRolledDelete(bad, 'invoices')).toBe(true);
+		expect(hasHandRolledDelete(badLowercase, 'invoices')).toBe(true);
+		expect(hasHandRolledDelete(badWrapped, 'invoices')).toBe(true);
+		expect(hasHandRolledDelete(good, 'invoices')).toBe(false);
+
+		// The vendor half of the guard, including the two near-misses that must
+		// NOT trip it: a different table whose name merely starts with `vendor`,
+		// and the child-table sweeps a spec is still free to write.
+		const badVendor = "tenantPsql(`DELETE FROM vendors WHERE name LIKE '${MARKER}%'`);";
+		const goodVendor = [
+			"import { deleteVendorsWhere } from '../fixtures/helpers';",
+			"tenantPsql(`DELETE FROM vendor_users WHERE vendor_id='${id}'`);",
+			"tenantPsql(`DELETE FROM vendor_statement_reconciliations WHERE id='${id}'`);",
+			"deleteVendorsWhere(`id='${id}'`);"
+		].join('\n');
+
+		expect(hasHandRolledDelete(badVendor, 'vendors')).toBe(true);
+		expect(hasHandRolledDelete(goodVendor, 'vendors')).toBe(false);
 	});
 });
