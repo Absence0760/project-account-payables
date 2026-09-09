@@ -1,20 +1,28 @@
-"""`scripts/seed.py` and `scripts/migrate_all_tenants.py` anchor their own checkout.
+"""Every `scripts/*.py` that imports `app` anchors its own checkout.
 
-Run as `python scripts/seed.py`, `sys.path[0]` is `scripts/` — so `app` is not
-on `sys.path` at all. A git worktree reusing the primary checkout's
+Run as `python scripts/<anything>.py`, `sys.path[0]` is `scripts/` — so `app`
+is not on `sys.path` at all. A git worktree reusing the primary checkout's
 `backend/.venv` then resolves it through the editable install's baked-in
 `__editable___backend_0_1_0_finder`, which maps `app` to whichever checkout
-`pip install -e` was run in. Measured, before the anchor:
+`pip install -e` was run in. Measured, before the anchors:
 
     cd <worktree>/backend && python scripts/seed.py --help
     -> app.__file__ = <primary>/backend/app/__init__.py
 
-These are the first two commands a contributor runs (`pnpm seed`,
-`pnpm migrate:all`; step 4 of the root CLAUDE.md first-time setup), and both
-were silently operating on another checkout's models while every line they
-printed named this one. `scripts/worktree/sitecustomize.py` fixes the whole
-class, but only once someone puts it on `PYTHONPATH`; these two are ours to
-edit, so they carry the two-line anchor and need no activation.
+`pnpm seed` and `pnpm migrate:all` are the first two commands a contributor
+runs (step 4 of the root CLAUDE.md first-time setup), and both were silently
+operating on another checkout's models while every line they printed named this
+one. `scripts/worktree/sitecustomize.py` fixes the whole class, but only once
+someone puts it on `PYTHONPATH`; these scripts are ours to edit, so each
+carries the two-line anchor and needs no activation.
+
+**The list is a glob, not a roll-call.** Naming the files would fix today's
+instances and let the class reopen the next time someone adds a script — which
+is the failure this file exists to prevent. The rule is derived instead: a
+script that imports `app` must anchor; one that does not (`verify_tls.py`
+today) needs nothing, and its exemption comes from that same derivation rather
+than from an allowlist. `test_the_derivation_is_not_vacuous` is what stops a
+broken glob turning "no scripts matched" into a green run.
 
 Three properties, and the second is the one an innocent-looking edit breaks:
 
@@ -40,7 +48,6 @@ import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = BACKEND_ROOT / "scripts"
-ANCHORED_SCRIPTS = [SCRIPTS_DIR / "seed.py", SCRIPTS_DIR / "migrate_all_tenants.py"]
 
 #: Locating the anchor is shared between these tests and the subprocess driver
 #: below, so there is exactly one definition of "where the prologue ends".
@@ -72,13 +79,33 @@ exec(compile(_LOCATOR, "<locator>", "exec"), _locator_ns)  # noqa: S102
 anchor_index = _locator_ns["anchor_index"]
 
 
-def _first_app_import_index(tree: ast.Module) -> int:
+def _is_app_import(node: ast.AST) -> bool:
+    if isinstance(node, ast.ImportFrom):
+        return (node.module or "").split(".")[0] == "app"
+    if isinstance(node, ast.Import):
+        return any(alias.name.split(".")[0] == "app" for alias in node.names)
+    return False
+
+
+def _imports_app(tree: ast.Module) -> bool:
+    """Anywhere, not only at module level.
+
+    A function-level `from app... import ...` still resolves through `sys.path`
+    when it runs, so it needs the anchor just as much — it merely fails later.
+    """
+    return any(_is_app_import(node) for node in ast.walk(tree))
+
+
+def _first_top_level_app_import(tree: ast.Module) -> int:
     for i, node in enumerate(tree.body):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "app":
-            return i
-        if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "app" for a in node.names):
+        if _is_app_import(node):
             return i
     return -1
+
+
+ALL_SCRIPTS = sorted(SCRIPTS_DIR.glob("*.py"))
+ANCHORED_SCRIPTS = [p for p in ALL_SCRIPTS if _imports_app(ast.parse(p.read_text("utf-8")))]
+EXEMPT_SCRIPTS = [p for p in ALL_SCRIPTS if p not in ANCHORED_SCRIPTS]
 
 
 # The driver execs ONLY the statements up to and including the anchor, so it
@@ -138,18 +165,44 @@ def _run_prologue(script: Path, *, times: int = 1, preseed: list[str] | None = N
     return json.loads(result.stdout)
 
 
+def test_the_derivation_is_not_vacuous() -> None:
+    """A broken glob must fail loudly, not parametrize zero cases.
+
+    Every assertion below is `@pytest.mark.parametrize`d over `ANCHORED_SCRIPTS`;
+    an empty list would collect nothing and read as a pass, which is exactly the
+    silent-green this file exists to prevent.
+    """
+    assert len(ALL_SCRIPTS) >= 13, ALL_SCRIPTS
+    assert len(ANCHORED_SCRIPTS) >= 12, ANCHORED_SCRIPTS
+    assert all(p.is_file() for p in ANCHORED_SCRIPTS)
+
+
+@pytest.mark.parametrize("script", EXEMPT_SCRIPTS, ids=lambda p: p.name)
+def test_an_exempt_script_is_exempt_because_it_never_imports_app(script: Path) -> None:
+    """The exemption is derived, never an allowlist.
+
+    A script that does not touch `app` cannot resolve it from the wrong tree, so
+    it needs no anchor. Adding an `app` import to one of these moves it into
+    `ANCHORED_SCRIPTS` automatically and the anchor tests start applying.
+    """
+    assert not _imports_app(ast.parse(script.read_text("utf-8")))
+
+
 @pytest.mark.parametrize("script", ANCHORED_SCRIPTS, ids=lambda p: p.name)
 def test_the_anchor_runs_before_the_first_app_import(script: Path) -> None:
     tree = ast.parse(script.read_text(encoding="utf-8"))
     anchor = anchor_index(tree)
-    first_app = _first_app_import_index(tree)
+    first_app = _first_top_level_app_import(tree)
 
-    assert anchor >= 0, f"{script.name} has no sys.path anchor — see this module's docstring"
-    assert first_app >= 0, f"{script.name} imports nothing from app; is this still the right file?"
-    assert anchor < first_app, (
-        f"{script.name}'s anchor sits after its first `app` import, so it cannot "
-        "affect how `app` resolves. Keep it in the import prologue."
+    assert anchor >= 0, (
+        f"{script.name} imports `app` but has no sys.path anchor. Copy the "
+        "prologue from scripts/seed.py — see this module's docstring for why."
     )
+    if first_app >= 0:
+        assert anchor < first_app, (
+            f"{script.name}'s anchor sits after its first `app` import, so it "
+            "cannot affect how `app` resolves. Keep it in the import prologue."
+        )
 
 
 @pytest.mark.parametrize("script", ANCHORED_SCRIPTS, ids=lambda p: p.name)
