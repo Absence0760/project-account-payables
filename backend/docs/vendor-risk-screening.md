@@ -120,6 +120,19 @@ Call sites:
   vendor gets a de-duped `fraud_flag` payment hold. Best-effort — a screening
   failure never blocks applying the approved change. Gated by
   `FEOH_VENDOR_SCREENING_ENABLED`.
+
+  **"Dual control" here means two humans, and that now includes the
+  portal-submitted case.** The approve path's segregation check compared only
+  `requested_by_user_id`, which is NULL for every supplier-portal submission —
+  so an `ap_manager` (who holds `vendor.manage`, `vendor.bank_change.approve`
+  and `payment.execute` by default) could invite a portal user at an address
+  they controlled, sign in as it, stage the redirect and approve it alone. It
+  now also refuses when `requester_provisioned_by_user_id` — frozen at staging
+  from `vendor_users.provisioned_by_user_id` — equals the approver. The
+  `fraud_flag` above is a *signal*, not the second control: exception
+  resolution has no segregation check of its own. See
+  [`supplier-portal.md`](supplier-portal.md) § Credential provenance and the BEC
+  dual control.
 - **Periodic sweep** — `services/vendor_rescreen.py` (`check_type="periodic"`).
 - **Pre-payment** — `check_payment_compliance` keeps its own
   `check_type="pre_payment"` screen (different verdict contract).

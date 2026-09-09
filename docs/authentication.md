@@ -692,6 +692,63 @@ exactly as before.
     the same role set their actions default to, so no custom-role holder
     loses reachability.
 
+### Segregation of duties on a vendor bank change (the BEC gate)
+
+A staged `VendorChangeRequest` is applied by
+`POST /api/vendors/change-requests/{id}/approve`, which refuses a proposer who
+is also the approver. That check compared **one** column —
+`requested_by_user_id`, the AP-side requester — and that column is NULL for
+every request submitted through the supplier portal. The comment beside it
+stated the assumption it rested on: *"portal-submitted requests have no AP
+requester, so this only bites AP-initiated ones."* True only if AP cannot create
+portal identities.
+
+AP can. `POST /api/vendors/{id}/portal-users` is
+`require_roles(ADMIN, AP_MANAGER)`, and `ROLE_AP_MANAGER` holds `vendor.manage`,
+`vendor.bank_change.approve` **and** `payment.execute` by default — so one
+person could invite a portal user at an address they controlled, sign in as it,
+stage a bank redirect, approve their own request through the NULL
+short-circuit, and pay it. The compensating `fraud_flag` raised on the
+vendor's in-queue invoices is not a second control against the same actor:
+exception resolution has no segregation check either (see
+[Open gap](#open-gap-exception-resolution-has-no-segregation-check) below).
+
+The approve path now refuses on **both** axes an AP actor can be the proposer:
+
+| Column | Set when | Refuses |
+|---|---|---|
+| `vendor_change_requests.requested_by_user_id` | AP staged the change from the app | approver == that user |
+| `vendor_change_requests.requester_provisioned_by_user_id` | frozen at staging from `vendor_users.provisioned_by_user_id` | approver == the AP actor who minted that portal identity's password |
+
+`vendor_users.provisioned_by_user_id` is stamped by invite AND by
+`POST .../reset-password` — the only two routes that hand an AP actor a working
+supplier credential — and is deliberately NOT cleared when the supplier changes
+their own password (that route needs the *current* password, which the
+provisioner has, so clearing there would be a one-request bypass). NULL means
+no AP actor has ever held this credential, which is correctly permissive: a
+self-managed supplier's request approves normally. Migration `0095`, tenant DBs.
+Full reasoning, including why the value is frozen rather than joined:
+[`backend/docs/supplier-portal.md`](../backend/docs/supplier-portal.md) §
+Credential provenance and the BEC dual control.
+
+The credential itself no longer travels in the invite/reset response — it is
+emailed to the portal user's own address, and a delivery failure rolls the
+request back rather than leaving an undeliverable account. That is
+defence-in-depth, not the control: an AP actor who supplies their own address
+still receives the email. The approval refusal is what closes the chain.
+
+#### Open gap: exception resolution has no segregation check
+
+`POST /api/exceptions/{id}/resolve` (and `/bulk/resolve`) gate on
+`require_roles(ADMIN, AP_MANAGER)` and nothing else — there is no check that the
+resolver is not the actor whose action raised the exception. With the approval
+refusal above in place this is no longer load-bearing for the bank-redirect
+chain (the approval itself is refused, so the `fraud_flag` is never reached by
+that path), but it remains true of every other exception type. Closing it needs
+a `raised_by` provenance column on `exceptions` and a decision about whether a
+small AP team can afford it — a control-design question, recorded rather than
+patched. Tracked in `docs/followups.md`.
+
 ### Segregation of duties on a workflow's approval step
 
 `check_segregation` is driven by the approval step's own

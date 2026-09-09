@@ -212,8 +212,17 @@ written. Provisioning a supplier credential is the segregation-of-duties half
 that used to leave no trace: an account that can submit invoices and stage
 bank-detail changes could be created, used and deleted, and the trail would show
 only the deletion. `details` is `{"vendor_user_id": ...}` — never the supplier's
-login address, and never the temp password the response body and the invite
-email carry.
+login address, and never the temp password the invite email carries (the
+response body no longer carries one at all).
+
+The invite also stamps `vendor_users.provisioned_by_user_id` with the AP actor,
+and `POST /api/vendors/{id}/portal-users/{vendor_user_id}/reset-password`
+re-stamps it (audit action `vendor_portal_user.password_reset`, `details`
+`{"vendor_id": ...}`). That column is what
+`POST /api/vendors/change-requests/{id}/approve` reads to refuse a bank-change
+approval by the person who minted the submitting identity's password — see
+[`supplier-portal.md`](supplier-portal.md) § Credential provenance and the BEC
+dual control.
 
 ## Vendor Fields
 
