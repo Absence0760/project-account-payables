@@ -262,6 +262,27 @@ def test_missing_reported_amount_is_unverified_not_a_discrepancy():
     assert v.authorized_amount == Decimal("500.00")
 
 
+@pytest.mark.parametrize("bad", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])
+def test_non_finite_reported_amount_is_unverified_not_a_500(bad):
+    """`json.loads` accepts `NaN`/`Infinity` by default, so an adapter that
+    parses the settlement figure itself can hand `verify_settlement` a
+    non-finite `Decimal`. `_q`'s `.quantize()` would raise `InvalidOperation`
+    before any tolerance check — a 500 on the webhook recording money movement.
+    Treated as no usable amount: fail-open `unverified`."""
+    from app.services.payment_settlement import REASON_NON_FINITE_AMOUNT
+
+    v = verify_settlement(
+        reported_amount=bad,
+        reported_currency="USD",
+        target_amount=Decimal("500.00"),
+        target_currency="USD",
+    )
+    assert v.outcome == OUTCOME_UNVERIFIED
+    assert v.reason == REASON_NON_FINITE_AMOUNT
+    assert v.is_discrepancy is False
+    assert v.authorized_amount == Decimal("500.00")
+
+
 # ---------------------------------------------------------------------------
 # Serialization for the audit row (project invariant: money as exact string)
 # ---------------------------------------------------------------------------

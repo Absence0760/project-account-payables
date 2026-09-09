@@ -171,6 +171,27 @@ async def test_prepare_us_domestic_skips_fx_and_iban_requirements():
 
 
 @pytest.mark.asyncio
+async def test_prepare_strips_whitespace_from_home_currency_before_comparing():
+    """A hand-edited `settings.payments.home_currency` of "USD " must not route
+    a USD → USD domestic payment through `international_wire` (and lock an FX
+    rate) just because " USD " != "USD" as bare strings."""
+    fx = MockFXAdapter()
+    fx.get_rate = AsyncMock(side_effect=AssertionError("must not call FX"))
+    inv = _invoice(amount=Decimal("250.00"), currency="USD")
+    vendor = _vendor(country="US")
+
+    prepared = await prepare_international_payment(
+        invoice=inv,
+        vendor=vendor,
+        org_home_currency="  usd ",
+        fx_adapter=fx,
+    )
+
+    assert prepared.corridor.method == "ach"
+    assert prepared.payment.fx_rate is None
+
+
+@pytest.mark.asyncio
 async def test_prepare_falls_back_to_iban_country_when_vendor_lacks_address_country():
     """No vendor.bank_details.country, no vendor.address_country —
     extract the country from the IBAN prefix. This is the common
