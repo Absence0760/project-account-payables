@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { DiscountOptimization, DiscountRoi } from './discounts';
+import { isTierStarted, normalizeTierDays, normalizeTierPercent } from './discounts';
 import { en } from '$lib/i18n/locales/en';
 import { interpolate } from '$lib/i18n/interpolate';
 
@@ -103,3 +104,120 @@ function unknownHorizonMustNotCompile(roi: DiscountRoi) {
 	const weeks = roi.days_accelerated / 7;
 	return { apr, weeks };
 }
+
+/**
+ * The bulk-negotiation tier validators
+ * (`POST /api/discounts/bulk-negotiate`, proposed from the `/discounts` page).
+ *
+ * They exist so a doomed tier is refused with a sentence rather than a raw
+ * pydantic 422, and — more importantly — so the percent reaches the wire as the
+ * exact decimal TEXT it was typed as. A tier percent is applied to a base that
+ * spans a vendor's whole open balance, so a rounding introduced on the way out
+ * is a rounding on real money (root `CLAUDE.md` § Project invariants).
+ */
+describe('normalizeTierDays', () => {
+	it('accepts the server range 0…365', () => {
+		expect(normalizeTierDays('0')).toBe(0);
+		expect(normalizeTierDays('10')).toBe(10);
+		expect(normalizeTierDays('365')).toBe(365);
+	});
+
+	it('refuses out-of-range, non-integer and non-numeric input', () => {
+		// 366 is outside `le=365`; 1000 also fails the digit bound.
+		expect(normalizeTierDays('366')).toBeNull();
+		expect(normalizeTierDays('1000')).toBeNull();
+		expect(normalizeTierDays('7.5')).toBeNull();
+		expect(normalizeTierDays('-1')).toBeNull();
+		expect(normalizeTierDays('ten')).toBeNull();
+	});
+
+	it('treats blank / absent as not-a-value', () => {
+		expect(normalizeTierDays('')).toBeNull();
+		expect(normalizeTierDays('   ')).toBeNull();
+		expect(normalizeTierDays(null)).toBeNull();
+		expect(normalizeTierDays(undefined)).toBeNull();
+	});
+});
+
+describe('normalizeTierPercent', () => {
+	it('returns the typed text UNCHANGED, never a re-formatted number', () => {
+		// The point of the whole helper: `2.50` must not come back as `2.5`, and
+		// a long fraction must not be rounded on its way to the server.
+		expect(normalizeTierPercent('2.50')).toBe('2.50');
+		expect(normalizeTierPercent('3')).toBe('3');
+		expect(normalizeTierPercent('0.005')).toBe('0.005');
+		expect(normalizeTierPercent('1.234567890123')).toBe('1.234567890123');
+	});
+
+	it('trims surrounding whitespace only', () => {
+		expect(normalizeTierPercent('  2.00  ')).toBe('2.00');
+	});
+
+	it('enforces the server bounds gt=0, lt=100 at both edges', () => {
+		expect(normalizeTierPercent('0')).toBeNull();
+		expect(normalizeTierPercent('0.00')).toBeNull();
+		expect(normalizeTierPercent('100')).toBeNull();
+		expect(normalizeTierPercent('100.00')).toBeNull();
+		expect(normalizeTierPercent('150')).toBeNull();
+		// Just inside each edge still passes.
+		expect(normalizeTierPercent('0.01')).toBe('0.01');
+		expect(normalizeTierPercent('99.99')).toBe('99.99');
+	});
+
+	it('refuses anything that is not a bare decimal', () => {
+		expect(normalizeTierPercent('2%')).toBeNull();
+		expect(normalizeTierPercent('-2')).toBeNull();
+		expect(normalizeTierPercent('2e1')).toBeNull();
+		expect(normalizeTierPercent('1,5')).toBeNull();
+		expect(normalizeTierPercent('')).toBeNull();
+		expect(normalizeTierPercent(null)).toBeNull();
+	});
+});
+
+describe('isTierStarted', () => {
+	it('reads a wholly blank row as an unused slot, not an error', () => {
+		expect(isTierStarted({ days: '', percent: '' })).toBe(false);
+		expect(isTierStarted({ days: '  ', percent: '  ' })).toBe(false);
+	});
+
+	it('reads either field carrying text as the user’s intent', () => {
+		// A started-but-unreadable row must be refused, never silently dropped:
+		// sending fewer tiers than were typed proposes a different offer from
+		// the one on screen.
+		expect(isTierStarted({ days: '10', percent: '' })).toBe(true);
+		expect(isTierStarted({ days: '', percent: '2' })).toBe(true);
+	});
+});
+
+/**
+ * The bulk-negotiation copy, guarded the same way the unrankable copy above is.
+ */
+describe('the vendor-negotiation copy', () => {
+	it('exists in the catalogue', () => {
+		for (const key of [
+			'discounts.bulk.open',
+			'discounts.bulk.title',
+			'discounts.bulk.baseLabel',
+			'discounts.bulk.baseExplain',
+			'discounts.bulk.confirm',
+			'discounts.bulk.noValidUntil'
+		] as const) {
+			expect(Object.keys(en), `"${key}" is not in the catalogue`).toContain(key);
+			expect(en[key].trim().length).toBeGreaterThan(0);
+		}
+	});
+
+	it('names the vendor in the armed confirm', () => {
+		// The second click commits an offer covering that vendor's ENTIRE open
+		// balance, so the button has to say whose.
+		expect(en['discounts.bulk.confirm']).toContain('{vendor}');
+		expect(interpolate(en['discounts.bulk.confirm'], { vendor: 'Globex' }, 'en')).toContain(
+			'Globex'
+		);
+	});
+
+	it('never states a base amount before the server computes one', () => {
+		// The intro describes the RULE; it must not carry a figure of its own.
+		expect(en['discounts.bulk.intro']).not.toMatch(/\d/);
+	});
+});
