@@ -253,36 +253,65 @@
 		</label>
 	</div>
 
+	<!-- KPI row — rendered on EVERY state, never gated on the response.
+	     `docs/decisions.md` §125: an absent figure is a dash, and whether it is
+	     absent because it is still arriving is ANNOUNCED, not drawn. This row
+	     used to sit inside `{:else if forecast}` and collapse to nothing while
+	     the three analytics requests were in flight — which satisfied §34 (no
+	     figure nobody computed was shown) but by a DIFFERENT mechanism from
+	     `/discounts` and `/bank-reconciliation`, so the one convention had two
+	     shapes and a reader could not learn it once.
+
+	     `pending` is only consulted when the value is MISSING, so a re-fetch
+	     (granularity, horizon, an applied opening balance) keeps the figures
+	     already on screen rather than blanking a row the CFO is reading; the
+	     `.loading` line below says a newer answer is on its way. A FAILED load
+	     leaves them absent-but-not-loading — an `unavailable` row — and the
+	     error banner below it says why, which is why the banner moved under the
+	     row rather than replacing it. -->
+	<div class="kpi-row" data-testid="forecast-kpi-row">
+		<KpiCard
+			value={forecast ? fmt(forecast.totals.scheduled_amount) : null}
+			label={m('cfo.kpi.projectedOutflow')}
+			pending={loading}
+		/>
+		<KpiCard
+			value={forecast ? fmt(forecast.totals.committed_amount) : null}
+			label={m('cfo.kpi.committed')}
+			pending={loading}
+		/>
+		<KpiCard
+			value={forecast ? fmt(forecast.totals.pending_amount) : null}
+			label={m('cfo.kpi.pipeline')}
+			pending={loading}
+		/>
+		<!-- The three cards above read the forecast; this one reads the SEPARATE
+		     what-if response. `?? '0'` was actively defeating the honest answer
+		     — `fmt` is `formatMoney`, which already returns the no-figure dash
+		     for a missing amount, and the coercion turned it into a green "$0
+		     available if you pay early", a figure nobody computed on the one
+		     card a CFO acts on (`docs/decisions.md` §34).
+
+		     All three requests still commit together out of one `Promise.all`,
+		     so `whatif` is never null while `forecast` is set. It is a trap
+		     rather than a live bug — splitting that `Promise.all` to let the
+		     forecast paint before the slower what-if is an obvious future
+		     change, and it would have silently armed the zero. `null` hands the
+		     case to `KpiCard`, which also drops the green tint when there is no
+		     figure to call good news. -->
+		<KpiCard
+			value={whatif ? fmt(whatif.scenarios.early.total_discount_captured) : null}
+			label={m('cfo.kpi.discountIfEarly')}
+			highlight="green"
+			pending={loading}
+		/>
+	</div>
+
 	{#if error}
 		<p class="cf-error" role="alert">{error}</p>
 	{:else if loading}
 		<p class="loading">{m('cfo.loading')}</p>
 	{:else if forecast}
-		<div class="kpi-row" data-testid="forecast-kpi-row">
-			<KpiCard value={fmt(forecast.totals.scheduled_amount)} label={m('cfo.kpi.projectedOutflow')} />
-			<KpiCard value={fmt(forecast.totals.committed_amount)} label={m('cfo.kpi.committed')} />
-			<KpiCard value={fmt(forecast.totals.pending_amount)} label={m('cfo.kpi.pipeline')} />
-			<!-- The three cards above read the forecast this branch is gated on;
-			     this one reads the SEPARATE what-if response. `?? '0'` was
-			     actively defeating the honest answer — `fmt` is `formatMoney`,
-			     which already returns the no-figure dash for a missing amount,
-			     and the coercion turned it into a green "$0 available if you pay
-			     early", a figure nobody computed on the one card a CFO acts on
-			     (`docs/decisions.md` §34).
-
-			     Unreachable today: all three requests commit together out of one
-			     `Promise.all`, so `whatif` is never null while `forecast` is
-			     set. It is a trap rather than a live bug — splitting that
-			     `Promise.all` to let the forecast paint before the slower
-			     what-if is an obvious future change, and it would have silently
-			     armed the zero. `null` hands the case to `KpiCard`, which also
-			     drops the green tint when there is no figure to call good news. -->
-			<KpiCard
-				value={whatif ? fmt(whatif.scenarios.early.total_discount_captured) : null}
-				label={m('cfo.kpi.discountIfEarly')}
-				highlight="green"
-			/>
-		</div>
 
 		<!-- Forecast bar chart -->
 		<div class="chart-card">

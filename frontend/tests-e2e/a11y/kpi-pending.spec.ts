@@ -359,16 +359,13 @@ test.describe('accessibility — KPI pending affordance (WCAG 4.1.2 / 1.3.1)', (
 
 	// --- /cfo -------------------------------------------------------------
 
-	test('/cfo: the forecast KPI row is withheld while the forecast is in flight', async ({
-		page
-	}) => {
-		// `/cfo` applies the same rule by a different mechanism: rather than
-		// rendering busy cards, it renders no KPI row at all until the response
-		// lands. That satisfies §34 — no figure nobody computed is displayed —
-		// so what this test pins is the invariant, not the mechanism: while the
-		// three analytics requests are in flight, NO card on this row reports a
-		// figure. If `/cfo` later adopts `KpiCard`'s `pending` prop, replace the
-		// count assertion with `expectRowPending`; the invariant is unchanged.
+	test('/cfo KPI row: pending announces a load, settled announces figures', async ({ page }) => {
+		// `/cfo` used to apply the rule by a DIFFERENT mechanism — it rendered no
+		// KPI row at all until the response landed. That satisfied §34 (no figure
+		// nobody computed was displayed) but meant the one convention had two
+		// shapes, so a reader could not learn it once. It now takes the same
+		// `pending` treatment as the two rows above, and this asserts the
+		// mechanism as well as the invariant.
 		const forecast = holdEndpoint(page, '/api/analytics/cashflow_forecast');
 		const whatif = holdEndpoint(page, '/api/analytics/cashflow_whatif');
 		const position = holdEndpoint(page, '/api/analytics/cash_position');
@@ -382,13 +379,18 @@ test.describe('accessibility — KPI pending affordance (WCAG 4.1.2 / 1.3.1)', (
 			// The page's own in-flight state, not a guess at timing.
 			await expect(page.locator('.workspace > .loading')).toBeVisible();
 
-			await expect(page.getByTestId('forecast-kpi-row')).toHaveCount(0);
+			const row = page.getByTestId('forecast-kpi-row');
+			await expect(row).toBeVisible();
+			await expectRowPending(row, 4);
 			await expectNoA11yViolations(page);
 
+			// --- settled (the page's real analytics responses) ---
 			forecast.release();
 			whatif.release();
 			position.release();
-			await expect(page.getByTestId('forecast-kpi-row')).toBeVisible();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value');
+			await expectRowSettled(row, 4);
+			await expectNoA11yViolations(page);
 		} finally {
 			forecast.release();
 			whatif.release();
@@ -425,7 +427,12 @@ test.describe('accessibility — KPI pending affordance (WCAG 4.1.2 / 1.3.1)', (
 
 		await page.goto('/cfo');
 		const row = page.getByTestId('forecast-kpi-row');
-		await expect(row).toBeVisible();
+		// The row is now rendered from first paint (pending), so its mere
+		// presence is no longer a readiness signal — wait on the card state the
+		// landed response produces, exactly as the two rows above do.
+		await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value', {
+			timeout: 15_000
+		});
 
 		await expectRowSettled(row, 4);
 		await expectEveryCardIsAFigure(row, 4);
