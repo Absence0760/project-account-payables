@@ -145,6 +145,7 @@ async def _seed_discount_invoice(
     amount: Decimal = _USD_FACE,
     reporting_amount: Decimal | None = None,
     paid_at: datetime | None = None,
+    discount_percent: Decimal = Decimal("10.00"),
 ) -> None:
     """One invoice on 10%-early-pay terms whose discount deadline is
     `discount_offset_days` from today (negative = elapsed)."""
@@ -173,7 +174,7 @@ async def _seed_discount_invoice(
                 invoice_id=inv.id,
                 due_date=today + timedelta(days=45),
                 discount_date=ddate,
-                discount_percent=Decimal("10.00"),
+                discount_percent=discount_percent,
             )
         )
         if paid:
@@ -360,6 +361,40 @@ async def test_discount_capture_counts_a_payment_on_the_deadline_itself(realdb):
 
     assert d["captured_count"] == 1
     assert d["missed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_discount_amount_rounds_a_half_cent_tie_away_from_zero(realdb):
+    """The one figure this tile's SQL port deliberately changed.
+
+    2.50% of 399.40 is exactly 9.985 — a half-cent tie, which is the only
+    input class where the two rounding modes disagree. The Python fold used
+    `Decimal.quantize`'s default context (`ROUND_HALF_EVEN` → 9.98); Postgres
+    `round(numeric, 2)` goes away from zero (→ 9.99), which is the project's
+    documented money convention and what `discount_offers.discount_savings`
+    already returns for this same quantity (base × percent ÷ 100).
+
+    Pinned because it is a deliberate convention alignment rather than a bug
+    fix: without a test on the boundary itself, the next reader has the comment
+    and the doc but no evidence the code does what they say, and a future
+    refactor could quietly restore half-even with the whole suite still green.
+    """
+    await _seed_discount_invoice(
+        realdb,
+        discount_offset_days=-4,
+        paid=True,
+        amount=Decimal("399.40"),
+        discount_percent=Decimal("2.50"),
+    )
+    async with realdb.client(key=TENANT, role="admin") as c:
+        d = (await c.get("/api/dashboard")).json()["discount_capture"]
+
+    assert d["captured_count"] == 1
+    assert Decimal(str(d["captured_amount"])) == Decimal("9.99")
+    # The USD row needs no conversion, so the reporting leg rounds identically
+    # — both legs go through the same `round(…, 2)`.
+    assert Decimal(str(d["captured_amount_reporting"])) == Decimal("9.99")
+    assert d["unconverted_count"] == 0
 
 
 # ---------------------------------------------------------------------------
