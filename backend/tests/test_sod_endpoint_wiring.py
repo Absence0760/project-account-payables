@@ -33,6 +33,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from app.api.deps import require_permission
 from app.api.permissions import (
     ALL_PERMISSIONS,
     PERM_INVOICE_APPROVE,
@@ -45,6 +46,18 @@ from app.api.permissions import (
     PERM_VENDOR_MANAGE,
 )
 from app.main import app
+
+# `require_permission(...)` builds a fresh closure per call, but every one of
+# them shares a single code object — comparing `__code__` identifies the factory
+# exactly, where `__qualname__.endswith("require_permission.<locals>.checker")`
+# only guesses at it (an unrelated closure named `checker` would satisfy the
+# string, and renaming the real one would break it). Mirrors
+# `test_rbac.py::_REQUIRE_PERMISSION_CODE`.
+_REQUIRE_PERMISSION_CODE = require_permission("user.manage").__code__
+
+
+def _is_require_permission_checker(call) -> bool:
+    return getattr(call, "__code__", None) is _REQUIRE_PERMISSION_CODE
 
 
 def _iter_app_routes():
@@ -81,9 +94,7 @@ def _permission_checkers(route):
 
     def walk(dep):
         call = getattr(dep, "call", None)
-        if call is not None and getattr(call, "__qualname__", "").endswith(
-            "require_permission.<locals>.checker"
-        ):
+        if call is not None and _is_require_permission_checker(call):
             for cell in call.__closure__ or ():
                 val = cell.cell_contents
                 if isinstance(val, frozenset):
@@ -129,9 +140,7 @@ async def _call_checker(route, user):
     checker = None
     for route_dep in [route.dependant, *_iter_deps(route.dependant)]:
         call = getattr(route_dep, "call", None)
-        if call is not None and getattr(call, "__qualname__", "").endswith(
-            "require_permission.<locals>.checker"
-        ):
+        if call is not None and _is_require_permission_checker(call):
             checker = call
             break
     assert checker is not None, "no require_permission checker on route"
