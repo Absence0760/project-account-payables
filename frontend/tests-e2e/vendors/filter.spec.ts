@@ -9,10 +9,13 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/vendors status filter (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('Unverified chip narrows to vendors in unverified status', async ({ page }) => {
+		// `count()` does not auto-wait, and this baseline is what the narrowed
+		// count is compared against — so anchor on the unfiltered list being on
+		// screen first rather than on a quiet network.
+		await expect(page.locator('table tbody tr').first()).toBeVisible();
 		const beforeRows = await page.locator('table tbody tr').count();
 
 		const filtered = page.waitForResponse(

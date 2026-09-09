@@ -122,7 +122,6 @@ test.describe('/invoices inter-company routing', () => {
 		const number = `${MARKER}-ORIGIN-${stamp}`;
 
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 		const vendorName = `${MARKER}-VENDOR-${stamp}`;
 		const entityId = await createEntity(page, entityName, `ic-sub-${stamp}`);
 		const invoiceId = await createInvoice(page, number, vendorName);

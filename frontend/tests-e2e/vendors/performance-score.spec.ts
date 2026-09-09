@@ -77,7 +77,6 @@ function purgeVendor(vendorId: string): void {
 test.describe('/vendors performance score (admin)', () => {
 	test('the score renders with the inputs that produced it', async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 
 		const vendor = await createVendor(page, `${VENDOR_MARKER}${Date.now()}`);
 		try {
@@ -130,7 +129,6 @@ test.describe('/vendors performance score (admin)', () => {
 
 	test('a vendor with no history says so instead of showing a zero', async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 
 		const vendor = await createVendor(page, `${VENDOR_MARKER}EMPTY-${Date.now()}`);
 		try {

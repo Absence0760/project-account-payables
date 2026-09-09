@@ -147,8 +147,15 @@ test.describe('/invoices — Bulk Re-code GL modal (admin)', () => {
 		// Clerk doesn't have access to /invoices nav, but they CAN navigate
 		// directly. Confirm the button is gated by isAdmin, not just
 		// sidebar visibility.
+		// The button gates on `auth.isAdmin`, which is only populated once GET
+		// /api/auth/me lands — asserting the absence before that would pass for
+		// the wrong reason (nobody holds any role yet). Wait on the identity
+		// fetch itself rather than on a quiet network.
+		const me = page.waitForResponse(
+			(r) => r.url().includes('/api/auth/me') && r.request().method() === 'GET'
+		);
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
+		await me;
 		const button = page.getByRole('button', { name: 'Bulk Re-code GL' });
 		await expect(button).toHaveCount(0);
 	});

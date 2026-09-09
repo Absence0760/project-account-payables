@@ -35,7 +35,6 @@ async function setVendorStatus(
 test.describe('/vendors verify/reject', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('row actions cell shows Verify + Reject only for unverified', async ({

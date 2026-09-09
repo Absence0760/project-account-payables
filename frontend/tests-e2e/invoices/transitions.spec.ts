@@ -128,7 +128,6 @@ test.describe('/invoices status transitions', () => {
 	test.beforeEach(async ({ page }) => {
 		await ensureReadyForReviewQueueHasOne(page);
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('ready_for_review invoice modal shows Approve + Reject buttons', async ({

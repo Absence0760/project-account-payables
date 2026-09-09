@@ -11,7 +11,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/vendors screening & risk (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('list shows a Screening column with a status pill per row', async ({ page }) => {

@@ -76,7 +76,6 @@ test.describe('supplier-portal white-label theming', () => {
 		// Portal login is anon to the PORTAL (its own token key), so it must theme
 		// purely from the public brand read.
 		await page.goto('/portal/login');
-		await page.waitForLoadState('networkidle');
 
 		// The accent CSS custom property is written onto <html> by portalBrand.
 		await expect
@@ -122,7 +121,6 @@ const PORTAL_PASSWORD = 'demo';
 async function portalSignIn(page: import('@playwright/test').Page): Promise<void> {
 	await acceptConsent(page);
 	await page.goto('/portal/login');
-	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
 	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
 	await page.locator('button[type="submit"]').click();

@@ -189,7 +189,6 @@ test.describe('/invoices daily approval journey', () => {
 		const target = await ensureReadyForReview(page);
 		// Reflect the freshly-promoted row in the table.
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 
 		// 2. Filter to the review queue via the "Ready for Review" chip.
 		//    Clicking it fires a filtered fetch (status=ready_for_review);
@@ -281,7 +280,6 @@ test.describe('/invoices daily approval journey', () => {
 
 		const target = await ensureReadyForReview(page);
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 
 		const reviewChip = page.locator('.filter-chip', { hasText: /^Ready for Review\s/ });
 		const filtered = page.waitForResponse(

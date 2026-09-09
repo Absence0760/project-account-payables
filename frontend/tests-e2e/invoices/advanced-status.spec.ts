@@ -18,16 +18,17 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/invoices advanced status filter', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('transient/terminal statuses are not in the quick chip row', async ({ page }) => {
+		// Anchor on a chip that MUST be there first. The two assertions below are
+		// absence checks, and absence is satisfied by an empty page — asserting
+		// them before the chip row has rendered would pass for the wrong reason.
+		await expect(page.locator('.filter-chip', { hasText: /^New\s/ })).toBeVisible();
 		// Extracting (pending) and Posted in ERP live in the modal now, not
 		// inline — even though the seed has invoices in those states.
 		await expect(page.locator('.filter-chip', { hasText: /^Extracting/ })).toHaveCount(0);
 		await expect(page.locator('.filter-chip', { hasText: /^Posted in ERP/ })).toHaveCount(0);
-		// The actionable subset is present.
-		await expect(page.locator('.filter-chip', { hasText: /^New\s/ })).toBeVisible();
 	});
 
 	test('a modal-only status filters the table and surfaces as an active chip', async ({ page }) => {

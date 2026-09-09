@@ -23,7 +23,6 @@ test.describe('/vendors create + portal invite (acme admin)', () => {
 
 		try {
 			await page.goto('/vendors');
-			await page.waitForLoadState('networkidle');
 
 			// --- Create ---
 			await page.getByRole('button', { name: 'New Vendor' }).click();
