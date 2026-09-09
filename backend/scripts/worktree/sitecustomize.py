@@ -13,11 +13,12 @@ which happens more often than it sounds:
     cd <worktree>/backend && uvicorn app.main:app      # sys.path[0] = .../venv/bin
     cd <worktree>/backend && pytest --import-mode=importlib   # no prepend at all
 
-Two members of that class fixed themselves, because we own the code:
-`backend/alembic.ini` gained `prepend_sys_path = %(here)s`, and
-`scripts/seed.py` / `scripts/migrate_all_tenants.py` anchor their own checkout
-in their import prologue — those need no activation. This shim is the general
-answer for the rest, above all the console scripts we cannot edit.
+Two branches of that class fixed themselves, because we own the code:
+`backend/alembic.ini` gained `prepend_sys_path = %(here)s`, and every
+`scripts/*.py` that imports `app` anchors its own checkout in its import
+prologue (globbed by `tests/test_script_checkout_anchor.py`, so a new one
+cannot forget). Neither needs activation. This shim is the general answer for
+the rest — above all the console scripts we cannot edit.
 
 `PathFinder` then finds nothing, the editable finder answers, and the command
 runs the **primary checkout's** code while every message on screen names the
