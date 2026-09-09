@@ -15,11 +15,15 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.billing import Plan, Subscription
+from app.services.billing import plan_catalog as plan_catalog_module
 from app.services.billing.plan_catalog import (
     DEFAULT_PLAN_CATALOG,
+    clear_stale_canceled_subscription,
     ensure_plan_catalog,
     ensure_subscription,
 )
@@ -140,3 +144,161 @@ async def test_ensure_subscription_returns_none_for_unknown_plan_code(realdb):
             s, organization_id=org_id, plan_code=f"nonexistent_{uuid.uuid4().hex[:8]}"
         )
     assert result is None
+
+
+# --- `uq_subscription_org_plan` is (org, plan) with NO status filter ---------
+#
+# `uq_subscription_one_live_per_org` bounds the LIVE count; this second
+# constraint bounds the TOTAL, so a canceled row keeps occupying its (org, plan)
+# slot forever. Every writer that tries to put an org back onto a plan it once
+# held has to free that slot first — `change_plan` always did it inline, and
+# `ensure_subscription` did not, so an org whose subscription was canceled (the
+# dunning sweep is the path that does that) could never resubscribe to the same
+# plan: the INSERT raised IntegrityError. `clear_stale_canceled_subscription` is
+# now the one owner of that rule.
+
+
+async def _seed_canceled(realdb, org_id, plan_code: str):
+    """Leave `org_id` with a CANCELED subscription on `plan_code` and no live
+    one — the state the dunning sweep produces."""
+    ctrl_mk = realdb.control_sessionmaker()
+    async with ctrl_mk() as s:
+        await ensure_plan_catalog(s)
+        sub = await ensure_subscription(s, organization_id=org_id, plan_code=plan_code)
+        sub.status = "canceled"
+        await s.commit()
+        return sub.id
+
+
+async def test_ensure_subscription_resubscribes_after_a_cancellation(realdb):
+    """The fix. Re-binding an org to the plan it was canceled on must succeed."""
+    ctrl_mk = realdb.control_sessionmaker()
+    org_id = realdb.info("a").org_id
+    await _clear_catalog(realdb)
+    try:
+        canceled_id = await _seed_canceled(realdb, org_id, "growth")
+
+        async with ctrl_mk() as s:
+            revived = await ensure_subscription(s, organization_id=org_id, plan_code="growth")
+            await s.commit()
+        assert revived is not None
+        assert revived.status == "active"
+        assert revived.id != canceled_id, "a fresh row, not the canceled one reused"
+
+        async with ctrl_mk() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(Subscription).where(Subscription.organization_id == org_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        # The stale canceled row was consumed to free the slot; exactly one
+        # row for this (org, plan), and it is the live one.
+        assert len(rows) == 1
+        assert rows[0].id == revived.id
+    finally:
+        async with ctrl_mk() as s:
+            await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
+            await s.commit()
+        await _clear_catalog(realdb)
+
+
+async def test_without_the_guard_the_same_call_raises_integrityerror(realdb, monkeypatch):
+    """The repro: neutralise the guard and the INSERT collides, proving the
+    constraint is real and that the guard — not luck — is what avoids it."""
+    ctrl_mk = realdb.control_sessionmaker()
+    org_id = realdb.info("a").org_id
+    await _clear_catalog(realdb)
+    try:
+        await _seed_canceled(realdb, org_id, "growth")
+
+        async def _noop(session, *, organization_id, plan_id):
+            return None
+
+        monkeypatch.setattr(plan_catalog_module, "clear_stale_canceled_subscription", _noop)
+
+        async with ctrl_mk() as s:
+            with pytest.raises(IntegrityError) as excinfo:
+                await ensure_subscription(s, organization_id=org_id, plan_code="growth")
+            await s.rollback()
+        assert "uq_subscription_org_plan" in str(excinfo.value)
+    finally:
+        async with ctrl_mk() as s:
+            await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
+            await s.commit()
+        await _clear_catalog(realdb)
+
+
+async def test_clear_stale_canceled_subscription_deletes_only_its_own_target(realdb):
+    """Narrow by construction: it frees ONE (org, plan) slot. It must not touch
+    a canceled row on a different plan (that org's history) nor a LIVE row on
+    the target plan (deleting that would drop a paying subscription)."""
+    ctrl_mk = realdb.control_sessionmaker()
+    org_id = realdb.info("a").org_id
+    await _clear_catalog(realdb)
+    try:
+        async with ctrl_mk() as s:
+            await ensure_plan_catalog(s)
+            growth_id = (await s.execute(select(Plan.id).where(Plan.code == "growth"))).scalar_one()
+            scale_id = (await s.execute(select(Plan.id).where(Plan.code == "scale"))).scalar_one()
+            free_id = (await s.execute(select(Plan.id).where(Plan.code == "free"))).scalar_one()
+            # canceled on growth (the target), canceled on scale (history),
+            # live on free (untouchable).
+            for plan_id, status in (
+                (growth_id, "canceled"),
+                (scale_id, "canceled"),
+                (free_id, "active"),
+            ):
+                s.add(
+                    Subscription(
+                        id=uuid.uuid4(),
+                        organization_id=org_id,
+                        plan_id=plan_id,
+                        status=status,
+                    )
+                )
+            await s.commit()
+
+        async with ctrl_mk() as s:
+            await clear_stale_canceled_subscription(s, organization_id=org_id, plan_id=growth_id)
+            await s.commit()
+
+        async with ctrl_mk() as s:
+            remaining = {
+                (r.plan_id, r.status)
+                for r in (
+                    await s.execute(
+                        select(Subscription).where(Subscription.organization_id == org_id)
+                    )
+                )
+                .scalars()
+                .all()
+            }
+        assert remaining == {(scale_id, "canceled"), (free_id, "active")}
+
+        # And deleting a LIVE row on the target plan is out of scope too.
+        async with ctrl_mk() as s:
+            await clear_stale_canceled_subscription(s, organization_id=org_id, plan_id=free_id)
+            await s.commit()
+        async with ctrl_mk() as s:
+            live = (
+                (
+                    await s.execute(
+                        select(Subscription).where(
+                            Subscription.organization_id == org_id,
+                            Subscription.plan_id == free_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(live) == 1, "a live subscription must never be cleared"
+    finally:
+        async with ctrl_mk() as s:
+            await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
+            await s.commit()
+        await _clear_catalog(realdb)
