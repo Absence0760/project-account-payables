@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.api.payments import PAYABLE_INVOICE_STATUSES
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
@@ -703,3 +704,149 @@ async def test_the_converging_card_rail_is_still_accepted_by_the_builder(realdb)
         assert result.created is True
         assert result.run.status == "draft"
         await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# A GENUINELY `submitted` payment, booked by the app's own execute path
+# ---------------------------------------------------------------------------
+
+
+async def test_a_rail_that_reports_submitted_removes_the_invoice_from_the_queue(realdb):
+    """The end-to-end reproduction, not a hand-written row.
+
+    The follow-up this closes named the obstacle: the `mock` payment adapter
+    returns `completed` synchronously, so no local tenant ever HAS a payment
+    sitting in `submitted` — which is why the queue shipped for so long excluding
+    only `completed` payments while every real rail (ACH settles in 1-3 days)
+    leaves one `submitted` for days. The other tests here insert the row
+    directly, which is a faithful reproduction of the DB state the unique index
+    acts on; this one proves the state is reachable through
+    `execute_payment_run` itself, with a stub standing in for the rail the mock
+    adapter cannot imitate.
+
+    The assertion is deliberately narrow. On `submitted` the real code transitions
+    the invoice to `payment_scheduled`, which is still in
+    `PAYABLE_INVOICE_STATUSES` — so the invoice remains a queue candidate BY
+    STATUS and the only thing keeping it out is the live payment. Nothing about
+    the transition is patched, precisely so that stays true rather than being
+    arranged.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy import select as sa_select
+
+    from app.api.payments import execute_payment_run, payment_queue_ids
+    from app.models.invoice import Invoice as InvoiceModel
+    from app.models.payment import Payment as PaymentModel
+    from app.models.payment import PaymentRun
+    from app.services.payment_adapters import PaymentStatus
+
+    mk = realdb.sessionmaker(TENANT)
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    admin_id = info.users["admin"]
+
+    inv_id = await _seed_invoice(mk, org_id, number="Q-INFLIGHT", amount="250.00")
+    entity_id = await _default_entity_id(mk)
+    # A REAL linked vendor is load-bearing, not scenery: with `vendor_id` NULL the
+    # ACH leg's own fail-safe parks the payment at `pending_compliance` before the
+    # sanctions adapter is ever consulted ("we cannot screen a payee we don't
+    # have"), so the patched gate below would never run and the payment would
+    # never reach `submitted`.
+    vendor_id = await _seed_vendor(mk, org_id)
+    async with mk() as s:
+        invoice_row = (
+            await s.execute(sa_select(InvoiceModel).where(InvoiceModel.id == inv_id))
+        ).scalar_one()
+        invoice_row.vendor_id = vendor_id
+        await s.commit()
+
+    run_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            PaymentRun(
+                id=run_id,
+                organization_id=org_id,
+                entity_id=entity_id,
+                status="draft",
+                total_amount=Decimal("250.00"),
+                # A DIFFERENT user, so `check_run_segregation` doesn't refuse the
+                # admin executing it.
+                initiated_by=uuid.uuid4(),
+                requires_cfo_approval=False,
+            )
+        )
+        await s.flush()
+        s.add(
+            PaymentModel(
+                id=uuid.uuid4(),
+                invoice_id=inv_id,
+                entity_id=entity_id,
+                payment_run_id=run_id,
+                amount=Decimal("250.00"),
+                method="ach",
+                status="pending",
+                correlation_id=uuid.uuid4(),
+            )
+        )
+        await s.commit()
+
+    async def _submitting_create_payment(payload):
+        """What a real ACH rail answers: accepted, not settled. The webhook
+        finalises it days later."""
+        return SimpleNamespace(
+            success=True,
+            status=PaymentStatus.submitted,
+            provider_payment_id="px_inflight",
+            reference="REF-INFLIGHT",
+            failure_reason=None,
+        )
+
+    adapter = SimpleNamespace(
+        provider_name="stub_rail",
+        create_payment=_submitting_create_payment,
+    )
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(verdict="allow", reasons=[]),
+        ),
+    ):
+        async with mk() as db:
+            await execute_payment_run(
+                run_id=run_id,
+                db=db,
+                org=_org(org_id),
+                user=SimpleNamespace(id=admin_id, full_name="Queue Tester", roles=["admin"]),
+                entity_id=None,
+            )
+            await db.commit()
+
+    async with mk() as s:
+        payment = (
+            await s.execute(sa_select(PaymentModel).where(PaymentModel.invoice_id == inv_id))
+        ).scalar_one()
+        invoice = (
+            await s.execute(sa_select(InvoiceModel).where(InvoiceModel.id == inv_id))
+        ).scalar_one()
+
+    # The state the mock adapter can never produce, produced.
+    assert payment.status == "submitted"
+    # ...and the invoice is STILL payable by status, so nothing but the live
+    # payment can account for what follows.
+    invoice_status = getattr(invoice.status, "value", invoice.status)
+    assert invoice_status in PAYABLE_INVOICE_STATUSES
+
+    result = await _queue_result(realdb, mk)
+    offered = {i["invoice_number"] for i in result["items"]}
+    assert "Q-INFLIGHT" not in offered
+
+    async with mk() as db:
+        ids_resp = await payment_queue_ids(
+            db=db, org=_org(org_id), user=_user(admin_id), entity_id=None
+        )
+    assert str(inv_id) not in set(ids_resp["ids"])
