@@ -39,6 +39,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from app.api.deps import require_permission
 from app.api.permissions import (
     ALL_PERMISSIONS,
     PERM_INVOICE_APPROVE,
@@ -52,6 +53,18 @@ from app.api.permissions import (
 )
 from app.main import app
 from tests.permission_gates import permission_checkers, permission_gate_sets
+
+# `require_permission(...)` builds a fresh closure per call, but every one of
+# them shares a single code object — comparing `__code__` identifies the factory
+# exactly, where `__qualname__.endswith("require_permission.<locals>.checker")`
+# only guesses at it (an unrelated closure named `checker` would satisfy the
+# string, and renaming the real one would break it). Mirrors
+# `test_rbac.py::_REQUIRE_PERMISSION_CODE`.
+_REQUIRE_PERMISSION_CODE = require_permission("user.manage").__code__
+
+
+def _is_require_permission_checker(call) -> bool:
+    return getattr(call, "__code__", None) is _REQUIRE_PERMISSION_CODE
 
 
 def _iter_app_routes():

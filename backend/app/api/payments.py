@@ -1424,7 +1424,14 @@ async def void_payment(
 
     await db.commit()
     await db.refresh(payment)
-    return PaymentResponse.from_db(payment, invoice)
+    resp = PaymentResponse.from_db(payment, invoice)
+    # Surface the two best-effort legs' outcomes so the operator (and the void
+    # dialog) can tell whether the rail was reversed and — for a card payment —
+    # whether the card was actually closed at the provider. A non-cancelled
+    # `void_card_outcome` is the prompt to retry via `POST /api/cards/{id}/cancel`.
+    resp.void_card_outcome = card_outcome
+    resp.void_adapter_outcome = adapter_outcome
+    return resp
 
 
 async def _recompute_parent_run_status(db: AsyncSession, payment: Payment) -> None:

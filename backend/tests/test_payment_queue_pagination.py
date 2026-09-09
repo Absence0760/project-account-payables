@@ -133,3 +133,53 @@ async def test_queue_requires_a_payments_role(realdb):
     async with realdb.client(key=TENANT, role="ap_clerk") as c:
         assert (await c.get("/api/payments/queue")).status_code == 403
         assert (await c.get("/api/payments/queue/ids")).status_code == 403
+
+
+async def test_queue_row_discount_rounds_half_up_matching_the_rollup(realdb):
+    """The per-row `discount_amount` and `_payment_queue_rollup`'s attribution
+    of the same invoice must agree on a half-cent boundary. The rollup rounds
+    in SQL (`round(x, 2)` — half away from zero); a plain Python `.quantize()`
+    (half-to-even) here made `21.00 @ 2.50%` = `0.525` render as `0.52` in the
+    row and `0.53` in the totals."""
+    from datetime import timedelta
+
+    from app.models.payment import PaymentSchedule
+    from app.utils.dates import utc_today
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    inv_id = uuid.uuid4()
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add(
+            Invoice(
+                id=inv_id,
+                organization_id=org_id,
+                entity_id=ent,
+                invoice_number="HALFCENT-001",
+                vendor_name="Rounding Co",
+                amount=Decimal("21.00"),
+                currency="USD",
+                status=InvoiceStatus.approved,
+                correlation_id=uuid.uuid4(),
+            )
+        )
+        s.add(
+            PaymentSchedule(
+                id=uuid.uuid4(),
+                invoice_id=inv_id,
+                due_date=utc_today() + timedelta(days=30),
+                discount_date=utc_today() + timedelta(days=10),
+                discount_percent=Decimal("2.50"),
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        page = (await c.get("/api/payments/queue", params={"page_size": 100})).json()
+        summary = (await c.get("/api/payments/queue")).json()
+
+    row = next(r for r in page["items"] if r["id"] == str(inv_id))
+    assert row["discount_amount"] == "0.53"  # half-UP, not "0.52"
+    # And the whole-set savings total attributes the same figure.
+    assert Decimal(summary["total_savings"]) >= Decimal("0.53")

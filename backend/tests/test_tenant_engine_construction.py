@@ -239,8 +239,8 @@ def _interpolations(expr: ast.expr, scope: ast.AST) -> list[str]:
     """Interpolation nodes reachable from `expr` — f-string, `%`, `.format()`.
 
     Those three are the shapes that splice a caller-supplied value into a URL.
-    Plain concatenation is deliberately absent: `_make_tenant_url`'s own body is
-    a concatenation, and the exempt Lambda handlers mirror it verbatim.
+    Plain concatenation is deliberately absent: `tenant_db_url`'s own body is a
+    concatenation, and it is the one place that construction lives.
     """
     found: list[str] = []
     for candidate in _resolve(expr, scope):

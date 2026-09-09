@@ -71,7 +71,7 @@ class EntityStore {
 
 	/** True once the tenant has more than one entity — gates the switcher UI. */
 	get multiEntity(): boolean {
-		return this.entities.length > 1;
+		return this.activeEntities.length > 1;
 	}
 
 	/** The selected Entity object, or `null` for the consolidated view. */

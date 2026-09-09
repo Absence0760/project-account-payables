@@ -581,7 +581,7 @@ async def test_void_cancels_an_unspent_card_so_it_cannot_be_rediscovered(realdb)
 
     with _ambient_patches():
         async with realdb.sessionmaker(TENANT)() as db:
-            await void_payment(
+            void_result = await void_payment(
                 payment_id=pay_id,
                 body=VoidPaymentRequest(reason="duplicate run"),
                 db=db,
@@ -589,6 +589,10 @@ async def test_void_cancels_an_unspent_card_so_it_cannot_be_rediscovered(realdb)
                 user=_user(info.users["admin"]),
                 entity_id=None,
             )
+
+    # The card-cancel outcome is on the RESPONSE now, not only the audit row —
+    # the void dialog needs it to tell the operator whether to retry the close.
+    assert void_result.void_card_outcome == "card_cancelled"
 
     async with mk() as s:
         card = (await s.execute(select(VirtualCard).where(VirtualCard.id == card_id))).scalar_one()
