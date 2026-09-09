@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
+import sqlalchemy as sa
+
 from app.models.discount import (
     OFFER_SCOPE_VENDOR,
     OFFER_SOURCE_SUPPLIER,
@@ -313,15 +315,70 @@ def mark_captured(offer, *, captured_amount: Decimal, now: datetime) -> None:
     offer.status = OFFER_STATUS_CAPTURED
 
 
+def has_lapsed(offer, *, as_of: date) -> bool:
+    """Is this an ``offered`` row whose own ``valid_until`` has already passed?
+
+    The single definition of "lapsed", shared by the WRITE that records it
+    (:func:`expire_if_past`) and by every READ that has to reason about a
+    population before that write has happened.
+
+    Both callers are needed because the write is not guaranteed to run. The only
+    thing that invokes ``expire_if_past`` is the dynamic-discounting auto-capture
+    sweep, which is OFF by default (``FEOH_DISCOUNT_OPTIMIZATION_ENABLED``) — so
+    on any deployment that has not enabled auto-capture, a lapsed offer stays
+    ``offered`` forever. That is not merely cosmetic: ``GET /api/discounts/dashboard``
+    derives ``capture_rate_pct`` from captured ÷ (captured + declined + expired),
+    so nine lapsed offers and one capture reported **100.00%** — the single
+    figure a treasury team reads to decide whether early-pay discounting is
+    working, saying the opposite of the truth. Reading the predicate instead of
+    the stored status makes the answer right whether or not the sweep runs, and
+    also closes the window where it is enabled but has not ticked yet.
+
+    Accepting a lapsed offer was never possible (the acceptance path enforces
+    the same date window), so this corrects reporting, not authorization.
+    """
+    if offer.status != OFFER_STATUS_OFFERED:
+        return False
+    return offer.valid_until is not None and offer.valid_until < as_of
+
+
+def lapsed_sql(as_of: date):
+    """:func:`has_lapsed` as a SQLAlchemy predicate, for a set-level read.
+
+    Same rule, expressed where the rows are, so the dashboard aggregates don't
+    have to load every open offer to classify it. Kept beside the Python
+    version — and drift-guarded by ``tests/test_discount_offers.py`` — because
+    two spellings of "lapsed" would eventually disagree, and this one decides
+    which bucket an offer's money lands in.
+    """
+    from app.models.discount import DiscountOffer
+
+    return sa.and_(
+        DiscountOffer.status == OFFER_STATUS_OFFERED,
+        DiscountOffer.valid_until.is_not(None),
+        DiscountOffer.valid_until < as_of,
+    )
+
+
+def still_open_sql(as_of: date):
+    """The complement: an ``offered`` row that has NOT lapsed.
+
+    What "open offers" has to mean on every read — a lapsed row can no longer
+    be accepted, so counting it as an open opportunity overstates both the
+    count and the projected savings beside it.
+    """
+    from app.models.discount import DiscountOffer
+
+    return sa.and_(DiscountOffer.status == OFFER_STATUS_OFFERED, sa.not_(lapsed_sql(as_of)))
+
+
 def expire_if_past(offer, *, as_of: date) -> bool:
     """Expire an ``offered`` offer whose ``valid_until`` is before ``as_of``.
 
     Returns ``True`` if the status changed, ``False`` otherwise (already
     accepted/captured/declined/expired, no ``valid_until``, or still in window).
     """
-    if offer.status != OFFER_STATUS_OFFERED:
-        return False
-    if offer.valid_until is None or offer.valid_until >= as_of:
+    if not has_lapsed(offer, as_of=as_of):
         return False
     offer.status = OFFER_STATUS_EXPIRED
     return True

@@ -17,6 +17,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -754,6 +755,24 @@ async def dashboard(
     def _in_reporting_currency(q):
         return q.where(func.upper(DiscountOffer.currency) == reporting_currency)
 
+    def _missed_offer(as_of):
+        """The offers whose window closed without the discount being taken.
+
+        Stored ``declined`` / ``expired`` — PLUS a row still sitting at
+        ``offered`` whose own ``valid_until`` has already passed. The only thing
+        that ever writes ``expired`` is the auto-capture sweep, which is OFF by
+        default, so on a deployment that has not enabled it a lapsed offer never
+        leaves ``offered`` and dropped out of this population entirely: nine
+        lapsed offers and one capture reported a **100.00%** capture rate, and
+        each of those nine also inflated `open_offer_count` and the projected
+        savings beside it. `offers_svc.lapsed_sql` is the same predicate
+        `expire_if_past` writes from, so the read cannot drift from the write.
+        """
+        return sa.or_(
+            DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED]),
+            offers_svc.lapsed_sql(as_of),
+        )
+
     # Captured — counted and summed only in the reporting currency.
     captured_count, captured_amount = (
         await db.execute(
@@ -786,7 +805,7 @@ async def dashboard(
                 _scope(
                     _in_reporting_currency(
                         select(DiscountOffer.base_amount, DiscountOffer.tiers).where(
-                            DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED])
+                            _missed_offer(today)
                         )
                     )
                 )
@@ -797,7 +816,7 @@ async def dashboard(
         await db.execute(
             _scope(
                 select(func.count()).where(
-                    DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED]),
+                    _missed_offer(today),
                     func.upper(DiscountOffer.currency) != reporting_currency,
                 )
             )
@@ -816,11 +835,7 @@ async def dashboard(
 
     # Open offers + projected savings (optimizer, unconstrained cash).
     open_offers = list(
-        (
-            await db.execute(
-                _scope(select(DiscountOffer).where(DiscountOffer.status == OFFER_STATUS_OFFERED))
-            )
-        )
+        (await db.execute(_scope(select(DiscountOffer).where(offers_svc.still_open_sql(today)))))
         .scalars()
         .all()
     )

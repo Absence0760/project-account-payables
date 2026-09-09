@@ -142,7 +142,18 @@ class Settings(BaseSettings):
     # accept/decline offer surface run unconditionally; only the *auto-capture
     # sweep* is gated. `discount_optimization_enabled` is the master switch for
     # that background loop — OFF by default so local dev / tests don't
-    # auto-pay. `discount_auto_capture_roi_threshold` is the annualized return
+    # auto-pay.
+    #
+    # That gate ALSO holds the only caller of `expire_if_past`, so with it off
+    # nothing ever writes `expired` and a lapsed offer sits at `offered`
+    # forever. Reporting no longer depends on that write: every read classifies
+    # a lapsed row through `discount_offers.has_lapsed` / `lapsed_sql` — the
+    # same predicate the write uses — so the dashboard is correct whether or
+    # not this switch is on. Left as-is deliberately rather than split into a
+    # second always-on sweep: a background loop nobody asked for is a worse
+    # local-first default than a stale status column no read trusts.
+    #
+    # `discount_auto_capture_roi_threshold` is the annualized return
     # (APR %) an offer must clear for the sweep to capture it automatically;
     # `discount_cost_of_capital_pct` is the platform-default annual cost of
     # capital the ROI calculator compares against (per-org override:

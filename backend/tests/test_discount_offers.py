@@ -474,3 +474,73 @@ def test_every_tier_window_call_site_resolves_the_reference_from_the_offer():
     # A scan that finds nothing proves nothing — pin that the call sites are
     # still where this guard thinks they are.
     assert seen >= 9, f"expected the tier-window call sites to still exist, found {seen}"
+
+
+# --------------------------------------------------------------------------- #
+# "lapsed" has one definition, and both spellings of it must agree
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "status,valid_until_offset,expected",
+    [
+        ("offered", -1, True),  # window closed yesterday
+        ("offered", 0, False),  # closes today — still capturable today
+        ("offered", 1, False),  # still open
+        ("offered", None, False),  # no stated expiry is not an expiry
+        ("captured", -1, False),  # already decided; status wins
+        ("declined", -1, False),
+        ("expired", -1, False),  # already recorded, not "lapsed but unrecorded"
+        ("accepted", -1, False),
+    ],
+)
+def test_has_lapsed_covers_the_status_and_date_matrix(status, valid_until_offset, expected):
+    today = date(2026, 6, 15)
+    offer = SimpleNamespace(
+        status=status,
+        valid_until=(
+            None if valid_until_offset is None else today + timedelta(days=valid_until_offset)
+        ),
+    )
+    assert do.has_lapsed(offer, as_of=today) is expected
+
+
+def test_expire_if_past_flips_exactly_when_has_lapsed_says_so():
+    """`expire_if_past` is the WRITE; `has_lapsed` is the predicate it writes on.
+
+    They were one function; splitting them is what lets a read classify a row
+    the sweep has not reached (the sweep is off by default, so that is the
+    normal case, not an edge). If the write ever stops agreeing with the
+    predicate, the dashboard and the database disagree about the same offer.
+    """
+    today = date(2026, 6, 15)
+    for status in ("offered", "accepted", "captured", "declined", "expired"):
+        for offset in (-1, 0, 1, None):
+            offer = SimpleNamespace(
+                status=status,
+                valid_until=(None if offset is None else today + timedelta(days=offset)),
+            )
+            predicted = do.has_lapsed(offer, as_of=today)
+            assert do.expire_if_past(offer, as_of=today) is predicted
+            if predicted:
+                assert offer.status == "expired"
+
+
+def test_lapsed_sql_and_still_open_sql_are_complements_over_offered():
+    """The SQL pair must partition the `offered` population, not overlap it.
+
+    Rendered rather than executed — the executed behaviour is covered by
+    `test_discounts_api.py`'s dashboard cases against a real Postgres. What is
+    worth pinning here is that `still_open_sql` is defined as the NEGATION of
+    `lapsed_sql` rather than as a second hand-written date comparison, since two
+    independently-written comparisons are exactly how a row ends up in both
+    buckets or neither.
+    """
+    today = date(2026, 6, 15)
+    lapsed = str(do.lapsed_sql(today))
+    still_open = str(do.still_open_sql(today))
+    assert "valid_until IS NOT NULL" in lapsed
+    assert "valid_until <" in lapsed
+    # The complement embeds the same expression under a NOT.
+    assert "NOT (" in still_open
+    assert "valid_until IS NOT NULL" in still_open

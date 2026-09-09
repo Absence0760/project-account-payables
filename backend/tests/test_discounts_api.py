@@ -624,3 +624,120 @@ async def test_offer_not_visible_cross_tenant(realdb):
     async with realdb.client(key="b", role="ap_manager") as c:
         resp = await c.get(f"/api/discounts/offers/{offer_id}")
     assert resp.status_code == 404
+
+
+async def test_lapsed_offers_count_as_missed_even_with_the_sweep_off(realdb):
+    """A lapsed offer is missed, whether or not anything wrote `expired`.
+
+    `expire_if_past` is invoked by exactly one caller — the auto-capture sweep,
+    which is OFF by default (`FEOH_DISCOUNT_OPTIMIZATION_ENABLED`). So on a
+    deployment that has not enabled auto-capture, an offer whose `valid_until`
+    passed stays `offered` forever, and the dashboard's missed population
+    (`declined` + `expired`) simply did not contain it.
+
+    That is the whole defect: with one capture and several lapsed offers,
+    `capture_rate_pct` read **100.00** — the single figure a treasury team uses
+    to decide whether early-pay discounting is working, reporting the opposite
+    of the truth — while each lapsed row ALSO inflated `open_offer_count` as a
+    still-available opportunity.
+
+    Seeded through the ORM rather than the API because the create endpoint
+    (correctly) refuses a `valid_until` in the past.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_captured = await _add_invoice(mk, org_id, amount="1000.00")
+    inv_lapsed = await _add_invoice(mk, org_id, amount="4000.00")
+    inv_live = await _add_invoice(mk, org_id, amount="2000.00")
+
+    today = date.today()
+    async with mk() as s:
+        entity_id = await _default_entity_id(s)
+        s.add_all(
+            [
+                DiscountOffer(
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                    scope="invoice",
+                    invoice_id=uuid.UUID(inv_captured),
+                    base_amount=Decimal("1000.00"),
+                    currency="USD",
+                    tiers=_tiers(),
+                    status="captured",
+                    captured_amount=Decimal("30.00"),
+                ),
+                # Window closed yesterday, never swept -> still `offered`.
+                DiscountOffer(
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                    scope="invoice",
+                    invoice_id=uuid.UUID(inv_lapsed),
+                    base_amount=Decimal("4000.00"),
+                    currency="USD",
+                    tiers=_tiers(),
+                    status="offered",
+                    valid_until=today - timedelta(days=1),
+                ),
+                # Genuinely still open — the control.
+                DiscountOffer(
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                    scope="invoice",
+                    invoice_id=uuid.UUID(inv_live),
+                    base_amount=Decimal("2000.00"),
+                    currency="USD",
+                    tiers=_tiers(),
+                    status="offered",
+                    valid_until=today + timedelta(days=30),
+                ),
+            ]
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/discounts/dashboard")).json()
+
+    # The lapsed offer is missed, and its best tier (3% of 4000) is the money.
+    assert body["missed_count"] == 1
+    assert Decimal(str(body["missed_amount"])) == Decimal("120.00")
+
+    # It is NOT an open opportunity — only the live one is.
+    assert body["open_offer_count"] == 1
+
+    # And the rate is 1 captured of 2 decided, not 100%.
+    assert Decimal(str(body["capture_rate_pct"])) == Decimal("50.00")
+
+
+async def test_a_lapsed_offer_with_no_valid_until_is_still_open(realdb):
+    """`valid_until IS NULL` means "no stated expiry", not "expired".
+
+    The lapsed predicate is deliberately three-legged (`offered` AND
+    `valid_until IS NOT NULL` AND `valid_until < today`) — SQL's NULL comparison
+    would silently drop the row from BOTH populations, so an open-ended offer
+    would vanish from the dashboard rather than be counted anywhere.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id, amount="500.00")
+
+    async with mk() as s:
+        s.add(
+            DiscountOffer(
+                organization_id=org_id,
+                entity_id=await _default_entity_id(s),
+                scope="invoice",
+                invoice_id=uuid.UUID(invoice_id),
+                base_amount=Decimal("500.00"),
+                currency="USD",
+                tiers=_tiers(),
+                status="offered",
+                valid_until=None,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/discounts/dashboard")).json()
+
+    assert body["open_offer_count"] == 1
+    assert body["missed_count"] == 0

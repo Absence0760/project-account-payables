@@ -66,7 +66,7 @@ Cost of capital: per-org `Organization.settings.discounting.cost_of_capital_pct`
 | `discount_roi.py` | annualized-return primitive (above) |
 | `discount_offers.py` | tier normalization/selection (`best_tier_for_date`, `select_tier` / `select_tier_for_date`), savings math, lifecycle mutators (`accept_offer` / `decline_offer` / `mark_captured` / `expire_if_past`), and `build_bulk_offer` (sum a vendor's open balances into a vendor-scoped offer). Pure — never commits |
 | `discount_optimizer.py` | `optimize(opportunities, cash_budget, cost_of_capital_pct, today, reporting_currency=None)` — scores each opportunity, ranks by APR desc (tie-break savings, then id), and **greedily** selects the highest-yield `worthwhile` + still-capturable ones until the cash budget is exhausted (capture vs. cash preservation). `cash_budget=None` selects every worthwhile one. Pure. See [Currency](#currency--the-totals-are-sums) for `reporting_currency` |
-| `discount_auto_trigger.py` | background sweep — auto-accepts open offers whose ROI clears `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal` (per-tenant fan-out, fresh engine, one failure never halts the sweep). Also the sole place `expire_if_past` runs — flips an `offered` row whose `valid_until` has passed to `expired` before it's ever considered for auto-accept. **Money-path boundary: only flags `offered → accepted`; never creates a `Payment`/`PaymentRun`** — actual funding still flows through the CFO-gated payment run. The status guard is the dedupe |
+| `discount_auto_trigger.py` | background sweep — auto-accepts open offers whose ROI clears `FEOH_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal` (per-tenant fan-out, fresh engine, one failure never halts the sweep). Also the sole place `expire_if_past` runs — flips an `offered` row whose `valid_until` has passed to `expired` before it's ever considered for auto-accept. Because that makes the write conditional on this sweep being enabled (it is off by default), **reads never depend on it**: they classify a lapsed row through the shared `has_lapsed` / `lapsed_sql` predicate instead (see § A lapsed offer is missed). **Money-path boundary: only flags `offered → accepted`; never creates a `Payment`/`PaymentRun`** — actual funding still flows through the CFO-gated payment run. The status guard is the dedupe |
 
 ### Currency — the totals are sums
 
@@ -416,8 +416,8 @@ field in it aggregates only rows denominated in that code:
 | Field | Population |
 |---|---|
 | `captured_amount` / `captured_count` | captured offers in the reporting currency |
-| `missed_amount` / `missed_count` | declined + expired offers in the reporting currency |
-| `projected_savings` | open offers in the reporting currency (via the optimizer) |
+| `missed_amount` / `missed_count` | declined + expired + **lapsed** offers in the reporting currency |
+| `projected_savings` | open (non-lapsed) offers in the reporting currency (via the optimizer) |
 | `excluded_captured_count` / `excluded_missed_count` / `unconvertible_offer_count` | how many rows each figure left out |
 
 `captured_amount` and `missed_amount` were previously bare cross-currency
@@ -435,6 +435,32 @@ counts ride along so a partial figure is visibly partial rather than quietly
 short. `capture_rate_pct` is computed over the same reporting-currency
 population as the counts beside it, so every field in the response describes
 one set.
+
+### A lapsed offer is missed, whether or not anything recorded it
+
+"Missed" is **not** `status IN (declined, expired)`. It is that, plus any row
+still sitting at `offered` whose own `valid_until` has already passed —
+`discount_offers.lapsed_sql`, the same predicate `expire_if_past` writes from.
+
+The reason is that the write is not guaranteed to run. `expire_if_past` has
+exactly one caller, the auto-capture sweep, and that sweep is OFF by default
+(`FEOH_DISCOUNT_OPTIMIZATION_ENABLED`). On any deployment that has not enabled
+auto-capture, a lapsed offer never leaves `offered` — so it fell out of the
+missed population entirely *and* was counted as a still-available opportunity in
+`open_offer_count` and `projected_savings`. With one capture and nine lapsed
+offers, `capture_rate_pct` read **100.00**: the one figure a treasury team uses
+to judge whether early-pay discounting is working, saying the opposite of the
+truth.
+
+Reading the predicate rather than the stored status also closes the window where
+the sweep IS enabled but has not ticked yet, and costs nothing when it has (a
+swept row is `expired`, which the first leg already matches).
+
+This corrects **reporting, not authorization** — accepting a lapsed offer was
+never possible, because the acceptance path enforces the same date window
+independently. And `valid_until IS NULL` is deliberately *not* lapsed: an offer
+with no stated expiry has not expired, and SQL's NULL comparison would otherwise
+drop it from both populations rather than counting it in either.
 
 Two conventions worth knowing before reading the response:
 
