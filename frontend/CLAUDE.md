@@ -1352,6 +1352,50 @@ accepts any valid hex and the brand is the tenant's call.
 - **BASE_PATH** — set to `/<repo-name>` during CI builds for GitHub Pages asset paths.
 - **No SSR** — static adapter only. Dynamic data comes from the backend API.
 
+### `networkidle` is not a readiness signal (tests-e2e/)
+
+`page.waitForLoadState('networkidle')` waits for 500ms of no network traffic.
+Playwright discourages it, and this repo measured what it costs: the
+`organization/` directory failed 10 runs in 75 (13.3%) on that call alone, every
+failure a 30s timeout whose screenshot showed the panel already fully rendered.
+It never asserts that anything was *drawn*, and on a page that polls or streams
+it may never fire. **Don't add one.** Wait on the thing the test actually
+depends on — which, nine times out of ten, is the auto-waiting assertion already
+on the next line.
+
+That last point is stronger here than it sounds, and it is why deleting these is
+safe rather than merely usually-safe: `routes/+layout.svelte` renders **nothing**
+until its `browser`-guarded `$effect` resolves `hasTenant` (the tri-state guard
+that stops the marketing page flashing on a tenant host). Effects run during
+neither SSR nor prerender, so no route's markup exists in the served document —
+`pnpm build` emits a single `index.html` whose body is an empty
+`<div style="display: contents">`, with no `<form>` and no `<input>` in it, and
+`adapter-static`'s `fallback` hands that same document to every path under
+`vite preview` (what CI serves). So waiting for **any** element in the app shell
+transitively proves hydration completed. `fixtures/helpers.ts::signIn` carries
+the long-form version of this, because its JSDoc used to claim the opposite.
+
+Three shapes need a real substitute rather than a deletion, and one keeps it:
+
+1. A bare `.count()` or `page.evaluate()` on the next line has no auto-wait —
+   gate on the element the read depends on.
+2. A `toHaveCount(0)` **absence** assertion passes vacuously against the empty
+   pre-hydration document. Put a positive assertion before it; the wait was
+   hiding a test that could not fail.
+3. Asserting that **no further request** was issued is the one honest use — a
+   `waitForResponse` proves at least one fired, never that a duplicate did not.
+   `credit-memos/load-sequencing.spec.ts` keeps its two on those grounds and
+   says so inline; don't sweep them.
+
+Never substitute `waitForTimeout`, and never raise the 30s timeout to absorb it
+(both are masking, see the root `CLAUDE.md` § Fix bugs at the source).
+
+**`pnpm check` does NOT typecheck `tests-e2e/`.** A syntax error there silently
+zeroes the whole Playwright suite. After any bulk edit run
+`pnpm exec playwright test --config=tests-e2e/playwright.config.ts --list` and
+compare the total — note the explicit `--config`, without which the command
+picks up the wrong project and reports `Total: 0 tests in 0 files`.
+
 ## Web vs Mobile feature parity
 
 The mobile app (`mobile/`) covers core approval workflows. These web features are **not yet on mobile**:
