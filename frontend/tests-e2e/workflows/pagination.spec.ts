@@ -18,8 +18,29 @@ function seedWorkflows(n: number): void {
 	);
 }
 
+/**
+ * The rows above are bulk-INSERTed and never handed to the API, so nothing
+ * FK-references them today and a bare definition delete would succeed. The
+ * sweep is written FK-complete anyway, matching the sibling workflow specs:
+ * `workflow_definitions` is referenced by `workflow_versions`,
+ * `workflow_instances` (itself referenced by `workflow_steps`) and
+ * `workflow_experiments`, none of them cascading, so a definition that ever
+ * acquires a child stops being deletable — and this is the file the next
+ * spec's teardown gets copied from. `is_default = false` keeps a marker typo
+ * away from the seeded default `fixtures/globalSetup.ts` asserts against.
+ */
 function purge(): void {
-	tenantPsql(`DELETE FROM workflow_definitions WHERE name LIKE '${MARKER}%'`);
+	const doomed =
+		`SELECT id FROM workflow_definitions ` +
+		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN ` +
+			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
 }
 
 test.describe('/workflows pagination', () => {

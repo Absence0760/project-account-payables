@@ -1,4 +1,38 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so
+ * teardown can find them by name instead of by id.
+ *
+ * That is the point of sweeping by name: the `finally` blocks below only run
+ * once the test body HAS an id, so `createWorkflow` throwing after its POST
+ * already landed — a slow editor render, a nav that never settles — leaks the
+ * row it just made, and an interrupted run leaks every row in flight. This
+ * tenant is still carrying eight `Step Config E2E <ts>` rows from exactly
+ * that.
+ *
+ * `workflow_definitions` is FK-referenced by `workflow_versions`,
+ * `workflow_instances` (itself referenced by `workflow_steps`) and
+ * `workflow_experiments`, none of them cascading, so the children go first or
+ * the delete raises. `is_default = false` is the seatbelt: a marker typo can
+ * then still never reach the seeded default the whole suite is asserted
+ * against by `fixtures/globalSetup.ts`.
+ */
+const MARKER = 'Step Config E2E ';
+
+function purgeWorkflows(): void {
+	const doomed =
+		`SELECT id FROM workflow_definitions ` +
+		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN ` +
+			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
+}
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	// Use the UI's create flow so we land on the detail page with the
@@ -6,7 +40,7 @@ async function createWorkflow(page: import('@playwright/test').Page): Promise<st
 	// redirect; we read the new id from the URL once it lands.
 	await page.goto('/workflows');
 	await page.getByRole('button', { name: '+ New Workflow' }).click();
-	await page.locator('#wf-name').fill(`Step Config E2E ${Date.now()}`);
+	await page.locator('#wf-name').fill(`${MARKER}${Date.now()}`);
 	await page.getByRole('button', { name: /^Create$/ }).click();
 	await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
 	const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
@@ -39,6 +73,8 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/workflows/[id] step config', () => {
+	test.afterEach(() => purgeWorkflows());
+
 	test('renaming a step persists through PATCH and reload', async ({ page }) => {
 		const id = await createWorkflow(page);
 
