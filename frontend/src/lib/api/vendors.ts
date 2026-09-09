@@ -234,9 +234,14 @@ export interface PortalInvitePayload {
 	full_name: string;
 }
 
-/** Mirrors `backend/app/schemas/portal.PortalInviteResponse`. `temp_password`
- *  is shown once via `ui/SecretReveal` then dropped; `portal_url` is `null`
- *  when `FEOH_TENANT_URL_TEMPLATE` isn't configured. */
+/** Mirrors `backend/app/schemas/portal.PortalInviteResponse`.
+ *
+ *  There is deliberately **no** `temp_password`: the backend now delivers the
+ *  credential only by email to the portal user's own address. Returning it here
+ *  let one `ap_manager` mint a supplier login at an address they controlled in
+ *  a single request — the first link of a BEC bank-redirect chain they could
+ *  then complete alone. `portal_url` is `null` when `FEOH_TENANT_URL_TEMPLATE`
+ *  isn't configured. */
 export interface PortalInviteResult {
 	user: {
 		id: string;
@@ -248,7 +253,6 @@ export interface PortalInviteResult {
 		last_login_at: string | null;
 		created_at: string;
 	};
-	temp_password: string;
 	portal_url: string | null;
 }
 

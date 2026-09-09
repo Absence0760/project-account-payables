@@ -28,7 +28,6 @@
 	import CreateVendorModal from '$lib/components/modals/CreateVendorModal.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import InviteVendorPortalUserModal from '$lib/components/modals/InviteVendorPortalUserModal.svelte';
-	import SecretReveal from '$lib/components/ui/SecretReveal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -66,7 +65,9 @@
 	// `require_roles(ADMIN, AP_MANAGER)`, the plain-role gate (like ERP sync /
 	// CSV import), hence `auth.isManager` not the granular permission.
 	let inviteVendor = $state<Vendor | null>(null);
-	// The one-time temp password from an invite, shown once via SecretReveal.
+	// Confirmation of a sent invite. Deliberately NOT a credential: the backend
+	// no longer returns the temp password (it is emailed to the supplier), so
+	// there is nothing here to reveal-once, copy, or leave in the DOM.
 	let inviteResult = $state<PortalInviteResult | null>(null);
 	let bankEditing = $state<Vendor | null>(null);
 	let bankForm = $state<BankDetails>({
@@ -778,29 +779,35 @@
 	/>
 {/if}
 
-<SecretReveal
-	open={inviteResult !== null}
-	ariaLabel={m('vendors.invite.reveal.aria')}
-	heading={m('vendors.invite.reveal.heading')}
-	warningStrong={m('vendors.invite.reveal.warningStrong')}
-	warning={m('vendors.invite.reveal.warning')}
-	secret={inviteResult?.temp_password ?? ''}
-	testId="vendor-invite-temp-password"
-	copyLabel={m('vendors.invite.reveal.copy')}
-	copiedLabel={m('vendors.invite.reveal.copied')}
-	copiedToast={m('vendors.invite.reveal.copiedToast')}
-	copyFailedToast={m('vendors.invite.reveal.copyFailedToast')}
-	doneLabel={m('vendors.invite.reveal.done')}
-	meta={inviteResult
-		? [
-				{ label: m('vendors.invite.reveal.email'), value: inviteResult.user.email },
-				...(inviteResult.portal_url
-					? [{ label: m('vendors.invite.reveal.url'), value: inviteResult.portal_url, mono: true }]
-					: [])
-			]
-		: []}
-	onclose={() => (inviteResult = null)}
-/>
+{#if inviteResult}
+	<Modal
+		ariaLabel={m('vendors.invite.sent.aria')}
+		title={m('vendors.invite.sent.heading')}
+		width="md"
+		onclose={() => (inviteResult = null)}
+	>
+		<p class="invite-sent-body" data-testid="vendor-invite-sent">
+			{m('vendors.invite.sent.body', { email: inviteResult.user.email })}
+		</p>
+		<dl class="invite-sent-meta">
+			<div>
+				<dt>{m('vendors.invite.sent.email')}</dt>
+				<dd>{inviteResult.user.email}</dd>
+			</div>
+			{#if inviteResult.portal_url}
+				<div>
+					<dt>{m('vendors.invite.sent.url')}</dt>
+					<dd class="mono">{inviteResult.portal_url}</dd>
+				</div>
+			{/if}
+		</dl>
+		<div class="modal-footer">
+			<button type="button" class="btn-primary" onclick={() => (inviteResult = null)}>
+				{m('vendors.invite.sent.done')}
+			</button>
+		</div>
+	</Modal>
+{/if}
 
 {#if showImportCsv}
 	<ImportCsvModal
@@ -1054,5 +1061,31 @@
 		width: 1px;
 		height: 20px;
 		background: var(--border);
+	}
+	.invite-sent-body {
+		margin: 0 0 1rem;
+		font-size: 0.9rem;
+		color: var(--text-muted);
+	}
+	.invite-sent-meta {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+		gap: 0.75rem;
+		margin: 0 0 0.5rem;
+	}
+	.invite-sent-meta dt {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+	.invite-sent-meta dd {
+		margin: 0.15rem 0 0;
+		font-weight: 600;
+		word-break: break-all;
+	}
+	.invite-sent-meta dd.mono {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.85rem;
 	}
 </style>

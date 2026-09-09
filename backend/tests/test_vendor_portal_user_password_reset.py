@@ -10,6 +10,12 @@ Exercised through the real HTTP surface + real Postgres via the `realdb`
 harness so the round-trip (mint a new temp password → hash it onto the SAME
 row → force `must_change_password` → the OLD password stops authenticating →
 the audit row lands) is proven end to end, not just at the unit level.
+
+Both temp passwords are read out of the **delivered email**, not the HTTP
+response. Invite and reset no longer echo the plaintext back to the AP caller:
+returning it for a caller-supplied address is what let one `ap_manager` mint a
+supplier login they controlled and complete a bank redirect alone — see
+`test_vendor_bank_change_provisioner_sod.py`.
 """
 
 from __future__ import annotations
@@ -29,6 +35,28 @@ TENANT = "a"
 @pytest.fixture
 def mk(realdb):
     return realdb.sessionmaker(TENANT)
+
+
+@pytest.fixture
+def sent_mail(monkeypatch):
+    """Capture what the (dev-default `console`) email adapter would send —
+    the only channel a supplier-portal credential travels on now."""
+    outbox: list = []
+
+    async def _fake_send(self, message):  # noqa: ANN001
+        outbox.append(message)
+
+    from app.services.email_adapters.console_adapter import ConsoleAdapter
+
+    monkeypatch.setattr(ConsoleAdapter, "send", _fake_send, raising=True)
+    return outbox
+
+
+def _password_from(message) -> str:
+    for line in message.body_text.splitlines():
+        if line.strip().startswith("Password:"):
+            return line.split("Password:", 1)[1].strip()
+    raise AssertionError("no password line in the delivered message")
 
 
 @pytest.fixture
@@ -66,17 +94,18 @@ async def _invite_portal_user(client, vendor_id: str, email: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_reset_mints_new_temp_password_and_forces_change(realdb, mk):
-    """Happy path: the response carries a fresh temp password distinct from
-    the invite one, the SAME VendorUser id, and `must_change_password: true`
-    so the vendor is forced through the change-password flow on next login —
-    mirroring `invite_vendor_portal_user`."""
+async def test_reset_mints_new_temp_password_and_forces_change(realdb, mk, sent_mail):
+    """Happy path: a fresh temp password, distinct from the invite one, is
+    EMAILED to the supplier (never returned to the AP caller), lands on the
+    SAME VendorUser id, and sets `must_change_password: true` so the vendor is
+    forced through the change-password flow on next login — mirroring
+    `invite_vendor_portal_user`."""
     email = f"locked-{uuid.uuid4().hex[:8]}@vendor.test"
     async with realdb.client(key=TENANT, role="admin") as client:
         vendor_id = await _create_vendor(client)
         invited = await _invite_portal_user(client, vendor_id, email)
         vendor_user_id = invited["user"]["id"]
-        old_temp_password = invited["temp_password"]
+        old_temp_password = _password_from(sent_mail[0])
 
         resp = await client.post(
             f"/api/vendors/{vendor_id}/portal-users/{vendor_user_id}/reset-password"
@@ -86,7 +115,10 @@ async def test_reset_mints_new_temp_password_and_forces_change(realdb, mk):
 
     assert body["user"]["id"] == vendor_user_id
     assert body["user"]["must_change_password"] is True
-    new_temp_password = body["temp_password"]
+    assert "temp_password" not in body
+    assert len(sent_mail) == 2
+    assert sent_mail[1].to == email
+    new_temp_password = _password_from(sent_mail[1])
     assert new_temp_password
     assert new_temp_password != old_temp_password
 
@@ -101,7 +133,7 @@ async def test_reset_mints_new_temp_password_and_forces_change(realdb, mk):
 
 
 @pytest.mark.asyncio
-async def test_old_password_stops_working_after_reset(realdb, mk, fake_redis):
+async def test_old_password_stops_working_after_reset(realdb, mk, fake_redis, sent_mail):
     """The whole point: once reset, the OLD temp password no longer
     authenticates at the real portal login endpoint, and the NEW one does."""
     email = f"locked-{uuid.uuid4().hex[:8]}@vendor.test"
@@ -109,7 +141,7 @@ async def test_old_password_stops_working_after_reset(realdb, mk, fake_redis):
         vendor_id = await _create_vendor(admin_client)
         invited = await _invite_portal_user(admin_client, vendor_id, email)
         vendor_user_id = invited["user"]["id"]
-        old_temp_password = invited["temp_password"]
+        old_temp_password = _password_from(sent_mail[0])
 
         # Sanity: the pre-reset password actually works.
         async with realdb.client(key=TENANT, role=None) as anon_client:
@@ -123,7 +155,7 @@ async def test_old_password_stops_working_after_reset(realdb, mk, fake_redis):
             f"/api/vendors/{vendor_id}/portal-users/{vendor_user_id}/reset-password"
         )
     assert reset_resp.status_code == 200, reset_resp.text
-    new_temp_password = reset_resp.json()["temp_password"]
+    new_temp_password = _password_from(sent_mail[-1])
 
     async with realdb.client(key=TENANT, role=None) as anon_client:
         old_login = await anon_client.post(
@@ -140,7 +172,7 @@ async def test_old_password_stops_working_after_reset(realdb, mk, fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_reset_writes_an_audit_row(realdb, mk):
+async def test_reset_writes_an_audit_row(realdb, mk, sent_mail):
     """Status/credential changes on a supplier-portal identity are audited
     like every other vendor mutation (project invariant — append-only audit
     trail on state changes)."""
@@ -178,7 +210,7 @@ async def test_reset_writes_an_audit_row(realdb, mk):
 
 
 @pytest.mark.asyncio
-async def test_reset_unknown_vendor_user_is_404(realdb):
+async def test_reset_unknown_vendor_user_is_404(realdb, sent_mail):
     async with realdb.client(key=TENANT, role="admin") as client:
         vendor_id = await _create_vendor(client)
         resp = await client.post(
@@ -188,7 +220,7 @@ async def test_reset_unknown_vendor_user_is_404(realdb):
 
 
 @pytest.mark.asyncio
-async def test_reset_requires_admin_or_ap_manager_role(realdb):
+async def test_reset_requires_admin_or_ap_manager_role(realdb, sent_mail):
     """Same permission gate as invite/delete — an ap_clerk cannot reset a
     supplier's credential."""
     email = f"locked-{uuid.uuid4().hex[:8]}@vendor.test"

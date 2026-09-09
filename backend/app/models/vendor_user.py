@@ -44,6 +44,34 @@ class VendorUser(Base, TimestampMixin):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # The control-plane `User.id` who last handed out a working password for
+    # this credential — stamped by `POST /api/vendors/{id}/portal-users` and
+    # re-stamped by `.../reset-password`, the ONLY two routes that mint a
+    # supplier password an AP actor gets to see.
+    #
+    # This is a segregation-of-duties record, not a bookkeeping nicety. Without
+    # it one `ap_manager` could complete a BEC bank redirect alone: provision a
+    # portal identity, sign in as it, stage a bank change (which fills
+    # `requested_by_vendor_user_id` and leaves `requested_by_user_id` NULL), and
+    # then approve their own request — because `approve_change_request`'s
+    # requester-is-not-approver check only ever compared the AP column.
+    # `_stage_change` copies this value onto the change request at staging time
+    # so the evidence survives the portal user being deleted afterwards.
+    #
+    # NULL means "no AP actor in this system has ever held this credential"
+    # (a legacy row, or a supplier who has always managed their own password) —
+    # correctly permissive, because an AP actor cannot sign in as that identity
+    # without going through invite or reset, both of which stamp the column.
+    #
+    # Deliberately NOT cleared when the supplier changes their own password
+    # (`POST /api/portal/auth/change-password`): the attacker holds the temp
+    # password, so clearing on self-change would be a one-request bypass of the
+    # very control this column exists to enforce. The stamp is durable
+    # provenance, not a "who knows the password right now" flag.
+    provisioned_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+
     # Per-portal-user notification preferences. Shape: a map of event_type ->
     # {"email": bool}. Empty `{}` means "use defaults" (all channels on) —
     # see services/notification_dispatch.resolve_prefs. Mirrors

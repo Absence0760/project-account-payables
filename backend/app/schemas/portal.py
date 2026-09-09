@@ -171,15 +171,28 @@ class PortalUserResponse(BaseModel):
 
 
 class PortalInviteResponse(BaseModel):
+    """Result of provisioning (or resetting) a supplier-portal credential.
+
+    There is deliberately **no** `temp_password` field. It used to carry the
+    plaintext password back to whoever called the route, for an address that
+    same caller chose — which made "mint a supplier login I control" a single
+    frictionless request with no delivery record, and was the first link in a
+    BEC chain one `ap_manager` could complete alone (invite a portal user, sign
+    in as it, stage a bank-detail change, approve their own request through the
+    NULL `requested_by_user_id` short-circuit, then pay it).
+
+    The credential now leaves only through the email adapter, to the portal
+    user's own address. Local-first is unaffected: the dev default `console`
+    adapter renders the message, exactly as the tenant-signup welcome email
+    already relies on. See `backend/docs/supplier-portal.md` § Credential
+    delivery.
+    """
+
     user: PortalUserResponse
-    # The plaintext temp password is returned so the admin can share it
-    # out-of-band if email delivery isn't configured (local dev, etc).
-    # In production the welcome email also carries it.
-    temp_password: str
     # The real tenant portal URL (built from `FEOH_TENANT_URL_TEMPLATE`, same
     # construction as the signup welcome email / supplier-chat portal-link
-    # email) — echoed back so the admin can share it manually alongside the
-    # temp password. `None` when no template is configured.
+    # email) — echoed back so the admin can point the supplier at the right
+    # host. `None` when no template is configured. Not a secret.
     portal_url: str | None = None
 
 
