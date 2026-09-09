@@ -115,8 +115,18 @@ test.describe('sidebar entity switcher', () => {
 		await page.reload();
 		await page.waitForLoadState('networkidle');
 
-		// Back to a single selectable entity → the switcher hides entirely.
-		await expect(page.locator('.entity-btn')).toBeHidden();
+		// The deactivated entity can no longer be picked. Two valid end states,
+		// depending on how many OTHER entities the shared worker tenant carries
+		// (other specs in this file leak them): the switcher hides entirely
+		// (this was the only second entity), or it stays but drops the option.
+		const switcher = page.locator('.entity-btn');
+		if (await switcher.isVisible()) {
+			await switcher.click();
+			await expect(page.locator('.entity-menu')).toBeVisible();
+			await expect(page.locator('.entity-option', { hasText: name })).toHaveCount(0);
+		} else {
+			await expect(switcher).toBeHidden();
+		}
 	});
 
 	test('Escape closes the open menu and restores focus to the trigger', async ({ page }) => {
