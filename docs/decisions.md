@@ -4374,3 +4374,250 @@ data.
 The frontend half (the switcher dropping a retired selection back to the
 consolidated view) is a convenience, not the control — it was written first, and
 was a client-side guard over a server-side hole until this landed.
+
+---
+
+## 116. A challenge that mints a session is auditable; one that mails a code is not
+
+The last two write-nothing entries in `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT`
+were both filed as "challenge issuance", and the call had never been made
+either way. It is true of one of them.
+
+`POST /portal/auth/mfa/challenge` does not issue a challenge — it **verifies**
+the second factor and mints the session, the portal twin of
+`api/auth.verify_mfa`, which has audited since it was built. And because
+`/portal/auth/login` returns a challenge instead of a token once a supplier
+enrols a factor, it is the **only** place an MFA-enrolled supplier's sign-in
+completes: turning MFA on took that account's sign-in off the trail entirely,
+in exchange for a stronger credential. The per-account failure budget that
+throttles guessing there is a Redis rolling window — a brake, not evidence. A
+portal account can stage a vendor bank change, so a campaign against its second
+factor is exactly what an auditor looks for. It now writes
+`portal.mfa.verify.success` / `.failure`.
+
+`POST /portal/auth/mfa/challenge/email` genuinely is issuance, and stays
+unaudited on three grounds now recorded in the dict itself rather than left as
+"not yet":
+
+* The auditable event is the code being **redeemed**, which the rows above carry
+  as `method`. An issued-but-unused code is already visible as an absence.
+* That endpoint answers 204 on every path precisely so it cannot reveal which
+  supplier addresses exist **and** are enrolled. A row would be written for
+  exactly that set, rebuilding the oracle inside a WORM-shipped trail.
+* Its employee twin `api/auth.request_email_otp` is unaudited on the same
+  terms. A stricter control on only the supplier surface is an asymmetry, not a
+  control.
+
+Two implementation details are really part of the decision. The recorded
+`method` is derived from the branch actually taken, never echoed from
+`body.method`: the portal schema leaves that field an unconstrained `str` where
+the employee one pins `^(totp|email)$`, so restating it would put
+caller-controlled text into an append-only trail **and** label the row with a
+factor nobody used. And the success row is written **after** the session is
+minted — `_mint_portal_session` lets its Redis failures propagate while
+`dispatch_auth_audit` swallows its own, so the other order lets a blip leave an
+immutable row asserting a sign-in that 500'd. That is §111's "written after the
+commit", applied to a session instead of a factor.
+
+---
+
+## 117. The SOX export's control connection is released by a different mechanism than its tenant one
+
+The spool (§110) closed the audit export's connection hold, and its guard
+asserted exactly that — on the **tenant** session, which `_spooled_response`
+closes explicitly. The **control-plane** session is never closed by that route
+at all: it returns to the pool only because `commit_before_response` ends its
+read transaction on the exit stack FastAPI unwinds before sending (§20).
+Nothing pinned that, and the control pool is shared by every tenant on the
+process, so a control read added after the spool would be worse than the tenant
+hold §110 had just fixed.
+
+Verified by degrading that hook to its no-op return: the tenant assertion still
+passes while control reads one connection, still in transaction, at the first
+body chunk. `format=pdf` gets its own case for the third variant of the same
+obligation — it cannot stream, so it materialises, but it must close the tenant
+session **before** the ReportLab layout rather than hold it across.
+
+---
+
+## 118. The dashboard's discount tile groups by a CASE, and its half-cent ties moved to ROUND_HALF_UP
+
+`api/dashboard`'s discount-capture block was the last unbounded fold on the
+landing page: every discount-scheduled invoice (`WHERE discount_percent IS NOT
+NULL`, no `LIMIT`, no date bound) streamed into a synchronous Python projection
+inside an `async def`. It was left out of the round that fixed the five
+vendor-spend folds, on the reasoning that this one needs a per-**row** verdict —
+captured / missed / still-capturable — rather than a per-currency sum, so it
+could not become a plain `GROUP BY`.
+
+That reasoning was right about a per-currency `GROUP BY` and wrong about the
+conclusion. The verdict is **two comparisons**, so it groups by a `CASE` and
+three rows come back. What stays in Python is what was never per-row — the
+bucket vocabulary, the `captured / (captured + missed)` rate, the
+`insufficient_data` state — as `analytics.discount_capture_from_grouped_rows`,
+mirroring `currency_conversion.rollup_from_grouped_rows`.
+
+**Rejected: bounding the tile by period.** It was the other option on the table
+and it is cheaper, but it answers a different question. "Discounts captured this
+quarter" is not "discounts captured", and the tile carries no period control for
+a reader to reconcile the two. Narrowing a figure's population to make its query
+cheaper is a silent redefinition.
+
+Two details are load-bearing, and one changes a number.
+
+**The rounding tie-break moved.** The figure is rounded to cents per row, where
+the fold rounded — quantize-then-sum, not sum-then-quantize. But Postgres
+`round(numeric, 2)` breaks an exact half-cent away from zero where
+`Decimal.quantize`'s default context broke it to even, so 2.50% of 399.40
+(= 9.985) goes from `9.98` to `9.99`. This is an **alignment**, not a drift:
+`ROUND_HALF_UP` is the documented convention and it is what
+`discount_offers.discount_savings` already returns for this identical quantity —
+base × percent ÷ 100. The dashboard was the one place computing it the other
+way. Pinned by a boundary test, because a deliberate convention change with no
+test on the boundary is indistinguishable from an accident.
+
+**`AT TIME ZONE 'UTC'` before the date cast is not decoration.**
+`payments.completed_at` is `timestamptz` and asyncpg handed Python a UTC-aware
+datetime, so `.date()` was the UTC date. A bare `::date` reads the Postgres
+**session's** TimeZone, so a payment at 23:30 UTC on its deadline would miss its
+own discount window on any server configured east of UTC — the class of bug
+`utils/dates.utc_today` exists to prevent, reaching SQL for the first time.
+
+---
+
+## 119. `configured_home_currency` exists because `resolve_home_currency` cannot say "unset"
+
+`currency_conversion.resolve_reporting_currency` was the fourth reader of
+`settings.payments.home_currency` and the last still reaching into the settings
+JSON itself. The recorded fix was two lines: call the hoisted
+`international_payments.resolve_home_currency` as its second candidate. That
+would have broken it.
+
+`resolve_home_currency`'s entire job is to never answer "unset" — it substitutes
+`DEFAULT_HOME_CURRENCY`, because the payment path has to pick something and a
+blank code compares equal to nothing. But `resolve_reporting_currency` is a
+four-rung chain and this setting is only rung 2. A rung that always answers makes
+rungs 3 and 4 unreachable: an org whose only currency signal is
+`invoice_defaults.currency` would silently start rolling up in USD — a worse bug
+than the duplication being removed, and invisible, since every test asserting
+rung 2 would still pass.
+
+So the primitive hoisted underneath both is the one that can abstain:
+`configured_home_currency(org_settings) -> str | None` — the setting normalised,
+or `None` when the tenant has not usably set one — and `resolve_home_currency`
+becomes `configured_home_currency(...) or DEFAULT_HOME_CURRENCY`.
+`international_payments.py` is now the only file under `app/` that reads the raw
+setting, the source-scan allow-list is down to one entry, and a fall-through test
+pins the behaviour the naive de-duplication would have lost.
+
+The general shape, worth naming: **two callers wanting the same value can still
+need different answers for "absent".** Sharing the normaliser is right; sharing
+the *defaulting* is what breaks a resolution chain. Hoist the layer that returns
+`None`.
+
+---
+
+## 120. One refusal predicate set, and a rail-conditional refusal is not a block
+
+`GET /api/payments/queue` derived its `blocked` flag from one of the four
+per-invoice refusals `create_payment_run_for_invoices` enforces. The failure
+mode is specific and expensive: a run is refused as a **whole**, so one unmarked
+row 409s a forty-invoice select-all and the operator has no way to bisect which
+row did it. §41's lesson applies — the list of special cases was the defect, not
+its length.
+
+`payment_runs.run_refusal_reasons()` is now the single answer to "would a run
+refuse this invoice, and why", and the builder consumes it too (its four inline
+gates are gone). **Rejected:** leaving the builder's gates in place and having
+the queue call a read-only copy. That is exactly the drift this entry was raised
+about; the queue can only be trusted if the enforcer reads the same function.
+
+**A live virtual card pins the rail; it does not block the row.**
+`virtual_card` *converges* onto the existing card rather than opening a second
+outflow, so it is the one rail a card-claimed invoice is still payable on — the
+documented mint-then-run flow. Marking the row `blocked` (the simpler answer,
+and the one a uniform boolean pushes you toward) would have disabled its
+checkbox and removed that flow from the product. So `RunRefusal` carries
+`only_method`, derived from `CARD_CONVERGING_METHODS` rather than restated; if a
+second converging rail is ever added it resolves to `None` and the refusal reads
+as unconditional — the fail-closed direction, since a queue offering "one of
+these two rails" it has not learned to render is worse than one that refuses.
+
+A consequence worth stating because it looks like a bug: **`blocked_total` and
+`selectable_total` are not complementary.** A pinned row leaves the selectable
+set (bulk-select stages the default rail) while its checkbox still works, so
+`blocked_total` is counted in its own right. Deriving it as
+`total - selectable_total` would report a perfectly payable row to the operator
+as something to go and clear.
+
+---
+
+## 121. A page-level text-entry recipe carves out the controls it is not for, rather than being out-specified
+
+`/organization`'s branding swatch was rendering 478 px wide — the entire grid
+column — squeezing its sibling hex field to 22 px and failing WCAG 2.2 AA SC
+2.5.8. The cause was a **specificity tie**, not a size mistake: §114's checkbox
+fix added `:not([type='checkbox']):not([type='radio'])` to that page's `input`
+recipe, taking it from 0-0-1 to 0-2-1, which ties
+`.color-field input[type='color']` (`width: 40px`, also 0-2-1) and sits later in
+the file. The rule that had always lost stopped losing.
+
+**Rejected: `min-width` on the hex field.** It was tried and measured, and it
+made things worse — the swatch stays 478 px and the floor pushes the flex line
+64 px outside its grid cell, so axe moved from *insufficient size* to *partially
+obscured*. A floor on the child cannot fix a sibling that has taken the whole
+row. **Rejected: a longer selector on `.color-field`.** It wins today and ties
+again the next time anything is added to the base recipe.
+
+Taken: carve `[type='color']` out of the recipe, because it is the same fact as
+the checkbox carve-out — a **text-entry** recipe reaching a control that is not a
+text entry, declaring a padding and a width meaningless for a native swatch.
+Measured after: swatch 40 px, hex 430 px, no overflow, `.color-field`
+`scrollWidth == clientWidth`.
+
+The general rule: **when a recipe and a specific override tie, widen the
+carve-out, don't lengthen the override.** Ties are created by editing the recipe,
+so that is where the repair belongs.
+
+---
+
+## 122. A shared test fixture is not the creating spec's to delete
+
+Four e2e specs were given teardowns for the rows they create, and the first
+attempt also deleted the vendors that manual invoice entry provisions. It failed
+on a foreign key, and the reason is the useful part:
+`vendor_matching.match_and_link_vendor`'s third leg is a normalized-name
+Jaccard, so a *different* spec's invoice had been linked to the same vendor row
+— `invoices/file-management` types "E2E File Mgmt Vendor" and lands on
+`create-manual`'s "E2E File Vendor".
+
+The distinction the teardowns now encode is **bounded vs unbounded**. An invoice
+number carrying `Date.now()` is a new row every run and must be cleaned. A
+vendor resolved by a fuzzy matcher is one row per distinct name, re-matched
+thereafter, and is shared by whoever types a name close enough — a fixture, not
+a leak. Only the unbounded rows are a leak, and no single spec owns the others.
+
+The foreign-key refusal is also why the teardowns delete rather than NULL a
+link: a `NULL`-the-FK "fix" would have silently rewritten another spec's invoice
+instead of failing.
+
+---
+
+## 123. `target-size.spec.ts` bites — established by restoring the pre-fix CSS, not by assertion
+
+§114's target-size work shipped a regression guard that had never been executed,
+because ten agents shared one port that round. Running it settled the question:
+restoring the pre-fix checkpoint block byte-for-byte fails **five of six**
+cases, with real measurements (target 16 against the 24 floor, three times;
+painted box 14 against 16; `outline-style: none`).
+
+The sixth did not fail, and that is the finding. "A click outside the painted
+box toggles the row" asserted only `insetX > 0`, which a 1 px opaque border also
+satisfies — so the click landed on the paint and the test re-proved that
+clicking a checkbox toggles it. It now asserts the inset reaches `(24 - 16) / 2`
+and that the click point is outside the paint, which is the claim it was named
+for.
+
+A guard that has never been run is a guard whose coverage nobody knows. The file
+header records the experiment so the next reader does not have to re-derive
+whether these assertions bite.
