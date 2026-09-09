@@ -1,11 +1,21 @@
 <script lang="ts">
 	import type { InvoiceStatus } from '$lib/types/invoice';
-	import { STATUS_LABELS } from '$lib/types/invoice';
+	import { invoiceStatusLabelKey } from '$lib/types/invoice';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let { status }: { status: InvoiceStatus } = $props();
+
+	// $derived so the badge re-renders when the locale changes. A status this
+	// build doesn't know renders its RAW value — visible and searchable —
+	// rather than a blank pill; `status` is typed against the union, but the
+	// assistant's tool results carry a status straight off the wire.
+	let label = $derived.by(() => {
+		const key = invoiceStatusLabelKey(status);
+		return key ? m(key) : status;
+	});
 </script>
 
-<span class="badge {status}">{STATUS_LABELS[status]}</span>
+<span class="badge {status}">{label}</span>
 
 <style>
 	.badge {

@@ -5,7 +5,7 @@
 	import { formatMoney } from '$lib/utils/money';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { InvoiceStatus } from '$lib/types/invoice';
-	import { STATUS_LABELS } from '$lib/types/invoice';
+	import { invoiceStatusLabelKey } from '$lib/types/invoice';
 	import type {
 		ToolInvocation,
 		VendorSpendResult,
@@ -45,7 +45,7 @@
 	// A tool status string maps onto the known InvoiceStatus union for the
 	// badge; an unrecognised value still renders the badge label fallback.
 	function asStatus(s: string): InvoiceStatus {
-		return (s in STATUS_LABELS ? s : 'new') as InvoiceStatus;
+		return (invoiceStatusLabelKey(s) ? s : 'new') as InvoiceStatus;
 	}
 
 	let spend = $derived(

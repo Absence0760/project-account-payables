@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { STATUS_LABELS } from '$lib/types/invoice';
+	import { INVOICE_STATUS_LABEL_KEYS } from '$lib/types/invoice';
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
@@ -326,7 +326,7 @@
 						{@const count = data?.pipeline[status] ?? 0}
 						{@const pct = data ? Math.max(count / data.total_invoices * 100, 4) : 0}
 						<div class="pipeline-row">
-							<span class="pipeline-label">{STATUS_LABELS[status]}</span>
+							<span class="pipeline-label">{m(INVOICE_STATUS_LABEL_KEYS[status])}</span>
 							<div class="pipeline-bar-bg">
 								<div class="pipeline-bar" style="width:{pct}%;background:{PIPELINE_COLORS[status] ?? '#888'}"></div>
 							</div>

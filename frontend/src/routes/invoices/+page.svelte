@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Invoice, InvoiceStatus, AdvancedSearchFilters } from '$lib/types/invoice';
-	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, IMMUTABLE_STATUSES, commonTransitions } from '$lib/types/invoice';
+	import { INVOICE_STATUSES, INVOICE_STATUS_LABEL_KEYS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, IMMUTABLE_STATUSES, commonTransitions } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
@@ -768,7 +768,7 @@
 			</button>
 			{#each chipStatuses as s}
 				<button class="filter-chip" class:active={activeStatuses.includes(s)} onclick={() => toggleStatus(s)}>
-					{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
+					{m(INVOICE_STATUS_LABEL_KEYS[s])} <span class="count">{statusCount(s)}</span>
 				</button>
 			{/each}
 		</nav>
@@ -829,7 +829,7 @@
 						<div class="bulk-status-dropdown">
 							<select bind:value={bulkStatusValue} aria-label={m('invoices.bulk.newStatusAria')}>
 								{#each validBulkTransitions as s}
-									<option value={s}>{STATUS_LABELS[s]}</option>
+									<option value={s}>{m(INVOICE_STATUS_LABEL_KEYS[s])}</option>
 								{/each}
 							</select>
 							<button class="bulk-apply-btn" disabled={bulkBusy} onclick={bulkStatusChange}>{m('common.apply')}</button>
@@ -882,7 +882,7 @@
 						if (isRowOpenClick(e)) editing = invoice;
 					}}
 				>
-					<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" aria-label={`Select invoice ${invoice.invoice_number}`} checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
+					<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? m('invoices.systemManagedTitle', { status: m(INVOICE_STATUS_LABEL_KEYS[invoice.status]) }) : ''}><input type="checkbox" aria-label={`Select invoice ${invoice.invoice_number}`} checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
 					<td class="mono">
 						<RowLink
 							onclick={() => (editing = invoice)}

@@ -226,7 +226,23 @@ export const en = {
 	'invoices.col.dueDate': 'Due Date',
 	'invoices.col.status': 'Status',
 	'invoices.col.assignedTo': 'Assigned To',
+	// Invoice status labels — the /invoices chips + bulk picker, the dashboard
+	// pipeline, StatusBadge, InvoiceModal and AdvancedSearchModal
+	// ($lib/types/invoice.ts::INVOICE_STATUS_LABEL_KEYS)
+	'invoices.status.new': 'New',
+	'invoices.status.pending': 'Extracting',
+	'invoices.status.readyForReview': 'Ready for Review',
+	'invoices.status.approved': 'Approved',
+	'invoices.status.rejected': 'Rejected',
+	'invoices.status.sendingToErp': 'Sending to ERP',
+	'invoices.status.sentToErp': 'Sent to ERP',
+	'invoices.status.postedInErp': 'Posted in ERP',
+	'invoices.status.paymentScheduled': 'Payment Scheduled',
+	'invoices.status.paid': 'Paid',
+	'invoices.status.done': 'Done',
+	'invoices.status.failed': 'Failed',
 	'invoices.selectAllAria': 'Select all invoices on this page',
+	'invoices.systemManagedTitle': 'Cannot select — {status} is system-managed',
 	'invoices.empty': 'No invoices match your filters.',
 	'invoices.empty.errored': 'Could not load invoices. Try again.',
 	'invoices.empty.fresh': 'No invoices yet. Upload one, create one manually, or import a CSV to load your open AP.',
