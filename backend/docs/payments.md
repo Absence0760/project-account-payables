@@ -1262,8 +1262,12 @@ expressions built by `currency_conversion.invoice_reporting_amount_sql` (the
 one owner of the rule, shared with the dashboard) — so a KPI or banner can't
 contradict the list:
 
-- `total` — every payable row; `selectable_total` / `blocked_total` split it by
-  whether the financial-integrity gate would refuse the row.
+- `total` — every payable row. `selectable_total` is what "select all N
+  matching" resolves (rows a run accepts on the DEFAULT rail); `blocked_total`
+  is rows a run refuses on EVERY rail. **They do not add up to `total`** — a
+  rail-pinned row (`required_method`) leaves the selectable set while staying
+  perfectly payable, so `blocked_total` is counted in its own right rather than
+  subtracted. See § The queue reports every refusal the run builder enforces.
 - `by_currency` — `[{currency, count, total_amount, total_savings}]`, exact
   decimal strings, so the frontend renders honest per-currency pay-bar
   subtotals without holding every row. Never a cross-currency sum.
@@ -1302,7 +1306,8 @@ writer) — which is why it is pinned by
 
 **`GET /api/payments/queue/ids`** is the "select all N matching" resolver
 (mirrors `GET /api/invoices/ids`): `{ids, total, truncated, currency,
-by_currency}` for the whole **selectable** (unblocked) set, ordered the same
+by_currency}` for the whole **selectable** set — every row a run would accept on
+the default rail, so it excludes blocked rows AND rail-pinned ones — ordered the same
 way and capped at `MAX_SELECT_ALL_IDS` (5000). Same RBAC as `/queue`
 (`admin` / `ap_manager` / `cfo`). The frontend `/payments` Queue tab has a
 Load-More footer and a pay-bar "Select all N matching" button whose count +
@@ -1581,7 +1586,7 @@ Matching payments against bank statement entries:
 | `POST` | `/api/payments/runs/{id}/retry-failed` | Re-attempt the safely-retryable FAILED payments of a `partial`/`failed` run by booking a NEW attempt row (the failed row is never mutated). Never re-dispatches a payment that already succeeded, nor one whose fate at the processor is unknown (`needs_reconciliation`); also skips an invoice that is unpayable, carries an unresolved payment-blocking exception (any member of `PAYMENT_BLOCKING_EXCEPTION_TYPES`), has since been credited, or already has another live payment. Same `payment.execute` gate, segregation check and CFO threshold as `/execute`. See § Why a payment failed, and retrying it. |
 | `POST` | `/api/payments/runs/{id}/sync-erp` | Re-run the ERP sync-back for a run whose settled payments didn't land — the exit for an invoice stranded at `payment_scheduled` after a failed sync leg. Awaits the pass and returns its `synced`/`transitioned`/`skipped`/`held`/`failed` counts (read `transitioned` for "did this recover anything"); idempotent by construction; moves no money. `payment.execute`-gated, entity-scoped, audited `payment_run.erp_sync_retried`. 409 when the run has no settled payment. See § ERP Payment Sync → A failed leg is a strand, and it is visible. |
 | `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run — deletes its child payment rows so the invoices return to the queue, and flips the run to `cancelled`. |
-| `GET` | `/api/payments/queue` | List invoices ready for payment — paginated (`page` / `page_size`, default 20). Response carries the whole-set `total` / `selectable_total` / `blocked_total` / `by_currency` + per-row `blocked` / `blocked_reason`. See § The payment queue is paginated and § Financial-integrity exception gate → The queue says which rows the gate would refuse. |
+| `GET` | `/api/payments/queue` | List invoices ready for payment — paginated (`page` / `page_size`, default 20). Response carries the whole-set `total` / `selectable_total` / `blocked_total` / `by_currency` + per-row `blocked` / `blocked_reason` / `required_method` — the verdict of `payment_runs.run_refusal_reasons`, the SAME predicate set the run builder enforces. See § The payment queue is paginated and § Financial-integrity exception gate → The queue reports every refusal the run builder enforces. |
 | `GET` | `/api/payments/queue/ids` | "Select all N matching" resolver — `{ids, total, truncated, currency, by_currency}` for the whole selectable set, capped at 5000. Same RBAC as `/queue`. |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates — every money figure in the org's reporting currency, with `unconverted_payment_count` / `excluded_rebate_count` reporting what each had to leave out. `CardRebate` is a **tenant** table (`decisions.md` §57), so the rebate figure is read from the tenant session and joins `virtual_cards` for its currency + entity; there is no `control_db` dependency and no try/except fallback — a DB failure is a 500, not a confident `0`. See § The payments KPIs are denominated, not just summed. |
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment. Reverses a `virtual_card` payment's card at the provider too — see § Voiding a card payment cancels the card. |
@@ -1882,59 +1887,104 @@ covers the standalone path AND the dispatch-time re-check (a flag raised after
 the run is built) with the same parametrised cases, including that clearing the
 flag releases it there too.
 
-#### The queue says which rows the gate would refuse
+#### The queue reports every refusal, from the run builder's own predicate set
 
-A gate the operator can't see is a gate they walk into. There are two of them.
+A gate the operator can't see is a gate they walk into. The run builder enforces
+**four** per-invoice refusals, and the queue used to derive its `blocked` flag
+from ONE of them — so every other refusal was a row the queue happily offered and
+`create_payment_run_for_invoices` then hard-409'd, taking the whole select-all
+batch down with no way to bisect which row did it.
 
-**A live payment already claims the invoice.** `_queue_base_where()` excludes
-any invoice with a **live** payment — `Payment.status NOT IN
-LIVE_PAYMENT_TERMINAL_STATUSES`, the SAME definition the run builder's
-`_live_payment_invoice_numbers` guard (and `uq_payments_one_live_per_invoice`)
-uses. It used to exclude only `Payment.status == "completed"`, so an invoice
-with a `submitted` / `processing` / `pending` payment — every real rail, ACH
-settles in 1-3 days — was a selectable queue row (and counted in
-`selectable_total` and `/summary`'s `queue_count`) that a run then hard-409'd on
-the unique index, taking the whole select-all batch down with no way to bisect.
-A **terminal** (`failed` / `voided` / `cancelled`) payment leaves the invoice
-offered again — re-pay after a failure. `test_payment_queue_blocked.py` carries
-the non-tautological drift guard: the offered set is checked against BOTH
-run-builder refusal predicates (`blocked_invoice_ids` **and**
-`_live_payment_invoice_numbers`).
+They now come from one place. `payment_runs.run_refusal_reasons(db, invoices,
+methods=..., net_amounts=...)` is the single answer to *"would a payment run
+refuse this invoice, and why"*, and **both** surfaces read it: the builder turns
+its verdict into the 409s below, and `GET /api/payments/queue` turns it into the
+row's flags. A refusal added there reaches the queue for free — the way exception
+types already did.
 
-**An unresolved payment-blocking exception.** `GET /api/payments/queue`
-used to offer these rows indistinguishably from payable ones, so selecting one
-took the **whole** draft down with a 409 and nothing on screen said which row did
-it. Every queue row now carries:
+| Refusal | Reason code | On the queue |
+|---------|-------------|--------------|
+| an unresolved (`open`/`escalated`) payment-blocking exception | the exception **type** (`duplicate` / `fraud_flag` / `line_total_mismatch` / `payment_reconciliation`) | `blocked: true` |
+| applied credit memos cover the whole invoice — a `$0` payment a real rail rejects as `failed` | `fully_credited` | `blocked: true` |
+| a live virtual card already claims the invoice (`POST /api/cards/generate` mints one with no `Payment` row behind it) | `live_virtual_card` | `blocked: false`, `required_method: "virtual_card"` |
+| a live payment already claims the invoice (`uq_payments_one_live_per_invoice`) | `live_payment` | the row is **excluded** — see below |
+
+Not covered there, deliberately, because neither is a per-invoice question a row
+can render: `PAYABLE_INVOICE_STATUSES` (the queue's own base filter IS that
+predicate, so a non-payable invoice is never a queue row), and the
+single-currency-per-run rule + the CFO threshold, which are properties of the
+SELECTION rather than of any one invoice.
+
+**A live payment is excluded, not marked.** `_queue_base_where()` drops any
+invoice with a **live** payment — `Payment.status NOT IN
+LIVE_PAYMENT_TERMINAL_STATUSES`, the SAME definition the builder's
+`live_payment_invoices` guard uses. It used to exclude only
+`Payment.status == "completed"`, so an invoice with a `submitted` /
+`processing` / `pending` payment — every real rail, ACH settles in 1-3 days —
+was a selectable queue row that a run then 409'd on the unique index. A
+**terminal** (`failed` / `voided` / `cancelled`) payment leaves the invoice
+offered again — re-pay after a failure. It is excluded rather than badged
+because it is not a refusal to act on: something is already paying that invoice,
+so it is not "ready to pay" in the first place.
+
+**A card claim pins the rail; it does not block the row.** The builder refuses a
+card-claimed invoice on every rail EXCEPT `virtual_card`, which *converges* onto
+the existing card rather than opening a second outflow (`CARD_CONVERGING_METHODS`
+— the documented mint-a-card-then-run-it flow). Blocking the row would break that
+flow, so the row stays selectable with `required_method` set, and the frontend
+pins its method select to that rail. It IS excluded from `selectable_total` and
+`/queue/ids`, because "select all N matching" stages the default rail.
+
+Consequently **`blocked_total` and `selectable_total` are not complementary**, and
+`blocked_total` is counted in its own right rather than as `total -
+selectable_total`: a card-claimed row leaves the selectable set while its checkbox
+still works, and subtracting would report it to the operator as something to go
+and clear.
 
 | Field | Meaning |
 |-------|---------|
-| `blocked` | `true` when this invoice carries an unresolved payment-blocking exception — i.e. including it in a run would 409 the run |
-| `blocked_reason` | the blocking exception **type** (`duplicate` / `fraud_flag` / `line_total_mismatch` / `payment_reconciliation`), or `null` |
+| `blocked` | a run refuses this invoice on **every** rail |
+| `blocked_reason` | the stable, PII-free reason code — set for a `required_method` row too, so the UI can say WHY the rail is pinned |
+| `required_method` | the one rail this invoice is still payable on, or `null` |
+| `selectable_total` | rows "select all N matching" resolves (`/queue/ids`) — excludes blocked AND rail-pinned rows |
+| `blocked_total` | rows whose checkbox is disabled, i.e. exactly the `blocked` ones |
 
-Three properties are load-bearing:
+Four properties are load-bearing:
 
-- **One predicate, not two.** The verdict is resolved through
-  `payment_runs.blocking_exception_types` — the function
-  `blocked_invoice_ids` (the run builder's own gate) is now defined in terms of.
-  The queue and the builder read the same tuple and the same SQL, so the queue
-  can never offer a row the builder refuses, and adding a type to
-  `PAYMENT_BLOCKING_EXCEPTION_TYPES` updates both surfaces at once.
-- **The reason is a code, never prose.** `blocked_reason` is the exception
-  `exception_type` and nothing else. An exception's `description` can name a
-  vendor, a bank account or an amount; this value is rendered to an operator and
-  travels through a JSON body, so it stays inside the fixed PII-free vocabulary
-  (which also lets the frontend localise it). An invoice carrying several
-  blocking exceptions reports the one earliest in the tuple — a fixed order, so
-  the answer doesn't depend on row order.
-- **Additive.** Both fields are always present and default to not-blocked, so a
-  client that ignores them behaves exactly as before.
+- **One predicate set, not five.** The builder's four gates and the queue's flags
+  are the same function. The whole-set aggregates and `/queue/ids` restate those
+  predicates in SQL (they must — otherwise every KPI would stream every invoice id
+  into Python), and `test_payment_queue_blocked.py` compares the two directly over
+  a population carrying every refusal at once, rather than trusting the
+  restatement.
+- **The reason is a code, never prose.** An exception's `description` can name a
+  vendor, a bank account or an amount; `blocked_reason` stays inside the fixed
+  PII-free vocabulary (which also lets the frontend localise it). An invoice
+  carrying several blocking exceptions reports the one earliest in
+  `PAYMENT_BLOCKING_EXCEPTION_TYPES` — a fixed order, so the answer doesn't
+  depend on row order.
+- **The 409 messages did not change.** Folding four hand-written gates into one
+  shared resolver kept each refusal's own operator-facing message (`_REFUSAL_ORDER`
+  reports them in the order the separate checks used to run), and the final rung
+  is fail-CLOSED — a future reason code with no message still refuses the run
+  rather than staging it.
+- **Additive.** All three fields default to "no refusal", so a client that ignores
+  them behaves exactly as before.
+
+The live-payment refusal is now also a **pre-check**, not only the
+`IntegrityError` backstop: the same 409 arrives before the insert, and the
+savepoint + `uq_payments_one_live_per_invoice` still catch the concurrent race.
 
 Coverage: `tests/test_payment_queue_blocked.py` — a blocking type marks the row,
 an advisory one (`po_mismatch`) does not, `escalated` still blocks,
 resolved/dismissed releases, every member of the tuple is reported, the reason is
 deterministic under multiple exceptions, the description never reaches the
-payload, and the queue's blocked set is asserted equal to
-`blocked_invoice_ids`' own verdict.
+payload, a fully-credited invoice is blocked while a partly-credited one stays
+payable, a card-claimed invoice is rail-pinned (and a cancelled card releases it),
+`blocked_total` counts blocked rows rather than merely-unselectable ones, the SQL
+selectable set equals the Python verdict, the reason vocabulary is pinned to what
+the builder can raise, each refusal still 409s with its own message, and the
+converging card rail is still accepted.
 
 ## Code Structure
 

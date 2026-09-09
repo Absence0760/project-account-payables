@@ -367,3 +367,339 @@ async def test_queue_offered_set_carries_nothing_the_run_builder_would_refuse(re
     assert refused_for_live_payment == {"Q-INV-LIVE"}
     assert clean_id in offered
     assert exc_id not in offered and live_id not in offered
+
+
+# ---------------------------------------------------------------------------
+# The OTHER refusals — everything the run builder enforces, not just exceptions
+# ---------------------------------------------------------------------------
+#
+# Excluding a live payment (above) closed one of four per-invoice refusals.
+# `services/payment_runs.run_refusal_reasons` is now the single predicate set
+# both surfaces read, so these prove the remaining two reach the queue AND that
+# the queue's SQL restatement of them agrees with the Python verdict.
+
+
+async def _seed_vendor(mk, org_id) -> uuid.UUID:
+    from app.models.vendor import Vendor
+
+    vendor_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(Vendor(id=vendor_id, organization_id=org_id, name="Queue Vendor"))
+        await s.commit()
+    return vendor_id
+
+
+async def _apply_credit(mk, org_id, invoice_id: uuid.UUID, *, amount: str) -> None:
+    """An APPLIED credit memo against the invoice — what `net_payable_amounts`
+    subtracts. An `open` memo must not count."""
+    from app.models.credit_memo import CreditMemo
+
+    vendor_id = await _seed_vendor(mk, org_id)
+    async with mk() as s:
+        s.add(
+            CreditMemo(
+                id=uuid.uuid4(),
+                memo_number=f"CM-{uuid.uuid4().hex[:8]}",
+                vendor_id=vendor_id,
+                invoice_id=invoice_id,
+                amount=Decimal(amount),
+                currency="USD",
+                status="applied",
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+
+
+async def _mint_card(mk, org_id, invoice_id: uuid.UUID, *, status: str = "created") -> None:
+    """A live virtual card claiming the invoice, with no `Payment` behind it —
+    exactly what `POST /api/cards/generate` persists."""
+    from app.models.virtual_card import VirtualCard
+
+    async with mk() as s:
+        s.add(
+            VirtualCard(
+                organization_id=org_id,
+                invoice_id=invoice_id,
+                card_provider="mock",
+                provider_card_id=f"mock_{uuid.uuid4().hex[:12]}",
+                last_four="4242",
+                amount_limit=Decimal("500.00"),
+                currency="USD",
+                status=status,
+            )
+        )
+        await s.commit()
+
+
+async def _default_entity_id(mk) -> uuid.UUID:
+    """The tenant's `is_default` Entity — what `get_write_entity_id` resolves to
+    and what a run's `entity_id` FK must point at."""
+    from sqlalchemy import select as sa_select
+
+    from app.models.entity import Entity
+
+    async with mk() as s:
+        return (
+            await s.execute(sa_select(Entity.id).where(Entity.is_default.is_(True)).limit(1))
+        ).scalar_one()
+
+
+async def _selectable_ids(realdb, mk) -> set[str]:
+    from app.api.payments import payment_queue_ids
+
+    info = realdb.info(TENANT)
+    async with mk() as db:
+        resp = await payment_queue_ids(
+            db=db, org=_org(info.org_id), user=_user(info.users["admin"]), entity_id=None
+        )
+    return set(resp["ids"])
+
+
+async def test_a_fully_credited_invoice_is_blocked_not_offered(realdb):
+    """Applied credit memos covering the whole invoice leave nothing to pay, so
+    the run builder 409s it. The queue used to offer it anyway — selecting it,
+    or select-all, took the entire batch down with no way to bisect."""
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    inv_id = await _seed_invoice(mk, org_id, number="Q-CREDITED", amount="500.00")
+    await _apply_credit(mk, org_id, inv_id, amount="500.00")
+
+    rows = await _queue(realdb, mk)
+    assert rows["Q-CREDITED"]["blocked"] is True
+    assert rows["Q-CREDITED"]["blocked_reason"] == "fully_credited"
+    assert rows["Q-CREDITED"]["required_method"] is None
+    assert str(inv_id) not in await _selectable_ids(realdb, mk)
+
+
+async def test_a_partly_credited_invoice_stays_payable(realdb):
+    """The refusal is "nothing left to move", not "a credit exists" — a partial
+    credit still leaves money to pay, so the row stays selectable."""
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    inv_id = await _seed_invoice(mk, org_id, number="Q-PARTCREDIT", amount="500.00")
+    await _apply_credit(mk, org_id, inv_id, amount="100.00")
+
+    rows = await _queue(realdb, mk)
+    assert rows["Q-PARTCREDIT"]["blocked"] is False
+    assert rows["Q-PARTCREDIT"]["blocked_reason"] is None
+    assert str(inv_id) in await _selectable_ids(realdb, mk)
+
+
+async def test_a_card_claimed_invoice_is_rail_pinned_not_blocked(realdb):
+    """A live virtual card is refused on every rail EXCEPT `virtual_card`, which
+    converges onto that card. So the row is NOT blocked — blocking it would kill
+    the documented mint-a-card-then-run-it flow — but it does leave the
+    select-all set, which stages the default rail and would 409."""
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    inv_id = await _seed_invoice(mk, org_id, number="Q-CARDED")
+    await _mint_card(mk, org_id, inv_id)
+
+    rows = await _queue(realdb, mk)
+    assert rows["Q-CARDED"]["blocked"] is False
+    assert rows["Q-CARDED"]["blocked_reason"] == "live_virtual_card"
+    assert rows["Q-CARDED"]["required_method"] == "virtual_card"
+    assert str(inv_id) not in await _selectable_ids(realdb, mk)
+
+
+async def test_a_cancelled_card_releases_the_rail_pin(realdb):
+    """`uq_virtual_cards_one_live_per_invoice`'s own predicate is
+    `status <> 'cancelled'` — cancelling the card releases the claim, so the row
+    goes back to being payable on any rail."""
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    inv_id = await _seed_invoice(mk, org_id, number="Q-CARDGONE")
+    await _mint_card(mk, org_id, inv_id, status="cancelled")
+
+    rows = await _queue(realdb, mk)
+    assert rows["Q-CARDGONE"]["blocked"] is False
+    assert rows["Q-CARDGONE"]["required_method"] is None
+    assert str(inv_id) in await _selectable_ids(realdb, mk)
+
+
+async def test_blocked_total_counts_blocked_rows_not_merely_unselectable_ones(realdb):
+    """`blocked_total` used to be `total - selectable_total`. Those stopped being
+    complementary the moment a rail-CONDITIONAL refusal existed: a card-claimed
+    row leaves the selectable set but its checkbox still works, so subtracting
+    would report it to the operator as something to go and clear."""
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    clean_id = await _seed_invoice(mk, org_id, number="Q-TOT-CLEAN")
+    exc_id = await _seed_invoice(mk, org_id, number="Q-TOT-EXC")
+    card_id = await _seed_invoice(mk, org_id, number="Q-TOT-CARD")
+    await _add_exception(mk, org_id, exc_id, exception_type="duplicate")
+    await _mint_card(mk, org_id, card_id)
+
+    result = await _queue_result(realdb, mk)
+    on_page = {i["invoice_number"]: i for i in result["items"]}
+    assert on_page["Q-TOT-EXC"]["blocked"] is True
+    assert on_page["Q-TOT-CARD"]["blocked"] is False
+
+    selectable = await _selectable_ids(realdb, mk)
+    assert str(clean_id) in selectable
+    assert str(exc_id) not in selectable and str(card_id) not in selectable
+
+    # The card row is counted OUT of selectable but NOT into blocked, so the two
+    # deliberately do not add up to the total.
+    assert result["total"] - result["selectable_total"] > result["blocked_total"]
+
+
+async def test_the_queues_sql_selectable_set_matches_the_python_verdict(realdb):
+    """The drift guard that matters. `/queue/ids` + `selectable_total` restate
+    the refusal predicates in SQL (they must, or every whole-set aggregate would
+    stream every invoice id into Python); the per-row flags come from
+    `run_refusal_reasons`. This compares the two over a population carrying every
+    refusal at once — so a SQL clause that stops matching its Python twin fails
+    here rather than as a 409 in production."""
+    from sqlalchemy import select as sa_select
+
+    from app.models.invoice import Invoice as InvoiceModel
+    from app.services.payment_runs import run_refusal_reasons
+
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    clean_id = await _seed_invoice(mk, org_id, number="Q-SQL-CLEAN")
+    exc_id = await _seed_invoice(mk, org_id, number="Q-SQL-EXC")
+    credited_id = await _seed_invoice(mk, org_id, number="Q-SQL-CREDIT", amount="200.00")
+    card_id = await _seed_invoice(mk, org_id, number="Q-SQL-CARD")
+    live_id = await _seed_invoice(mk, org_id, number="Q-SQL-LIVE")
+    await _add_exception(mk, org_id, exc_id, exception_type="fraud_flag")
+    await _apply_credit(mk, org_id, credited_id, amount="200.00")
+    await _mint_card(mk, org_id, card_id)
+    await _book_payment(mk, live_id, status="submitted")
+
+    selectable = await _selectable_ids(realdb, mk)
+
+    seeded = [clean_id, exc_id, credited_id, card_id, live_id]
+    async with mk() as db:
+        invoices = (
+            (await db.execute(sa_select(InvoiceModel).where(InvoiceModel.id.in_(seeded))))
+            .scalars()
+            .all()
+        )
+        verdicts = await run_refusal_reasons(db, invoices)
+
+    # Python: each refused row names the reason its own seed created.
+    assert verdicts[exc_id].reason == "fraud_flag"
+    assert verdicts[credited_id].reason == "fully_credited"
+    assert verdicts[card_id].reason == "live_virtual_card"
+    assert verdicts[live_id].reason == "live_payment"
+    assert clean_id not in verdicts
+
+    # SQL: the selectable set is exactly the rows with no refusal.
+    assert str(clean_id) in selectable
+    for refused in (exc_id, credited_id, card_id, live_id):
+        assert str(refused) not in selectable, refused
+
+
+async def test_every_queue_reason_code_is_one_the_run_builder_can_actually_raise():
+    """`blocked_reason` is a fixed vocabulary the client localises. Pin it: the
+    non-exception codes are exactly `payment_runs`' own reason constants, every
+    one of them has an operator-facing 409 message, and the rail-conditional one
+    is derived from `CARD_CONVERGING_METHODS` rather than restated."""
+    from app.api.payments import PAYMENT_BLOCKING_EXCEPTION_TYPES
+    from app.services import payment_runs
+
+    non_exception = {
+        payment_runs.REFUSAL_LIVE_VIRTUAL_CARD,
+        payment_runs.REFUSAL_FULLY_CREDITED,
+        payment_runs.REFUSAL_LIVE_PAYMENT,
+    }
+    assert non_exception.isdisjoint(PAYMENT_BLOCKING_EXCEPTION_TYPES)
+    # A reason with no message falls through to the builder's generic refusal.
+    assert set(payment_runs._REFUSAL_MESSAGES) == non_exception
+    assert set(payment_runs._REFUSAL_ORDER) == non_exception
+    # The one rail a card-claimed invoice stays payable on comes FROM the
+    # converge set, so the two cannot drift.
+    assert payment_runs.CARD_CLAIM_ONLY_METHOD in payment_runs.CARD_CONVERGING_METHODS
+
+
+async def test_the_run_builder_still_409s_each_refusal_with_its_own_message(realdb):
+    """Folding four hand-written gates into one shared predicate set must not
+    change which message an operator gets. Each refusal keeps naming the invoice
+    and its own cause."""
+    from types import SimpleNamespace as NS
+
+    from fastapi import HTTPException
+
+    from app.services.payment_runs import PaymentRunItemInput, create_payment_run_for_invoices
+
+    mk = realdb.sessionmaker(TENANT)
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    credited_id = await _seed_invoice(mk, org_id, number="Q-409-CREDIT", amount="300.00")
+    card_id = await _seed_invoice(mk, org_id, number="Q-409-CARD")
+    live_id = await _seed_invoice(mk, org_id, number="Q-409-LIVE")
+    await _apply_credit(mk, org_id, credited_id, amount="300.00")
+    await _mint_card(mk, org_id, card_id)
+    await _book_payment(mk, live_id, status="submitted")
+
+    org = _org(org_id)
+    user = NS(id=info.users["admin"], full_name="Queue Tester")
+
+    async def _refuse(invoice_id, method="ach"):
+        async with mk() as db:
+            with pytest.raises(HTTPException) as exc:
+                await create_payment_run_for_invoices(
+                    db,
+                    org=org,
+                    org_id=org_id,
+                    entity_id=uuid.uuid4(),
+                    scope_entity_id=None,
+                    user=user,
+                    items=[PaymentRunItemInput(invoice_id=invoice_id, method=method)],
+                )
+        return exc.value
+
+    credited = await _refuse(credited_id)
+    assert credited.status_code == 409
+    assert "credit" in credited.detail.lower()
+    assert "Q-409-CREDIT" in credited.detail
+
+    carded = await _refuse(card_id)
+    assert carded.status_code == 409
+    assert "card" in carded.detail.lower()
+    assert "Q-409-CARD" in carded.detail
+
+    live = await _refuse(live_id)
+    assert live.status_code == 409
+    assert "live payment" in live.detail.lower()
+    assert "Q-409-LIVE" in live.detail
+
+
+async def test_the_converging_card_rail_is_still_accepted_by_the_builder(realdb):
+    """The queue's `required_method` is only honest if the builder really does
+    accept that rail — a card-claimed invoice paid BY card converges onto the
+    existing card, which is the documented mint-then-run flow."""
+    from types import SimpleNamespace as NS
+
+    from app.services.payment_runs import PaymentRunItemInput, create_payment_run_for_invoices
+
+    mk = realdb.sessionmaker(TENANT)
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    inv_id = await _seed_invoice(mk, org_id, number="Q-CONVERGE")
+    await _mint_card(mk, org_id, inv_id)
+
+    rows = await _queue(realdb, mk)
+    pinned = rows["Q-CONVERGE"]["required_method"]
+    assert pinned == "virtual_card"
+
+    # The tenant's REAL default entity — `PaymentRun.entity_id` is an FK, and a
+    # made-up id fails the insert as an IntegrityError the builder reads as the
+    # live-payment backstop.
+    entity_id = await _default_entity_id(mk)
+    async with mk() as db:
+        result = await create_payment_run_for_invoices(
+            db,
+            org=_org(org_id),
+            org_id=org_id,
+            entity_id=entity_id,
+            scope_entity_id=None,
+            user=NS(id=info.users["admin"], full_name="Queue Tester"),
+            items=[PaymentRunItemInput(invoice_id=inv_id, method=pinned)],
+        )
+        assert result.created is True
+        assert result.run.status == "draft"
+        await db.rollback()

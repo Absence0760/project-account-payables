@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, exists, func, not_, select
+from sqlalchemy import case, exists, func, not_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ from app.api.permissions import (
     PERM_PAYMENT_VOID,
 )
 from app.api.sorting import SortParams, resolve_order_by, sort_params
+from app.models.credit_memo import CreditMemo
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
@@ -78,6 +79,7 @@ from app.services.payment_controls import (
     check_run_segregation,
 )
 from app.services.payment_runs import (
+    CARD_CLAIM_ONLY_METHOD,
     PaymentRunItemInput,
     active_run_payments,
     blocked_invoice_ids,
@@ -89,6 +91,7 @@ from app.services.payment_runs import (
     net_payable_amount,
     recompute_run_status,
     rollup_payment_statuses,
+    run_refusal_reasons,
     superseded_payment_ids,
 )
 from app.services.payment_settlement import settlement_coverage
@@ -478,11 +481,87 @@ def _live_payment_invoice_ids():
     )
 
 
+def _queue_live_card_exists():
+    """SQL EXISTS — a live virtual card already claims this invoice, the SAME
+    predicate ``services/card_issuance.live_card_invoice_ids`` resolves
+    (``status <> 'cancelled'``, i.e. ``uq_virtual_cards_one_live_per_invoice``).
+
+    NOT a block: the run builder refuses a card-claimed invoice on every rail
+    EXCEPT ``virtual_card``, which converges onto the existing card rather than
+    opening a second outflow. So the row stays OFFERED (with
+    ``required_method``) and is only kept out of the set "select all matching"
+    resolves, which would stage it on the default rail and 409 the batch.
+    """
+    return exists(
+        select(1).where(
+            VirtualCard.invoice_id == Invoice.id,
+            VirtualCard.status != "cancelled",
+        )
+    )
+
+
+def _queue_fully_credited():
+    """SQL predicate — applied credit memos cover the whole invoice, so a run
+    would have nothing to move. Mirrors
+    ``services/payment_runs.net_payable_amounts`` (``amount`` minus the sum of
+    ``applied`` memos), the figure the run builder refuses on.
+    """
+    applied = (
+        select(func.coalesce(func.sum(CreditMemo.amount), 0))
+        .where(CreditMemo.invoice_id == Invoice.id, CreditMemo.status == "applied")
+        .scalar_subquery()
+    )
+    return (func.coalesce(Invoice.amount, 0) - applied) <= 0
+
+
 def _queue_base_where() -> list:
+    """What makes an invoice a queue ROW at all: payable, and not already being
+    paid. Rows a run would REFUSE are still listed (marked `blocked`) — an
+    operator has to see what to go clear — except a live payment, which is not a
+    refusal to act on but a payment already in flight."""
     return [
         Invoice.status.in_(PAYABLE_INVOICE_STATUSES),
         Invoice.id.notin_(_live_payment_invoice_ids()),
     ]
+
+
+def _queue_selectable_where() -> list:
+    """Base, minus every row `POST /api/payments/runs` would refuse on the
+    DEFAULT rail — the set "select all N matching" resolves, and the set the
+    `selectable_total` KPI counts.
+
+    Each clause is the SQL form of one `services/payment_runs.run_refusal_reasons`
+    verdict, which is what the per-row `blocked` / `required_method` flags come
+    from; `tests/test_payment_queue_blocked.py` compares the two directly rather
+    than trusting the restatement. Expressed as SQL because the whole-set
+    aggregates and `/queue/ids` must not stream every invoice id into Python.
+    """
+    return [
+        *_queue_base_where(),
+        not_(_queue_blocking_exists()),
+        not_(_queue_fully_credited()),
+        not_(_queue_live_card_exists()),
+    ]
+
+
+def _queue_blocked_on_every_rail():
+    """SQL form of the per-row ``blocked`` flag — a refusal no rail escapes.
+
+    Deliberately NOT ``NOT _queue_selectable_where()``: the card claim leaves the
+    selectable set (bulk-selecting it would stage the default rail) while leaving
+    the row perfectly payable, so subtracting would count a working checkbox as
+    something to go and clear.
+
+    The card clause joins this only when ``CARD_CLAIM_ONLY_METHOD`` is ``None`` —
+    i.e. a second converging rail was added and the queue can no longer name one
+    — which is exactly when ``run_refusal_reasons`` stops setting ``only_method``
+    and the per-row flag flips to blocked. Derived from the same constant, so the
+    count and the flag cannot disagree.
+    """
+    clauses = [_queue_blocking_exists(), _queue_fully_credited()]
+    if CARD_CLAIM_ONLY_METHOD is None:
+        clauses.append(_queue_live_card_exists())
+    return or_(*clauses)
 
 
 async def _payment_queue_rollup(
@@ -526,9 +605,7 @@ async def _payment_queue_rollup(
     rep_expr = conv.amount
     unconv_expr = conv.unconverted
 
-    where = _queue_base_where()
-    if selectable_only:
-        where.append(not_(_queue_blocking_exists()))
+    where = _queue_selectable_where() if selectable_only else _queue_base_where()
 
     # Invoice-only aggregate — no schedule join, so no row fan-out on the
     # money sums / count.
@@ -623,16 +700,31 @@ async def payment_queue(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """A page of approved invoices ready for payment (no completed payment yet).
+    """A page of approved invoices ready for payment (no live payment yet).
 
     Paginated (`page` / `page_size`, `id`-tie-broken order). Each row carries
-    `blocked` / `blocked_reason` — whether an unresolved payment-blocking
-    exception means `POST /api/payments/runs` would refuse it. The money totals
-    (`total_amount` / `total_savings` / `by_currency`) and the
+    the verdict `services/payment_runs.run_refusal_reasons` gives it — the SAME
+    predicate set `POST /api/payments/runs` enforces, so the queue can never
+    offer a row the run builder then hard-409s (which used to take a whole
+    select-all batch down with no way to bisect it):
+
+    * `blocked` / `blocked_reason` — a run refuses this invoice on EVERY rail.
+      The reason is a stable, PII-free code (an exception TYPE, or
+      `fully_credited`), never a description, which can carry vendor / bank /
+      amount detail.
+    * `required_method` — a run refuses it on every rail BUT this one (a live
+      virtual card already claims the invoice, and `virtual_card` converges onto
+      that card rather than opening a second outflow). Not blocked: the row is
+      still selectable, pinned to that rail.
+
+    The money totals (`total_amount` / `total_savings` / `by_currency`) and the
     `total` / `selectable_total` / `blocked_total` counts describe the WHOLE
     queue, not the loaded page — a KPI/banner over one page would contradict
-    the list. Use `GET /api/payments/queue/ids` to resolve the whole
-    selectable set for "select all N matching".
+    the list. `selectable_total` is the set `GET /api/payments/queue/ids`
+    resolves for "select all N matching", so it also excludes a
+    `required_method` row (bulk-selecting one would stage it on the default
+    rail); `blocked_total` counts only rows whose checkbox is disabled, i.e.
+    exactly the `blocked` ones. The two are therefore NOT complementary.
     """
     # Callable as a plain function in tests (`Depends(...)` isn't resolved
     # there); fall back to the canonical first page.
@@ -658,13 +750,18 @@ async def payment_queue(
     )
     rows = (await db.execute(page_q)).all()
 
-    # Which of THIS PAGE's rows a run would refuse — resolved through the same
-    # `payment_runs` helper the run builder itself uses, so the queue can never
-    # offer a row the builder then rejects.
-    blocked_types = await blocking_exception_types(db, [inv.id for inv, _ in rows])
+    # Which of THIS PAGE's rows a run would refuse, and why — resolved through
+    # the ONE predicate set the run builder itself enforces, so the queue can
+    # never offer a row the builder then rejects, and a refusal added to
+    # `run_refusal_reasons` reaches this surface for free. No `methods` is
+    # passed: the queue does not know which rail the operator will pick, and
+    # omitting it is the fail-closed reading (every rail non-converging), which
+    # is what surfaces the card claim as `required_method`.
+    refusals = await run_refusal_reasons(db, [inv for inv, _ in rows])
 
     items: list[dict] = []
     for inv, sched in rows:
+        refusal = refusals.get(inv.id)
         discount_amount: Decimal | None = None
         discount_eligible = False
         if (
@@ -712,12 +809,21 @@ async def payment_queue(
                 if sched and sched.discount_percent
                 else None,
                 "discount_amount": str(discount_amount) if discount_amount else None,
-                # `blocked` is what the UI disables the row's checkbox on;
-                # `blocked_reason` is the exception TYPE only (a stable code the
-                # client localises), never the description (which can carry
-                # vendor / bank / amount detail). Both default to not-blocked.
-                "blocked": inv.id in blocked_types,
-                "blocked_reason": blocked_types.get(inv.id),
+                # `blocked` is what the UI disables the row's checkbox on, and
+                # is true only for a refusal that holds on EVERY rail — a
+                # rail-conditional one carries `required_method` instead and
+                # stays selectable, because refusing it outright would break the
+                # documented mint-a-card-then-run-it flow.
+                #
+                # `blocked_reason` is a stable code from a fixed vocabulary (an
+                # exception TYPE, or one of `payment_runs`' own reason
+                # constants) that the client localises — never a row's
+                # description, which can carry vendor / bank / amount detail.
+                # It is populated for a `required_method` row too, so the UI can
+                # say WHY the rail is pinned.
+                "blocked": refusal is not None and refusal.only_method is None,
+                "blocked_reason": refusal.reason if refusal else None,
+                "required_method": refusal.only_method if refusal else None,
             }
         )
 
@@ -733,7 +839,24 @@ async def payment_queue(
             apply_entity_scope(
                 select(func.count(Invoice.id))
                 .select_from(Invoice)
-                .where(*_queue_base_where(), not_(_queue_blocking_exists())),
+                .where(*_queue_selectable_where()),
+                Invoice,
+                entity_id,
+            )
+        )
+    ).scalar() or 0
+    # Counted in its own right rather than as `total - selectable_total`.
+    # Those two stopped being complementary once a rail-conditional refusal
+    # existed: a card-claimed row leaves the SELECTABLE set (bulk-selecting it
+    # would stage it on the default rail and 409 the batch) but is not blocked
+    # — its checkbox works. Subtracting would report it to the operator as
+    # something to go and clear, which is the opposite of the truth.
+    blocked_total = (
+        await db.execute(
+            apply_entity_scope(
+                select(func.count(Invoice.id))
+                .select_from(Invoice)
+                .where(*_queue_base_where(), _queue_blocked_on_every_rail()),
                 Invoice,
                 entity_id,
             )
@@ -746,7 +869,7 @@ async def payment_queue(
         "page": pagination.page,
         "page_size": pagination.page_size,
         "selectable_total": int(selectable_total),
-        "blocked_total": rollup["total"] - int(selectable_total),
+        "blocked_total": int(blocked_total),
         "total_amount": rollup["total_amount"],
         "total_savings": rollup["total_savings"],
         "currency": rollup["currency"],
@@ -780,7 +903,7 @@ async def payment_queue_ids(
             apply_entity_scope(
                 select(func.count(Invoice.id))
                 .select_from(Invoice)
-                .where(*_queue_base_where(), not_(_queue_blocking_exists())),
+                .where(*_queue_selectable_where()),
                 Invoice,
                 entity_id,
             )
@@ -789,7 +912,7 @@ async def payment_queue_ids(
 
     ids_q = (
         apply_entity_scope(
-            select(Invoice.id).where(*_queue_base_where(), not_(_queue_blocking_exists())),
+            select(Invoice.id).where(*_queue_selectable_where()),
             Invoice,
             entity_id,
         )
