@@ -194,11 +194,11 @@ test.describe('/payments queue selection', () => {
 			created.push(await createApprovedInvoice(page, `E2E-SUM-${stamp}-A`));
 			created.push(await createApprovedInvoice(page, `E2E-SUM-${stamp}-B`));
 
-			// `loadMoreUntilRow` below starts by polling `table tbody tr` for a
-			// row, and `DataTable` renders a placeholder <tr> while the fetch is
-			// in flight — so that poll can be satisfied before any real row
-			// exists, the paging loop then sees no "Load more" and exits, and a
-			// row on page 2 is never reached. Wait for the queue's own fetch.
+			// Wait for the queue's own fetch before paging, so `loadMoreUntilRow`
+			// starts from a settled list rather than one still filling. The
+			// helper no longer mistakes `DataTable`'s placeholder row for a real
+			// one, but the "Load more" footer arrives with the same response as
+			// the rows, so this keeps the first paging decision off an empty DOM.
 			const queueLoaded = page.waitForResponse((r) =>
 				new URL(r.url()).pathname.endsWith('/api/payments/queue')
 			);
@@ -240,11 +240,11 @@ test.describe('/payments queue selection', () => {
 			created.push(await createApprovedInvoice(page, `E2E-PAY-${stamp}-A`));
 			created.push(await createApprovedInvoice(page, `E2E-PAY-${stamp}-B`));
 
-			// `loadMoreUntilRow` below starts by polling `table tbody tr` for a
-			// row, and `DataTable` renders a placeholder <tr> while the fetch is
-			// in flight — so that poll can be satisfied before any real row
-			// exists, the paging loop then sees no "Load more" and exits, and a
-			// row on page 2 is never reached. Wait for the queue's own fetch.
+			// Wait for the queue's own fetch before paging, so `loadMoreUntilRow`
+			// starts from a settled list rather than one still filling. The
+			// helper no longer mistakes `DataTable`'s placeholder row for a real
+			// one, but the "Load more" footer arrives with the same response as
+			// the rows, so this keeps the first paging decision off an empty DOM.
 			const queueLoaded = page.waitForResponse((r) =>
 				new URL(r.url()).pathname.endsWith('/api/payments/queue')
 			);
