@@ -1,4 +1,35 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`.
+ *
+ * The id-based delete below is the polite path (it goes through the API and
+ * leaves an audit row), but it only fires when `workflowId` holds the id of
+ * the row the LAST `beforeEach` made: a `beforeEach` that throws after its
+ * POST landed leaves the new row unreferenced, and the stale `workflowId`
+ * then deletes nothing that still exists. Sweeping by name needs no id.
+ *
+ * `workflow_definitions` is FK-referenced by `workflow_versions`,
+ * `workflow_instances` (itself referenced by `workflow_steps`) and
+ * `workflow_experiments`, none of them cascading, so the children go first.
+ * `is_default = false` keeps a marker typo away from the seeded default that
+ * `fixtures/globalSetup.ts` asserts the whole suite against.
+ */
+const MARKER = 'e2e-matrix-';
+
+function purgeWorkflows(): void {
+	const doomed =
+		`SELECT id FROM workflow_definitions ` +
+		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN ` +
+			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
+}
 
 async function apiHeaders(page: import('@playwright/test').Page) {
 	return {
@@ -94,11 +125,13 @@ test.describe('/workflows/[id] — approval matrix editor', () => {
 	let workflowId: string;
 
 	test.beforeEach(async ({ page }) => {
-		workflowId = await createWorkflow(page, `e2e-matrix-${Date.now()}`);
+		workflowId = await createWorkflow(page, `${MARKER}${Date.now()}`);
 	});
 
 	test.afterEach(async ({ page }) => {
 		if (workflowId) await deleteWorkflow(page, workflowId);
+		// Backstop for anything the id-based delete could not reach.
+		purgeWorkflows();
 	});
 
 	test('routing_rules + parallel_mode + escalation round-trip through PATCH', async ({

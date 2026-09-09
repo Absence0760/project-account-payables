@@ -1,9 +1,37 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so the
+ * `afterEach` below can sweep by name rather than by id — the only teardown
+ * that survives `createWorkflow` throwing after its POST has already landed,
+ * or a run that is interrupted mid-test.
+ *
+ * `workflow_definitions` is FK-referenced by `workflow_versions`,
+ * `workflow_instances` (itself referenced by `workflow_steps`) and
+ * `workflow_experiments`, none of them cascading, so the children go first.
+ * `is_default = false` keeps a marker typo away from the seeded default that
+ * `fixtures/globalSetup.ts` asserts the whole suite against.
+ */
+const MARKER = 'Add Remove E2E ';
+
+function purgeWorkflows(): void {
+	const doomed =
+		`SELECT id FROM workflow_definitions ` +
+		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN ` +
+			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
+}
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	await page.goto('/workflows');
 	await page.getByRole('button', { name: '+ New Workflow' }).click();
-	await page.locator('#wf-name').fill(`Add Remove E2E ${Date.now()}`);
+	await page.locator('#wf-name').fill(`${MARKER}${Date.now()}`);
 	await page.getByRole('button', { name: /^Create$/ }).click();
 	await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
 	const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
@@ -34,6 +62,8 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/workflows/[id] add/remove steps', () => {
+	test.afterEach(() => purgeWorkflows());
+
 	test('Add Approval step appends to pipeline and selects the new step', async ({
 		page
 	}) => {

@@ -15,6 +15,46 @@ interface WorkflowResponse {
 	steps_config: { steps: Array<{ type: string; enabled: boolean; config: Record<string, unknown> }> };
 }
 
+/**
+ * Every workflow definition these tests create is named `${MARKER}…` and every
+ * invoice `${INVOICE_MARKER}…`, so the `afterEach` below can sweep by name
+ * rather than by id.
+ *
+ * The `finally` blocks are ordered, and an early step throwing skips the rest:
+ * `hardDeleteInvoice` runs first, so a failed invoice delete strands both the
+ * definition AND the workflow instance that then makes the API's DELETE 409
+ * ("snapshot source for 1 in-flight invoice") — which is exactly the shape a
+ * long-lived local `e2e2` was still carrying, a `Snapshot B <ts>` definition
+ * wedged behind an un-deleted `SNAP-y-<ts>` invoice.
+ *
+ * Invoices go through `deleteInvoicesWhere`, the owner of the 16-FK child
+ * graph (which includes `workflow_instances`), so this only has to clear what
+ * hangs off the DEFINITION: `workflow_versions`, `workflow_experiments`, and
+ * any instance not reached by the invoice sweep (itself referenced by
+ * `workflow_steps`). None of those FKs cascade, so the children go first.
+ * `is_default = false` keeps a marker typo away from the seeded default that
+ * `fixtures/globalSetup.ts` asserts the whole suite against — and the seeded
+ * default is restored by the `finally`, which is the half a name sweep cannot
+ * do for it.
+ */
+const MARKER = 'WF Snapshot E2E ';
+const INVOICE_MARKER = 'SNAP-';
+
+function purgeWorkflows(): void {
+	deleteInvoicesWhere(`invoice_number LIKE '${INVOICE_MARKER}%'`);
+	const doomed =
+		`SELECT id FROM workflow_definitions ` +
+		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN ` +
+			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
+}
+
 async function listWorkflows(page: import('@playwright/test').Page) {
 	const resp = await page.request.get(`${API_BASE}/api/workflows`, {
 		headers: await authedTenantHeaders(page)
@@ -61,7 +101,7 @@ async function createInvoice(
 		headers: creds ?? (await authedTenantHeaders(page)),
 		data: {
 			vendor: 'Snapshot Test Vendor',
-			invoice_number: `SNAP-${suffix}`,
+			invoice_number: `${INVOICE_MARKER}${suffix}`,
 			amount: 1234.5,
 			currency: 'USD',
 			status: 'new'
@@ -134,6 +174,8 @@ function hardDeleteInvoice(id: string): void {
  */
 
 test.describe('workflow deactivation snapshot semantics', () => {
+	test.afterEach(() => purgeWorkflows());
+
 	test('deactivated workflow keeps routing its in-flight invoices; new invoices use the now-active one', async ({
 		page
 	}) => {
@@ -164,7 +206,7 @@ test.describe('workflow deactivation snapshot semantics', () => {
 
 			// Create + activate workflow B with auto_approve_below=999_999. Per
 			// the one-active invariant, this deactivates the seeded workflow.
-			bId = await createWorkflow(page, `Snapshot B ${Date.now()}`, [
+			bId = await createWorkflow(page, `${MARKER}Snapshot B ${Date.now()}`, [
 				{
 					type: 'extraction',
 					enabled: true,
@@ -280,7 +322,11 @@ test.describe('workflow deactivation snapshot semantics', () => {
 			// (2) Activate a replacement — that legitimately deactivates the
 			// seeded one, leaving invoice X's snapshot orphaned from any
 			// active definition, which is the state under test.
-			const replacementId = await createWorkflow(page, `replacement-${Date.now()}`, seedSteps);
+			const replacementId = await createWorkflow(
+				page,
+				`${MARKER}replacement ${Date.now()}`,
+				seedSteps
+			);
 			cleanupWorkflows.push(replacementId);
 			await patchWorkflow(page, replacementId, { is_active: true });
 			const wfsMid = await listWorkflows(page);

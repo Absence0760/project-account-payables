@@ -116,6 +116,16 @@ function hardDeleteInvoice(id: string): void {
  */
 
 test.describe('workflow definition drives invoice routing', () => {
+	// Every invoice these tests create is numbered `WF-RT-…`, so teardown can
+	// sweep by number instead of by id. The `finally` blocks below only run
+	// once `createInvoice` has RETURNED an id, so a create that lands the POST
+	// and then fails its status assertion leaks the row — which is how a
+	// long-lived local `e2e2` ended up still holding a `WF-RT-auto-<ts>`.
+	// `deleteInvoicesWhere` owns the whole 16-FK child graph (including the
+	// invoice's `workflow_instances`); `exceptions` is inside it, so the extra
+	// clears `hardDeleteInvoice` does per-id aren't needed here.
+	test.afterEach(() => deleteInvoicesWhere(`invoice_number LIKE 'WF-RT-%'`));
+
 	test('approval step + no auto_below: new invoice goes to ready_for_review', async ({
 		page
 	}) => {

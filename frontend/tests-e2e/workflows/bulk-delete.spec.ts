@@ -6,6 +6,39 @@ import {
 	test
 } from '../fixtures/helpers';
 
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so the
+ * `afterEach` below can sweep by name rather than by id.
+ *
+ * Three of the four tests create their rows OUTSIDE any `try`, so a failure
+ * between the create and the `finally` — the wedging `INSERT`, a UI step, the
+ * bulk-bar arming — leaks them permanently. Sweeping by name needs no id and
+ * runs whatever the body did.
+ *
+ * `workflow_definitions` is FK-referenced by `workflow_versions`,
+ * `workflow_instances` (itself referenced by `workflow_steps`) and
+ * `workflow_experiments`, none of them cascading, so the children go first —
+ * which is also what clears the synthetic instance the partial-success test
+ * wedges a definition with. `is_default = false` keeps a marker typo away from
+ * the seeded default that `fixtures/globalSetup.ts` asserts the whole suite
+ * against.
+ */
+const MARKER = 'WF Bulk E2E ';
+
+function purgeWorkflows(): void {
+	const doomed =
+		`SELECT id FROM workflow_definitions ` +
+		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN ` +
+			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
+	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
+}
+
 async function createWorkflow(
 	page: import('@playwright/test').Page,
 	name: string
@@ -53,6 +86,8 @@ test.describe('/workflows bulk delete', () => {
 		await page.waitForLoadState('networkidle');
 	});
 
+	test.afterEach(() => purgeWorkflows());
+
 	test('default workflow has no selection checkbox', async ({ page }) => {
 		const defaultRow = page.locator('table tbody tr', { has: page.locator('.default-badge') });
 		await expect(defaultRow).toBeVisible();
@@ -62,8 +97,8 @@ test.describe('/workflows bulk delete', () => {
 	test('selecting rows reveals the bulk-bar with the right count', async ({ page }) => {
 		const created: string[] = [];
 		try {
-			created.push(await createWorkflow(page, `BulkBar A ${Date.now()}`));
-			created.push(await createWorkflow(page, `BulkBar B ${Date.now()}`));
+			created.push(await createWorkflow(page, `${MARKER}BulkBar A ${Date.now()}`));
+			created.push(await createWorkflow(page, `${MARKER}BulkBar B ${Date.now()}`));
 			await page.reload();
 			await page.waitForLoadState('networkidle');
 
@@ -90,18 +125,18 @@ test.describe('/workflows bulk delete', () => {
 
 	test('bulk Delete drops every selected workflow from the list', async ({ page }) => {
 		const ts = Date.now();
-		const a = await createWorkflow(page, `Bulk Del A ${ts}`);
-		const b = await createWorkflow(page, `Bulk Del B ${ts}`);
+		const a = await createWorkflow(page, `${MARKER}Bulk Del A ${ts}`);
+		const b = await createWorkflow(page, `${MARKER}Bulk Del B ${ts}`);
 		await page.reload();
 		await page.waitForLoadState('networkidle');
 		const beforeRows = await page.locator('table tbody tr').count();
 
 		await page
-			.locator('table tbody tr', { hasText: `Bulk Del A ${ts}` })
+			.locator('table tbody tr', { hasText: `${MARKER}Bulk Del A ${ts}` })
 			.locator('td.checkbox-col input[type="checkbox"]')
 			.check();
 		await page
-			.locator('table tbody tr', { hasText: `Bulk Del B ${ts}` })
+			.locator('table tbody tr', { hasText: `${MARKER}Bulk Del B ${ts}` })
 			.locator('td.checkbox-col input[type="checkbox"]')
 			.check();
 
@@ -127,8 +162,8 @@ test.describe('/workflows bulk delete', () => {
 	}) => {
 		// One workflow we'll wedge with a fake instance, and one that's
 		// freely deletable.
-		const wedged = await createWorkflow(page, `Wedged ${Date.now()}`);
-		const free = await createWorkflow(page, `Free ${Date.now()}`);
+		const wedged = await createWorkflow(page, `${MARKER}Wedged ${Date.now()}`);
+		const free = await createWorkflow(page, `${MARKER}Free ${Date.now()}`);
 
 		// Need a real invoice to satisfy the FK on workflow_instances.invoice_id.
 		const invoiceId = tenantPsql('SELECT id FROM invoices LIMIT 1').trim();
