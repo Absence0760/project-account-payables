@@ -54,6 +54,10 @@ test.use({ storageState: { cookies: [], origins: [] } });
 async function portalSignIn(page: Page) {
 	await acceptConsent(page);
 	await page.goto('/portal/login');
+	// LOAD-BEARING, do not delete: Svelte 5 binds the form's `onsubmit` only
+	// after hydration, so a fill+submit before that fires the native GET and
+	// silently never attempts an auth POST. Same rationale (and the same fix)
+	// as `fixtures/helpers.ts::signIn` — see the comment there.
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
 	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
@@ -63,7 +67,6 @@ async function portalSignIn(page: Page) {
 	// explicitly rather than depending on where login happens to land.
 	await expect(page).toHaveURL(/\/portal\/?$/, { timeout: 15_000 });
 	await page.goto('/portal/invoices');
-	await page.waitForLoadState('networkidle');
 }
 
 function portalVendor(): { vendorId: string; orgId: string } {

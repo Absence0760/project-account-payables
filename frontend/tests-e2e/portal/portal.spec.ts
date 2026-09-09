@@ -56,6 +56,10 @@ async function portalSignInRaw(
 ) {
   await acceptConsent(page);
   await page.goto("/portal/login");
+  // LOAD-BEARING, do not delete: Svelte 5 binds the form's `onsubmit` only
+  // after hydration, so a fill+submit before that fires the native GET and
+  // silently never attempts an auth POST. Same rationale (and the same fix)
+  // as `fixtures/helpers.ts::signIn` — see the comment there.
   await page.waitForLoadState("networkidle");
   await page.locator('input[type="email"]').fill(email);
   await page.locator('input[type="password"]').fill(password);
@@ -76,7 +80,6 @@ async function portalSignIn(
   await portalSignInRaw(page, email, password);
   await expect(page).toHaveURL(/\/portal\/?$/, { timeout: 15_000 });
   await page.goto("/portal/invoices");
-  await page.waitForLoadState("networkidle");
 }
 
 test.describe("/portal/login", () => {
@@ -84,7 +87,6 @@ test.describe("/portal/login", () => {
     page,
   }) => {
     await page.goto("/portal/login");
-    await page.waitForLoadState("networkidle");
 
     // The login card heading is the tenant's white-label PRODUCT NAME (themed
     // from the public GET /api/portal/branding). With no brand set on the
@@ -115,7 +117,6 @@ test.describe("/portal/login", () => {
     page,
   }) => {
     await page.goto("/portal/invoices");
-    await page.waitForLoadState("networkidle");
 
     // The portal layout sends any non-public path to /portal/login when
     // there's no portal token in localStorage.
@@ -192,7 +193,6 @@ test.describe("/portal — authenticated vendor", () => {
 
     // The token is cleared — a deep-link bounces back to login.
     await page.goto("/portal/invoices");
-    await page.waitForLoadState("networkidle");
     await expect(page).toHaveURL(/\/portal\/login/, { timeout: 5_000 });
   });
 });
@@ -451,7 +451,6 @@ test.describe("/portal/change-password", () => {
     await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
 
     await page.goto("/portal/change-password");
-    await page.waitForLoadState("networkidle");
 
     await expect(
       page.getByRole("heading", { name: "Set a new password" }),
@@ -469,6 +468,11 @@ test.describe("/portal/change-password", () => {
     await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
 
     await page.goto("/portal/change-password");
+    // LOAD-BEARING, do not delete: the change-password form is `<form
+    // onsubmit={handleSubmit}>` with `bind:value` fields, both wired only at
+    // hydration. Filling and submitting before that fires the native GET, so
+    // the client-side mismatch guard under test never runs. Same class as the
+    // portal-login wait above and `fixtures/helpers.ts::signIn`.
     await page.waitForLoadState("networkidle");
 
     const fields = page.locator('input[type="password"]');
@@ -517,7 +521,6 @@ test.describe("/portal — must-change-password redirect", () => {
       // And the layout enforces it: trying to slip over to invoices
       // bounces back to change-password while the flag is set.
       await page.goto("/portal/invoices");
-      await page.waitForLoadState("networkidle");
       await expect(page).toHaveURL(/\/portal\/change-password/, {
         timeout: 5_000,
       });

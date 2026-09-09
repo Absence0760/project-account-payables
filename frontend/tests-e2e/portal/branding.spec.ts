@@ -76,7 +76,6 @@ test.describe('supplier-portal white-label theming', () => {
 		// Portal login is anon to the PORTAL (its own token key), so it must theme
 		// purely from the public brand read.
 		await page.goto('/portal/login');
-		await page.waitForLoadState('networkidle');
 
 		// The accent CSS custom property is written onto <html> by portalBrand.
 		await expect
@@ -122,6 +121,10 @@ const PORTAL_PASSWORD = 'demo';
 async function portalSignIn(page: import('@playwright/test').Page): Promise<void> {
 	await acceptConsent(page);
 	await page.goto('/portal/login');
+	// LOAD-BEARING, do not delete: Svelte 5 binds the form's `onsubmit` only
+	// after hydration, so a fill+submit before that fires the native GET and
+	// silently never attempts an auth POST. Same rationale (and the same fix)
+	// as `fixtures/helpers.ts::signIn` — see the comment there.
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
 	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);

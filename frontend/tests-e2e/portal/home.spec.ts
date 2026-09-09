@@ -41,6 +41,10 @@ const seeded: string[] = [];
 async function portalSignIn(page: Page) {
 	await acceptConsent(page);
 	await page.goto('/portal/login');
+	// LOAD-BEARING, do not delete: Svelte 5 binds the form's `onsubmit` only
+	// after hydration, so a fill+submit before that fires the native GET and
+	// silently never attempts an auth POST. Same rationale (and the same fix)
+	// as `fixtures/helpers.ts::signIn` — see the comment there.
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(PORTAL_EMAIL);
 	await page.locator('input[type="password"]').fill(PORTAL_PASSWORD);
@@ -94,7 +98,6 @@ test('/portal renders the overview instead of bouncing to the invoice list', asy
 
 		await portalSignIn(page);
 		await page.goto('/portal');
-		await page.waitForLoadState('networkidle');
 
 		// Still on /portal — the redirect is gone.
 		await expect(page).toHaveURL(/\/portal\/?$/);
@@ -117,7 +120,6 @@ test('the overview counts the whole set and never leaks internals', async ({ pag
 
 		await portalSignIn(page);
 		await page.goto('/portal');
-		await page.waitForLoadState('networkidle');
 
 		const kpis = page.getByTestId('portal-home-kpis');
 		await expect(kpis).toBeVisible({ timeout: 15_000 });
@@ -155,7 +157,6 @@ test('outstanding money is shown per currency, never summed across them', async 
 
 		await portalSignIn(page);
 		await page.goto('/portal');
-		await page.waitForLoadState('networkidle');
 
 		const totals = page.getByTestId('portal-home-outstanding');
 		await expect(totals).toBeVisible({ timeout: 15_000 });
