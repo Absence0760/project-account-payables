@@ -72,20 +72,63 @@ function purgeGenerated(invoiceId: string): void {
 	tenantPsql(`DELETE FROM virtual_cards WHERE invoice_id = '${invoiceId}'`);
 }
 
-/** A seeded invoice id to issue cards against. */
+/** A seeded invoice id, for the one case that is refused before the endpoint
+ *  ever looks at the invoice (the cards-disabled 400) — so it needs no vendor.
+ *  It still orders by the primary key: an unordered `LIMIT 1` is the defect
+ *  `aPayableInvoiceId` below carried, and the idiom should not survive
+ *  anywhere in this file. Empty is a missing fixture, not a passing test. */
 function anInvoiceId(): string {
-	return tenantPsql(`SELECT id FROM invoices LIMIT 1`).trim();
+	const id = tenantPsql(`SELECT id FROM invoices ORDER BY id LIMIT 1`).trim();
+	expect(id, 'this tenant has no invoices at all — re-seed the e2e tenants').not.toBe('');
+	return id;
 }
 
-/** A seeded invoice in a payable status — the only statuses
- *  `POST /api/cards/generate` will mint a card against (mirrors
- *  `PAYABLE_INVOICE_STATUSES` in `backend/app/api/payments.py`, which
- *  `generate_cards` filters on). The lean e2e seed's first invoice is
- *  deliberately `new`-status, so `anInvoiceId()` alone isn't safe here. */
+/**
+ * A seeded invoice this tenant can actually mint a card against.
+ *
+ * Every clause is load-bearing, because each one is a way `generate_cards`
+ * declines an invoice **without failing the request** — it `continue`s past it
+ * and returns a cheerful `201` with an empty `items`:
+ *
+ *  - **payable status** — mirrors `PAYABLE_INVOICE_STATUSES`
+ *    (`backend/app/api/payments.py`), which `generate_cards` filters on. The
+ *    lean e2e seed's first invoice is deliberately `new`, so `anInvoiceId()`
+ *    alone was never safe here.
+ *  - **a vendor** (the inner join) and **not `payments_blocked`** — minting a
+ *    card moves money, so the endpoint runs the same compliance gate the
+ *    payment-run leg does, and skips an invoice with no screenable vendor or a
+ *    blocked one.
+ *  - **`ORDER BY i.id`** — the real defect. `LIMIT 1` over an *unordered* set
+ *    lets Postgres return whichever row it likes, so which invoice this spec
+ *    tested depended on heap order, which shifts as other specs write to the
+ *    shared tenant. On a freshly-seeded tenant every payable invoice carries a
+ *    vendor and it passed; on a tenant holding a vendorless payable invoice
+ *    stranded by an earlier spec it drew that row and failed — reproducibly,
+ *    but looking exactly like a flake. `id` is the primary key, so this is a
+ *    total order and stable across runs. **Never reintroduce a bare
+ *    `LIMIT 1`.**
+ *
+ * Fails loudly when nothing qualifies rather than returning `''`: an empty id
+ * would POST a batch matching no invoice, collect the same empty-`items` 201,
+ * and turn a missing fixture into a wrong-looking assertion further down.
+ */
 function aPayableInvoiceId(): string {
-	return tenantPsql(
-		`SELECT id FROM invoices WHERE status IN ('approved', 'posted_in_erp', 'payment_scheduled') LIMIT 1`
+	const id = tenantPsql(
+		`SELECT i.id
+		   FROM invoices i
+		   JOIN vendors v ON v.id = i.vendor_id
+		  WHERE i.status IN ('approved', 'posted_in_erp', 'payment_scheduled')
+		    AND NOT v.payments_blocked
+		  ORDER BY i.id
+		  LIMIT 1`
 	).trim();
+	expect(
+		id,
+		'no payable invoice with an unblocked vendor in this tenant, so ' +
+			'POST /api/cards/generate has nothing it would mint a card for — re-seed ' +
+			'the e2e tenants (python backend/scripts/seed.py)'
+	).not.toBe('');
+	return id;
 }
 
 test.describe('virtual card lifecycle', () => {
@@ -104,7 +147,15 @@ test.describe('virtual card lifecycle', () => {
 		});
 		expect(gen.status()).toBe(201);
 		const genBody = (await gen.json()) as { items: { id: string; status: string }[] };
-		expect(genBody.items.length).toBe(1);
+		// A skip inside `generate_cards` is silent — 201 with an empty `items` —
+		// so name the remaining causes here. `aPayableInvoiceId` has already
+		// screened out the status / missing-vendor / blocked-vendor ones, which
+		// leaves a live sanctions or KYC verdict, or a card adapter that refused.
+		expect(
+			genBody.items.length,
+			'the endpoint accepted the batch but minted nothing: the invoice was skipped ' +
+				'by the compliance gate or the card adapter refused'
+		).toBe(1);
 		const card = genBody.items[0];
 		expect(card.status).toBe('created');
 
