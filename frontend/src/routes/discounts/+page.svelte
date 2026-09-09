@@ -338,11 +338,19 @@
 			     opposite fact and the one that reads as a failing programme.
 			     Same "—" + reason treatment the CFO cash-conversion-cycle and
 			     fraud-rate cards already use, and the same empty state the
-			     sibling figure on `/` shows (`docs/decisions.md` §34). -->
+			     sibling figure on `/` shows (`docs/decisions.md` §34).
+
+			     `—` also covers the load window, where `dashboard` is still
+			     null: the money KPIs beside this one brief-render `$0` by the
+			     page's existing convention, but `0%` is the exact misreading
+			     this card exists to remove, so an unknown rate renders as
+			     unknown. The reason line is withheld there — "no offer has been
+			     captured or missed yet" is a claim we cannot make before the
+			     response lands. -->
 			<KpiCard
-				value={dashboard?.insufficient_data
-					? '—'
-					: `${(dashboard?.capture_rate_pct ?? 0).toFixed(0)}%`}
+				value={dashboard && !dashboard.insufficient_data
+					? `${(dashboard.capture_rate_pct ?? 0).toFixed(0)}%`
+					: '—'}
 				label={m('discounts.kpi.captureRate')}
 				sub={dashboard?.insufficient_data ? m('discounts.kpi.captureRateUnknown') : null}
 			/>
