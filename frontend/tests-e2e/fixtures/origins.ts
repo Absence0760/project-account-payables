@@ -47,12 +47,31 @@ export const NO_TENANT_ORIGIN = `http://localhost:${WEB_PORT}`;
  */
 export const APP_ROOT_URL: RegExp = new RegExp(`^http://[^/]+:${WEB_PORT}/?$`);
 
+/**
+ * Escape every regex metacharacter so a literal string can be embedded in a
+ * `RegExp`.
+ *
+ * The backslash is in the class on purpose, and it is the one an
+ * escape-the-dots shortcut leaves out: `\` is itself a metacharacter, so a
+ * value containing one produces a *different* pattern rather than an escaped
+ * literal — which is why a dots-only version is incomplete sanitization, not
+ * merely narrow. These regexes are what the cross-tenant isolation specs assert
+ * identity with, so "the slugs are alphanumeric in practice" is the wrong thing
+ * to lean on.
+ *
+ * `fixtures/helpers.ts` re-exports this; it kept its own copy of the same
+ * expression before, and one of the two is all this file needs to own.
+ */
+export function escapeRegExp(input: string): string {
+	return input.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
 /** Same, pinned to one tenant — for the cross-tenant specs that assert identity. */
 export function tenantRootUrl(slug: string): RegExp {
-	return new RegExp(`^http://${slug.replace(/\./g, '\\.')}\\.localhost:${WEB_PORT}/?$`);
+	return new RegExp(`^http://${escapeRegExp(slug)}\\.localhost:${WEB_PORT}/?$`);
 }
 
 /** Same, pinned to one tenant, allowing any path below the root. */
 export function tenantUrlPrefix(slug: string): RegExp {
-	return new RegExp(`^http://${slug.replace(/\./g, '\\.')}\\.localhost:${WEB_PORT}/`);
+	return new RegExp(`^http://${escapeRegExp(slug)}\\.localhost:${WEB_PORT}/`);
 }

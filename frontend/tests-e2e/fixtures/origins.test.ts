@@ -4,7 +4,14 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { APP_ROOT_URL, NO_TENANT_ORIGIN, tenantOrigin, tenantRootUrl, WEB_PORT } from './origins';
+import {
+	APP_ROOT_URL,
+	escapeRegExp,
+	NO_TENANT_ORIGIN,
+	tenantOrigin,
+	tenantRootUrl,
+	WEB_PORT
+} from './origins';
 
 /**
  * The ratchet behind `fixtures/origins.ts`.
@@ -79,6 +86,21 @@ describe('the e2e suite derives its origins from one configurable port', () => {
 		// `acmeXlocalhost` — and these are the cross-tenant isolation specs.
 		expect(tenantRootUrl('acme').test(`http://techflow.localhost:${WEB_PORT}/`)).toBe(false);
 		expect(tenantRootUrl('acme').test(`http://acmeXlocalhost:${WEB_PORT}/`)).toBe(false);
+	});
+
+	it('escapes every metacharacter in a slug, backslash included', () => {
+		// The first version of `tenantRootUrl` escaped only dots, which CodeQL
+		// flagged as incomplete sanitization — correctly: `\` is itself a
+		// metacharacter, so a dots-only escape passes it through and builds a
+		// DIFFERENT pattern rather than an escaped literal. `\d` is the sharp
+		// case: left alone it matches any digit, so `1ocalhost` would satisfy a
+		// regex meant to pin one exact tenant.
+		expect(escapeRegExp(String.raw`a\db.c`)).toBe(String.raw`a\\db\.c`);
+		expect(tenantRootUrl(String.raw`a\d`).test(`http://a1.localhost:${WEB_PORT}/`)).toBe(false);
+		expect(tenantRootUrl(String.raw`a\d`).test(`http://a\\d.localhost:${WEB_PORT}/`)).toBe(true);
+
+		// And the ordinary slug still round-trips untouched.
+		expect(escapeRegExp('e2e1')).toBe('e2e1');
 	});
 
 	it('no spec or fixture hardcodes the port', () => {

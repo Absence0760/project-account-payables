@@ -13,6 +13,7 @@ import {
 
 import {
 	APP_ROOT_URL,
+	escapeRegExp,
 	NO_TENANT_ORIGIN,
 	tenantOrigin,
 	tenantRootUrl,
@@ -326,12 +327,18 @@ export function tenantBase(slug: string): string {
 
 // The port every one of these derives from lives in `fixtures/origins.ts`; the
 // re-export is what lets a spec keep a single import from `../fixtures/helpers`.
-export { APP_ROOT_URL, NO_TENANT_ORIGIN, tenantOrigin, tenantRootUrl, tenantUrlPrefix, WEB_PORT };
+export {
+	APP_ROOT_URL,
+	// One copy of the escape, in the module that needs it to build a RegExp —
+	// this file carried an identical expression before.
+	escapeRegExp,
+	NO_TENANT_ORIGIN,
+	tenantOrigin,
+	tenantRootUrl,
+	tenantUrlPrefix,
+	WEB_PORT
+};
 
-/** Escape every regex metacharacter so a literal URL can be embedded in a RegExp. */
-export function escapeRegExp(input: string): string {
-	return input.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-}
 
 /**
  * Drive the email-password sign-in form on the seeded `acme` tenant.
