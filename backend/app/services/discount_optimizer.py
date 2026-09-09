@@ -58,10 +58,18 @@ class OfferOpportunity:
     ``pay_by`` — the discount/tier deadline (latest pay date that still earns
     the tier).
     ``due_date`` — the invoice's net due date (the baseline you'd otherwise pay
-    on). Days accelerated is ``days_between(pay_by, due_date)`` — the textbook
-    cost-of-forgoing-discount horizon (pay on the deadline instead of at net),
-    NOT the discount period itself. An opportunity whose ``pay_by`` has already
-    elapsed (``today > pay_by``) is no longer capturable and is never selected.
+    on), or ``None`` when there isn't one to resolve. Days accelerated is
+    ``days_between(pay_by, due_date)`` — the textbook cost-of-forgoing-discount
+    horizon (pay on the deadline instead of at net), NOT the discount period
+    itself. An opportunity whose ``pay_by`` has already elapsed
+    (``today > pay_by``) is no longer capturable and is never selected.
+
+    ``due_date=None`` means the horizon is genuinely unknown — a vendor-scoped
+    bulk offer spans many invoices and has no single net due date. The caller
+    must NOT substitute ``pay_by`` for it: that makes ``days_accelerated`` zero,
+    which is a *measurement* ("the return is nil"), not "we cannot say". Such an
+    opportunity is reported on ``OptimizationResult.unrankable`` rather than
+    ranked at the bottom of a list it cannot be placed in.
     """
 
     offer_id: str
@@ -74,7 +82,7 @@ class OfferOpportunity:
     tier_days: int
     discount_percent: Decimal
     pay_by: date  # discount/tier deadline — latest pay date that still earns the tier
-    due_date: date  # invoice net due date — the baseline you'd otherwise pay on
+    due_date: date | None  # invoice net due date; None == horizon unknown
 
 
 @dataclass(frozen=True)
@@ -109,6 +117,16 @@ class OptimizationResult:
     # How many ranked opportunities were left out of the totals above because
     # their currency isn't the one the totals are in.
     unconvertible_count: int = 0
+    # Opportunities with no resolvable net due date. Their ROI has no horizon,
+    # so they cannot be placed in `recommendations` (which is an APR ranking)
+    # and are carried here instead — with `roi.annualized_return_pct is None`
+    # and `roi.worthwhile is None`, never a fabricated 0.00 / False pair. They
+    # contribute to no total and are never selected. `savings` on each is real.
+    unrankable: list[Recommendation] = field(default_factory=list)
+
+    @property
+    def unrankable_count(self) -> int:
+        return len(self.unrankable)
 
 
 def optimize(
@@ -151,14 +169,53 @@ def optimize(
     callers and the pure unit tests), which is why every production caller
     passes it.
 
+    An opportunity with ``due_date is None`` has no horizon, so it has no APR
+    and cannot be placed in an APR ranking. It goes to
+    ``OptimizationResult.unrankable`` with an ROI whose horizon-dependent fields
+    are ``None`` — never a fabricated ``0.00`` APR beside a positive
+    ``net_benefit``. It is never selected and contributes to no total. Keeping
+    it out of ``recommendations`` rather than sorting it to the bottom is what
+    lets every downstream consumer of that list keep assuming a real number
+    there.
+
     Returns a deterministic :class:`OptimizationResult`.
     """
     cost_of_capital_pct = Decimal(cost_of_capital_pct)
     target_currency = reporting_currency.strip().upper() if reporting_currency else None
 
+    def _unconvertible(opp: OfferOpportunity) -> bool:
+        return target_currency is not None and (
+            (opp.currency or "").strip().upper() != target_currency
+        )
+
     # Score every opportunity with the shared ROI primitive.
     scored: list[tuple[OfferOpportunity, DiscountROI, bool, bool]] = []
+    unrankable: list[Recommendation] = []
     for opp in opportunities:
+        if opp.due_date is None:
+            # No horizon → no APR → no place in a ranking BY APR. Withheld
+            # rather than defaulted: substituting `pay_by` for the missing due
+            # date yields `days_accelerated == 0`, and the resulting object is
+            # self-contradictory — `annualized_return_pct: 0.00` and
+            # `worthwhile: False` sitting beside a POSITIVE `net_benefit`
+            # (the opportunity cost of holding cash for zero days is zero
+            # too). Every bulk-negotiated offer without a `valid_until` scored
+            # that way and was therefore permanently unrecommendable.
+            unrankable.append(
+                Recommendation(
+                    opportunity=opp,
+                    roi=compute_roi(
+                        base_amount=opp.base_amount,
+                        discount_percent=opp.discount_percent,
+                        days_accelerated=None,
+                        cost_of_capital_pct=cost_of_capital_pct,
+                    ),
+                    selected=False,
+                    cumulative_outlay=_ZERO,
+                    unconvertible=_unconvertible(opp),
+                )
+            )
+            continue
         roi = compute_roi(
             base_amount=opp.base_amount,
             discount_percent=opp.discount_percent,
@@ -167,10 +224,7 @@ def optimize(
         )
         # Capturable only while the discount deadline has not elapsed.
         capturable = today <= opp.pay_by
-        unconvertible = target_currency is not None and (
-            (opp.currency or "").strip().upper() != target_currency
-        )
-        scored.append((opp, roi, capturable, unconvertible))
+        scored.append((opp, roi, capturable, _unconvertible(opp)))
 
     # Rank by annualized return desc — highest yield per day of cash first.
     # Tie-break on larger savings, then offer_id for a stable deterministic order.
@@ -190,7 +244,10 @@ def optimize(
 
     for opp, roi, capturable, unconvertible in scored:
         # Eligible = a worthwhile discount we can still capture (deadline open).
-        eligible = roi.worthwhile and capturable
+        # `bool(...)` because `worthwhile` is tri-state (None == unrankable);
+        # nothing unrankable reaches this loop, but the coercion keeps the
+        # invariant local rather than depending on the filter above.
+        eligible = bool(roi.worthwhile) and capturable
         if unconvertible:
             unconvertible_count += 1
         elif eligible:
@@ -231,4 +288,5 @@ def optimize(
         total_outlay_selected=cumulative_outlay,
         recommendations=recommendations,
         unconvertible_count=unconvertible_count,
+        unrankable=unrankable,
     )

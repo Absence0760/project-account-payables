@@ -205,8 +205,9 @@ def test_transition_invoice_helper_dispatches_audit():
 # Every HANDLER that mutates TENANT state audits — drift guard
 # ---------------------------------------------------------------------------
 
-# Tenant-mutating HANDLERS with no `dispatch_audit` reachable from their own
-# source. Keyed on `(module, handler)` — never on the module.
+# Tenant-mutating HANDLERS with no audit-writing call (`_AUDIT_WRITERS`, below)
+# reachable from their own source. Keyed on `(module, handler)` — never on the
+# module.
 #
 # The unit used to be the module, and one auditing handler exempted every other
 # handler beside it: `api/invoices.py` has 21 tenant-mutating routes, so a
@@ -265,25 +266,16 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "rebuilds the derived `invoices.meta.audit_summary` cache FROM the audit trail; "
         "no business field changes"
     ),
-    # -- supplier-portal auth: the auth trail (`dispatch_auth_audit`), not the
-    #    business trail. Each of these touches only the calling vendor user's
-    #    own account or an ephemeral Redis credential.
-    ("app.api.portal_auth", "portal_login"): "audits via dispatch_auth_audit (auth trail)",
-    ("app.api.portal_auth", "portal_change_password"): (
-        "audits via dispatch_auth_audit (auth trail)"
-    ),
+    # -- supplier-portal auth: writes NO audit row of any kind. Each of these
+    #    touches only the calling vendor user's own account or an ephemeral
+    #    Redis credential. (`portal_login`, `portal_change_password`,
+    #    `portal_mfa_verify` and `portal_mfa_disable` used to be listed here
+    #    too, on the strength of auditing via `dispatch_auth_audit` /
+    #    `queue_auth_audit`. Those now count as auditing — see `_AUDIT_WRITERS`
+    #    — so they need no exemption and the sweep covers them directly.)
     ("app.api.portal_auth", "portal_mfa_challenge"): (
         "trades the login-issued challenge token for an access token; writes no "
         "tenant row (the failure budget is Redis) — auth trail, not business trail"
-    ),
-    ("app.api.portal_auth", "portal_mfa_disable"): (
-        "audits `portal.mfa.disabled` on success + the step-up failure via "
-        "dispatch_auth_audit (the auth trail, not the business trail — the "
-        "grep for `dispatch_audit` does not see `dispatch_auth_audit`)"
-    ),
-    ("app.api.portal_auth", "portal_mfa_verify"): (
-        "audits `portal.mfa.enrolled` on success + the step-up failure via "
-        "dispatch_auth_audit; mirrors `api/auth.py::enroll_mfa_verify`"
     ),
     ("app.api.portal_auth", "portal_request_email_otp"): (
         "mints a single-use email OTP into Redis; writes no tenant row"
@@ -311,6 +303,11 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "audits via services/qms_sync (`quality_inspection.synced`)"
     ),
     ("app.api.invoices", "bulk_recode_gl_endpoint"): "audits via services/gl_recode.bulk_recode_gl",
+    ("app.api.invoices", "import_invoices_from_csv"): (
+        "audits via services/csv_import.import_invoices_csv (`invoice.imported_csv` per "
+        "created invoice, keyed on its own correlation_id, plus `vendor.imported_csv` "
+        "for each auto-created vendor stub)"
+    ),
     ("app.api.invoices", "bulk_status_change"): (
         "audits via workflow_engine.transition_invoice + services/review"
     ),
@@ -325,6 +322,14 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "audits via workflow_engine.transition_invoice + exception_lifecycle.record_decision"
     ),
     ("app.api.recurring", "generate_now"): ("audits via services/recurring_invoices.generate_one"),
+    ("app.api.vendors", "import_vendors_from_csv"): (
+        "audits via services/csv_import.import_vendors_csv (`vendor.imported_csv` per "
+        "created vendor)"
+    ),
+    ("app.api.vendors", "sync_vendors_from_erp_endpoint"): (
+        "audits via services/vendor_sync.sync_vendors_from_erp "
+        "(`vendor.synced_from_erp` per created/updated/linked vendor)"
+    ),
     ("app.api.vendors", "screen_vendor"): (
         "audits via services/vendor_screening.screen_vendor_record (`vendor.screened`)"
     ),
@@ -348,25 +353,37 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
 # OPEN HOLES — NOT justified exemptions
 # ---------------------------------------------------------------------------
 #
-# Handlers the per-handler unit exposed that genuinely mutate tenant business
-# state with no audit row anywhere on the path. They are listed so the suite is
-# green on a KNOWN, enumerated set rather than by widening the real exemption
-# dict — every one of them is work still to do, and `test_audit_exemption_list_
-# has_no_stale_entries` fails the moment one starts auditing, which is the
-# prompt to delete its entry here.
+# Handlers that genuinely mutate tenant business state with no audit row
+# anywhere on the path. Listing one here keeps the suite green on a KNOWN,
+# enumerated set instead of widening the real exemption dict above — an entry
+# here says "still to do", never "already covered", and
+# `test_audit_exemption_list_has_no_stale_entries` fails the moment the handler
+# starts auditing, which is the prompt to delete the entry.
 #
 # Do not add to this dict. A new unaudited mutating handler is a bug to fix, not
 # an entry to make.
-#
-# The round-24 six — `inspections.create_inspection`,
-# `invoices.import_invoices_from_csv`, `vendors.{import_vendors_from_csv,
-# invite_vendor_portal_user, sync_vendors_from_erp_endpoint}` and
-# `workflow_definitions.create_workflow` — now each dispatch a PII-free audit
-# row (`quality_inspection.created` / `invoice.imported_from_csv` /
-# `vendor.imported_from_csv` / `vendor_user.invited` / `vendor.synced_from_erp`
-# / `workflow.created`) and their entries are deleted, exactly as the note
-# above prescribes.
 _OPEN_AUDIT_HOLES: dict[tuple[str, str], str] = {}
+"""Empty on purpose — kept, not deleted.
+
+The six entries this held (round-24 report) are all closed:
+
+* ``workflow_definitions.create_workflow`` → ``workflow.created``
+* ``vendors.invite_vendor_portal_user`` → ``vendor_user.invited``
+* ``vendors.sync_vendors_from_erp_endpoint`` → ``vendor.synced_from_erp``
+  (in ``services/vendor_sync``)
+* ``vendors.import_vendors_from_csv`` → ``vendor.imported_csv``
+  (in ``services/csv_import``)
+* ``invoices.import_invoices_from_csv`` → ``invoice.imported_csv``
+  (in ``services/csv_import``)
+* ``inspections.create_inspection`` → ``quality_inspection.created``
+
+The dict stays because the DISTINCTION it draws is the valuable part: a known
+gap is not a settled decision, and merging one into the exemption dict above is
+how "we have not done this yet" quietly becomes "this is fine". A future
+unaudited mutator should be FIXED; if one genuinely cannot be fixed in the
+session that finds it, it belongs here — with a reason that says it is open work
+— and nowhere else.
+"""
 
 _AUDIT_EXEMPT = {**_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT, **_OPEN_AUDIT_HOLES}
 
@@ -401,11 +418,35 @@ def _identifiers_in(src: str) -> set[str]:
     return names
 
 
+# Every helper that writes an `audit_log` row. `dispatch_audit` is the
+# tenant-session path; `dispatch_auth_audit` and `queue_auth_audit` open their
+# OWN tenant session (a handler running on the control-plane session has none to
+# write through) and then go through the same `services/audit.log_action`
+# primitive. All three produce the row this invariant is about, so all three
+# have to count as auditing.
+#
+# Matching only `dispatch_audit` was a blind spot with teeth. Neither of the
+# other two contains it as a substring, so a handler auditing through them read
+# as UNAUDITED — it had to be excused in the dict above, and because
+# `test_audit_exemption_list_has_no_stale_entries` only fires when an excused
+# handler STARTS auditing, that entry's reason string could then never be
+# re-validated by anything. That is how `portal_mfa_verify` kept a reason
+# asserting "a SUCCESSFUL enrollment is unaudited on both surfaces" after both
+# surfaces started auditing it: the same "one thing silently vouches for
+# another" shape as the module-wide unit this file's per-handler unit replaced.
+_AUDIT_WRITERS = ("dispatch_audit", "dispatch_auth_audit", "queue_auth_audit")
+
+
+def _writes_audit_row(src: str) -> bool:
+    return any(writer in src for writer in _AUDIT_WRITERS)
+
+
 def _handler_audits(
     fn: object, module: str, _depth: int = 0, _seen: set[str] | None = None
 ) -> bool:
-    """True when `dispatch_audit` appears in this handler's own source, or in
-    the source of a function it calls that is defined in the SAME module.
+    """True when an audit-writing call (`_AUDIT_WRITERS`) appears in this
+    handler's own source, or in the source of a function it calls that is
+    defined in the SAME module.
 
     The same-module allowance is what keeps a real pattern legible: several
     routers funnel their writes through a local `_audit(...)` / `_transition(...)`
@@ -427,7 +468,7 @@ def _handler_audits(
         src = inspect.getsource(fn)  # type: ignore[arg-type]
     except (OSError, TypeError):  # pragma: no cover - C builtins
         return False
-    if "dispatch_audit" in src:
+    if _writes_audit_row(src):
         return True
 
     mod = sys.modules.get(module)
@@ -529,7 +570,7 @@ def test_audit_exemption_list_has_no_stale_entries():
             continue
         fn = _resolve_handler(module, name)
         if fn is not None and _handler_audits(fn, module):
-            stale.append(f"{module}.{name} (now calls dispatch_audit — drop the exemption)")
+            stale.append(f"{module}.{name} (now writes an audit row — drop the exemption)")
     assert not stale, f"stale audit exemptions: {stale}"
 
 
@@ -546,32 +587,46 @@ def test_entity_and_gl_account_mutations_dispatch_audit():
 
 
 def test_round_24_open_audit_holes_are_closed():
-    """The six handlers round 24 enumerated in `_OPEN_AUDIT_HOLES` — a Day-0
+    """The six mutators round 24 enumerated in `_OPEN_AUDIT_HOLES` — a Day-0
     CSV load of a tenant's AP ledger, an ERP vendor pull, a bulk vendor
     import, the one AP action that mints a vendor identity, a workflow
     definition, and a hand-recorded 4-way-match quality inspection — now each
     dispatch a PII-free audit row (invariant #3).
 
-    Pinned by name here, per-handler, so a refactor that drops one
-    `dispatch_audit` call fails loudly even if the route-discovery sweep ever
-    stops reaching that handler — the belt to the sweep's suspenders.
-    """
-    from app.api import inspections, invoices, vendors, workflow_definitions
+    Pinned by name here so a refactor that drops one `dispatch_audit` call
+    fails loudly even if the route-discovery sweep ever stops reaching that
+    handler — the belt to the sweep's suspenders.
 
-    handlers = [
+    Three of the six audit **per row inside their service**, not once at the
+    route: an import that creates 400 invoices writes 400 rows, each keyed on
+    the invoice's own `correlation_id` so it is reachable from that invoice's
+    trail. A single route-level summary row keyed on the org would be
+    invisible from every invoice it describes, which is the trail an auditor
+    actually walks. So the assertion follows the delegation rather than
+    demanding the call sit in the handler — the same distinction
+    `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT` draws above.
+    """
+    from app.api import inspections, vendors, workflow_definitions
+    from app.services import csv_import, vendor_sync
+
+    # Audits directly in the handler.
+    direct = [
         workflow_definitions.create_workflow,
         vendors.invite_vendor_portal_user,
-        vendors.sync_vendors_from_erp_endpoint,
-        vendors.import_vendors_from_csv,
-        invoices.import_invoices_from_csv,
         inspections.create_inspection,
     ]
-    missing = [
-        f"{h.__module__}.{h.__name__}"
-        for h in handlers
-        if "dispatch_audit" not in inspect.getsource(h)
+    # Audits in the service the handler delegates to (one row per created row).
+    delegated = [
+        csv_import.import_invoices_csv,
+        csv_import.import_vendors_csv,
+        vendor_sync.sync_vendors_from_erp,
     ]
-    assert not missing, f"these tenant-mutating handlers write no audit row: {missing}"
+    missing = [
+        f"{fn.__module__}.{fn.__name__}"
+        for fn in (*direct, *delegated)
+        if not _handler_audits(fn, fn.__module__)
+    ]
+    assert not missing, f"these tenant-mutating paths write no audit row: {missing}"
 
 
 # ---------------------------------------------------------------------------

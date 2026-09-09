@@ -1,11 +1,4 @@
-import {
-	API_BASE,
-	currentTenantSlug,
-	expect,
-	signInAndWait,
-	signOut,
-	test
-} from '../fixtures/helpers';
+import { API_BASE, currentTenantSlug, expect, signInAndWait, signOut, tenantBase, test } from '../fixtures/helpers';
 
 // Start unauthenticated — this spec needs a fresh login per test to capture / revoke a JWT.
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -65,8 +58,8 @@ test.describe('logout security', () => {
 		// shape of a stolen-and-replayed token). Logging out in one
 		// must lock out the other on its next request.
 		const slug = currentTenantSlug();
-		const ctxA = await browser.newContext({ baseURL: `http://${slug}.localhost:7777` });
-		const ctxB = await browser.newContext({ baseURL: `http://${slug}.localhost:7777` });
+		const ctxA = await browser.newContext({ baseURL: tenantBase(slug) });
+		const ctxB = await browser.newContext({ baseURL: tenantBase(slug) });
 		try {
 			const pageA = await ctxA.newPage();
 			await signInAndWait(pageA, tenantAdmin);

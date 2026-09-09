@@ -648,7 +648,11 @@ async def test_portal_mfa_enrollment_success_is_audited(mfa_on, monkeypatch):
     audit.assert_awaited_once()
     kwargs = audit.await_args.kwargs
     assert kwargs["action"] == "portal.mfa.enrolled"
-    assert kwargs["details"] == {"factor": "totp"}
+    # `replaced` records whether this enrollment REPLACED a live factor —
+    # the fact a "who swapped the supplier's second factor" investigation
+    # turns on. PII-free either way: the factor kind and a boolean, never
+    # the secret and never the supplier's address.
+    assert kwargs["details"] == {"factor": "totp", "replaced": False}
     assert secret not in repr(kwargs)
 
 

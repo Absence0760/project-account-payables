@@ -1,12 +1,5 @@
-import { expect, test } from '../fixtures/helpers';
+import { ACME_ADMIN, ACME_BASE, API_BASE, escapeRegExp, expect, TECHFLOW_ADMIN, TECHFLOW_BASE, test } from '../fixtures/helpers';
 
-import {
-	ACME_ADMIN,
-	ACME_BASE,
-	escapeRegExp,
-	TECHFLOW_ADMIN,
-	TECHFLOW_BASE
-} from '../fixtures/helpers';
 
 // Start unauthenticated — this spec drives its own ACME/TECHFLOW logins to assert
 // cross-tenant write isolation. The per-worker admin storage state would point at
@@ -33,7 +26,7 @@ test.use({ baseURL: ACME_BASE });
  * through the guard is enough to defeat tenant isolation.
  */
 
-const API_URL = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+const API_URL = API_BASE;
 
 async function tokenAfterLogin(
 	page: import('@playwright/test').Page,

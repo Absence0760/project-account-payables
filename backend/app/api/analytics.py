@@ -63,11 +63,13 @@ from app.services.cashflow import (
 from app.services.currency_conversion import (
     card_currency_sql,
     compute_unrealized_fx_gain_loss,
+    invoice_currency_rollup_select,
     payment_reporting_amount_sql,
     reporting_amount_for_row,
     resolve_reporting_currency,
-    rollup_to_reporting_currency,
-    vendor_rollup_to_reporting_currency,
+    rollup_from_grouped_rows,
+    vendor_rollup_from_grouped_rows,
+    vendor_spend_grouped_select,
 )
 from app.services.fx_adapters import get_fx_adapter
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
@@ -732,25 +734,21 @@ async def get_cfo_analytics(
     # The naive SUM above mixes currencies. Re-roll into the org's reporting
     # currency using each row's rate-locked `reporting_amount` so a EUR invoice
     # and a USD invoice add up correctly. See backend/docs/multi-currency.md.
+    # Grouped per currency in SQL (`invoice_currency_rollup_select`) rather
+    # than selecting four columns of every invoice in the period and folding
+    # them a row at a time — same rule, same result, one aggregate instead of a
+    # transfer that grows with the invoice table.
     reporting_currency = resolve_reporting_currency(org.settings)
     spend_rows_q = await db.execute(
         _inv(
-            select(
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(
+            invoice_currency_rollup_select(reporting_currency=reporting_currency).where(
                 Invoice.invoice_date >= period_start,
                 Invoice.status != InvoiceStatus.rejected.value,
             )
         )
     )
-    spend_rollup = rollup_to_reporting_currency(
-        [
-            {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
-            for r in spend_rows_q.all()
-        ],
+    spend_rollup = rollup_from_grouped_rows(
+        [dict(r) for r in spend_rows_q.mappings().all()],
         reporting_currency=reporting_currency,
     )
 
@@ -771,19 +769,13 @@ async def get_cfo_analytics(
     # backend/docs/multi-currency.md.
     ap_balance_rows_q = await db.execute(
         _inv(
-            select(
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(Invoice.status.in_(OPEN_AP_STATUSES))
+            invoice_currency_rollup_select(reporting_currency=reporting_currency).where(
+                Invoice.status.in_(OPEN_AP_STATUSES)
+            )
         )
     )
-    ap_balance_rollup = rollup_to_reporting_currency(
-        [
-            {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
-            for r in ap_balance_rows_q.all()
-        ],
+    ap_balance_rollup = rollup_from_grouped_rows(
+        [dict(r) for r in ap_balance_rows_q.mappings().all()],
         reporting_currency=reporting_currency,
     )
 
@@ -904,35 +896,23 @@ async def get_cfo_analytics(
     # Rolled into the org's reporting currency (not a naive SUM across
     # currencies) — a vendor billing in more than one currency used to add
     # e.g. USD + EUR as if they were one currency.
+    #
+    # Grouped in SQL by `vendor_spend_grouped_select`, the one query all four
+    # per-vendor spend surfaces share (this tile, its drill-through, the CSV
+    # export, the emailed scheduled report). Each of them used to select five
+    # columns of EVERY invoice in the period and fold them in Python — a
+    # synchronous per-row loop inside an `async def`, the shape
+    # `docs/decisions.md` §103 removed from the dashboard's own top-vendor
+    # tile. See backend/docs/analytics.md § Per-vendor spend is one query.
     vendor_rows = await db.execute(
-        _inv(
-            select(
-                Invoice.vendor_name,
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(
-                Invoice.invoice_date >= period_start,
-                Invoice.vendor_name.isnot(None),
-                Invoice.vendor_name != "",
-                # Exclude rejected so the concentration denominator matches the
-                # headline total_spend — else vendor shares are understated.
-                Invoice.status != InvoiceStatus.rejected.value,
-            )
+        vendor_spend_grouped_select(
+            reporting_currency=reporting_currency,
+            period_start=period_start,
+            entity_id=entity_id,
         )
     )
-    vendor_entries = vendor_rollup_to_reporting_currency(
-        [
-            {
-                "vendor": vendor,
-                "amount": amount,
-                "currency": currency,
-                "reporting_amount": rep_amt,
-                "reporting_currency": rep_cur,
-            }
-            for vendor, amount, currency, rep_amt, rep_cur in vendor_rows.all()
-        ],
+    vendor_entries = vendor_rollup_from_grouped_rows(
+        [dict(r) for r in vendor_rows.mappings().all()],
         reporting_currency=reporting_currency,
     )
     # The FULL vendor list, not a pre-sliced top-50. `compute_supplier_concentration`
@@ -942,9 +922,16 @@ async def get_cfo_analytics(
     # (and with them the `flagged` risk warning), and made `top_50_share_pct`
     # exactly 100.0 by construction on any tenant with 50+ vendors — a metric
     # that could not carry information. `assistant/tools/vendor_spend` already
-    # passes the full list and slices only for display; this now matches.
+    # passes the full list and slices only for display; this now matches. The
+    # SQL `GROUP BY` above returns every vendor for the same reason.
     vendor_spend = [{"vendor": e.vendor, "amount": e.amount} for e in vendor_entries]
     concentration = compute_supplier_concentration(vendor_spend)
+    # How many of the invoices behind `concentration` were added at FACE value
+    # because no rate lock bridged them into `reporting_currency`. Zero on a
+    # single-currency tenant. Reported rather than absorbed: a part-converted
+    # total presented as a converted one is the failure mode the `reporting`
+    # rollup beside it already discloses (`docs/decisions.md` §35).
+    concentration_unconverted_count = sum(e.unconverted_count for e in vendor_entries)
 
     # ----- Fraud-rate trend (last 6 months) — proxy: exception -----
     # ----- count / invoice count per month. -----
@@ -1191,6 +1178,10 @@ async def get_cfo_analytics(
             "largest_vendor": concentration.largest_vendor,
             "largest_vendor_share_pct": float(concentration.largest_vendor_share_pct),
             "flagged": concentration.flagged,
+            # Invoices folded into `total_spend` (and therefore into every
+            # share above) at FACE value, because no rate lock bridged them
+            # into the reporting currency. A count, not money.
+            "unconverted_count": concentration_unconverted_count,
         },
         # `rate_pct` is a percentage; the row's other fields are counts. It is
         # `null` for a month with no invoices — an empty denominator makes the
@@ -1376,21 +1367,18 @@ async def _entity_metrics(
     # had until `reporting_accounts_payable_balance` was added beside it.
     # Reuses that surface's exact rollup so the two figures can never disagree
     # for the consolidated (entity_id=None) row.
+    # Grouped per currency in SQL, like the `/cfo` rollup it mirrors. This one
+    # runs once PER ENTITY, so the old four-columns-of-every-open-invoice fold
+    # was multiplied by the tenant's subsidiary count.
     outstanding_rows_q = await db.execute(
         _inv(
-            select(
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(Invoice.status.in_(_OPEN_AP_STATUSES))
+            invoice_currency_rollup_select(reporting_currency=reporting_currency).where(
+                Invoice.status.in_(_OPEN_AP_STATUSES)
+            )
         )
     )
-    outstanding_rollup = rollup_to_reporting_currency(
-        [
-            {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
-            for r in outstanding_rows_q.all()
-        ],
+    outstanding_rollup = rollup_from_grouped_rows(
+        [dict(r) for r in outstanding_rows_q.mappings().all()],
         reporting_currency=reporting_currency,
     )
 
@@ -1516,42 +1504,21 @@ async def drill_spend_concentration(
     and a few representative invoice IDs the CFO can click into."""
     period_start = utc_today() - timedelta(days=period_days)
     reporting_currency = resolve_reporting_currency(org.settings)
+    # Same query, same population and same conversion rule as the tile this
+    # drills into (`get_cfo_analytics`) — one builder, so the two cannot
+    # disagree about which invoices are spend or what a foreign one is worth.
+    # It groups in SQL rather than streaming the period's invoices into a
+    # Python fold; see backend/docs/analytics.md § Per-vendor spend is one
+    # query and `docs/decisions.md` §103.
     rows = await db.execute(
-        apply_entity_scope(
-            select(
-                Invoice.vendor_name,
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(
-                Invoice.invoice_date >= period_start,
-                Invoice.vendor_name.isnot(None),
-                Invoice.vendor_name != "",
-                # Same population as the concentration tile this drills into
-                # (get_cfo_analytics) — rejected invoices were never real
-                # spend. Without this the drill-through total disagreed with
-                # the tile the CFO clicked from.
-                Invoice.status != InvoiceStatus.rejected.value,
-            ),
-            Invoice,
-            entity_id,
+        vendor_spend_grouped_select(
+            reporting_currency=reporting_currency,
+            period_start=period_start,
+            entity_id=entity_id,
         )
     )
-    # Rolled into the org's reporting currency (not a naive SUM across
-    # currencies) — a vendor billing in more than one currency used to add
-    # e.g. USD + EUR as if they were one currency.
-    vendor_entries = vendor_rollup_to_reporting_currency(
-        [
-            {
-                "vendor": vendor,
-                "amount": amount,
-                "currency": currency,
-                "reporting_amount": rep_amt,
-                "reporting_currency": rep_cur,
-            }
-            for vendor, amount, currency, rep_amt, rep_cur in rows.all()
-        ],
+    vendor_entries = vendor_rollup_from_grouped_rows(
+        [dict(r) for r in rows.mappings().all()],
         reporting_currency=reporting_currency,
     )
     # The denominator is the WHOLE period's spend, taken before `limit` is
@@ -1559,7 +1526,9 @@ async def drill_spend_concentration(
     # labelled as the whole-set total and rebased every `share_pct` onto the
     # top-N subtotal — so the drill-through and the tile it drills into reported
     # different shares for the same vendor, and `?limit=` silently changed both.
+    # For the same reason the `GROUP BY` above carries no `LIMIT`.
     total = sum((e.amount for e in vendor_entries), Decimal("0"))
+    unconverted_count = sum(e.unconverted_count for e in vendor_entries)
     vendor_entries = vendor_entries[:limit]
     return {
         "period_days": period_days,
@@ -1572,10 +1541,17 @@ async def drill_spend_concentration(
                 if total > 0
                 else 0.0,
                 "invoice_count": e.invoice_count,
+                # Per-vendor count of invoices added at face value for want of
+                # a rate lock — so the row that is part-converted is the row
+                # the CFO can see is part-converted, not just the page total.
+                "unconverted_count": e.unconverted_count,
             }
             for e in vendor_entries
         ],
         "total_spend": _money(total),
+        # Whole-period count, taken before `limit` like `total_spend` — the
+        # denominator's disclosure has to describe the denominator.
+        "unconverted_count": unconverted_count,
     }
 
 
@@ -1695,43 +1671,21 @@ async def export_report(
         )
         payload = EXPORTERS[report](rows.scalars().all())
     elif report == "vendor_spend":
+        # Same builder as the CFO concentration tile and its drill-through —
+        # same population (rejected invoices were never real spend), same
+        # conversion rule, grouped in SQL rather than folded per invoice in
+        # Python. See backend/docs/analytics.md § Per-vendor spend is one query.
+        export_currency = resolve_reporting_currency(org.settings if org else None)
         rows = await db.execute(
-            apply_entity_scope(
-                select(
-                    Invoice.vendor_name,
-                    Invoice.amount,
-                    Invoice.currency,
-                    Invoice.reporting_amount,
-                    Invoice.reporting_currency,
-                ).where(
-                    Invoice.invoice_date >= period_start,
-                    Invoice.vendor_name.isnot(None),
-                    Invoice.vendor_name != "",
-                    # Same population as the CFO concentration tile
-                    # (get_cfo_analytics) and its drill-through — rejected
-                    # invoices were never real spend. Without this the export
-                    # disagreed with both.
-                    Invoice.status != InvoiceStatus.rejected.value,
-                ),
-                Invoice,
-                entity_id,
+            vendor_spend_grouped_select(
+                reporting_currency=export_currency,
+                period_start=period_start,
+                entity_id=entity_id,
             )
         )
-        # Rolled into the org's reporting currency (not a naive SUM across
-        # currencies) — a vendor billing in more than one currency used to
-        # add e.g. USD + EUR as if they were one currency.
-        vendor_entries = vendor_rollup_to_reporting_currency(
-            [
-                {
-                    "vendor": vendor,
-                    "amount": amount,
-                    "currency": currency,
-                    "reporting_amount": rep_amt,
-                    "reporting_currency": rep_cur,
-                }
-                for vendor, amount, currency, rep_amt, rep_cur in rows.all()
-            ],
-            reporting_currency=resolve_reporting_currency(org.settings if org else None),
+        vendor_entries = vendor_rollup_from_grouped_rows(
+            [dict(r) for r in rows.mappings().all()],
+            reporting_currency=export_currency,
         )
         payload = EXPORTERS[report](vendor_entries)
     elif report == "payment_register":

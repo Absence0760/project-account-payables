@@ -51,6 +51,29 @@ PUBLIC_API_URL=https://api.feohledger.com pnpm build        # Production
 
 Note: The frontend also reads the tenant slug from the browser subdomain at runtime (not from env vars). See [multi-tenancy.md](multi-tenancy.md).
 
+### Playwright e2e harness (`frontend/tests-e2e/`)
+
+Test-run configuration only — nothing here reaches the app at build or deploy
+time. Every value defaults to what the suite already used, so an existing run is
+unchanged.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `E2E_WEB_ORIGIN` | `http://localhost:7777` | Origin the SvelteKit app is served on, **without** a tenant subdomain. Everything else is derived from it — the per-tenant origins (`http://<slug>.localhost:7777`), the post-login landing pattern, and the `--port` the Playwright `webServer` block hands `vite dev` / `vite preview`. |
+| `PUBLIC_API_URL` | `http://localhost:8000` | Backend origin. Same variable the app reads (above): one value configures the build under test and the specs that call the API directly. |
+| `E2E_TENANT_OFFSET` | `0` | Fixed offset added to every worker's `e2e<N>` tenant index, so two independent runs don't collide on `e2e1`. |
+| `E2E_TENANT_COUNT` / `FEOH_E2E_TENANT_COUNT` | `4` | How many `e2e<N>` tenants the seed provisioned; the worker→tenant map wraps modulo this. |
+| `PLAYWRIGHT_WORKERS` | `4` (CI: `1`) | Worker count. |
+| `PLAYWRIGHT_BASE_URL` | `http://acme.localhost:7777` | Fallback `baseURL` for specs that don't take the per-worker one. |
+| `FEOH_E2E_USE_PREVIEW` | unset | `true` serves the built bundle (`vite preview`) instead of the dev server — what CI does after `pnpm build`. |
+
+The first two exist for **git worktrees**: `playwright.config.ts` sets
+`reuseExistingServer` locally, so a second session on the default port silently
+tests the *primary* checkout's build instead of its own. Worktrees isolate files,
+not ports. Resolved in `frontend/tests-e2e/fixtures/env.ts`; the full recipe
+(including what stays shared — the databases and the opt-in Docker services) is
+in `frontend/tests-e2e/README.md` § Running from a worktree.
+
 ## Backend (`backend/.env`)
 
 | Variable              | Default                                                                  | Description                      |

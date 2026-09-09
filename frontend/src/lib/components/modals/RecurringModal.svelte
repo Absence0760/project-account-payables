@@ -7,8 +7,8 @@
 	} from '$lib/types/recurring';
 	import {
 		RECURRING_CADENCES,
-		CADENCE_LABELS,
-		STATUS_LABELS,
+		CADENCE_LABEL_KEYS,
+		recurringStatusLabelKey,
 		STATUS_TONES
 	} from '$lib/types/recurring';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -213,13 +213,19 @@
 				: m('recurring.modal.title.view', { name: template!.name })
 	);
 	const ariaLabel = $derived(isCreate ? m('recurring.modal.aria.new') : m('recurring.modal.aria.detail'));
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = $derived.by(() => {
+		const key = recurringStatusLabelKey(status);
+		return key ? m(key) : status;
+	});
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
 			<div class="status-row">
-				<Badge tone={STATUS_TONES[status]} variant={status}>{STATUS_LABELS[status]}</Badge>
+				<Badge tone={STATUS_TONES[status]} variant={status}>{statusLabel}</Badge>
 				<span class="meta-pill">{m('recurring.modal.generatedCount', { count: template!.generated_count })}</span>
 				{#if template!.next_run_on && status === 'active'}
 					<span class="meta-pill">{m('recurring.modal.nextRun', { date: formatDate(template!.next_run_on) })}</span>
@@ -260,7 +266,7 @@
 				<span>{m('recurring.modal.field.cadence')}</span>
 				<select bind:value={cadence} disabled={!canEdit}>
 					{#each RECURRING_CADENCES as c}
-						<option value={c}>{CADENCE_LABELS[c]}</option>
+						<option value={c}>{m(CADENCE_LABEL_KEYS[c])}</option>
 					{/each}
 				</select>
 			</label>

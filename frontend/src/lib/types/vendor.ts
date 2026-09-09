@@ -211,11 +211,14 @@ export interface VendorEnrichmentApplyResponse {
 	applied_at: string;
 }
 
-// Human labels for the applyable fields (used in the enrich diff UI).
-export const ENRICHABLE_FIELD_LABELS: Record<EnrichableField, string> = {
-	name: 'Legal name',
-	address: 'Address',
-	website: 'Website'
+// Message keys for the applyable fields (used in the enrich diff UI). The
+// field name is a table cell AND the `{field}` interpolated into the
+// translated `vendors.modal.applyFieldAria` checkbox label, so an English
+// literal here landed mid-sentence in a translated aria-label.
+export const ENRICHABLE_FIELD_LABEL_KEYS: Record<EnrichableField, MessageKey> = {
+	name: 'vendors.enrich.field.name',
+	address: 'vendors.enrich.field.address',
+	website: 'vendors.enrich.field.website'
 };
 
 // ---------------------------------------------------------------------------
@@ -271,6 +274,7 @@ export interface VendorMergeResponse {
 }
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 
 /**
  * Badge tone per vendor lifecycle status (`Vendor.status`).
@@ -296,20 +300,107 @@ export const VENDOR_STATUS_TONES: Record<string, BadgeTone> = {
 	rejected: 'danger'
 };
 
-export const SCREENING_STATUS_LABELS: Record<ScreeningStatus, string> = {
-	unscreened: 'Unscreened',
-	clear: 'Clear',
-	review: 'Review',
-	match: 'Match'
+// Every lifecycle value `Vendor.status` can hold. The column is untyped on the
+// wire (hence the `string`-keyed tone map above), so this union is the
+// frontend's own vocabulary: it exists to make the label map below TOTAL, so a
+// status added here without a label is a compile error rather than a badge
+// that quietly falls back to its raw enum value.
+export type VendorStatus = 'active' | 'unverified' | 'inactive' | 'rejected';
+
+export const VENDOR_STATUSES: VendorStatus[] = ['active', 'unverified', 'inactive', 'rejected'];
+
+/**
+ * The i18n key carrying each lifecycle-status label — never the English string
+ * itself. It lived as a page-local English map on `/vendors`, whose STATUS
+ * FILTER CHIPS are translated, so the row badge read `Unverified` in English
+ * directly beside a chip that read `Nicht verifiziert`. It now sits beside the
+ * tone map for the same reason that one was hoisted: the label and the colour
+ * of one status belong together.
+ */
+export const VENDOR_STATUS_LABEL_KEYS: Record<VendorStatus, MessageKey> = {
+	active: 'vendors.status.active',
+	unverified: 'vendors.status.unverified',
+	inactive: 'vendors.status.inactive',
+	rejected: 'vendors.status.rejected'
 };
 
-export const RISK_LEVEL_LABELS: Record<RiskLevel, string> = {
-	low: 'Low',
-	medium: 'Medium',
-	high: 'High',
-	critical: 'Critical',
-	unknown: 'Unknown'
+/** The message key for a lifecycle status, or `null` for an unrecognised one. */
+export function vendorStatusLabelKey(status: string): MessageKey | null {
+	return VENDOR_STATUS_LABEL_KEYS[status as VendorStatus] ?? null;
+}
+
+// Where the vendor record came from (`Vendor.source`) — rendered as a muted
+// pill in the row beside the status badge, so it is keyed for the same reason.
+export type VendorSource = 'manual' | 'erp_sync' | 'ai_extracted';
+
+export const VENDOR_SOURCE_LABEL_KEYS: Record<VendorSource, MessageKey> = {
+	manual: 'vendors.source.manual',
+	erp_sync: 'vendors.source.erpSync',
+	ai_extracted: 'vendors.source.aiExtracted'
 };
+
+/** The message key for a vendor source, or `null` for an unrecognised one. */
+export function vendorSourceLabelKey(source: string): MessageKey | null {
+	return VENDOR_SOURCE_LABEL_KEYS[source as VendorSource] ?? null;
+}
+
+/**
+ * The i18n key carrying each screening-status label — never the English string
+ * itself. `ui/ScreeningBadge.svelte` renders this pill on the (extracted)
+ * `/vendors` list and inside `VendorModal`, so a hardcoded English map here
+ * put an untranslated `Clear` beside translated columns. `Record<
+ * ScreeningStatus, MessageKey>` makes a new status a compile error rather
+ * than a blank pill, and `vendor.test.ts` proves every key exists in the
+ * catalogue.
+ *
+ */
+export const SCREENING_STATUS_LABEL_KEYS: Record<ScreeningStatus, MessageKey> = {
+	unscreened: 'vendors.screening.status.unscreened',
+	clear: 'vendors.screening.status.clear',
+	review: 'vendors.screening.status.review',
+	match: 'vendors.screening.status.match'
+};
+
+/**
+ * The message key for a screening status, or `null` for one this frontend
+ * doesn't know (the caller renders the raw value — visible and searchable —
+ * rather than a blank pill).
+ */
+export function screeningStatusLabelKey(status: string): MessageKey | null {
+	return SCREENING_STATUS_LABEL_KEYS[status as ScreeningStatus] ?? null;
+}
+
+/**
+ * The i18n key carrying each risk level — never the English string itself.
+ *
+ * It is rendered in three places, and the pill in `ui/ScreeningBadge.svelte`
+ * is why this had to land: that badge shows the screening verdict and the
+ * negative-news flag (both localized) directly beside the risk level, so an
+ * English `High risk` sat between two translated pills.
+ *
+ * The pill and its tooltip are COMPOSED strings, not the bare level, so they
+ * get their own keys (`vendors.risk.pill` / `.title`) rather than an English
+ * `{label} risk` template: German puts the noun first, French wants a space
+ * before its colon, and Japanese neither. Never concatenate a translated
+ * level onto an English word.
+ */
+export const RISK_LEVEL_LABEL_KEYS: Record<RiskLevel, MessageKey> = {
+	low: 'vendors.risk.low',
+	medium: 'vendors.risk.medium',
+	high: 'vendors.risk.high',
+	critical: 'vendors.risk.critical',
+	unknown: 'vendors.risk.unknown'
+};
+
+/**
+ * The message key for a risk level, or `null` for one this frontend doesn't
+ * know (the caller renders the raw value — visible and searchable — rather
+ * than a blank cell). `Vendor.risk_level` is typed against the union, but the
+ * scorer can widen it before this map catches up.
+ */
+export function riskLevelLabelKey(level: string): MessageKey | null {
+	return RISK_LEVEL_LABEL_KEYS[level as RiskLevel] ?? null;
+}
 
 // The screening-hit taxonomy (`SanctionsCheck.categories`). The backend's
 // vocabulary is fixed but open-ended — a future provider may report a label we

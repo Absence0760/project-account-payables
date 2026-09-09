@@ -3,9 +3,9 @@
 	import type { MessageKey } from '$lib/i18n/messages';
 	import {
 		RECURRING_STATUSES,
-		STATUS_LABELS,
+		recurringStatusLabelKey,
 		STATUS_TONES,
-		CADENCE_LABELS,
+		cadenceLabelKey,
 		skipReasonKey
 	} from '$lib/types/recurring';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -45,9 +45,20 @@
 
 	const canCreate = $derived(auth.isManager);
 
+	// Status and cadence are message keys, not English literals — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = recurringStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+	const cadenceLabel = (c: string) => {
+		const key = cadenceLabelKey(c);
+		return key ? m(key) : c;
+	};
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...RECURRING_STATUSES.map((s) => ({ key: s, label: STATUS_LABELS[s] }))
+		...RECURRING_STATUSES.map((s) => ({ key: s, label: statusLabel(s) }))
 	]);
 
 	const COLUMNS = $derived([
@@ -433,7 +444,7 @@
 					<td>{template.vendor_name ?? '—'}</td>
 					<td class="right mono"><Money amount={template.amount} currency={template.currency} /></td>
 					<td>
-						<span class="cadence">{CADENCE_LABELS[template.cadence]}</span>
+						<span class="cadence">{cadenceLabel(template.cadence)}</span>
 						<span class="cadence-day">{m('recurring.dayOfPeriod', { day: template.day_of_period })}</span>
 					</td>
 					<td class="muted">
@@ -449,7 +460,7 @@
 						     caller owns placement. -->
 						<span class="badge-row">
 							<Badge tone={STATUS_TONES[template.status]} variant={template.status}>
-								{STATUS_LABELS[template.status]}
+								{statusLabel(template.status)}
 							</Badge>
 							{#if template.last_skip}
 								<Badge

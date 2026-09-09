@@ -1,6 +1,5 @@
-import { expect, test } from '../fixtures/helpers';
+import { expect, NO_TENANT_BASE, test } from '../fixtures/helpers';
 
-import { NO_TENANT_BASE } from '../fixtures/helpers';
 
 // Start unauthenticated — this spec tests the public signup flow on the no-tenant origin.
 test.use({ storageState: { cookies: [], origins: [] } });

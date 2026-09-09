@@ -510,6 +510,21 @@ families (`financing_adapters`, `fx_adapters`, …):
 
   Guard: `tests/test_adapter_registry_fail_closed.py`.
 
+### Manual inspections audit too
+
+`POST /api/inspections` writes a `quality_inspection.created` audit row — the
+same PII-lean shape as the sync path's `quality_inspection.synced`:
+`inspection_number`, `result`, and whether the PO / GR references resolved.
+The inspector's name, the accepted / rejected quantities and the free-text
+deviation notes are deliberately **not** recorded, exactly as they are not on
+the sync row.
+
+It is the hand-entered inspection, not the synced one, that most needs the row:
+a `fail` or `partial` here is what flips an invoice's `po_match` to a quality
+hold, and a `pass` is what clears one — so this is the only inspection a human
+can author, and it was the only one with no record of who authored it while its
+QMS-synced sibling had audited since the integration shipped.
+
 ## Data Models
 
 The procurement models already exist:

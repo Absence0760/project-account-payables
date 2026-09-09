@@ -2872,7 +2872,24 @@
 		margin-bottom: 12px;
 	}
 
-	input,
+	/* The TEXT-entry recipe, carved away from the three controls it also
+	   reached but was never written for. Svelte scopes this to
+	   `.card.svelte-x input:where(.svelte-x)`, which outranks the global
+	   control base in `app.css`.
+
+	   checkbox/radio: `background:` is a SHORTHAND — it reset
+	   `background-image`, the drawn tick, so the twelve `.switch-row` toggles
+	   rendered identically checked and unchecked.
+
+	   color: adding those two `:not()`s took this selector from 0-0-1 to
+	   0-2-1, which TIES `.color-field input[type='color']` (also 0-2-1) — and
+	   on a tie the later rule wins, so `width: 100%` started beating the
+	   swatch's own `width: 40px`. The branding swatch grew to the full 478px
+	   column and squeezed its sibling hex field to 22px, under the WCAG 2.2 AA
+	   SC 2.5.8 24px floor (caught by `tests-e2e/a11y/axe.spec.ts`). A native
+	   colour swatch is not a text entry: it wants neither this padding nor
+	   this width, so it is carved out rather than out-specified. */
+	input:not([type='checkbox']):not([type='radio']):not([type='color']),
 	select,
 	textarea {
 		background: var(--bg);
@@ -2890,7 +2907,9 @@
 		resize: vertical;
 	}
 
-	input:focus,
+	/* Same carve-out: `outline: none` here would strip the checkbox/radio
+	   focus ring `app.css` draws for them (WCAG 2.4.7). */
+	input:not([type='checkbox']):not([type='radio']):focus,
 	select:focus,
 	textarea:focus {
 		outline: none;
@@ -3150,7 +3169,10 @@
 		letter-spacing: 0.04em;
 	}
 
-	.threshold-row input,
+	/* Text-entry recipe. No checkbox sits under this selector today, but it
+	   outranks the global control base in `app.css`, so the carve-out keeps a
+	   later one from losing its tick (`background:` resets the drawn mark). */
+	.threshold-row input:not([type='checkbox']):not([type='radio']),
 	.threshold-row textarea {
 		background: var(--bg);
 		border: 1px solid var(--border);
@@ -3167,7 +3189,7 @@
 		font-size: 0.82rem;
 	}
 
-	.threshold-row input:focus,
+	.threshold-row input:not([type='checkbox']):not([type='radio']):focus,
 	.threshold-row textarea:focus {
 		outline: none;
 		border-color: var(--accent);

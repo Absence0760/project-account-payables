@@ -31,6 +31,9 @@ different Postgres databases.
 | 2            | `e2e3`      | `http://e2e3.localhost:7777` |
 | 3            | `e2e4`      | `http://e2e4.localhost:7777` |
 
+(Those base URLs are the defaults; set `E2E_WEB_ORIGIN` to move them — see
+"Running from a worktree" below.)
+
 If a local flake suggests within-worker spec interference, run
 serially: `PLAYWRIGHT_WORKERS=1 pnpm test:e2e`. That matches
 the CI-shard behaviour.
@@ -71,9 +74,11 @@ Start the local e2e backend with both set (CI uses these exact values):
 
 ```
 tests-e2e/
-├── playwright.config.ts             config; webServer boots `pnpm dev`; workers default 4
+├── playwright.config.ts             config; webServer boots vite on E2E_WEB_ORIGIN's port; workers default 4
 ├── fixtures/
+│   ├── env.ts                       web origin + API base — see "Running from a worktree" below
 │   ├── helpers.ts                   per-worker fixtures + signIn / tenantPsql / etc.
+│   ├── services.ts                  reachability gates for the opt-in compose services
 │   └── globalSetup.ts               pre-run guard — see "Workflow shape guard" below
 ├── a11y/                            axe-core accessibility regression guard (WCAG 2.2 AA)
 ├── meta/                            source guards over the specs themselves — see "Invoice teardown" below
@@ -190,6 +195,56 @@ PLAYWRIGHT_WORKERS=1 pnpm test:frontend    # serial run, easier to debug a flake
 
 The `pnpm db:up` / `dev:backend` / `test:frontend` invocations are
 the root dispatch scripts; see the repo's root README for the rest.
+
+## Running from a worktree (`E2E_WEB_ORIGIN` / `PUBLIC_API_URL`)
+
+The dev server's port and the backend's origin are **configurable**, and both
+default to today's values — an ordinary run needs nothing:
+
+| Variable          | Default                 | What it points at                              |
+| ----------------- | ----------------------- | ---------------------------------------------- |
+| `E2E_WEB_ORIGIN`  | `http://localhost:7777` | The SvelteKit app, without a tenant subdomain.  |
+| `PUBLIC_API_URL`  | `http://localhost:8000` | The FastAPI backend (also passed to Vite).      |
+
+Set both when a second session runs the suite at the same time — most often a
+git **worktree** (root `CLAUDE.md` § "Running concurrent sessions"):
+
+```bash
+E2E_WEB_ORIGIN=http://localhost:7801 PUBLIC_API_URL=http://localhost:8001 \
+  E2E_TENANT_OFFSET=1 pnpm test:e2e
+```
+
+Why it matters: `playwright.config.ts` sets `reuseExistingServer` locally, so a
+worktree that keeps the default port finds the **primary checkout's** dev server
+already listening and tests *that* build — silently, with every spec passing
+against code you did not change. The alternative a session reaches for is taking
+the port from whoever owns it, which is worse: two round-24 agents hit this and
+one stopped and restarted a server it did not own. Worktrees isolate files, not
+ports.
+
+`fixtures/env.ts` resolves both values and derives everything else from them —
+the per-tenant subdomain origins (`tenantOrigin(slug)`, and the `ACME_BASE` /
+`TECHFLOW_BASE` / `NO_TENANT_BASE` constants), the post-login landing pattern
+(`TENANT_ROOT_URL`), and the `--port` the `webServer` block passes to
+`vite dev` / `vite preview`. Nothing else should read a port.
+
+Two things stay shared and are NOT covered by these variables:
+
+- **The databases.** Every session still shares one Postgres, so pin a distinct
+  tenant with `E2E_TENANT_OFFSET` (above) and give the second backend its own
+  `FEOH_DATABASE_URL` if you want full isolation.
+- **The opt-in Docker services** in `fixtures/services.ts` (Keycloak :8088,
+  Mailpit :8025, LocalStack :4566, stripe-mock :12111, fake-erp :12112). They
+  are one compose stack per machine, like Postgres — a second suite reuses them
+  rather than starting its own.
+- **The backend's own idea of where the frontend lives.**
+  `FEOH_TENANT_URL_TEMPLATE` (`http://{slug}.localhost:7777` in
+  `.env.development`) is what the *backend* stamps into invite links, portal
+  links and the SSO callback base — `E2E_WEB_ORIGIN` does not reach it. Two
+  specs assert against that template (`organization/tenant-url.spec.ts`,
+  `organization/custom-domain-rejection.spec.ts`), so a second session on a
+  non-default web origin must set `FEOH_TENANT_URL_TEMPLATE` on its backend to
+  match, or those two fail while everything else passes.
 
 ## Service-backed specs (gated)
 
@@ -344,8 +399,12 @@ Reach for these instead of duplicating boilerplate per spec:
 - `deleteInvoicesWhere(predicate, slug?)` — the ONLY supported way to
   delete invoices. See "Invoice teardown" above; a source guard fails
   the suite if a spec issues its own `DELETE FROM invoices`.
-- `API_BASE`, `ACME_BASE`, `TECHFLOW_BASE`, `NO_TENANT_BASE` — the
-  same origins everyone was redeclaring inline.
+- `API_BASE`, `ACME_BASE`, `TECHFLOW_BASE`, `NO_TENANT_BASE`,
+  `tenantBase(slug)` — the same origins everyone was redeclaring inline, all
+  derived from `E2E_WEB_ORIGIN` / `PUBLIC_API_URL` (see "Running from a
+  worktree").
+- `TENANT_ROOT_URL` — the post-login landing pattern. Wait on this rather than
+  writing a `/:7777\/?$/` regex, which pins the spec to the default port.
 
 ## Subdomain trick
 
@@ -353,9 +412,10 @@ The frontend resolves the tenant from the subdomain
 (`<slug>.localhost:7777` → `<slug>`). Chromium auto-resolves
 `*.localhost` to 127.0.0.1 per RFC 6761, so no `/etc/hosts` edits
 needed. To exercise the no-tenant marketing landing, override
-`baseURL` to `http://localhost:7777` via
-`test.use({ baseURL: 'http://localhost:7777' })` in the spec (or
-import `NO_TENANT_BASE` and use that).
+`baseURL` to the bare origin — `test.use({ baseURL: NO_TENANT_BASE })`,
+importing `NO_TENANT_BASE` from `fixtures/helpers.ts`. Prefer that over a
+literal `'http://localhost:7777'`, which pins the spec to the default port and
+breaks under `E2E_WEB_ORIGIN` (see "Running from a worktree" above).
 
 ## Storage-state (future)
 

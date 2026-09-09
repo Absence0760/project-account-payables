@@ -243,3 +243,78 @@ def test_no_reporting_currency_disables_the_guard():
     assert result.unconvertible_count == 0
     assert result.total_savings_selected == Decimal("20.00")
     assert result.recommendations[0].unconvertible is False
+
+
+# ---------------------------------------------------------------------------
+# Unknown horizon — `null`, not a measured zero
+# ---------------------------------------------------------------------------
+
+
+def _horizonless_opp(offer_id: str, *, base: str, percent: str, pay_by: date, currency="USD"):
+    """An opportunity with NO net due date — what a vendor-scoped bulk offer
+    carrying no `valid_until` produces (`_build_opportunity` can resolve neither
+    a `PaymentSchedule` nor an `Invoice` due date for it)."""
+    return OfferOpportunity(
+        offer_id=offer_id,
+        invoice_id=None,
+        vendor_id=f"ven-{offer_id}",
+        vendor_name=f"Vendor {offer_id}",
+        invoice_number=None,
+        base_amount=Decimal(base),
+        currency=currency,
+        tier_days=10,
+        discount_percent=Decimal(percent),
+        pay_by=pay_by,
+        due_date=None,
+    )
+
+
+def test_horizonless_opportunity_is_unrankable_not_ranked_at_zero():
+    """Regression: with the due date defaulting to `pay_by`, this offer scored
+    `annualized_return_pct: 0.00` / `worthwhile: false` *beside* a positive
+    `net_benefit` — a self-contradictory object that could never be
+    recommended. It now leaves the APR ranking entirely."""
+    bulk = _horizonless_opp("bulk", base="500000.00", percent="3.00", pay_by=date(2026, 1, 21))
+    good = _opp("good", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21))
+
+    result = optimize(
+        [bulk, good],
+        cash_budget=None,
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+        reporting_currency="USD",
+    )
+
+    # It is NOT in the APR ranking — a thing with no APR has no position in one.
+    assert [r.opportunity.offer_id for r in result.recommendations] == ["good"]
+    assert [r.opportunity.offer_id for r in result.unrankable] == ["bulk"]
+    assert result.unrankable_count == 1
+
+    unranked = result.unrankable[0]
+    assert unranked.selected is False
+    assert unranked.roi.savings == Decimal("15000.00")  # real money, still stated
+    assert unranked.roi.annualized_return_pct is None
+    assert unranked.roi.net_benefit is None
+    assert unranked.roi.worthwhile is None
+    assert unranked.roi.horizon_known is False
+
+    # It contributes to no total — none of them are measurable for it.
+    assert result.total_savings_available == Decimal("20.00")  # `good` only
+    assert result.total_savings_selected == Decimal("20.00")
+    assert result.total_outlay_selected == Decimal("980.00")
+
+
+def test_horizonless_opportunity_never_consumes_a_cash_budget():
+    """It is not selected, so it cannot crowd out a ranked offer that is."""
+    bulk = _horizonless_opp("bulk", base="900.00", percent="3.00", pay_by=date(2026, 1, 21))
+    good = _opp("good", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21))
+    result = optimize(
+        [bulk, good],
+        cash_budget=Decimal("1000.00"),
+        cost_of_capital_pct=Decimal("8.00"),
+        today=_TODAY,
+        reporting_currency="USD",
+    )
+    assert result.unrankable[0].selected is False
+    assert [r.opportunity.offer_id for r in result.recommendations if r.selected] == ["good"]
+    assert result.total_outlay_selected == Decimal("980.00")

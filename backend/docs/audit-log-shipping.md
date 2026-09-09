@@ -348,7 +348,7 @@ whereas an export has to deliver every row of its range in one response:
   `GET /audit/verify-signatures` in the same module already used) selecting
   plain columns rather than the `AuditLog` entity, so nothing accumulates in the
   session's identity map;
-* JSON and CSV bodies are emitted in bounded chunks as rows arrive, so peak
+* JSON and CSV bodies are rendered in bounded chunks as rows arrive, so peak
   server memory is a page rather than a period. Measured with the body
   discarded as it is sent (so the number is the server's, not a test client's
   copy of the response): peak allocation went from 18.0 MiB at 5 000 rows and
@@ -356,6 +356,11 @@ whereas an export has to deliver every row of its range in one response:
   JSON also got faster (3 244 ms → 1 573 ms at 20 000 rows); CSV traded about
   20% wall clock (1 340 ms → 1 611 ms) for 48× less peak memory, which is the
   right way round for a report an auditor runs occasionally on a shared worker.
+* those chunks land in a **`SpooledTemporaryFile`** (`_spool_body`) rather than
+  going straight out on the wire, and the tenant session is **closed before the
+  response is returned** (`_drain_spool` then streams the finished file back in
+  `_SPOOL_READ_BYTES` blocks and unlinks it when the last one is read, or when
+  the client hangs up). See the connection-hold note below for why.
 
   That CSV regression was a *database* cost, not an application one, and it is
   addressed in the same round. Streaming bounds what the app holds, but the
@@ -388,22 +393,45 @@ Two consequences of streaming are worth knowing before editing that route:
   the range is scanned once and the query count stays fixed no matter how large
   it is.
 
-The trade-off streaming buys this with, stated plainly: the request holds its
-tenant DB connection checked out for the **whole** response, transmission
-included, where the buffered version released it as soon as the rows were read.
-The per-tenant pool is `pool_size=5, max_overflow=10`, so several concurrent
-annual exports over slow client links can hold connections far longer than
-before. That is the right way round — the alternative was gigabytes of server
-memory — but it is the thing to look at first if pool exhaustion ever shows up
-alongside export activity.
+**The connection is released before transmission, and that took a spool.**
+Streaming the cursor straight into the response bounded the memory and, in the
+same stroke, extended the connection hold from "while the rows are read" to
+"until the last byte reaches the client" — the request kept one of the tenant's
+`pool_size=5, max_overflow=10` connections checked out for the download's whole
+duration, so a handful of concurrent annual exports over slow links could
+exhaust the pool while Postgres itself sat idle. Draining the rendered chunks
+into a `SpooledTemporaryFile` first and `await db.close()`-ing before the
+`StreamingResponse` is returned keeps both properties instead of trading one for
+the other: peak RSS stays bounded by `_SPOOL_MAX_MEMORY_BYTES` (1 MiB; past that
+the rest rolls to disk, so a year-long range costs temp-file space, not memory)
+and the connection is back in the pool before a byte moves. `ix_audit_log_created_at`
+(above) is the other half of the same fix — it removed the sort that made the
+read itself long.
 
-Streaming also rests on FastAPI keeping its `yield`-dependency teardown *after*
+Two consequences, both deliberate:
+
+* A database error part-way through the range now surfaces **before** the first
+  byte, as a clean 500, instead of truncating a body the client had already
+  begun saving. That is the same principle as the un-terminated chunk and the
+  missing JSON `]`: an incomplete SOX export must never look complete.
+* The spool file must be closed on **both** exits — the last block read, and the
+  client hanging up mid-download (Starlette closes the body generator, so
+  `_drain_spool`'s `finally` is what unlinks it). An abandoned download is the
+  path that leaks quietly, because nothing surfaces an error.
+
+Streaming still rests on FastAPI keeping its `yield`-dependency teardown *after*
 the response body drains, which is internal ordering rather than a documented
-contract. `tests/test_audit_export_streaming.py` drives the raw ASGI app against
-a real database, so a future FastAPI bump that reordered it fails loudly there
-rather than silently handing the generator a closed session.
+contract — the spool makes the export no longer *depend* on that for its session
+(it has already closed it), but the dependency still tears down late.
+`tests/test_audit_export_streaming.py` drives the raw ASGI app against a real
+database, so a future FastAPI bump that reordered it fails loudly there rather
+than silently handing the generator a closed session.
 
-That file guards both halves — that it streams, and that it returns every row.
+That file guards both halves of the streaming contract — that it is chunked, and
+that it returns every row. `tests/test_audit_export_connection.py` guards the
+spool: no tenant connection checked out at any body chunk (asserted on the
+engine's own pool checkout/checkin events), bytes identical to the module's
+independent materialising renderer, and the temp file closed on both exits.
 
 ## DB-level immutability (SOX) and the `shipped_at` carve-out
 

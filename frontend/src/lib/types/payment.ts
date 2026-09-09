@@ -1,4 +1,5 @@
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount } from '$lib/utils/money';
 
 // Mirrors the statuses the backend actually persists on `payments.status`.
@@ -28,16 +29,37 @@ export const PAYMENT_STATUSES: PaymentStatus[] = [
 	'voided'
 ];
 
-export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
-	pending: 'Pending',
-	pending_compliance: 'Compliance Hold',
-	submitted: 'Submitted',
-	processing: 'Processing',
-	completed: 'Completed',
-	failed: 'Failed',
-	cancelled: 'Cancelled',
-	voided: 'Voided'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * Both surfaces that render a payment status (the `/payments` History badge
+ * and its filter chips) are inside the i18n extraction slice, so a hardcoded
+ * English map here put a translated chip row directly beside an untranslated
+ * `Compliance Hold` badge. Keyed the same way
+ * `notification.ts::EVENT_LABEL_KEYS` is; `Record<PaymentStatus, MessageKey>`
+ * makes a new status a compile error rather than a blank badge, and
+ * `paymentStatus.test.ts` proves every key exists in the catalogue.
+ */
+export const PAYMENT_STATUS_LABEL_KEYS: Record<PaymentStatus, MessageKey> = {
+	pending: 'payments.status.pending',
+	pending_compliance: 'payments.status.pendingCompliance',
+	submitted: 'payments.status.submitted',
+	processing: 'payments.status.processing',
+	completed: 'payments.status.completed',
+	failed: 'payments.status.failed',
+	cancelled: 'payments.status.cancelled',
+	voided: 'payments.status.voided'
 };
+
+/**
+ * The message key for a status, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank badge). `Payment.status` is typed against the union, but a status the
+ * backend adds first still reaches the badge as a bare string.
+ */
+export function paymentStatusLabelKey(status: string): MessageKey | null {
+	return PAYMENT_STATUS_LABEL_KEYS[status as PaymentStatus] ?? null;
+}
 
 /**
  * Badge tone per payment status.
@@ -134,15 +156,36 @@ export const PAYMENT_METHODS: PaymentMethod[] = [
 	'chaps'
 ];
 
-export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
-	ach: 'ACH',
-	wire: 'Wire',
-	check: 'Check',
-	virtual_card: 'Virtual Card',
-	bacs: 'BACS',
-	faster_payments: 'Faster Payments',
-	chaps: 'CHAPS'
+/**
+ * The i18n key carrying each rail's label — never the English string itself.
+ * The rail is a column on the (extracted) `/payments` History table and in
+ * `RunDetailModal`, one cell from the now-translated status badge.
+ *
+ * Several rails are proper NAMES rather than words — `ACH`, `BACS`, `Faster
+ * Payments`, `CHAPS` are scheme names and their catalogue entries are the
+ * same string in all six locales. That is deliberate: routing them through a
+ * key still costs nothing, and it means the day a locale does want to
+ * transliterate one, there is a place to put it.
+ */
+export const PAYMENT_METHOD_LABEL_KEYS: Record<PaymentMethod, MessageKey> = {
+	ach: 'payments.method.ach',
+	wire: 'payments.method.wire',
+	check: 'payments.method.check',
+	virtual_card: 'payments.method.virtualCard',
+	bacs: 'payments.method.bacs',
+	faster_payments: 'payments.method.fasterPayments',
+	chaps: 'payments.method.chaps'
 };
+
+/**
+ * The message key for a rail, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank cell). `Payment.method` is nullable on the wire and the backend can
+ * add a rail before this union does.
+ */
+export function paymentMethodLabelKey(method: string): MessageKey | null {
+	return PAYMENT_METHOD_LABEL_KEYS[method as PaymentMethod] ?? null;
+}
 
 export interface Payment {
 	id: string;

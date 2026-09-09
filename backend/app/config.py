@@ -138,9 +138,15 @@ class Settings(BaseSettings):
     vendor_rescreen_after_days: int = 7
 
     # Dynamic discounting & early-payment optimization (see
-    # backend/docs/dynamic-discounting.md). The ROI calculator and the
-    # accept/decline offer surface run unconditionally; only the *auto-capture
-    # sweep* is gated. `discount_optimization_enabled` is the master switch for
+    # backend/docs/dynamic-discounting.md). The ROI calculator, the
+    # accept/decline offer surface, the optimizer, the dashboard AND offer
+    # *expiry* all run unconditionally; only the *auto-capture decision* is
+    # gated. Expiry used to ride this switch too — it is written down by the
+    # same sweep — so with the switch off (the default) a lapsed offer stayed
+    # `offered` forever and `capture_rate_pct` read 100.00 on one capture out of
+    # ten. It no longer depends on the sweep: every read surface derives it
+    # (`services/discount_offers.effective_status`) and the sweep's write is a
+    # materialization. `discount_optimization_enabled` is the master switch for
     # that background loop — OFF by default so local dev / tests don't
     # auto-pay. `discount_auto_capture_roi_threshold` is the annualized return
     # (APR %) an offer must clear for the sweep to capture it automatically;

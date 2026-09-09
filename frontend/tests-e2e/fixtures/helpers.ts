@@ -11,6 +11,8 @@ import {
 	type Page
 } from '@playwright/test';
 
+import { API_BASE as _API_BASE, TENANT_ROOT_URL, WEB_ORIGIN, tenantOrigin } from './env';
+
 // `frontend/package.json` is `"type": "module"`, so the CommonJS
 // `__dirname` global isn't defined here. Recover it from
 // `import.meta.url` so the AUTH_DIR resolves relative to this file's
@@ -108,7 +110,7 @@ export const test = base.extend<object, WorkerFixtures>({
 		{ scope: 'worker' }
 	],
 	baseURL: async ({ tenantSlug }, use) => {
-		await use(`http://${tenantSlug}.localhost:7777`);
+		await use(tenantOrigin(tenantSlug));
 	},
 	// Default storage state for every test: the worker's tenant admin
 	// is already signed in. First test per worker pays the ~1–2 s login
@@ -184,9 +186,8 @@ function _readStoredToken(file: string): string | null {
  * Network errors also return false so the caller re-logs in.
  */
 async function _isStoredTokenValid(token: string, tenantSlug: string): Promise<boolean> {
-	const apiBase = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 	try {
-		const res = await fetch(`${apiBase}/api/auth/me`, {
+		const res = await fetch(`${_API_BASE}/api/auth/me`, {
 			headers: {
 				Authorization: `Bearer ${token}`,
 				'X-Tenant-Slug': tenantSlug
@@ -227,7 +228,7 @@ async function _ensureAdminStorageState(
 
 	fs.mkdirSync(AUTH_DIR, { recursive: true });
 	const context = await browser.newContext({
-		baseURL: `http://${tenantSlug}.localhost:7777`
+		baseURL: tenantOrigin(tenantSlug)
 	});
 	try {
 		const page = await context.newPage();
@@ -239,7 +240,7 @@ async function _ensureAdminStorageState(
 		// Mirror signInAndWait's success contract — land on the tenant
 		// dashboard URL before snapshotting storage. If the redirect
 		// hasn't happened, the localStorage hasn't been written yet.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 		// Bake a recorded cookie-consent choice into the persisted state so the
 		// GDPR consent banner (position:fixed, bottom-centre, z-index 10000) is
 		// hidden for every authenticated spec. The banner otherwise overlaps the
@@ -303,17 +304,22 @@ export const TECHFLOW_ADMIN = {
 	password: 'demo'
 } as const;
 
-/** Tenant origins. `*.localhost` resolves to 127.0.0.1 in Chromium. */
-export const ACME_BASE = 'http://acme.localhost:7777';
-export const TECHFLOW_BASE = 'http://techflow.localhost:7777';
-export const NO_TENANT_BASE = 'http://localhost:7777';
+/** Tenant origins, derived from `E2E_WEB_ORIGIN` (default
+ *  `http://localhost:7777`). `*.localhost` resolves to 127.0.0.1 in Chromium. */
+export const ACME_BASE = tenantOrigin('acme');
+export const TECHFLOW_BASE = tenantOrigin('techflow');
+export const NO_TENANT_BASE = WEB_ORIGIN;
 
 /** Build a tenant origin from a slug — used by specs that want to address
  *  the current worker's tenant explicitly (e.g. when overriding baseURL
  *  on a specific page.goto). */
 export function tenantBase(slug: string): string {
-	return `http://${slug}.localhost:7777`;
+	return tenantOrigin(slug);
 }
+
+/** The post-login landing URL (the tenant root). Re-exported so a spec can wait
+ *  on it instead of hardcoding a `:7777` pattern of its own. */
+export { TENANT_ROOT_URL };
 
 /** Escape every regex metacharacter so a literal URL can be embedded in a RegExp. */
 export function escapeRegExp(input: string): string {
@@ -323,7 +329,7 @@ export function escapeRegExp(input: string): string {
 /**
  * Drive the email-password sign-in form on the seeded `acme` tenant.
  * The frontend's tenant resolution requires hitting an `<slug>.localhost`
- * URL, so the playwright.config.ts baseURL is `acme.localhost:7777`.
+ * URL, so the playwright.config.ts baseURL is the `acme` tenant origin.
  *
  * Returns once the submit click has fired. Callers assert the
  * destination URL.
@@ -412,7 +418,7 @@ export async function signInAndWait(
 	// The tenant root is the dashboard. URL must end in just '/' — using
 	// a trailing-slash regex anchors the match against descendant paths
 	// like '/login/mfa'.
-	await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+	await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 }
 
 /**
@@ -586,6 +592,8 @@ export async function loadMoreUntilRow(page: Page, row: Locator): Promise<void> 
 	}
 }
 
-/** Per-worker API origin. Specs that hit `${API_BASE}/api/...` directly
- *  can import this instead of redeclaring `process.env.PUBLIC_API_URL ?? …`. */
-export const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+/** The backend origin. Specs that hit `${API_BASE}/api/...` directly import
+ *  this instead of redeclaring `process.env.PUBLIC_API_URL ?? …`; it is defined
+ *  in `fixtures/env.ts` alongside the web origin, so a worktree configures both
+ *  halves from one place. */
+export { _API_BASE as API_BASE };

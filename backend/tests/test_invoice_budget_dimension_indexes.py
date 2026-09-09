@@ -30,12 +30,35 @@ What this file pins:
    ``tenant_provisioning._create_tenant_tables`` (``create_all``, fresh tenants)
    and Alembic (existing tenants) — and a hand-picked name in the migration
    would leave the two schemas permanently different.
-4. **The index is usable for the production query's predicate.** Asserted under
-   ``enable_seqscan = off``, which tests the SHAPE of the index against the
+4. **The index is usable for the production query's predicate.** Asserted with
+   every OTHER index on ``invoices`` dropped inside a rolled-back transaction,
+   and ``enable_seqscan = off``. That tests the SHAPE of the index against the
    shape of the predicate. The suite's tenants hold a handful of rows, where a
    seq scan is genuinely the cheaper plan — asserting the cost-based CHOICE
    there would be asserting a fiction, and the real-volume choice is the
    measurement recorded above.
+
+   ``enable_seqscan = off`` alone was the original isolation and was not
+   enough. It removes seq scans from the planner's menu but cannot arbitrate
+   between two viable INDEX scans, and migration 0092 later added
+   ``ix_invoices_status_created_at_id`` — which serves this same query as
+   ``Index Cond: status = ANY (...)`` plus a filter on the dimension. Which of
+   the two won then came down to whatever statistics ``invoices`` happened to
+   carry, and the harness does not control those: the fixture TRUNCATEs between
+   tests but leaves ``pg_statistic`` behind, and autoanalyze reclaims it on its
+   own schedule (in CI, often not at all — "skipping analyze of invoices ---
+   lock not available"). So the assertion passed or failed on test ORDER. It
+   went red on main at 89d6299 with the plan below, having been green on the
+   commit before it::
+
+       ->  Index Scan using ix_invoices_status_created_at_id on invoices
+             Index Cond: ((status)::text = ANY (...))
+             Filter: ((cost_center)::text = 'PROBE-VALUE'::text)
+
+   Dropping the alternatives removes the choice, so what is left is the
+   question this test means to ask. It keeps its teeth: an index that is
+   missing, or a predicate reshaped so the index no longer applies, leaves the
+   planner with nothing but the disabled seq scan, and the assertion fails.
 
 Real-Postgres harness (`realdb`).
 """
@@ -89,6 +112,30 @@ async def _invoice_index_names(session) -> set[str]:
         text("SELECT indexname FROM pg_indexes WHERE tablename = 'invoices'")
     )
     return set(rows.scalars().all())
+
+
+async def _other_invoice_indexes(session, *, keep: str) -> list[str]:
+    """Every droppable index on ``invoices`` except ``keep``.
+
+    Constraint-backed indexes are excluded because ``DROP INDEX`` refuses them
+    (they belong to the constraint); none of them can serve the dimension
+    predicate anyway, so leaving them in place costs the isolation nothing."""
+    rows = await session.execute(
+        text(
+            """
+            SELECT c.relname
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE i.indrelid = 'invoices'::regclass
+              AND c.relname <> :keep
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid
+              )
+            """
+        ),
+        {"keep": keep},
+    )
+    return list(rows.scalars().all())
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +277,11 @@ async def test_actual_leg_can_use_the_dimension_index(realdb, dimension, index_n
     `cost_center` / `gl_account`, asserted identically for the two that already
     had it.
 
-    `enable_seqscan = off` is deliberate: it asks "is this index SHAPED for this
-    predicate", which is deterministic, rather than "would the planner pick it
-    at this row count", which at the harness's handful of rows would be a
-    fiction."""
+    Isolating the index — dropping the alternatives, seq scans off — is
+    deliberate: it asks "is this index SHAPED for this predicate", which is
+    deterministic, rather than "would the planner pick it at this row count",
+    which at the harness's handful of rows would be a fiction decided by
+    leftover statistics. See this module's docstring, point 4."""
     budget = Budget(
         id=uuid.uuid4(),
         name="idx probe",
@@ -250,6 +298,19 @@ async def test_actual_leg_can_use_the_dimension_index(realdb, dimension, index_n
         )
     )
     async with realdb.sessionmaker(TENANT)() as s:
-        await s.execute(text("SET LOCAL enable_seqscan = off"))
-        plan = "\n".join((await s.execute(text(f"EXPLAIN {sql}"))).scalars().all())
+        try:
+            await s.execute(text("SET LOCAL enable_seqscan = off"))
+            competitors = await _other_invoice_indexes(s, keep=index_name)
+            assert competitors, "expected other indexes on invoices to isolate against"
+            for name in competitors:
+                await s.execute(text(f'DROP INDEX "{name}"'))
+            plan = "\n".join((await s.execute(text(f"EXPLAIN {sql}"))).scalars().all())
+        finally:
+            # DDL is transactional in Postgres, so this puts every index back.
+            # The tenant DBs are shared across the tests in this process — a
+            # leaked DROP would silently de-index the rest of the run.
+            await s.rollback()
+        restored = await _invoice_index_names(s)
+
     assert index_name in plan, f"plan for {dimension.value} did not use {index_name}:\n{plan}"
+    assert set(competitors) <= restored, "rollback did not restore the dropped indexes"

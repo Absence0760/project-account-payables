@@ -280,10 +280,29 @@ async def get_write_entity_id(
     ``GLAccount`` is the exception and does NOT use this — a NULL there means
     "shared chart across all entities", which is the intended default for new
     accounts; that endpoint assigns ``entity_id`` explicitly.
+
+    **A deactivated entity refuses the write.** ``get_entity_id`` validates
+    only that the id *exists*, which is right for reads — a retired
+    subsidiary's history has to stay reachable, and narrowing a list to it is
+    harmless. Filing a *new* row under it is not: ``/entities`` deactivates an
+    entity precisely to stop it accumulating rows, and until this check existed
+    a stale ``X-Entity-ID`` (a client that had it selected when an admin
+    retired it, or one that never refreshed) kept doing exactly that. The
+    refusal is a 409, not a 400 — the header is well-formed and names a real
+    entity of this tenant; what changed is the entity's state, so the caller
+    re-selects rather than fixing a malformed request.
     """
-    if entity_id is not None:
-        return entity_id
-    return await resolve_default_entity_id(db)
+    if entity_id is None:
+        return await resolve_default_entity_id(db)
+    is_active = (
+        await db.execute(select(Entity.is_active).where(Entity.id == entity_id))
+    ).scalar_one_or_none()
+    if is_active is False:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Selected entity is deactivated; new records cannot be filed under it",
+        )
+    return entity_id
 
 
 def apply_entity_scope(

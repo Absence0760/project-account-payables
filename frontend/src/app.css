@@ -200,31 +200,74 @@ textarea:focus-visible {
    it alone can't fix the empty box — appearance:none + a drawn check
    is the only way to own both states. This is the single source of
    truth; per-route `accent-color` rules are now redundant no-ops.
+
+   WCAG 2.2 AA — 2.5.8 Target Size (Minimum). The PAINTED control is
+   16×16, which is under the 24×24 floor, so it used to clear the
+   criterion only through the *spacing* exception: a 24px-diameter
+   circle centred on the box must reach no other target, i.e. 4px of
+   clear space in every direction. Whether that holds is decided by
+   whatever padding a page gives its checkbox column, not by anything
+   here — `/invoices` (`width: 36px; padding: 10px/4px`) leaves 7px to
+   the cell edge, `/exceptions` (`width: 32px; padding-right: 0`)
+   leaves 2px. A criterion a page's padding can flip is not one the
+   design system is meeting, so the box now meets the SIZE floor
+   outright and stops depending on its neighbours:
+
+     • the border box is 24×24 — the rect a pointer hit-tests against
+       and the rect axe's `target-size` rule measures;
+     • a 4px TRANSPARENT border plus `background-clip: padding-box`
+       keeps every painted layer (fill, 1px ring, tick) inside the
+       16×16 padding box, so nothing looks any different;
+     • `margin: -4px` gives those 8px back to the layout, so the MARGIN
+       box is still 16×16 and no row, cell or label moves — a
+       `.grid-container` row measures the same before and after;
+     • the floor is carried by `min-width`/`min-height`, not by
+       `width`/`height` alone, because two pages override the width
+       from a scoped selector that outranks this one (`/organization`'s
+       `label.switch-row` sets 16×16, `/profile`'s `.prefs-table` sets
+       `width: auto`). A min-* clamp wins whichever `width` applies, so
+       the target can't be shrunk back by a page-level rule.
+
+   The 1px outline is an inset box-shadow rather than a real border,
+   because the border is now the transparent hit-area spacer. Inset
+   shadows are clipped to the padding box, so it traces the 16×16
+   visual exactly — and `border-radius: 8px` on the border box leaves
+   the padding box at 8 − 4 = 4px, the radius this control always had.
+   Guards: `src/lib/a11y/targetSizeAudit.test.ts` (the CSS invariant)
+   and `tests-e2e/a11y/target-size.spec.ts` (the rendered page).
    =================================================================== */
 input[type='checkbox'] {
 	appearance: none;
 	-webkit-appearance: none;
-	width: 16px;
-	height: 16px;
-	margin: 0;
+	width: 24px;
+	height: 24px;
+	/* The 2.5.8 floor. Kept as min-* so a page-scoped `width` can't undo it. */
+	min-width: 24px;
+	min-height: 24px;
+	/* Cancels the 4px hit-area border on all four sides: the margin box —
+	   what the line box, the flex row and the table cell measure — stays
+	   16×16, so growing the target moves nothing. */
+	margin: -4px;
 	flex-shrink: 0;
 	vertical-align: middle;
-	border: 1px solid var(--border);
-	border-radius: 4px;
-	background: var(--bg);
+	border: 4px solid transparent;
+	border-radius: 8px;
+	background-color: var(--bg);
+	background-clip: padding-box;
 	background-repeat: no-repeat;
 	background-position: center;
 	background-size: 11px;
+	box-shadow: inset 0 0 0 1px var(--border);
 	cursor: pointer;
-	transition: background-color 0.12s, border-color 0.12s, box-shadow 0.12s;
+	transition: background-color 0.12s, box-shadow 0.12s;
 }
 input[type='checkbox']:hover:not(:disabled) {
-	border-color: var(--accent);
+	box-shadow: inset 0 0 0 1px var(--accent);
 }
 input[type='checkbox']:checked,
 input[type='checkbox']:indeterminate {
 	background-color: var(--accent);
-	border-color: var(--accent);
+	box-shadow: inset 0 0 0 1px var(--accent);
 }
 input[type='checkbox']:checked {
 	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-6'/%3E%3C/svg%3E");
@@ -232,9 +275,19 @@ input[type='checkbox']:checked {
 input[type='checkbox']:indeterminate {
 	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M4 8h8'/%3E%3C/svg%3E");
 }
+/* The ring has to hug the 16×16 VISUAL, not the 24×24 hit box, or it
+   would float 4px off the control. A negative outline-offset draws it
+   inside the border box: offset −3px puts the outline's outer edge 3px
+   in (a 18×18 reference rect) and the 2px stroke lands on the 1px..3px
+   band — exactly `outline: 2px solid; outline-offset: 1px` around the
+   painted box, which is the ring every other control in the app uses.
+   It replaces a translucent 0.35-alpha glow, so the indicator is also
+   more visible than what it supersedes (2.4.7 / 2.4.13). `box-shadow`
+   is deliberately not set here: it carries the 1px outline now, and
+   restating it would drop the hover/checked colour. */
 input[type='checkbox']:focus-visible {
-	outline: none;
-	box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.35);
+	outline: 2px solid var(--accent);
+	outline-offset: -3px;
 }
 input[type='checkbox']:disabled {
 	opacity: 0.45;
@@ -723,7 +776,15 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	text-transform: uppercase;
 	letter-spacing: 0.03em;
 }
-.modal input,
+/* `:not([type='checkbox']):not([type='radio'])` because this is the
+   TEXT-entry recipe (a 1px border, 8px/10px padding, an opaque fill) and
+   it has the same specificity as the global checkbox/radio blocks above
+   while sitting later in the file — so inside a modal it was silently
+   winning, handing a checkbox a text field's border and padding. Harmless
+   while the box was a plain 16×16 square; not harmless now that the box's
+   border is the transparent 2.5.8 hit area. Same carve-out
+   `routes/admin/privacy` already spells out for its own form styling. */
+.modal input:not([type='checkbox']):not([type='radio']),
 .modal select,
 .modal textarea {
 	/* background-COLOR (longhand), not the `background` shorthand — the
@@ -741,7 +802,7 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 .modal select {
 	padding-right: 30px;
 }
-.modal input:focus,
+.modal input:not([type='checkbox']):not([type='radio']):focus,
 .modal select:focus,
 .modal textarea:focus {
 	outline: none;

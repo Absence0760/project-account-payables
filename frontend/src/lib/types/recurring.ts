@@ -11,28 +11,51 @@
 // See `frontend/CLAUDE.md` § Money formatting.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type RecurringCadence = 'monthly' | 'quarterly' | 'annual';
 
 export const RECURRING_CADENCES: RecurringCadence[] = ['monthly', 'quarterly', 'annual'];
 
-export const CADENCE_LABELS: Record<RecurringCadence, string> = {
-	monthly: 'Monthly',
-	quarterly: 'Quarterly',
-	annual: 'Annual'
+// The cadence is a table cell and a `<select>` option sitting beside the
+// translated status badge, so an English literal here reads as a gap.
+export const CADENCE_LABEL_KEYS: Record<RecurringCadence, MessageKey> = {
+	monthly: 'recurring.cadence.monthly',
+	quarterly: 'recurring.cadence.quarterly',
+	annual: 'recurring.cadence.annual'
 };
+
+/** The message key for a cadence, or `null` for an unrecognised one. */
+export function cadenceLabelKey(cadence: string): MessageKey | null {
+	return CADENCE_LABEL_KEYS[cadence as RecurringCadence] ?? null;
+}
 
 export type RecurringStatus = 'active' | 'paused' | 'ended';
 
 export const RECURRING_STATUSES: RecurringStatus[] = ['active', 'paused', 'ended'];
 
-// StatusBadge-style label map (Title Case) for the template status pill.
-export const STATUS_LABELS: Record<RecurringStatus, string> = {
-	active: 'Active',
-	paused: 'Paused',
-	ended: 'Ended'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * Both surfaces that render a template status (the `/recurring` list and
+ * `RecurringModal`) are inside the i18n extraction slice, so a hardcoded
+ * English map here put a translated Pause action beside an untranslated
+ * `Active` badge — and the amber "Not generating" badge next to it was
+ * already translated. `Record<RecurringStatus, MessageKey>` makes a new
+ * status a compile error rather than a blank badge, and `recurring.test.ts`
+ * proves every key exists in the catalogue.
+ */
+export const STATUS_LABEL_KEYS: Record<RecurringStatus, MessageKey> = {
+	active: 'recurring.status.active',
+	paused: 'recurring.status.paused',
+	ended: 'recurring.status.ended'
 };
+
+/** The message key for a status, or `null` for an unrecognised one. */
+export function recurringStatusLabelKey(status: string): MessageKey | null {
+	return STATUS_LABEL_KEYS[status as RecurringStatus] ?? null;
+}
 
 // Badge tone per status, so the list page and the modal can't tint the same
 // status two different shades — which is exactly what they did (.12 alpha on

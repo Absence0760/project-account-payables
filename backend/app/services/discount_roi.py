@@ -19,6 +19,25 @@ of days payment is accelerated), it answers two questions:
      is the dollar discount minus the opportunity cost of parting with the
      cash `days_accelerated` early.
 
+An unknown horizon is UNKNOWN, not zero
+---------------------------------------
+Both questions are horizon-relative: without a net due date there is nothing to
+accelerate *against*, so neither has an answer. ``days_accelerated=None`` says
+so, and every horizon-dependent field then comes back ``None``
+(``annualized_return_pct`` / ``opportunity_cost`` / ``net_benefit`` /
+``worthwhile``). ``savings`` stays a real figure — a percentage of a base
+amount needs no horizon.
+
+This exists because the caller used to substitute the discount deadline for the
+missing due date, which makes ``days_accelerated`` exactly ``0`` and produces a
+self-contradictory object: ``annualized_return_pct: 0.00`` (which reads as a
+measurement — "we measured it, the return is nil") beside a *positive*
+``net_benefit`` (because the opportunity cost of holding cash for zero days is
+also zero) and ``worthwhile: false``. Every bulk-negotiated offer with no
+``valid_until`` scored that way, so it was permanently unrecommendable. ``0`` and
+"cannot say" are different answers and a consumer has to be able to tell them
+apart.
+
 Everything is ``Decimal`` — currency is never float (project invariant). The
 optimizer (``discount_optimizer``) and the auto-capture sweep
 (``discount_auto_trigger``) both build on this module. See
@@ -47,29 +66,53 @@ def _q_pct(value: Decimal) -> Decimal:
 
 @dataclass(frozen=True)
 class DiscountROI:
-    """Outcome of evaluating one early-payment discount opportunity."""
+    """Outcome of evaluating one early-payment discount opportunity.
+
+    Every horizon-dependent field is ``None`` when the horizon is unknown (see
+    the module docstring). ``worthwhile`` is then ``None`` too — "cannot rank",
+    which is not the same verdict as ``False`` ("we ranked it; it loses").
+    """
 
     base_amount: Decimal
     discount_percent: Decimal
-    days_accelerated: int
-    savings: Decimal  # dollar discount captured
-    annualized_return_pct: Decimal  # APR of taking the discount
+    days_accelerated: int | None  # None == horizon unknown
+    savings: Decimal  # dollar discount captured — horizon-free
+    annualized_return_pct: Decimal | None  # APR of taking the discount
     cost_of_capital_pct: Decimal  # the hurdle rate compared against
-    opportunity_cost: Decimal  # cost of parting with cash `days_accelerated` early
-    net_benefit: Decimal  # savings - opportunity_cost
-    worthwhile: bool  # annualized_return_pct > cost_of_capital_pct
+    opportunity_cost: Decimal | None  # cost of parting with cash `days_accelerated` early
+    net_benefit: Decimal | None  # savings - opportunity_cost
+    worthwhile: bool | None  # annualized_return_pct > cost_of_capital_pct; None == unrankable
+
+    @property
+    def horizon_known(self) -> bool:
+        """False when there is no net due date to accelerate against.
+
+        The explicit marker a consumer keys off, so "APR is 0 %" and "APR is
+        unknown" never have to be told apart by guessing at a null.
+        """
+        return self.days_accelerated is not None
 
     def as_dict(self) -> dict:
-        """JSON-/audit-friendly view — money + percents as Decimal-strings."""
+        """JSON-/audit-friendly view — money + percents as Decimal-strings.
+
+        Unknowns serialize as JSON ``null``, never the string ``"None"`` and
+        never a fabricated ``"0.00"``: this view lands in an append-only audit
+        row, so a placeholder here is a false record that cannot be corrected.
+        """
+
+        def _s(value: Decimal | None) -> str | None:
+            return None if value is None else str(value)
+
         return {
             "base_amount": str(self.base_amount),
             "discount_percent": str(self.discount_percent),
             "days_accelerated": self.days_accelerated,
+            "horizon_known": self.horizon_known,
             "savings": str(self.savings),
-            "annualized_return_pct": str(self.annualized_return_pct),
+            "annualized_return_pct": _s(self.annualized_return_pct),
             "cost_of_capital_pct": str(self.cost_of_capital_pct),
-            "opportunity_cost": str(self.opportunity_cost),
-            "net_benefit": str(self.net_benefit),
+            "opportunity_cost": _s(self.opportunity_cost),
+            "net_benefit": _s(self.net_benefit),
             "worthwhile": self.worthwhile,
         }
 
@@ -98,7 +141,7 @@ def compute_roi(
     *,
     base_amount: Decimal,
     discount_percent: Decimal,
-    days_accelerated: int,
+    days_accelerated: int | None,
     cost_of_capital_pct: Decimal,
 ) -> DiscountROI:
     """Evaluate one early-payment discount opportunity.
@@ -107,15 +150,33 @@ def compute_roi(
     vendor's summed open balance for a bulk offer).
     ``days_accelerated`` — how many days before the due date the payment lands
     (``(due_date - pay_date).days``; clamp negatives to 0 at the call site if
-    you prefer, this function treats <= 0 as "no time value captured").
+    you prefer, this function treats <= 0 as "no time value captured"). Pass
+    ``None`` when the net due date is genuinely unknown — the caller must NOT
+    substitute the discount deadline for it, which silently reports 0 days and
+    turns "cannot say" into a measured zero.
     ``cost_of_capital_pct`` — the org's annual cost of capital (hurdle rate).
     """
     base_amount = Decimal(base_amount)
     discount_percent = Decimal(discount_percent)
     cost_of_capital_pct = Decimal(cost_of_capital_pct)
-    days = max(0, int(days_accelerated))
 
     savings = _q_money(base_amount * discount_percent / _HUNDRED)
+    if days_accelerated is None:
+        # Nothing to accelerate against — every horizon-relative answer is
+        # withheld rather than defaulted. `savings` is still real.
+        return DiscountROI(
+            base_amount=_q_money(base_amount),
+            discount_percent=_q_pct(discount_percent),
+            days_accelerated=None,
+            savings=savings,
+            annualized_return_pct=None,
+            cost_of_capital_pct=_q_pct(cost_of_capital_pct),
+            opportunity_cost=None,
+            net_benefit=None,
+            worthwhile=None,
+        )
+
+    days = max(0, int(days_accelerated))
     apr = annualized_return(discount_percent, days)
     # Opportunity cost of paying the (already-discounted) cash `days` early.
     paid_now = base_amount - savings

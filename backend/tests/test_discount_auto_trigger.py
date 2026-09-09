@@ -271,6 +271,64 @@ async def test_sweep_ignores_declined_and_expires_past_valid_until(realdb):
 
 
 @pytest.mark.asyncio
+async def test_expiring_an_offer_moves_no_money_and_writes_an_audit_row(realdb):
+    """Expiry is a correctness write, not a capture.
+
+    It must (a) move no money — no `Payment` / `PaymentRun`, no
+    `accepted_tier` / `captured_amount` — and (b) leave an append-only audit
+    row, which it did not: `expire_if_past` committed silently, so the only
+    evidence an offer had lapsed was the column it had just overwritten.
+    It is also counted apart from `captured`, so a log line can never read an
+    expiry as an acceptance.
+    """
+    mk = realdb.sessionmaker("a")
+    info = realdb.info("a")
+
+    offer = _make_offer(
+        info.org_id,
+        tiers=[{"days": 5, "percent": "3.00"}],
+        valid_until=_TODAY - timedelta(days=30),  # long past
+    )
+    async with mk() as db:
+        db.add(offer)
+        await db.commit()
+        offer_id = offer.id
+
+    outcome = await discount_auto_trigger._sweep_tenant(info.db_name, _TODAY, _resolver_const)
+    assert outcome.captured == 0
+    assert outcome.expired == 1
+
+    from sqlalchemy import func, select
+
+    from app.models.payment import Payment, PaymentRun
+    from app.models.workflow import AuditLog
+
+    async with mk() as db:
+        row = (
+            await db.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert row.status == OFFER_STATUS_EXPIRED
+        # Nothing was captured on the way out.
+        assert row.accepted_tier is None
+        assert row.accepted_at is None
+        assert row.captured_amount is None
+        assert row.captured_at is None
+
+        assert (await db.execute(select(func.count()).select_from(Payment))).scalar_one() == 0
+        assert (await db.execute(select(func.count()).select_from(PaymentRun))).scalar_one() == 0
+
+        audits = list(
+            (await db.execute(select(AuditLog).where(AuditLog.entity_id == offer_id)))
+            .scalars()
+            .all()
+        )
+        assert [a.action for a in audits] == ["discount_offer.expired"]
+        assert audits[0].entity_type == "discount_offer"
+        assert audits[0].actor_id is None  # system actor
+        assert audits[0].details["valid_until"] == (_TODAY - timedelta(days=30)).isoformat()
+
+
+@pytest.mark.asyncio
 async def test_sweep_does_not_auto_accept_a_tier_whose_window_has_closed(realdb):
     """Reproduces the issue's exact failure scenario: an offer opened 20 days
     ago with a 5-day/3% and 10-day/2% sliding scale, still within its own

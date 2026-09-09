@@ -242,14 +242,33 @@ def test_accept_offer_guard_rejects_non_offered():
 
 def test_decline_offer():
     offer = _offer()
-    do.decline_offer(offer, now=datetime.now(UTC))
+    do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 1))
     assert offer.status == OFFER_STATUS_DECLINED
 
 
 def test_decline_offer_guard():
     offer = _offer(status=OFFER_STATUS_CAPTURED)
     with pytest.raises(ValueError):
-        do.decline_offer(offer, now=datetime.now(UTC))
+        do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 1))
+
+
+def test_decline_offer_refuses_a_lapsed_offer():
+    """An offer whose window has closed is EXPIRED, and declining it would
+    record a refusal that never happened onto an append-only audit row. Accept
+    already refuses one (no tier is capturable past `valid_until`); decline was
+    the one path that could still write a decision onto a dead offer."""
+    offer = _offer(valid_until=date(2026, 1, 1))
+    with pytest.raises(ValueError, match="window has closed"):
+        do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 2))
+    assert offer.status == OFFER_STATUS_OFFERED  # unchanged
+
+
+def test_decline_offer_allows_the_last_day_of_the_window():
+    """`has_lapsed` is `valid_until < as_of`, so the window's own last day is
+    still live — the guard must not eat a legitimate decline a day early."""
+    offer = _offer(valid_until=date(2026, 1, 2))
+    do.decline_offer(offer, now=datetime.now(UTC), as_of=date(2026, 1, 2))
+    assert offer.status == OFFER_STATUS_DECLINED
 
 
 def test_mark_captured_from_accepted():
@@ -288,6 +307,83 @@ def test_expire_if_past_no_change_when_already_accepted():
     offer = _offer(status=OFFER_STATUS_ACCEPTED, valid_until=date(2026, 1, 1))
     assert do.expire_if_past(offer, as_of=date(2026, 2, 1)) is False
     assert offer.status == OFFER_STATUS_ACCEPTED
+
+
+# --------------------------------------------------------------------------- #
+# Expiry is derived, not read (the sweep that writes it is off by default)
+# --------------------------------------------------------------------------- #
+
+
+def test_has_lapsed_is_true_for_an_offered_row_past_its_window():
+    offer = _offer(valid_until=date(2026, 1, 1))
+    assert do.has_lapsed(offer, as_of=date(2026, 1, 2)) is True
+    # ...and the row is UNCHANGED. `has_lapsed` is a question, not a write —
+    # which is the whole point: the answer must not depend on any sweep having
+    # run.
+    assert offer.status == OFFER_STATUS_OFFERED
+
+
+def test_has_lapsed_is_false_on_the_last_day_of_the_window():
+    # `expire_if_past` uses `valid_until < as_of`, so the window's own last day
+    # is still open. The predicate must agree exactly, or the two disagree for
+    # one day per offer.
+    offer = _offer(valid_until=date(2026, 1, 2))
+    assert do.has_lapsed(offer, as_of=date(2026, 1, 2)) is False
+
+
+def test_has_lapsed_is_false_without_a_valid_until():
+    assert do.has_lapsed(_offer(valid_until=None), as_of=date(2026, 6, 1)) is False
+
+
+def test_has_lapsed_only_applies_to_offered_rows():
+    for status in (
+        OFFER_STATUS_ACCEPTED,
+        OFFER_STATUS_CAPTURED,
+        OFFER_STATUS_DECLINED,
+        OFFER_STATUS_EXPIRED,
+    ):
+        offer = _offer(status=status, valid_until=date(2026, 1, 1))
+        assert do.has_lapsed(offer, as_of=date(2026, 2, 1)) is False
+
+
+def test_effective_status_reports_a_lapsed_offer_as_expired():
+    """The defect this closes: `expire_if_past` has exactly one caller, the
+    auto-capture sweep, and that sweep is off by default — so a lapsed offer
+    kept reporting `offered` forever and the dashboard's `capture_rate_pct`
+    (captured / (captured + missed)) read 100.00 on 1 captured of 10."""
+    offer = _offer(valid_until=date(2026, 1, 1))
+    assert do.effective_status(offer, as_of=date(2026, 1, 2)) == OFFER_STATUS_EXPIRED
+    assert do.effective_status(offer, as_of=date(2026, 1, 1)) == OFFER_STATUS_OFFERED
+    # Never a write.
+    assert offer.status == OFFER_STATUS_OFFERED
+
+
+def test_effective_status_passes_every_other_status_through():
+    for status in (
+        OFFER_STATUS_ACCEPTED,
+        OFFER_STATUS_CAPTURED,
+        OFFER_STATUS_DECLINED,
+        OFFER_STATUS_EXPIRED,
+    ):
+        offer = _offer(status=status, valid_until=date(2026, 1, 1))
+        assert do.effective_status(offer, as_of=date(2026, 2, 1)) == status
+
+
+def test_expire_if_past_agrees_with_has_lapsed():
+    """The materialization and the predicate are the same rule; a divergence
+    would mean a row the reads call expired that the sweep never writes (or the
+    reverse)."""
+    cases = [
+        _offer(valid_until=date(2026, 1, 1)),
+        _offer(valid_until=date(2026, 1, 2)),
+        _offer(valid_until=date(2026, 1, 3)),
+        _offer(valid_until=None),
+        _offer(status=OFFER_STATUS_DECLINED, valid_until=date(2026, 1, 1)),
+    ]
+    as_of = date(2026, 1, 2)
+    for offer in cases:
+        expected = do.has_lapsed(offer, as_of=as_of)
+        assert do.expire_if_past(offer, as_of=as_of) is expected
 
 
 # --------------------------------------------------------------------------- #

@@ -272,6 +272,9 @@
 	let cashBudget = $state('');
 	let optimizing = $state(false);
 	let optimization = $state<DiscountOptimization | null>(null);
+	// `?? []` because the field is optional: a backend predating it renders no
+	// unrankable section rather than throwing on `undefined.length`.
+	const unrankableRecs = $derived(optimization?.unrankable ?? []);
 
 	async function runOptimize() {
 		// The budget goes out as the EXACT STRING the user typed. It used to go
@@ -429,8 +432,14 @@
 								<span class="scenario-title">
 									{rec.vendor_name ?? rec.invoice_number ?? rec.offer_id.slice(0, 8)}
 								</span>
-								<span class="scenario-roi" class:pos={rec.roi.worthwhile}>
-									{rec.roi.annualized_return_pct.toFixed(1)}% APR
+								<!-- `worthwhile` is TRI-state: `null` means the optimizer could
+								     not rank this offer, which is not the same answer as
+								     "ranked, and it loses". Compare to `true` explicitly so a
+								     null can never tint the row as a decided verdict. -->
+								<span class="scenario-roi" class:pos={rec.roi.worthwhile === true}>
+									{rec.roi.annualized_return_pct === null
+										? m('discounts.opt.aprUnknown')
+										: `${rec.roi.annualized_return_pct.toFixed(1)}% APR`}
 								</span>
 								<span class="scenario-sub">
 									{m('discounts.opt.save')}
@@ -461,6 +470,43 @@
 					</div>
 				{:else}
 					<p class="empty">{m('discounts.opt.noOffers')}</p>
+				{/if}
+				<!-- Offers the optimizer could not RANK. The server withholds the APR
+				     for an offer with no net due date rather than reporting a
+				     fabricated 0.00 %, and carries them here rather than sorting them
+				     to the bottom of a ranking BY APR. Rendering the array is the
+				     whole point: before this they were simply ABSENT from the page —
+				     a real, capturable saving that no longer appeared anywhere, which
+				     is a worse failure than the wrong number it replaced. -->
+				{#if unrankableRecs.length > 0}
+					<div class="unrankable-block" data-testid="optimizer-unrankable">
+						<h4 class="unrankable-heading">{m('discounts.opt.unrankableHeading')}</h4>
+						<p class="disc-skipped">
+							{m('discounts.opt.unrankableNote', { n: unrankableRecs.length })}
+						</p>
+						<div class="scenario-grid">
+							{#each unrankableRecs as rec (rec.offer_id)}
+								{@const recCurrency = recommendationCurrency(rec, optimization.currency)}
+								<div class="scenario-card">
+									<span class="scenario-title">
+										{rec.vendor_name ?? rec.invoice_number ?? rec.offer_id.slice(0, 8)}
+									</span>
+									<!-- No `pos` tint: there is no verdict to be positive about. -->
+									<span class="scenario-roi">{m('discounts.opt.aprUnknown')}</span>
+									<span class="scenario-sub">
+										{m('discounts.opt.save')}
+										{#if recCurrency}
+											<Money amount={rec.roi.savings} currency={recCurrency} />
+										{:else}
+											<span class="money">{formatAmountWithoutCurrency(rec.roi.savings)}</span>
+										{/if}
+										· {rec.discount_percent}% / {rec.tier_days}d
+									</span>
+									<span class="scenario-flag">{m('discounts.opt.notRanked')}</span>
+								</div>
+							{/each}
+						</div>
+					</div>
 				{/if}
 			{/if}
 		</div>
@@ -745,6 +791,21 @@
 	}
 	.scenario-flag.selected {
 		color: #1fa86a;
+	}
+
+	/* The unrankable block sits BELOW the ranked grid and is visibly its own
+	   section: these offers are not the tail of the ranking, they are outside
+	   it. Colour comes from tokens only — no tint here, so nothing to pair. */
+	.unrankable-block {
+		margin-top: 18px;
+		padding-top: 14px;
+		border-top: 1px solid var(--border);
+	}
+	.unrankable-heading {
+		margin: 0 0 6px;
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text);
 	}
 	/* Amber, same tone as `.disc-skipped`: this row's money is real, it just
 	   is not in the currency the totals above are stated in. */

@@ -25,7 +25,9 @@ from app.services.payment_settlement import (
     OUTCOME_CURRENCY_MISMATCH,
     OUTCOME_MATCHED,
     OUTCOME_UNVERIFIED,
+    REASON_NO_REPORTED_AMOUNT,
     REASON_NO_SETTLED_AMOUNT,
+    REASON_REPORTED_AMOUNT_UNUSABLE,
     REASON_SETTLED_AMOUNT_UNSTORABLE,
     SETTLED_AMOUNT_NUMERIC,
     SETTLEMENT_AMOUNT_TOLERANCE,
@@ -259,27 +261,6 @@ def test_missing_reported_amount_is_unverified_not_a_discrepancy():
     assert v.variance is None
     # Still records what WAS authorized so the blind spot is visible on the
     # audit row rather than silent.
-    assert v.authorized_amount == Decimal("500.00")
-
-
-@pytest.mark.parametrize("bad", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])
-def test_non_finite_reported_amount_is_unverified_not_a_500(bad):
-    """`json.loads` accepts `NaN`/`Infinity` by default, so an adapter that
-    parses the settlement figure itself can hand `verify_settlement` a
-    non-finite `Decimal`. `_q`'s `.quantize()` would raise `InvalidOperation`
-    before any tolerance check — a 500 on the webhook recording money movement.
-    Treated as no usable amount: fail-open `unverified`."""
-    from app.services.payment_settlement import REASON_NON_FINITE_AMOUNT
-
-    v = verify_settlement(
-        reported_amount=bad,
-        reported_currency="USD",
-        target_amount=Decimal("500.00"),
-        target_currency="USD",
-    )
-    assert v.outcome == OUTCOME_UNVERIFIED
-    assert v.reason == REASON_NON_FINITE_AMOUNT
-    assert v.is_discrepancy is False
     assert v.authorized_amount == Decimal("500.00")
 
 
@@ -576,3 +557,112 @@ def test_coverage_flag_defaults_off_so_every_existing_caller_is_unchanged():
         target_currency="USD",
     )
     assert c.state == COVERAGE_COVERED
+
+
+# ---------------------------------------------------------------------------
+# A reported figure that is not a number at all
+# ---------------------------------------------------------------------------
+#
+# `json.loads` accepts `NaN` and `Infinity` by default, so an adapter parsing a
+# hostile or broken payload really can hand one to the verifier. The tolerance
+# comparison quantized the reported figure BEFORE anything NaN-aware saw it, so
+# `InvalidOperation` escaped out of a pure function on the money path: the
+# webhook 5xx'd and the processor retried into the identical failure forever
+# (a retry storm, not a wrong figure) while the payment stayed in flight. The
+# recording layer one call later — `persistable_settled_amount` / `fits_numeric`
+# — was already written to quarantine exactly these values.
+
+
+@pytest.mark.parametrize("bad", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])
+def test_a_non_finite_reported_amount_is_an_explicit_verdict_not_a_raise(bad):
+    v = verify_settlement(
+        reported_amount=bad,
+        reported_currency="USD",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    assert v.outcome == OUTCOME_UNVERIFIED
+    assert v.reason == REASON_REPORTED_AMOUNT_UNUSABLE
+    # Never a silent pass: the outcome is not `matched` and the variance stays
+    # absent, because nothing was comparable.
+    assert v.is_discrepancy is False
+    assert v.variance is None
+
+
+def test_an_amount_past_the_decimal_context_is_the_same_explicit_verdict():
+    """`quantize` raises on a magnitude the context cannot represent, exactly
+    as it does on NaN — same class of unusable report, same named verdict."""
+    v = verify_settlement(
+        reported_amount=Decimal("1e999"),
+        reported_currency="USD",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    assert v.outcome == OUTCOME_UNVERIFIED
+    assert v.reason == REASON_REPORTED_AMOUNT_UNUSABLE
+
+
+def test_an_unusable_report_is_distinguishable_from_an_absent_one():
+    """Both fail open as a VERDICT — neither is evidence of a discrepancy —
+    but they must not be conflated: they diverge downstream."""
+    unusable = verify_settlement(
+        reported_amount=Decimal("NaN"),
+        reported_currency="USD",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    absent = verify_settlement(
+        reported_amount=None,
+        reported_currency=None,
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    assert unusable.reason != absent.reason
+    assert absent.reason == REASON_NO_REPORTED_AMOUNT
+
+
+def test_an_unusable_report_holds_the_invoice_instead_of_discharging_it():
+    """The whole point of not raising. A garbage figure must reach
+    `persistable_settled_amount`, which flags it unstorable, so coverage says
+    `uncertain` and the invoice holds — never laundered into the fails-open
+    NULL that means "no rail ever reported a figure"."""
+    v = verify_settlement(
+        reported_amount=Decimal("NaN"),
+        reported_currency="USD",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    storable, unstorable = persistable_settled_amount(v.settled_amount)
+    assert storable is None
+    assert unstorable is True
+
+    coverage = settlement_coverage(
+        settled_amount=storable,
+        settled_currency=v.settled_currency,
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+        settled_amount_unstorable=unstorable,
+    )
+    assert coverage.state == COVERAGE_UNCERTAIN
+    assert coverage.completes_invoice is False
+
+
+def test_the_unusable_figure_is_still_evidence_on_the_audit_row():
+    """The column carries the decision input; the audit row carries the
+    evidence. JSONB has no range limit, so the raw report survives."""
+    v = verify_settlement(
+        reported_amount=Decimal("NaN"),
+        reported_currency="usd",
+        target_amount=Decimal("5000.00"),
+        target_currency="USD",
+    )
+    details = v.as_details()
+    assert details["reason"] == REASON_REPORTED_AMOUNT_UNUSABLE
+    assert details["settled_amount"] == "NaN"
+    assert details["settled_currency"] == "usd"
+
+
+def test_persistable_never_raises_on_a_value_that_is_not_a_decimal():
+    """`fits_numeric` reaches for `.is_finite()` first, so a non-Decimal would
+    AttributeError on the money path for a report already known to be garbage."""
+    assert persistable_settled_amount("not-a-number") == (None, True)

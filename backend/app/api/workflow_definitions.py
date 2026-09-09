@@ -330,10 +330,13 @@ async def create_workflow(
     await db.flush()
     await db.refresh(defn)
 
-    # A workflow definition is the approval routing every invoice in its entity
-    # is bound to — creating one is a control change that belongs on the
-    # append-only trail, exactly like the from-template and import paths beside
-    # it. PII-free: name + step count + entity are routing config, not data.
+    # A workflow definition IS the approval routing rule set — who signs off on
+    # what, at which thresholds. Creating one was the single mutator in this
+    # module that left no trace, while its siblings (`from-template`, `import`,
+    # every version op, `delete`) all audit; an auditor reconstructing why an
+    # invoice took the route it did could see the definition being edited,
+    # restored and deleted, but never brought into existence. PII-free: the
+    # definition's own name and shape, no step contents.
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -345,7 +348,10 @@ async def create_workflow(
         details={
             "name": defn.name,
             "step_count": len(body.steps),
-            "entity_id": str(write_entity_id) if write_entity_id else None,
+            # `get_write_entity_id` never returns NULL — it resolves the
+            # tenant default, or 500s if the tenant has none — so there is no
+            # unscoped case to encode here.
+            "entity_id": str(write_entity_id),
         },
     )
     await db.commit()

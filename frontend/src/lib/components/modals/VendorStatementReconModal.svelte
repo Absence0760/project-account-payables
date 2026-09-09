@@ -7,11 +7,11 @@
 		StatementLineInput
 	} from '$lib/types/vendorStatementRecon';
 	import {
-		RECON_STATUS_LABELS,
+		reconStatusLabelKey,
 		RECON_STATUS_TONES,
-		RECON_CLASSIFICATION_LABELS,
-		RECON_RESOLUTION_LABELS,
-		RECON_SOURCE_FORMAT_LABELS,
+		RECON_CLASSIFICATION_LABEL_KEYS,
+		RECON_RESOLUTION_LABEL_KEYS,
+		reconSourceFormatLabelKey,
 		ambiguousSkipCount,
 		formatExtractionConfidence,
 		isMachineRead,
@@ -244,12 +244,18 @@
 
 	// An unrecognised source format renders its raw value rather than a blank
 	// pill — a new backend format would otherwise disappear silently.
-	const sourceLabel = $derived(
-		detail
-			? (RECON_SOURCE_FORMAT_LABELS[detail.source_format as ReconSourceFormat] ??
-					detail.source_format)
-			: ''
-	);
+	const sourceLabel = $derived.by(() => {
+		if (!detail) return '';
+		const key = reconSourceFormatLabelKey(detail.source_format);
+		return key ? m(key) : detail.source_format;
+	});
+
+	// The run status is a message key, not an English literal — an unrecognised
+	// value from the API renders raw rather than blank.
+	const statusLabel = $derived.by(() => {
+		const key = reconStatusLabelKey(status);
+		return key ? m(key) : status;
+	});
 
 	// --- Source document ---
 	let downloading = $state(false);
@@ -446,7 +452,7 @@
 	{:else if detail}
 		<!-- Detail / diff view -->
 		<div class="status-row">
-			<Badge tone={RECON_STATUS_TONES[status]} variant={status}>{RECON_STATUS_LABELS[status]}</Badge>
+			<Badge tone={RECON_STATUS_TONES[status]} variant={status}>{statusLabel}</Badge>
 			<span class="meta-pill">{formatDate(detail.statement_date)}</span>
 			{#if detail.statement_reference}
 				<span class="meta-pill"
@@ -574,7 +580,7 @@
 							</td>
 							<td>
 								<span class="cls {classificationTone(line.classification)}">
-									{RECON_CLASSIFICATION_LABELS[line.classification]}
+									{m(RECON_CLASSIFICATION_LABEL_KEYS[line.classification])}
 								</span>
 							</td>
 							<td class="resolution-cell">
@@ -600,7 +606,7 @@
 									</RowAction>
 								{:else}
 									<span class="res-state {line.resolution_status}">
-										{RECON_RESOLUTION_LABELS[line.resolution_status]}
+										{m(RECON_RESOLUTION_LABEL_KEYS[line.resolution_status])}
 									</span>
 								{/if}
 							</td>

@@ -13,6 +13,10 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+# `app.tenant_url` imports nothing (bar `os`), so it is safe on this
+# dotenv-free path where `app.database` — which reaches `app.config` — is not.
+from app.tenant_url import control_url_from_env, make_tenant_url
+
 
 def handler(event, context):
     """AWS Lambda entry point — processes SQS batch."""
@@ -27,9 +31,7 @@ async def _process_message(body: dict) -> None:
     org_id = uuid.UUID(body["org_id"])
     actor_id = uuid.UUID(body["actor_id"])
 
-    import os
-
-    db_url = os.environ["DATABASE_URL"]
+    db_url = control_url_from_env()
 
     # Look up the org to find the tenant DB name
     control_engine = create_async_engine(db_url)
@@ -47,11 +49,9 @@ async def _process_message(body: dict) -> None:
     # The org's configured ERP adapter; None falls back to mock in _call_erp
     erp_config = (org.settings or {}).get("erp")
 
-    # Connect to the tenant DB — same derivation as
-    # `app.database._make_tenant_url`, shared via the dependency-free helper.
-    from app.tenant_url import tenant_db_url
-
-    tenant_url = tenant_db_url(db_url, org.db_name)
+    # Connect to the tenant DB. `org.db_name` comes off the resolved Organization
+    # row above — never off the SQS body.
+    tenant_url = make_tenant_url(db_url, org.db_name)
     tenant_engine = create_async_engine(tenant_url)
     tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 

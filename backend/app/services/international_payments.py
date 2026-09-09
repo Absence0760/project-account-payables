@@ -60,6 +60,54 @@ class PreparedPayment:
 
 _MONEY_QUANT = Decimal("0.01")
 
+#: Last-resort home currency when an org has never set one. Matches the value
+#: every prior call site defaulted to independently.
+DEFAULT_HOME_CURRENCY = "USD"
+
+
+def normalize_currency_code(value: str | None) -> str | None:
+    """A currency code as the rest of the system compares it, or ``None``.
+
+    Trimmed and upper-cased; blank / non-string input yields ``None`` so the
+    caller can fall back deliberately rather than propagate a whitespace-only
+    "code" that equals nothing.
+    """
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip().upper()
+    return trimmed or None
+
+
+def resolve_home_currency(org_settings: dict | None) -> str:
+    """The org's HOME currency — ``settings.payments.home_currency``.
+
+    The denomination of `Payment.source_amount`, of every money threshold in
+    `settings.compliance`, and of the comparison that decides whether an
+    invoice even needs an FX leg. **One owner, because four call sites used to
+    normalise it four ways.** `compliance._home_currency` stripped and
+    upper-cased; `currency_conversion.resolve_reporting_currency` stripped and
+    upper-cased; `prepare_international_payment` only upper-cased what it was
+    handed; and `api/payments._execute_single_payment` — the site that decides
+    the FX leg — only upper-cased too.
+
+    A trailing space was therefore enough to route **every domestic payment**
+    through `international_wire`: `"USD "` != `"USD"`, so the invoice's currency
+    looked foreign, `prepare_international_payment` picked a cross-border
+    corridor, an FX rate was locked onto the row, and the KYC gate then read a
+    different (stripped) value for the same setting. Nothing validates the
+    field on write, and the tenant's own settings JSON is where it comes from.
+
+    Never raises and never returns blank: a missing or whitespace-only setting
+    degrades to ``DEFAULT_HOME_CURRENCY`` rather than producing a code that
+    compares equal to nothing.
+    """
+    if not isinstance(org_settings, dict):
+        return DEFAULT_HOME_CURRENCY
+    payments = org_settings.get("payments")
+    if not isinstance(payments, dict):
+        return DEFAULT_HOME_CURRENCY
+    return normalize_currency_code(payments.get("home_currency")) or DEFAULT_HOME_CURRENCY
+
 
 def _quantize_money(value: Decimal) -> Decimal:
     """Round to currency precision (2 dp, banker's rounding off in
@@ -95,10 +143,11 @@ async def prepare_international_payment(
 
     Raises `InternationalPaymentError` on any structural problem.
     """
-    # `.strip()` guards a hand-edited settings value like "USD " reaching the
-    # corridor selector, where a currency mismatch forces an FX leg.
-    target_currency = (invoice.currency or org_home_currency).strip().upper()
-    source_currency = org_home_currency.strip().upper()
+    # One normaliser, so a trailing space in the org's setting can no longer
+    # make the home currency compare unequal to itself here while comparing
+    # equal in the compliance gate. See `resolve_home_currency`.
+    source_currency = normalize_currency_code(org_home_currency) or DEFAULT_HOME_CURRENCY
+    target_currency = normalize_currency_code(invoice.currency) or source_currency
 
     bank = vendor.bank_details or {}
     iban = bank.get("iban") or ""

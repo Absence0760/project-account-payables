@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Catalog, CatalogItem, CatalogType } from '$lib/types/catalog';
-	import { CATALOG_TYPES, CATALOG_TYPE_LABELS } from '$lib/types/catalog';
+	import { CATALOG_TYPES, CATALOG_TYPE_LABEL_KEYS } from '$lib/types/catalog';
 	import { auth } from '$lib/stores/auth.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -173,7 +173,7 @@
 				<span>{m('catalogs.modal.field.type')}</span>
 				<select bind:value={catalog_type} disabled={!canEdit}>
 					{#each CATALOG_TYPES as t}
-						<option value={t}>{CATALOG_TYPE_LABELS[t]}</option>
+						<option value={t}>{m(CATALOG_TYPE_LABEL_KEYS[t])}</option>
 					{/each}
 				</select>
 			</label>
@@ -363,7 +363,12 @@
 		align-items: center;
 		gap: 8px;
 	}
-	.form-grid input,
+	/* The TEXT-entry recipe, carved away from the checkbox/radio it also
+	   reached. Svelte scopes this to `.form-grid.svelte-x input:where(.svelte-x)`,
+	   which outranks the global control base in `app.css`, and `background:`
+	   is a SHORTHAND — it reset `background-image`, the drawn tick, so the
+	   Active / Preferred toggle rendered identically checked and unchecked. */
+	.form-grid input:not([type='checkbox']):not([type='radio']),
 	.form-grid select,
 	.form-grid textarea {
 		padding: 7px 9px;

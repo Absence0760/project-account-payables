@@ -231,9 +231,29 @@ never see another vendor's offers (cross-vendor / unknown id → 404, never 403)
 
 | Method | Path                                       | Notes                                                                                  |
 |--------|--------------------------------------------|----------------------------------------------------------------------------------------|
-| GET    | `/portal/discount-offers`                  | Vendor-scoped offer list; per-tier savings + best capturable tier today; `?status=` filter |
-| POST   | `/portal/discount-offers/{id}/accept`      | Accept the discount (`tier_days` or best tier today). **Never moves money** — flips `offered → accepted` only (reuses `discount_offers.accept_offer`); CFO-gated payment run still funds it. Idempotent: re-accepting a non-`offered` offer is a `409`; foreign/unknown id `404` |
-| POST   | `/portal/discount-offers/{id}/decline`     | Decline the discount (reuses `discount_offers.decline_offer`); `409` if no longer `offered` |
+| GET    | `/portal/discount-offers`                  | Vendor-scoped offer list; per-tier savings + best capturable tier today; `?status=` filter. Both the reported `status` and the filter use the **effective** status (below) |
+| POST   | `/portal/discount-offers/{id}/accept`      | Accept the discount (`tier_days` or best tier today). **Never moves money** — flips `offered → accepted` only (reuses `discount_offers.accept_offer`); CFO-gated payment run still funds it. Idempotent: re-accepting a non-`offered` offer is a `409`; foreign/unknown id `404`. A lapsed offer is refused (`409`, or `422` when a rung is named) — no tier is capturable past `valid_until` |
+| POST   | `/portal/discount-offers/{id}/decline`     | Decline the discount (reuses `discount_offers.decline_offer`); `409` if no longer `offered`, **including a lapsed offer** |
+
+#### The supplier and AP see the same status
+
+An offer's `expired` state is **derived** from `valid_until`, not read from the
+column — the column's only writer is the auto-capture sweep, which is off by
+default (see `dynamic-discounting.md` § Expiry is derived, not swept). The
+portal used to render the raw column while `/api/discounts` derived it, so the
+same offer read `expired` to the AP team and `offered` to the supplier, who
+still saw a live Decline button on it.
+
+The portal now goes through the same one rule: `effective_status` on the
+response, `effective_status_sql` on the `?status=` filter and on the
+`open_discount_offers` KPI in `/portal/summary`. Nothing is written on a read —
+the stored column is left for the sweep to materialize.
+
+Neither side can act on a dead offer either. Accept already refused one (no tier
+is capturable past `valid_until`); decline did not, so a lapsed offer could be
+flipped to `declined` — asserting a refusal that never happened, on an
+append-only audit row. `decline_offer` now takes a required `as_of` and refuses,
+for the AP router and the portal alike.
 
 Both money math (savings) and the lifecycle mutators are the **same pure
 `services/discount_offers.py` primitives** the AP `/api/discounts` router uses —

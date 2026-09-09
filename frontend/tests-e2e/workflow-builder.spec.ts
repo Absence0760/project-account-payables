@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from './fixtures/helpers';
 
 /**
  * No-Code Workflow Builder — management UI e2e.
@@ -23,7 +23,6 @@ import { expect, test } from './fixtures/helpers';
  */
 
 import type { Page } from '@playwright/test';
-import { API_BASE, authedTenantHeaders } from './fixtures/helpers';
 
 async function deleteWorkflowByName(page: Page, name: string) {
 	const resp = await page.request.get(`${API_BASE}/api/workflows?page_size=100`, {

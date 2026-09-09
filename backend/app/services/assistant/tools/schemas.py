@@ -286,6 +286,16 @@ class OptimizeDiscountsResult(BaseModel):
     # Ranked offers excluded from the totals because they are in another
     # currency — the copilot must say so rather than report a mixed sum.
     unconvertible_count: int = 0
+    # Offers with NO resolvable net due date, so no horizon, so no APR: they
+    # cannot be placed in an APR ranking and are absent from `recommendations`
+    # entirely. The count is what makes that absence disclosed rather than
+    # silent — same contract as `unconvertible_count` beside it. Each carries a
+    # real savings figure; what is unknown is whether capturing it beats the
+    # cost of capital, and an unknown must be expressible rather than collapsed
+    # (`docs/decisions.md` §34). Before the horizon was modelled these offers
+    # DID appear here, scored at a fabricated 0.00 % APR — present but wrong,
+    # which is worse than absent but counted.
+    unrankable_count: int = 0
     recommendations: list[DiscountRecommendation]
 
 

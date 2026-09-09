@@ -1,4 +1,13 @@
-"""Vendor ERP sync service — pull vendors from ERP and sync to local database."""
+"""Vendor ERP sync service — pull vendors from ERP and sync to local database.
+
+Every vendor row this creates or changes writes an append-only audit row
+(``vendor.synced_from_erp``), the same way ``services/qms_sync`` audits each
+inspection it upserts. A vendor is a PAYEE: a bulk ERP pull that silently
+materialised new payee rows was the one vendor-mutating path with no record of
+where the row came from or who ran the pull. Rows the sync leaves byte-identical
+(``unchanged``) write nothing — an audit row for a state change that did not
+happen is unbounded growth describing nothing.
+"""
 
 import uuid
 from datetime import UTC, datetime
@@ -7,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.vendor import Vendor
+from app.services.audit_dispatch import dispatch_audit
 
 
 async def sync_vendors_from_erp(
@@ -14,12 +24,18 @@ async def sync_vendors_from_erp(
     organization_id: uuid.UUID,
     erp_vendors: list[dict],
     entity_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
 ) -> dict:
     """Sync a list of vendor records from an ERP into the local database.
 
     ``entity_id`` (multi-entity Phase 2) is the entity newly-created vendors
     land under — the selected entity or the tenant default, resolved at the
     endpoint. Vendors matched/updated keep their existing entity.
+
+    ``actor_id`` is the AP user who triggered the pull; it lands on every audit
+    row this writes. ``None`` means the sync had no human behind it (a future
+    background caller), which the trail records as a system action rather than
+    attributing it to nobody in particular.
 
     Each erp_vendor dict should have:
         - erp_vendor_id: str (required — the vendor ID in the ERP)
@@ -37,6 +53,12 @@ async def sync_vendors_from_erp(
     created = 0
     updated = 0
     unchanged = 0
+    # (vendor, change, erp_vendor_id) for every row this pull actually touched.
+    # Audited after the loop's single flush rather than inline: `Vendor.id` is a
+    # column default SQLAlchemy evaluates at INSERT time, so a newly-created
+    # vendor audited before the flush would produce a row whose `entity_id` is
+    # NULL — evidence pointing at nothing.
+    audited: list[tuple[Vendor, str, str]] = []
 
     for erp_v in erp_vendors:
         erp_id = erp_v.get("erp_vendor_id")
@@ -64,6 +86,7 @@ async def sync_vendors_from_erp(
             existing.erp_synced_at = now
             if changed:
                 updated += 1
+                audited.append((existing, "updated", erp_id))
             else:
                 unchanged += 1
         else:
@@ -90,6 +113,7 @@ async def sync_vendors_from_erp(
                         name_match.status = "active"
                         name_match.source = "erp_sync"
                     updated += 1
+                    audited.append((name_match, "linked", erp_id))
                     continue
 
             # Create new vendor
@@ -110,5 +134,56 @@ async def sync_vendors_from_erp(
             )
             db.add(vendor)
             created += 1
+            audited.append((vendor, "created", erp_id))
+
+    if audited:
+        await db.flush()
+        for vendor, change, erp_id in audited:
+            await _audit_synced(
+                db,
+                vendor=vendor,
+                organization_id=organization_id,
+                actor_id=actor_id,
+                erp_vendor_id=erp_id,
+                change=change,
+            )
 
     return {"created": created, "updated": updated, "unchanged": unchanged}
+
+
+async def _audit_synced(
+    db: AsyncSession,
+    *,
+    vendor: Vendor,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    erp_vendor_id: str,
+    change: str,
+) -> None:
+    """One append-only row per vendor the sync actually changed.
+
+    ``change`` distinguishes the three things this sync does: ``created`` (a new
+    payee row), ``updated`` (fields refreshed on a row already linked to the
+    ERP) and ``linked`` (a manually-created vendor adopted by the ERP id, which
+    can also promote it out of ``unverified``).
+
+    PII-free: the vendor's name and code — the same two fields the
+    ``vendor.created`` row already records — plus the ERP's own identifier.
+    Never ``tax_id``, ``address``, ``email`` or ``phone``, all of which the ERP
+    payload carries and this sync writes onto the row.
+    """
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action="vendor.synced_from_erp",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={
+            "change": change,
+            "erp_vendor_id": erp_vendor_id,
+            "name": vendor.name,
+            "code": vendor.code,
+        },
+    )

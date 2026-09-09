@@ -856,3 +856,101 @@ async def test_text_search_tool_is_entity_scoped(realdb):
         )
     all_returned = {m.invoice_id for m in res_all.matches}
     assert {str(inv_default.id), str(inv_other.id)} <= all_returned
+
+
+# ===========================================================================
+# Layer 2 — the copilot discloses what it could not rank
+# ===========================================================================
+
+
+async def test_optimize_discount_capture_discloses_unrankable_offers(realdb):
+    """An offer with no resolvable net due date has no APR, so it is absent
+    from `recommendations` — a ranking BY APR has no position for it. Absent
+    and uncounted, though, is an undisclosed omission: the copilot would answer
+    as though those offers did not exist.
+
+    `unrankable_count` is the disclosure, exactly as `unconvertible_count` is
+    for a foreign-currency offer. Before the horizon was modelled these offers
+    DID appear in `recommendations`, scored at a fabricated 0.00 % APR beside a
+    positive net benefit — present but wrong, which is worse than absent but
+    counted.
+    """
+    from app.models.discount import DiscountOffer
+    from app.models.vendor import Vendor
+    from app.services.assistant.tools.optimizer import optimize_discount_capture
+    from app.services.assistant.tools.schemas import OptimizeDiscountsParams
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+
+    async with mk_a() as s:
+        ent = await _default_entity_id(s, a.org_id)
+        vendor = Vendor(id=uuid.uuid4(), organization_id=a.org_id, name="Horizonless Co")
+        s.add(vendor)
+        # Rankable: an invoice-scoped offer whose invoice carries a due date.
+        inv = await _seed_invoice(
+            s,
+            a.org_id,
+            ent,
+            number="OPT-RANKED",
+            vendor_name="Ranked Co",
+            amount="1000.00",
+            due_date=date.today() + timedelta(days=30),
+        )
+        await s.flush()
+        tiers = [{"days": 5, "percent": "3.00"}]
+        s.add(
+            DiscountOffer(
+                id=uuid.uuid4(),
+                organization_id=a.org_id,
+                entity_id=ent,
+                scope="invoice",
+                invoice_id=inv.id,
+                source="supplier",
+                status="offered",
+                tiers=tiers,
+                base_amount=Decimal("1000.00"),
+                currency="USD",
+                valid_from=date.today(),
+                valid_until=date.today() + timedelta(days=30),
+            )
+        )
+        # Unrankable: vendor-scoped, no invoice and NO `valid_until`, so there
+        # is no net due date anywhere to accelerate against.
+        s.add(
+            DiscountOffer(
+                id=uuid.uuid4(),
+                organization_id=a.org_id,
+                entity_id=ent,
+                scope="vendor",
+                vendor_id=vendor.id,
+                source="supplier",
+                status="offered",
+                tiers=tiers,
+                base_amount=Decimal("500000.00"),
+                currency="USD",
+                valid_from=date.today(),
+                valid_until=None,
+            )
+        )
+        await s.commit()
+
+    ctrl_mk = realdb.control_sessionmaker()
+    async with mk_a() as s, ctrl_mk() as ctrl:
+        result = await optimize_discount_capture(
+            s,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            control_db=ctrl,
+            params=OptimizeDiscountsParams(),
+        )
+
+    assert result.unrankable_count == 1
+    # It is not smuggled into the ranking at a made-up APR...
+    assert [r.invoice_number for r in result.recommendations] == ["OPT-RANKED"]
+    # ...and every APR that IS reported is a real number.
+    assert all(r.annualized_return_pct > 0 for r in result.recommendations)
+    # ...nor into the totals: 3% of 500,000 would dwarf the 30.00 below.
+    assert result.total_savings_available == Decimal("30.00")
+    assert result.total_savings_selected == Decimal("30.00")

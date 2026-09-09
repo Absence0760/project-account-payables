@@ -37,7 +37,19 @@ COPY --from=ghcr.io/astral-sh/uv:0.5@sha256:7bff3c3776ec467fc1437960f2c469d8beb3
 # Nothing at runtime reads it, and Trivy scans the stale package metadata
 # inside it as if those copies were installed.
 COPY pyproject.toml requirements.lock .
-RUN uv pip install --system --no-cache --require-hashes -r requirements.lock
+
+# The same layer then removes pip. It is the ONLY package `python:3.14-slim`
+# ships in site-packages, nothing in this image installs with it (uv does that,
+# and the app runs from the copied source), and no runtime path imports it — so
+# all it contributes is a dist-info for Trivy to match CVEs against. It has
+# already produced one (CVE-2026-13346, pip < 26.2.0, "arbitrary file
+# installation via malicious package indexes"), reported against an installer
+# this image never invokes. Deleting it retires that finding and every future
+# pip CVE with it, rather than chasing the base-image digest each time one
+# lands. To install something into a running container for debugging,
+# `uv pip install --system` is still there.
+RUN uv pip install --system --no-cache --require-hashes -r requirements.lock \
+    && python -m pip uninstall -y pip
 
 COPY . .
 

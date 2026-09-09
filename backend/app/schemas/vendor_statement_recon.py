@@ -128,9 +128,15 @@ class ReconciliationSummaryResponse(BaseModel):
     filtered the LOADED page and ``totalDiscrepancies`` reduced the per-run
     discrepancy counts over it — both contradicting the whole-set ``total``.
 
-    ``open_discrepancies`` sums ``amount_mismatch + missing_our_side +
-    missing_their_side`` across the filtered set — the exact figure the page's
-    ``discrepancyCount`` reduce produced, just whole-set."""
+    ``open_discrepancies`` counts the **live** reconciliation lines across the
+    filtered set that are still actionable *and* still unresolved — the same
+    predicate ``_recompute_run_status`` and ``close-readiness`` use
+    (``_ACTIONABLE_CLASSES`` = ``amount_mismatch`` + ``missing_our_side``, with
+    ``resolution_status == 'unresolved'``). It previously summed the run rows'
+    import-time ``amount_mismatch_count`` / ``missing_our_side_count`` /
+    ``missing_their_side_count`` counters, which ``resolve_line`` never
+    updates: the figure could only ever go up, and it counted a class the
+    actionable set deliberately excludes."""
 
     total: int
     by_status: dict[str, int]

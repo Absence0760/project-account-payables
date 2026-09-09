@@ -1,4 +1,4 @@
-import { API_BASE, authToken, expect, tenantHeaders, test } from '../fixtures/helpers';
+import { API_BASE, authToken, expect, tenantBase, tenantHeaders, test } from '../fixtures/helpers';
 import {
 	cleanup,
 	createGr,
@@ -186,7 +186,7 @@ test.describe('require_inspection rule (4-way gate when no inspection exists)', 
 	test.beforeAll(async ({ browser, tenantSlug }) => {
 		// Capture the org settings so afterAll can restore them — the matching
 		// config is org-wide and must not leak into sibling specs.
-		const ctx = await browser.newContext({ baseURL: `http://${tenantSlug}.localhost:7777` });
+		const ctx = await browser.newContext({ baseURL: tenantBase(tenantSlug) });
 		const page = await ctx.newPage();
 		const { signInAndWait } = await import('../fixtures/helpers');
 		await signInAndWait(page);
@@ -199,7 +199,7 @@ test.describe('require_inspection rule (4-way gate when no inspection exists)', 
 	test.afterAll(async ({ browser, tenantSlug }) => {
 		cleanup(created);
 		// Restore the org's matching settings to whatever they were.
-		const ctx = await browser.newContext({ baseURL: `http://${tenantSlug}.localhost:7777` });
+		const ctx = await browser.newContext({ baseURL: tenantBase(tenantSlug) });
 		const page = await ctx.newPage();
 		const { signInAndWait } = await import('../fixtures/helpers');
 		await signInAndWait(page);

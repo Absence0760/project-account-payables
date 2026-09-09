@@ -1,4 +1,4 @@
-import { ACME_BASE, expect, test } from '../fixtures/helpers';
+import { ACME_BASE, escapeRegExp, expect, test } from '../fixtures/helpers';
 import { SERVICES, skipUnlessReachable } from '../fixtures/services';
 
 /**
@@ -63,7 +63,7 @@ test.describe('SAML login via Keycloak', () => {
 		// Keycloak POSTs the SAMLResponse to the backend ACS, which verifies it,
 		// mints our JWT, and (via the one-time-code bridge) lands on the tenant
 		// root (dashboard).
-		await page.waitForURL(/^http:\/\/acme\.localhost:7777\/?$/, { timeout: 20_000 });
+		await page.waitForURL(new RegExp(`^${escapeRegExp(ACME_BASE)}/?$`), { timeout: 20_000 });
 
 		// We're authenticated: a JWT is in localStorage and the app shell renders.
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));

@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
+import { API_BASE, WEB_ORIGIN, WEB_PORT, tenantOrigin } from './fixtures/env';
+
+const PORT_ARG = WEB_PORT ? ` --port ${WEB_PORT}` : '';
+
 /**
  * Playwright e2e config for the frontend.
  *
@@ -7,6 +11,13 @@ import { defineConfig, devices } from '@playwright/test';
  * (`<slug>.localhost:7777`). Chromium resolves `*.localhost` to
  * 127.0.0.1 by default per RFC 6761, so no /etc/hosts changes are
  * needed.
+ *
+ * Both origins are configurable — `E2E_WEB_ORIGIN` (default
+ * `http://localhost:7777`) and `PUBLIC_API_URL` (default
+ * `http://localhost:8000`), resolved in `fixtures/env.ts`. A session
+ * working in a git worktree needs that: `reuseExistingServer` is on
+ * locally, so without its own port it would silently test the primary
+ * checkout's build. See `tests-e2e/README.md` § Running from a worktree.
  *
  * Parallelism + isolation model:
  *
@@ -38,7 +49,7 @@ import { defineConfig, devices } from '@playwright/test';
  *   - Redis running on :6379
  *   - `python backend/scripts/seed.py` has run (creates acme +
  *     techflow + the e2e tenants)
- *   - Backend running on :8000 (set PUBLIC_API_URL accordingly)
+ *   - Backend running on :8000 (or set PUBLIC_API_URL accordingly)
  *
  * Locally, `cd frontend && pnpm test:e2e` boots the dev server via
  * the webServer block below. The backend has to be running
@@ -99,16 +110,21 @@ export default defineConfig({
 	// transforms during page navigation. Locally we keep `pnpm dev`
 	// so an interactive run picks up source edits.
 	webServer: {
-		command: process.env.FEOH_E2E_USE_PREVIEW === 'true'
-			? 'pnpm exec vite preview --port 7777'
-			: 'pnpm dev',
-		url: 'http://localhost:7777',
+		// `--port` on BOTH branches: `pnpm dev` is `vite dev --port 7777` in
+		// package.json, so invoking the script directly would ignore
+		// `E2E_WEB_ORIGIN` and hand back the primary checkout's port. Empty when
+		// the origin uses the scheme's default port — then vite picks its own.
+		command:
+			process.env.FEOH_E2E_USE_PREVIEW === 'true'
+				? `pnpm exec vite preview${PORT_ARG}`
+				: `pnpm exec vite dev${PORT_ARG}`,
+		url: WEB_ORIGIN,
 		reuseExistingServer: !process.env.CI,
 		timeout: 60_000,
 		stdout: 'ignore',
 		stderr: 'pipe',
 		env: {
-			PUBLIC_API_URL: process.env.PUBLIC_API_URL ?? 'http://localhost:8000'
+			PUBLIC_API_URL: API_BASE
 		}
 	},
 
@@ -119,7 +135,7 @@ export default defineConfig({
 		// in cross-tenant specs that pin via `test.use({ baseURL: … })`
 		// (e.g. `auth/tenant-isolation.spec.ts`) and in any direct
 		// `@playwright/test` import path.
-		baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://acme.localhost:7777',
+		baseURL: process.env.PLAYWRIGHT_BASE_URL ?? tenantOrigin('acme'),
 		trace: 'on-first-retry',
 		screenshot: 'only-on-failure',
 		video: 'retain-on-failure',

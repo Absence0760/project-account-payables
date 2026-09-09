@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { Payment, PaymentStatus, PaymentMethod } from '$lib/types/payment';
+	import type { Payment, PaymentStatus } from '$lib/types/payment';
 	import {
 		PAYMENT_STATUSES,
-		PAYMENT_STATUS_LABELS,
-		PAYMENT_METHOD_LABELS,
+		paymentStatusLabelKey,
+		paymentMethodLabelKey,
 		PAYMENT_STATUS_TONES,
 		runStatusTone
 	} from '$lib/types/payment';
@@ -1589,16 +1589,26 @@
 	}
 
 
+	// The rail name is a message key, not an English literal — a rail this
+	// build doesn't know renders raw rather than blank.
 	function methodLabel(method: string | null): string {
 		if (!method) return '—';
-		return PAYMENT_METHOD_LABELS[method as PaymentMethod] ?? method;
+		const key = paymentMethodLabelKey(method);
+		return key ? m(key) : method;
 	}
+
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = paymentStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
 
 	let historyChips = $derived([
 		{ key: 'all', label: m('common.all'), count: paymentCountsTotal || paymentStore.all.length },
 		...PAYMENT_STATUSES.map((s) => ({
 			key: s,
-			label: PAYMENT_STATUS_LABELS[s],
+			label: statusLabel(s),
 			count: statusCount(s)
 		}))
 	]);
@@ -2017,7 +2027,7 @@
 								class:compliance-ring={p.status === 'pending_compliance'}
 							>
 								<Badge tone={PAYMENT_STATUS_TONES[p.status]} variant={p.status}>
-									{PAYMENT_STATUS_LABELS[p.status]}
+									{statusLabel(p.status)}
 								</Badge>
 							</span>
 						</td>

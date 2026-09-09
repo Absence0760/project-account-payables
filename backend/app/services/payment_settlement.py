@@ -41,7 +41,7 @@ authorized leg is a match; reporting a third number is not.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.services.numeric_bounds import fits_numeric
 
@@ -65,9 +65,23 @@ OUTCOME_UNVERIFIED = "unverified"
 DISCREPANCY_OUTCOMES = frozenset({OUTCOME_AMOUNT_MISMATCH, OUTCOME_CURRENCY_MISMATCH})
 
 REASON_NO_REPORTED_AMOUNT = "provider_reported_no_amount"
-REASON_NON_FINITE_AMOUNT = "provider_reported_non_finite_amount"
 REASON_CURRENCY_NOT_AUTHORIZED = "settled_currency_not_authorized"
 REASON_AMOUNT_DIFFERS = "settled_amount_differs_from_authorization"
+
+#: The processor reported something that is not a usable number — a JSON `NaN`
+#: or `Infinity` (Python's own `json` module emits and accepts both by default,
+#: so an adapter parsing a hostile or broken payload really can hand one over),
+#: or a magnitude so large that quantizing it exceeds the decimal context.
+#:
+#: Named apart from `REASON_NO_REPORTED_AMOUNT` on purpose: "the rail said
+#: nothing" and "the rail said something unusable" reach the same
+#: `unverified` OUTCOME — neither is evidence of a discrepancy, and inventing
+#: a `fraud_flag` out of garbage would flag every payment on a broken
+#: integration — but they must stay distinguishable on the audit row, and they
+#: diverge downstream: `persistable_settled_amount` records the unusable figure
+#: as `settled_amount_unstorable`, so `settlement_coverage` returns `uncertain`
+#: and the invoice HOLDS, while a genuinely absent figure fails open.
+REASON_REPORTED_AMOUNT_UNUSABLE = "provider_reported_unusable_amount"
 
 
 @dataclass(frozen=True)
@@ -132,6 +146,48 @@ class SettlementVerification:
 
 def _q(value: Decimal) -> Decimal:
     return Decimal(value).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+
+def usable_reported_amount(value) -> Decimal | None:
+    """The 2 dp form of a reported settlement figure, or ``None`` if unusable.
+
+    ``_q`` raises ``InvalidOperation`` on a non-finite ``Decimal`` (``NaN`` /
+    ``Infinity``) and on a magnitude past the decimal context's precision. That
+    raise used to happen INSIDE ``verify_settlement``, i.e. before the figure
+    ever reached ``persistable_settled_amount`` — which handles exactly these
+    values, deliberately and explicitly, via ``fits_numeric``. So the one class
+    of report the recording layer was designed to quarantine instead took the
+    whole webhook transaction down: the handler 5xx'd, the processor retried
+    into the identical failure, and nothing about the money movement was
+    recorded. A retry storm, not a wrong figure — but the payment was left in
+    flight forever either way.
+
+    The NaN-aware guard therefore runs FIRST, and the verdict for such a report
+    is an explicit named one (``unverified`` /
+    ``REASON_REPORTED_AMOUNT_UNUSABLE``), never a 500 and never a silent
+    ``matched``.
+    """
+    candidate = coerce_reported_amount(value)
+    if candidate is None or not candidate.is_finite():
+        return None
+    try:
+        return _q(candidate)
+    except InvalidOperation:
+        return None
+
+
+def coerce_reported_amount(value) -> Decimal | None:
+    """The reported figure as a ``Decimal``, or ``None`` if it is not a number.
+
+    Separate from :func:`usable_reported_amount` because ``NaN`` IS a Decimal:
+    it is unusable for arithmetic but must still be carried onto the verdict so
+    the recording layer can quarantine it. Only a value that is not a number at
+    all (a caller-contract violation) yields ``None`` here.
+    """
+    try:
+        return Decimal(value)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _same_currency(a: str | None, b: str | None) -> bool:
@@ -200,10 +256,16 @@ def verify_settlement(
 
     ``unverified``
         The provider's webhook carried no amount at all (an adapter whose
-        payload genuinely omits it). Fails OPEN by design: an absent field
-        is not evidence, and inventing a discrepancy from it would flag every
-        payment on that rail. The caller records the outcome on the audit row
-        so the blind spot is visible rather than silent, and bank
+        payload genuinely omits it), or carried one that is not a usable
+        number (``NaN`` / ``Infinity`` / a magnitude past the decimal
+        context). Fails OPEN as a VERDICT by design: neither is evidence, and
+        inventing a discrepancy from either would flag every payment on that
+        rail. The two are distinguished by ``reason``
+        (``REASON_NO_REPORTED_AMOUNT`` vs ``REASON_REPORTED_AMOUNT_UNUSABLE``)
+        and they diverge downstream — an unusable figure is persisted as
+        ``settled_amount_unstorable``, so ``settlement_coverage`` returns
+        ``uncertain`` and the invoice holds. The caller records the outcome on
+        the audit row so the blind spot is visible rather than silent, and bank
         reconciliation remains the downstream net.
     """
     legs = build_authorized_legs(
@@ -224,27 +286,25 @@ def verify_settlement(
             authorized_leg=target_leg.leg,
         )
 
-    # A JSON `NaN` / `Infinity` (Python's `json.loads` accepts both by default)
-    # can reach here as `Decimal("NaN")` from an adapter that parses the amount
-    # itself rather than through `base.parse_amount`. `_q`'s `.quantize()` would
-    # then raise `InvalidOperation` before any tolerance check — an unhandled
-    # 500 on the webhook that is recording money movement. Treat a non-finite
-    # figure as "no usable amount": `unverified`, fail-open, same as `None`.
-    try:
-        amount_is_finite = Decimal(reported_amount).is_finite()
-    except (ArithmeticError, TypeError, ValueError):
-        amount_is_finite = False
-    if not amount_is_finite:
+    usable = usable_reported_amount(reported_amount)
+    if usable is None:
+        # A visible blind spot, never a silent pass. The unusable figure itself
+        # is carried through on `settled_amount` so it reaches
+        # `persistable_settled_amount`, which flags it unstorable — that is
+        # what makes `settlement_coverage` return `uncertain` and HOLD the
+        # invoice, rather than laundering garbage into the fails-open NULL that
+        # means "no rail ever reported a figure".
         return SettlementVerification(
             outcome=OUTCOME_UNVERIFIED,
-            reason=REASON_NON_FINITE_AMOUNT,
-            settled_currency=(reported_currency or None),
+            reason=REASON_REPORTED_AMOUNT_UNUSABLE,
+            settled_amount=coerce_reported_amount(reported_amount),
+            settled_currency=reported_currency,
             authorized_amount=target_leg.amount,
             authorized_currency=target_leg.currency,
             authorized_leg=target_leg.leg,
         )
 
-    settled = _q(reported_amount)
+    settled = usable
     candidates = [leg for leg in legs if _same_currency(reported_currency, leg.currency)]
 
     if not candidates:
@@ -325,6 +385,12 @@ def persistable_settled_amount(amount: Decimal | None) -> tuple[Decimal | None, 
     """
     if amount is None:
         return None, False
+    # The same NaN-aware front guard the verifier runs. `fits_numeric` already
+    # rejects a non-finite Decimal explicitly, but it reaches for `.is_finite()`
+    # first, so anything that is not a Decimal at all would AttributeError here
+    # — on the money path, for a report we have already decided is garbage.
+    if usable_reported_amount(amount) is None:
+        return None, True
     if fits_numeric(amount, *SETTLED_AMOUNT_NUMERIC):
         return amount, False
     return None, True

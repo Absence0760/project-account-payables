@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantBase, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * A stored non-English locale must format MONEY AND DATES, not just labels.
@@ -84,7 +84,7 @@ test.describe('stored locale formats money on first load', () => {
 			localStorage.setItem('feoh_locale', 'de');
 		});
 
-		await page.goto(`http://${tenantSlug}.localhost:7777/invoices`);
+		await page.goto(`${tenantBase(tenantSlug)}/invoices`);
 
 		// Narrow the list to the one invoice this spec minted, so the amounts read
 		// below are exactly the one whose value we chose — not a page of whatever

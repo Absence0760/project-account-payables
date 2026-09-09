@@ -13,6 +13,21 @@ Public API:
 Both return :class:`ImportResult`. Each row is processed independently
 — one bad row does not abort the import. Callers are expected to
 commit the session themselves after inspecting the result.
+
+**Every row these importers create writes an append-only audit row** —
+``vendor.imported_csv`` per vendor, ``invoice.imported_csv`` per invoice — one
+per created entity rather than one summary per batch, because a summary cannot
+be tied back to the row it describes. The invoice row is keyed on the invoice's
+own ``correlation_id``, which is the join key the per-invoice audit views use.
+
+A CSV import bypasses the workflow engine entirely and can land an invoice
+directly at ``paid``/``done``, so without this a hand-crafted historical payable
+had a completely empty audit trail — precisely the row a SOX auditor most wants
+attributed. Skipped and errored rows write nothing: nothing was created.
+
+The audit rows are added to the caller's session and never committed here, so
+they land atomically with the rows they describe and a caller that rolls back
+discards both.
 """
 
 from __future__ import annotations
@@ -29,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.vendor import Vendor
+from app.services.audit_dispatch import dispatch_audit
 from app.services.numeric_bounds import MONEY_NUMERIC, fits_numeric
 from app.utils.dates import parse_ambiguous_date
 
@@ -253,12 +269,17 @@ async def import_vendors_csv(
     organization_id: uuid.UUID,
     csv_text: str,
     entity_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
 ) -> ImportResult:
     """Upsert vendors from CSV. Dedup priority: code > case-insensitive name.
 
     ``entity_id`` (multi-entity Phase 2) is the entity new vendors land under —
-    the selected entity or the tenant default, resolved at the endpoint."""
+    the selected entity or the tenant default, resolved at the endpoint.
+
+    ``actor_id`` is the AP user who ran the import; it lands on the
+    ``vendor.imported_csv`` audit row written for each vendor created."""
     result = ImportResult()
+    created: list[Vendor] = []
     try:
         rows = _read_rows(csv_text)
     except csv.Error as exc:
@@ -310,10 +331,50 @@ async def import_vendors_csv(
             source="manual",
         )
         db.add(vendor)
+        created.append(vendor)
         result.imported += 1
 
+    # Flush BEFORE auditing: `Vendor.id` is a column default, evaluated by
+    # SQLAlchemy at INSERT time — not at construction — so a row audited before
+    # the flush lands with a NULL `entity_id`, pointing at nothing. One flush
+    # for the batch rather than one per row keeps the round trips where they
+    # were.
     await db.flush()
+    for vendor in created:
+        await _audit_vendor_imported(
+            db, vendor=vendor, organization_id=organization_id, actor_id=actor_id
+        )
     return result
+
+
+async def _audit_vendor_imported(
+    db: AsyncSession,
+    *,
+    vendor: Vendor,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+) -> None:
+    """Append-only record that this payee row was created by a CSV import.
+
+    PII-free: name and code — the same two fields ``api/vendors.py``'s
+    ``vendor.created`` row records — and nothing else. The CSV may carry
+    ``tax_id``, ``email``, ``phone`` and ``address``; none of them reach the
+    trail.
+    """
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action="vendor.imported_csv",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={
+            "name": vendor.name,
+            "code": vendor.code,
+            "source": IMPORT_PROVENANCE_SOURCE,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +388,7 @@ async def import_invoices_csv(
     csv_text: str,
     entity_id: uuid.UUID | None = None,
     day_first: bool = False,
+    actor_id: uuid.UUID | None = None,
 ) -> ImportResult:
     """Import historical invoices. Vendor resolution: code > name. Missing vendors
     get an auto-created stub with status='unverified' so the row still lands.
@@ -336,7 +398,12 @@ async def import_invoices_csv(
     default, resolved at the endpoint.
 
     ``day_first`` resolves ambiguous ``invoice_date`` / ``due_date`` cells
-    (see ``app.utils.dates.resolve_day_first_preference``)."""
+    (see ``app.utils.dates.resolve_day_first_preference``).
+
+    ``actor_id`` is the AP user who ran the import; it lands on the
+    ``invoice.imported_csv`` audit row written for each invoice created, and on
+    the ``vendor.imported_csv`` row for each vendor stub auto-created along the
+    way."""
     result = ImportResult()
     try:
         rows = _read_rows(csv_text)
@@ -347,6 +414,7 @@ async def import_invoices_csv(
     # One stamp for the whole batch — every row in a single import shares the
     # instant the import ran, which is the fact being recorded.
     provenance = build_import_provenance()
+    created: list[Invoice] = []
 
     for i, row in enumerate(rows, start=2):
         invoice_number = (row.get("invoice_number") or "").strip()
@@ -377,6 +445,7 @@ async def import_invoices_csv(
             vendor_name=vendor_name,
             vendor_code=vendor_code,
             entity_id=entity_id,
+            actor_id=actor_id,
         )
 
         status_raw = (row.get("status") or "done").strip().lower()
@@ -437,9 +506,38 @@ async def import_invoices_csv(
             meta={IMPORT_PROVENANCE_KEY: provenance},
         )
         db.add(invoice)
+        created.append(invoice)
         result.imported += 1
 
+    # Flush first — `Invoice.id` AND `Invoice.correlation_id` are both column
+    # defaults, populated by the INSERT rather than by construction, so an audit
+    # row written before this would carry a NULL entity id and a NULL
+    # correlation id: unreachable from the invoice it describes, and from
+    # anything else.
     await db.flush()
+    for invoice in created:
+        # `correlation_id`, not a fresh uuid: `GET /api/audit/invoice/{id}` and
+        # `GET /api/invoices/{id}/audit-log` both resolve an invoice's trail by
+        # joining on `Invoice.correlation_id`, so a row keyed any other way is
+        # invisible on the very invoice it describes. `status` is recorded
+        # because it is the whole risk of this path — an import can land a row
+        # directly at `paid`/`done`, a state the workflow engine would have
+        # required an approval (and an approval signature) to reach.
+        await dispatch_audit(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action="invoice.imported_csv",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            details={
+                "invoice_number": invoice.invoice_number,
+                "status": getattr(invoice.status, "value", invoice.status),
+                "vendor_id": str(invoice.vendor_id),
+                "source": IMPORT_PROVENANCE_SOURCE,
+            },
+        )
     return result
 
 
@@ -450,6 +548,7 @@ async def _resolve_or_create_vendor(
     vendor_name: str,
     vendor_code: str | None,
     entity_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
 ) -> Vendor:
     if vendor_code:
         q = await db.execute(
@@ -483,6 +582,12 @@ async def _resolve_or_create_vendor(
     )
     db.add(vendor)
     await db.flush()
+    # An invoice import that names an unknown supplier MINTS a payee row. It is
+    # a vendor create like any other and audits like one — otherwise the only
+    # trace of a new payee entering the tenant is the invoice that referenced it.
+    await _audit_vendor_imported(
+        db, vendor=vendor, organization_id=organization_id, actor_id=actor_id
+    )
     return vendor
 
 

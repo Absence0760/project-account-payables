@@ -5,9 +5,10 @@
 		PrimaryMetric
 	} from '$lib/types/experiments';
 	import {
-		STATUS_LABELS,
+		EXPERIMENT_STATUSES,
+		experimentStatusLabelKey,
 		STATUS_TONES,
-		PRIMARY_METRIC_LABELS
+		PRIMARY_METRIC_LABEL_KEYS
 	} from '$lib/types/experiments';
 	import type { WorkflowDefinition } from '$lib/types/workflow';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -92,15 +93,23 @@
 			: experiments.filter((e) => e.status === statusFilter)
 	);
 
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank. The chips
+	// and the row badge read the SAME map, so a status can't be named two ways
+	// one column apart (the chips used to carry their own `experiments.chip.*`
+	// copies, translated, beside an untranslated badge).
+	const statusLabel = (s: string) => {
+		const key = experimentStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all'), count: experiments.length },
-		{ key: 'draft', label: m('experiments.chip.draft'), count: experiments.filter((e) => e.status === 'draft').length },
-		{ key: 'running', label: m('experiments.chip.running'), count: experiments.filter((e) => e.status === 'running').length },
-		{
-			key: 'concluded',
-			label: m('experiments.chip.concluded'),
-			count: experiments.filter((e) => e.status === 'concluded').length
-		}
+		...EXPERIMENT_STATUSES.map((s) => ({
+			key: s,
+			label: statusLabel(s),
+			count: experiments.filter((e) => e.status === s).length
+		}))
 	]);
 
 	async function load() {
@@ -321,12 +330,12 @@
 						</RowLink>
 					</td>
 					<td>{exp.workflow_definition_name ?? '—'}</td>
-					<td>{PRIMARY_METRIC_LABELS[exp.primary_metric]}</td>
+					<td>{m(PRIMARY_METRIC_LABEL_KEYS[exp.primary_metric])}</td>
 					<td class="mono">{exp.split_a_pct}% / {100 - exp.split_a_pct}%</td>
 					<td class="right mono">{exp.assigned_count}</td>
 					<td>
 						<Badge tone={STATUS_TONES[exp.status]} variant={exp.status}>
-							{STATUS_LABELS[exp.status]}
+							{statusLabel(exp.status)}
 						</Badge>
 					</td>
 					<td class="actions">
@@ -385,7 +394,7 @@
 				<label for="exp-metric">{m('experiments.modal.primaryMetric')}</label>
 				<select id="exp-metric" bind:value={form.primary_metric}>
 					{#each METRICS as mtr (mtr)}
-						<option value={mtr}>{PRIMARY_METRIC_LABELS[mtr]}</option>
+						<option value={mtr}>{m(PRIMARY_METRIC_LABEL_KEYS[mtr])}</option>
 					{/each}
 				</select>
 			</div>

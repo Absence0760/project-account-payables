@@ -42,6 +42,13 @@ class VendorPatternResponse(BaseModel):
     min_approved_amount: str
     max_approved_amount: str
     sample_size: int
+    # Approvals whose amount could not be expressed in the org's reporting
+    # currency. They are EXCLUDED from the four money fields above but INCLUDED
+    # in ``sample_size`` -- so a reader handed the average beside the sample
+    # count is reading an average over fewer rows than the count claims unless
+    # this is disclosed. Emitted for exactly that disclosure (decisions.md
+    # §79/§82); the aggregate itself is unchanged.
+    unconverted_count: int = 0
 
 
 class ApprovalPatternsResponse(BaseModel):
@@ -83,6 +90,13 @@ class InvoiceAnomalyResponse(BaseModel):
     vendor_id: str | None = None
     vendor_name: str
     amount: str
+    # WHAT ``amount`` is denominated in. Normally the org's reporting currency
+    # (the figure the baseline is comparable against); when the invoice carries
+    # no usable rate lock, ``detect_invoice_anomaly`` falls back to the BILLED
+    # figure for display and this carries the invoice's own currency instead.
+    # Without it a client has no way to label the number and would stamp the
+    # reporting currency onto a figure that is not in it.
+    amount_currency: str = ""
     insufficient_history: bool
     baseline: VendorBaselineResponse | None = None
     flags: list[AnomalyFlagResponse]

@@ -4,13 +4,25 @@ Wraps ``services.analytics.compute_supplier_concentration``. The committed-statu
 set is lifted from ``app/api/analytics.py`` (imported, not duplicated). All sums
 are ``Numeric``/``Decimal``.
 
-Rolled into the org's reporting currency (not a naive SUM across currencies —
-the same fix `app/api/analytics.py`'s supplier-concentration queries already
-carry, via `reporting_amount_for_row`/`vendor_rollup_to_reporting_currency`):
+Rolled into the org's reporting currency (not a naive SUM across currencies):
 a vendor billing in more than one currency, or a tenant with vendors in
 different currencies, used to add e.g. USD + EUR amounts as if they were one
 currency and hand the mixed total to the assistant labeled with a single
 currency code.
+
+That rollup is done **in SQL**, by the same
+`currency_conversion.vendor_currency_rollup_select` +
+`vendor_rollup_from_grouped_rows` pair the four AP spend surfaces use. It used
+to select five columns of every committed invoice in the period and fold them
+in Python — a synchronous per-row loop inside an `async def` whose cost grew
+with the invoice table (`docs/decisions.md` §103, and
+`backend/docs/analytics.md` § Per-vendor spend is one query). The population
+stays this tool's own (`_COMMITTED_STATUSES`, not the AP surfaces'
+"everything but rejected"); only the grouping and the conversion are shared.
+
+It groups by `vendor_id` as well as name, because this tool RETURNS the id:
+two distinct vendor records can carry the same `vendor_name`, and merging them
+would attribute one supplier's spend to another.
 """
 
 from __future__ import annotations
@@ -19,7 +31,6 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.analytics import _COMMITTED_STATUSES
@@ -31,7 +42,10 @@ from app.services.assistant.tools.schemas import (
     VendorSpendResult,
     VendorSpendRow,
 )
-from app.services.currency_conversion import reporting_amount_for_row
+from app.services.currency_conversion import (
+    vendor_currency_rollup_select,
+    vendor_rollup_from_grouped_rows,
+)
 from app.tenant import apply_entity_scope
 from app.utils.dates import utc_today
 
@@ -76,43 +90,24 @@ async def get_vendor_spend(
     currency = await resolve_org_currency(org_id, control_db)
 
     stmt = (
-        select(
-            Invoice.vendor_id,
-            Invoice.vendor_name,
-            Invoice.amount,
-            Invoice.currency,
-            Invoice.reporting_amount,
-            Invoice.reporting_currency,
-        )
+        vendor_currency_rollup_select(reporting_currency=currency, include_vendor_id=True)
         .where(Invoice.status.in_(_COMMITTED_STATUSES))
         .where(Invoice.invoice_date >= start)
     )
     stmt = apply_entity_scope(stmt, Invoice, entity_id)
-    rows = (await db.execute(stmt)).all()
+    rows = (await db.execute(stmt)).mappings().all()
 
-    # Convert each row into the reporting currency BEFORE grouping by vendor —
-    # summing raw `amount` across vendors/rows would add unlike face values.
-    by_vendor: dict[tuple[str | None, str], Decimal] = {}
-    for vendor_id, vendor_name, amount, inv_currency, rep_amount, rep_currency in rows:
-        converted, _unconverted = reporting_amount_for_row(
-            amount=Decimal(str(amount or 0)),
-            currency=inv_currency,
-            reporting_currency=currency,
-            persisted_reporting_currency=rep_currency,
-            persisted_reporting_amount=rep_amount,
-        )
-        key = (str(vendor_id) if vendor_id else None, vendor_name or "")
-        by_vendor[key] = by_vendor.get(key, Decimal("0")) + converted
+    # Postgres has already converted and grouped; this reduces the
+    # `vendors x currencies` rows into one entry per vendor, already ordered
+    # (total DESC, name ASC).
+    entries = vendor_rollup_from_grouped_rows([dict(r) for r in rows], reporting_currency=currency)
 
-    # Shape into the dicts compute_supplier_concentration expects, sorted desc.
-    vendor_spend = sorted(
-        (
-            {"vendor": vendor_name, "vendor_id": vendor_id, "amount": amount}
-            for (vendor_id, vendor_name), amount in by_vendor.items()
-        ),
-        key=lambda r: r["amount"],
-        reverse=True,
-    )
+    # Shape into the dicts compute_supplier_concentration expects. The WHOLE
+    # list, never a pre-sliced top-N: it derives its denominator from what it
+    # is handed, so slicing first rebases every share (see its docstring).
+    vendor_spend = [
+        {"vendor": e.vendor or "", "vendor_id": e.vendor_id, "amount": e.amount} for e in entries
+    ]
 
     snapshot = compute_supplier_concentration(vendor_spend)
     total_spend = snapshot.total_spend

@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
-	RECON_SOURCE_FORMAT_LABELS,
+	RECON_CLASSIFICATION_LABEL_KEYS,
+	RECON_RESOLUTION_LABEL_KEYS,
+	RECON_SOURCE_FORMAT_LABEL_KEYS,
+	RECON_STATUS_LABEL_KEYS,
+	RECON_STATUSES,
+	reconSourceFormatLabelKey,
+	reconStatusLabelKey,
 	ambiguousSkipCount,
 	formatExtractionConfidence,
 	isMachineRead,
 	sourceStatementFilename
 } from './vendorStatementRecon';
+import { en } from '$lib/i18n/locales/en';
 
 // The vendor-statement provenance surface is the only place a reviewer learns
 // that a run's lines were MACHINE-READ off a PDF rather than typed or parsed
@@ -82,14 +89,54 @@ describe('sourceStatementFilename', () => {
 	});
 });
 
-describe('RECON_SOURCE_FORMAT_LABELS', () => {
+describe('RECON_SOURCE_FORMAT_LABEL_KEYS', () => {
 	it('covers every source format the backend can stamp', () => {
 		// `SOURCE_MANUAL` / `SOURCE_CSV` / `SOURCE_PDF` in
 		// backend/app/models/vendor_statement_recon.py. An unlabelled format would
 		// render a blank pill.
-		expect(Object.keys(RECON_SOURCE_FORMAT_LABELS).sort()).toEqual(['csv', 'manual', 'pdf']);
-		for (const label of Object.values(RECON_SOURCE_FORMAT_LABELS)) {
-			expect(label.length).toBeGreaterThan(0);
+		expect(Object.keys(RECON_SOURCE_FORMAT_LABEL_KEYS).sort()).toEqual(['csv', 'manual', 'pdf']);
+	});
+
+	it('names a real catalogue key for every source format', () => {
+		// `Record<ReconSourceFormat, MessageKey>` is the compile-time half; a key
+		// naming nothing in the catalogue typechecks fine and renders the raw key
+		// string in the provenance pill, so check the catalogue too.
+		for (const key of Object.values(RECON_SOURCE_FORMAT_LABEL_KEYS)) {
+			expect(Object.keys(en), `"${key}" is not in the catalogue`).toContain(key);
+		}
+		expect(reconSourceFormatLabelKey('pdf')).toBe('vendorStatements.sourceFormat.pdf');
+		expect(reconSourceFormatLabelKey('edi')).toBeNull();
+	});
+});
+
+describe('RECON_STATUS_LABEL_KEYS', () => {
+	it('names a real catalogue key for every run status', () => {
+		for (const status of RECON_STATUSES) {
+			const key = RECON_STATUS_LABEL_KEYS[status];
+			expect(key, `${status} has no label key`).toBeTruthy();
+			expect(Object.keys(en), `${status} → "${key}" is not in the catalogue`).toContain(key);
+			expect(en[key]).not.toBe(status);
+		}
+	});
+
+	it('resolves a known status and returns null otherwise', () => {
+		for (const status of RECON_STATUSES) {
+			expect(reconStatusLabelKey(status)).toBe(RECON_STATUS_LABEL_KEYS[status]);
+		}
+		expect(reconStatusLabelKey('archived')).toBeNull();
+	});
+});
+
+describe('the per-line label maps', () => {
+	it('name real catalogue keys for every classification and resolution', () => {
+		// Both render as cells of the modal's diff table, whose every header and
+		// action is translated — an English literal there was the hybrid this
+		// conversion removes.
+		for (const key of [
+			...Object.values(RECON_CLASSIFICATION_LABEL_KEYS),
+			...Object.values(RECON_RESOLUTION_LABEL_KEYS)
+		]) {
+			expect(Object.keys(en), `"${key}" is not in the catalogue`).toContain(key);
 		}
 	});
 });

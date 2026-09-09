@@ -55,7 +55,14 @@ from app.models.procurement import (
 )
 from app.models.recurring_invoice import RecurringInvoiceTemplate
 from app.models.vendor import Vendor
-from app.models.vendor_statement_recon import VendorStatementReconciliation
+from app.models.vendor_statement_recon import (
+    CLASS_AMOUNT_MISMATCH,
+    CLASS_MISSING_OUR_SIDE,
+    CLASS_MISSING_THEIR_SIDE,
+    RESOLUTION_UNRESOLVED,
+    VendorStatementReconciliation,
+    VendorStatementReconLine,
+)
 from app.utils.dates import utc_today
 
 pytestmark = pytest.mark.asyncio
@@ -1371,10 +1378,17 @@ def _vsr_expect(
 
 
 def _vsr_discrepancies(rows: list[dict]) -> int:
-    return sum(
-        r["amount_mismatch_count"] + r["missing_our_side_count"] + r["missing_their_side_count"]
-        for r in rows
-    )
+    """The discrepancy count the summary endpoint is expected to report.
+
+    `missing_their_side_count` is deliberately NOT summed. The endpoint counts
+    live line rows whose classification is in `_ACTIONABLE_CLASSES`
+    (`amount_mismatch`, `missing_on_our_side`) and which are still unresolved —
+    the same population `_recompute_run_status` and `close-readiness` use. An
+    invoice on our ledger the supplier has not billed is not something a clerk
+    chases on this screen, so counting it here would make this KPI the only
+    reader of a third population.
+    """
+    return sum(r["amount_mismatch_count"] + r["missing_our_side_count"] for r in rows)
 
 
 async def _seed_vendor_statements(realdb, key="a", *, entity_id=None, rows=None) -> list[dict]:
@@ -1399,23 +1413,46 @@ async def _seed_vendor_statements(realdb, key="a", *, entity_id=None, rows=None)
         await s.flush()
         for spec in specs:
             spec["vendor_id"] = vendor_ids[spec["vendor"]]
-            s.add(
-                VendorStatementReconciliation(
-                    organization_id=org_id,
-                    entity_id=eid,
-                    vendor_id=spec["vendor_id"],
-                    vendor_name=spec["vendor_name"],
-                    statement_date=_TODAY,
-                    statement_reference=spec["statement_reference"],
-                    currency="USD",
-                    status=spec["status"],
-                    line_count=5,
-                    matched_count=2,
-                    amount_mismatch_count=spec["amount_mismatch_count"],
-                    missing_our_side_count=spec["missing_our_side_count"],
-                    missing_their_side_count=spec["missing_their_side_count"],
-                )
+            run = VendorStatementReconciliation(
+                organization_id=org_id,
+                entity_id=eid,
+                vendor_id=spec["vendor_id"],
+                vendor_name=spec["vendor_name"],
+                statement_date=_TODAY,
+                statement_reference=spec["statement_reference"],
+                currency="USD",
+                status=spec["status"],
+                line_count=5,
+                matched_count=2,
+                amount_mismatch_count=spec["amount_mismatch_count"],
+                missing_our_side_count=spec["missing_our_side_count"],
+                missing_their_side_count=spec["missing_their_side_count"],
             )
+            s.add(run)
+            await s.flush()
+            # The per-run counters above are stamped once at import and are
+            # never updated when a line is resolved, which is exactly why
+            # `GET /summary` stopped reading them. It counts the LIVE lines, so
+            # a fixture that sets only the counters describes a run with no
+            # lines at all and the endpoint correctly answers 0. Seed the rows
+            # the counters claim, one per counted discrepancy, so the two halves
+            # of the fixture agree and the parity this file exists to assert is
+            # about filtering rather than about a stale column.
+            for classification, count in (
+                (CLASS_AMOUNT_MISMATCH, spec["amount_mismatch_count"]),
+                (CLASS_MISSING_OUR_SIDE, spec["missing_our_side_count"]),
+                (CLASS_MISSING_THEIR_SIDE, spec["missing_their_side_count"]),
+            ):
+                for _ in range(count):
+                    s.add(
+                        VendorStatementReconLine(
+                            reconciliation_id=run.id,
+                            organization_id=org_id,
+                            entity_id=eid,
+                            classification=classification,
+                            resolution_status=RESOLUTION_UNRESOLVED,
+                        )
+                    )
         await s.commit()
     return specs
 

@@ -193,7 +193,7 @@ if [[ "$FILE" == */app/*.py && "$FILE" != */app/database.py ]]; then
     ln="${m%%:*}"
     register "tenant-url-interpolation" "$ln" \
       "create_async_engine() URL built by interpolation / concatenation — no Organization row, no get_tenant cross-check" \
-      "from app.database import _make_tenant_url — pass _make_tenant_url(org.db_name) off a resolved row; see tests/test_tenant_engine_construction.py"
+      "import make_tenant_url from app.tenant_url (dependency-free, safe on a dotenv-less Lambda path) or _make_tenant_url from app.database in the app — pass it org.db_name off a resolved row; see tests/test_tenant_engine_construction.py"
   done < <(hits "create_async_engine\(\s*(f[\"']|[^)]*(url\s*=\s*f[\"']|\+|%|\.format\())")
 fi
 

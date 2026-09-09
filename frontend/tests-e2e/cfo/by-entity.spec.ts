@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { API_BASE, expect, test } from '../fixtures/helpers';
 
 /**
  * /cfo — "By entity" consolidated-reporting section.
@@ -13,7 +13,7 @@ import { expect, test } from '../fixtures/helpers';
  * CFO surface (gated admin + cfo).
  */
 
-const API = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+const API = API_BASE;
 
 async function createEntity(page, name: string, slug: string): Promise<string> {
 	return page.evaluate(

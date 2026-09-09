@@ -3,6 +3,7 @@
 // display via `formatMoney` / render directly, never `parseFloat`.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 
 export type ExperimentStatus = 'draft' | 'running' | 'concluded';
 
@@ -12,18 +13,44 @@ export type PrimaryMetric =
 	| 'exception_rate_pct'
 	| 'rejection_rate_pct';
 
-export const PRIMARY_METRIC_LABELS: Record<PrimaryMetric, string> = {
-	time_to_approval_days: 'Time to approval (days)',
-	touchless_rate_pct: 'Touchless rate',
-	exception_rate_pct: 'Exception rate',
-	rejection_rate_pct: 'Rejection rate'
+// Every status the backend's `WorkflowExperiment.status` can hold — the array
+// the filter chips are built from, so a new status joins them for free rather
+// than being a fourth hand-written chip nobody adds.
+export const EXPERIMENT_STATUSES: ExperimentStatus[] = ['draft', 'running', 'concluded'];
+
+// The primary metric is a table cell AND a `<select>` option beside the
+// translated status badge, so an English literal here reads as a gap.
+export const PRIMARY_METRIC_LABEL_KEYS: Record<PrimaryMetric, MessageKey> = {
+	time_to_approval_days: 'experiments.metric.timeToApprovalDays',
+	touchless_rate_pct: 'experiments.metric.touchlessRatePct',
+	exception_rate_pct: 'experiments.metric.exceptionRatePct',
+	rejection_rate_pct: 'experiments.metric.rejectionRatePct'
 };
 
-export const STATUS_LABELS: Record<ExperimentStatus, string> = {
-	draft: 'Draft',
-	running: 'Running',
-	concluded: 'Concluded'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * `/experiments` already rendered translated filter chips (from its own
+ * hand-written `experiments.chip.*` keys) directly beside an untranslated
+ * `Running` badge fed by this map. One keyed map now feeds both, so the two
+ * can't drift either. `Record<ExperimentStatus, MessageKey>` makes a new
+ * status a compile error rather than a blank badge, and `experiments.test.ts`
+ * proves every key exists in the catalogue.
+ */
+export const STATUS_LABEL_KEYS: Record<ExperimentStatus, MessageKey> = {
+	draft: 'experiments.status.draft',
+	running: 'experiments.status.running',
+	concluded: 'experiments.status.concluded'
 };
+
+/**
+ * The message key for a status, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank badge).
+ */
+export function experimentStatusLabelKey(status: string): MessageKey | null {
+	return STATUS_LABEL_KEYS[status as ExperimentStatus] ?? null;
+}
 
 // Badge tone per status. It replaces a page-local helper that mapped these to
 // the colour names `green` / `amber` / `grey` — naming the paint rather than

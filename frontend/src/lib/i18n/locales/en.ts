@@ -56,6 +56,8 @@ export const en = {
 	'nav.entities': 'Entities',
 	'entity.all': 'All entities',
 	'entity.consolidated': 'Consolidated',
+	'entity.deactivated': 'Deactivated',
+	'entity.deactivatedNote': 'This entity was deactivated. You’re now viewing all entities.',
 	'entity.default': 'Default',
 	'entity.hint': 'Entity',
 	'entity.selectAria': 'Select entity',
@@ -290,6 +292,26 @@ export const en = {
 	'payments.col.terms': 'Terms',
 	'payments.col.status': 'Status',
 	'payments.col.routes': 'Routes',
+
+	// Payment status labels — the History badge + its filter chips ($lib/types/payment.ts::PAYMENT_STATUS_LABEL_KEYS)
+	'payments.status.pending': 'Pending',
+	'payments.status.pendingCompliance': 'Compliance Hold',
+	'payments.status.submitted': 'Submitted',
+	'payments.status.processing': 'Processing',
+	'payments.status.completed': 'Completed',
+	'payments.status.failed': 'Failed',
+	'payments.status.cancelled': 'Cancelled',
+	'payments.status.voided': 'Voided',
+
+	// Payment rail labels ($lib/types/payment.ts). BACS / Faster Payments / CHAPS are UK scheme NAMES and stay verbatim in every locale, like ACH.
+	'payments.method.ach': 'ACH',
+	'payments.method.wire': 'Wire',
+	'payments.method.check': 'Check',
+	'payments.method.virtualCard': 'Virtual Card',
+	'payments.method.bacs': 'BACS',
+	'payments.method.fasterPayments': 'Faster Payments',
+	'payments.method.chaps': 'CHAPS',
+
 	// Corridor quote comparison — advisory only (POST /api/payments/corridor-quotes)
 	'payments.quotes.open': 'Compare routes',
 	'payments.quotes.openAria': 'Compare payment routes for invoice {invoice}',
@@ -474,11 +496,43 @@ export const en = {
 	'vendors.filter.unverified': 'Unverified',
 	'vendors.filter.active': 'Active',
 	'vendors.filter.rejected': 'Rejected',
+
+	// Vendor lifecycle status + source value labels ($lib/types/vendor.ts). The status wording matches the filter chips above on purpose — chip and row badge name the same state.
+	'vendors.status.active': 'Active',
+	'vendors.status.unverified': 'Unverified',
+	'vendors.status.inactive': 'Inactive',
+	'vendors.status.rejected': 'Rejected',
+	'vendors.source.manual': 'Manual',
+	'vendors.source.erpSync': 'ERP Sync',
+	'vendors.source.aiExtracted': 'AI Extracted',
+
 	'vendors.col.vendor': 'Vendor',
 	'vendors.col.code': 'Code',
 	'vendors.col.email': 'Email',
 	'vendors.col.status': 'Status',
 	'vendors.col.screening': 'Screening',
+
+	// Sanctions-screening pill — ui/ScreeningBadge.svelte + $lib/types/vendor.ts
+	'vendors.screening.status.unscreened': 'Unscreened',
+	'vendors.screening.status.clear': 'Clear',
+	'vendors.screening.status.review': 'Review',
+	'vendors.screening.status.match': 'Match',
+	'vendors.screening.blocked': 'Blocked',
+	'vendors.screening.adverseMedia': 'Negative news',
+	'vendors.screening.adverseMediaTitle': 'Adverse-media (negative news) hit — review the relationship',
+
+	// Vendor risk level + the two composed pill strings, and the enrichable-field names ($lib/types/vendor.ts)
+	'vendors.risk.low': 'Low',
+	'vendors.risk.medium': 'Medium',
+	'vendors.risk.high': 'High',
+	'vendors.risk.critical': 'Critical',
+	'vendors.risk.unknown': 'Unknown',
+	'vendors.risk.pill': '{level} risk',
+	'vendors.risk.title': 'Risk: {level}',
+	'vendors.enrich.field.name': 'Legal name',
+	'vendors.enrich.field.address': 'Address',
+	'vendors.enrich.field.website': 'Website',
+
 	'vendors.col.source': 'Source',
 	'vendors.col.invoices': 'Invoices',
 	'vendors.col.erp': 'ERP',
@@ -696,6 +750,22 @@ export const en = {
 	'contracts.col.endDate': 'End Date',
 	'contracts.col.value': 'Value',
 	'contracts.col.spend': 'Spend',
+
+	// Contract status + type value labels ($lib/types/contract.ts)
+	'contracts.status.draft': 'Draft',
+	'contracts.status.active': 'Active',
+	'contracts.status.expired': 'Expired',
+	'contracts.status.terminated': 'Terminated',
+	'contracts.status.cancelled': 'Cancelled',
+	'contracts.type.purchase': 'Purchase',
+	'contracts.type.service': 'Service',
+	'contracts.type.subscription': 'Subscription',
+	'contracts.type.lease': 'Lease',
+	'contracts.type.sla': 'SLA',
+	'contracts.type.msa': 'MSA',
+	'contracts.type.sow': 'SOW',
+	'contracts.type.other': 'Other',
+
 	'contracts.selectAllAria': 'Select all contracts on this page',
 	'contracts.bulk.changeStatus': 'Change Status',
 	'contracts.bulk.newStatusAria': 'New status for selected contracts',
@@ -821,6 +891,15 @@ export const en = {
 	'recurring.col.nextRun': 'Next run',
 	'recurring.col.generated': 'Generated',
 	'recurring.col.status': 'Status',
+
+	// Recurring template status + cadence value labels ($lib/types/recurring.ts)
+	'recurring.status.active': 'Active',
+	'recurring.status.paused': 'Paused',
+	'recurring.status.ended': 'Ended',
+	'recurring.cadence.monthly': 'Monthly',
+	'recurring.cadence.quarterly': 'Quarterly',
+	'recurring.cadence.annual': 'Annual',
+
 	'recurring.dayOfPeriod': 'day {day}',
 	'recurring.empty': 'No recurring templates match your filters.',
 	'recurring.notFound': 'Template not found',
@@ -1496,6 +1575,10 @@ export const en = {
 	'cfoMetrics.concentration.top10': 'Top 10 vendors',
 	'cfoMetrics.concentration.top50': 'Top 50 vendors',
 	'cfoMetrics.concentration.largest': 'Largest vendor',
+
+	// Concentration shares are computed over a PART-CONVERTED total — the unconvertible rows are INCLUDED at face value here, the opposite of cfoMetrics.apBalance.unconverted, which reports a floor because they were EXCLUDED. Do not collapse the two.
+	'cfoMetrics.concentration.unconverted': 'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value — so the shares above are computed over a part-converted total. Book the missing rate before acting on them.',
+
 	'cfoMetrics.fraudTrend.title': 'Exception rate trend (6 months)',
 	'cfoMetrics.fraudTrend.noInvoices': 'no invoices — rate not computable',
 	'cfoMetrics.fx.title': 'Unrealized FX gain / loss',
@@ -1536,6 +1619,17 @@ export const en = {
 	'expenses.col.gl': 'GL',
 	'expenses.col.amount': 'Amount',
 	'expenses.col.status': 'Status',
+
+	// Expense status + payment-method value labels ($lib/types/expense.ts)
+	'expenses.status.draft': 'Draft',
+	'expenses.status.submitted': 'Submitted',
+	'expenses.status.approved': 'Approved',
+	'expenses.status.rejected': 'Rejected',
+	'expenses.status.reimbursed': 'Reimbursed',
+	'expenses.method.outOfPocket': 'Out of pocket',
+	'expenses.method.corporateCard': 'Corporate card',
+	'expenses.method.virtualCard': 'Virtual card',
+
 	'expenses.selectAllAria': 'Select all expenses on this page',
 	'expenses.selectAria': 'Select expense {name}',
 	'expenses.row.editAria': 'Edit expense {name}',
@@ -1578,6 +1672,16 @@ export const en = {
 	'expenses.reports.col.merchant': 'Merchant',
 	'expenses.reports.col.category': 'Category',
 	'expenses.reports.col.amount': 'Amount',
+
+	// Expense-report status labels ($lib/types/expense.ts)
+	'expenses.reports.status.draft': 'Draft',
+	'expenses.reports.status.submitted': 'Submitted',
+	'expenses.reports.status.pendingApproval': 'Pending Approval',
+	'expenses.reports.status.approved': 'Approved',
+	'expenses.reports.status.rejected': 'Rejected',
+	'expenses.reports.status.reimbursed': 'Reimbursed',
+	'expenses.reports.status.cancelled': 'Cancelled',
+
 	'expenses.reports.openAria': 'Open report {number}',
 	'expenses.reports.empty': 'No expense reports yet.',
 	'expenses.reports.loadMore': 'Load more ({shown} of {total})',
@@ -1613,6 +1717,12 @@ export const en = {
 	'expenses.preapprovals.col.category': 'Category',
 	'expenses.preapprovals.col.estimated': 'Estimated',
 	'expenses.preapprovals.col.status': 'Status',
+
+	// Pre-approval request status labels ($lib/types/expense.ts)
+	'expenses.preapprovals.status.pending': 'Pending',
+	'expenses.preapprovals.status.approved': 'Approved',
+	'expenses.preapprovals.status.rejected': 'Rejected',
+
 	'expenses.preapprovals.approve': 'Approve',
 	'expenses.preapprovals.reject': 'Reject',
 	'expenses.preapprovals.confirmReject': 'Confirm reject',
@@ -1629,6 +1739,12 @@ export const en = {
 	'expenses.cards.col.card': 'Card',
 	'expenses.cards.col.amount': 'Amount',
 	'expenses.cards.col.status': 'Status',
+
+	// Corporate-card reconciliation status labels ($lib/types/expense.ts)
+	'expenses.cards.status.unmatched': 'Unmatched',
+	'expenses.cards.status.matched': 'Matched',
+	'expenses.cards.status.ignored': 'Ignored',
+
 	'expenses.cards.virtual': 'Virtual',
 	'expenses.cards.match': 'Match',
 	'expenses.cards.createExpense': 'Create expense',
@@ -1941,6 +2057,11 @@ export const en = {
 	'catalogs.filter.preferred': 'Preferred',
 	'catalogs.col.name': 'Name',
 	'catalogs.col.type': 'Type',
+
+	// Catalog type value labels ($lib/types/catalog.ts). Punch-out is the industry term and stays verbatim outside ja, which already transliterates it in catalogs.punchout.title.
+	'catalogs.type.internal': 'Internal',
+	'catalogs.type.punchout': 'Punch-out',
+
 	'catalogs.col.items': 'Items',
 	'catalogs.col.status': 'Status',
 	'catalogs.status.active': 'Active',
@@ -1972,6 +2093,11 @@ export const en = {
 	'catalogs.guided.catalogLabel': 'Catalog: {name}',
 	'catalogs.guided.contractLabel': 'Contract: {number}',
 	'catalogs.guided.preferredTag': 'Preferred',
+
+	// Why guided buying is steering the buyer here ($lib/types/catalog.ts)
+	'catalogs.guided.reason.preferredCatalog': 'Preferred catalog',
+	'catalogs.guided.reason.activeContract': 'Active contract',
+
 	'catalogs.loadMore': 'Load more ({shown} of {total})',
 	'catalogs.showingAll':
 		'{total, plural, one {Showing all # catalog} other {Showing all # catalogs}}',
@@ -2043,6 +2169,14 @@ export const en = {
 	'catalogs.punchout.start': 'Start punch-out',
 	'catalogs.punchout.noRole': "Your role can't start a punch-out session.",
 	'catalogs.punchout.status': 'Status',
+
+	// Punch-out session status labels ($lib/types/catalog.ts)
+	'catalogs.punchout.status.pending': 'Awaiting cart',
+	'catalogs.punchout.status.returned': 'Cart returned',
+	'catalogs.punchout.status.converted': 'Converted',
+	'catalogs.punchout.status.expired': 'Expired',
+	'catalogs.punchout.status.cancelled': 'Cancelled',
+
 	'catalogs.punchout.shoppingPrompt': 'Shopping at the supplier?',
 	'catalogs.punchout.reopen': 'Re-open supplier catalog',
 	'catalogs.punchout.checking': 'Checking…',
@@ -2377,6 +2511,13 @@ export const en = {
 	'positivePay.col.account': 'Account',
 	'positivePay.col.created': 'Created',
 	'positivePay.col.status': 'Status',
+
+	// Positive Pay file-type + status value labels ($lib/types/positivePay.ts). The type also interpolates into positivePay.fileLabel below, so an English literal would land mid-sentence.
+	'positivePay.fileType.checkIssue': 'Check issue',
+	'positivePay.fileType.achAuthorization': 'ACH authorization',
+	'positivePay.status.generated': 'Generated',
+	'positivePay.status.returnedProcessed': 'Return processed',
+
 	'positivePay.runLabel': 'Run {id}',
 	'positivePay.fileLabel': '{type} {id}',
 	'positivePay.empty': 'No Positive Pay files match your filters.',
@@ -4039,6 +4180,13 @@ export const en = {
 	'discounts.opt.selectedOutlay': 'Selected outlay:',
 	'discounts.opt.selectedSavings': 'Selected savings:',
 	'discounts.opt.sub': 'Ranks open offers by ROI vs your cost of capital, then greedily selects within an optional cash budget.',
+
+	// Offers the optimizer could not RANK — no net due date, so the ROI horizon is unknown (POST /api/discounts/optimize → unrankable[])
+	'discounts.opt.unrankableHeading': 'Not ranked — APR unknown',
+	'discounts.opt.unrankableNote': '{n, plural, one {# offer has} other {# offers have}} no net due date, so there is no horizon to annualize the return over. The saving is real and shown; the APR is withheld rather than reported as 0%. They are in no total above and were never selected — set the invoice due date to rank them.',
+	'discounts.opt.aprUnknown': 'APR unknown — no due date',
+	'discounts.opt.notRanked': 'Not ranked',
+
 	'discounts.redirecting': 'Redirecting…',
 	'discounts.row.accept': 'Accept',
 	'discounts.row.acceptAria': 'Accept discount for {vendor}',
@@ -4107,6 +4255,8 @@ export const en = {
 	'adaptive.patterns.error': 'Couldn’t load the approval patterns.',
 	'adaptive.patterns.heading': 'Approval patterns',
 	'adaptive.patterns.intro': 'How this tenant has actually approved, per approver and per supplier, over the last 180 days.',
+	'adaptive.patterns.unconverted':
+		'Partial: {n, plural, one {# approval} other {# approvals}} could not be expressed in {currency} and are excluded from the average, largest and median amounts below — the sample count still includes them. Book the missing rate to fold them in.',
 	'adaptive.patterns.vendors': 'By vendor',
 	'adaptive.retry': 'Retry',
 	'adaptive.routing.alreadyAssigned': 'Already assigned to the top-ranked approver — nothing changed.',
@@ -4171,9 +4321,6 @@ export const en = {
 	'adaptive.threshold.stale': 'You were looking at {was}; recomputed against the latest approval history it is now {now}. The refreshed recommendation is below — review it and apply again if you still want it.',
 	'adaptive.threshold.staleHeading': 'The recommendation changed — nothing was applied',
 	'adaptive.title': 'Adaptive Workflows',
-	'experiments.chip.concluded': 'Concluded',
-	'experiments.chip.draft': 'Draft',
-	'experiments.chip.running': 'Running',
 	'experiments.col.assigned': 'Assigned',
 	'experiments.col.name': 'Name',
 	'experiments.col.primaryMetric': 'Primary metric',
@@ -4183,6 +4330,11 @@ export const en = {
 	'experiments.error.load': 'Failed to load experiments.',
 	'experiments.error.results': 'Failed to load results.',
 	'experiments.lede': 'Run a controlled A/B test of two workflow-rule configurations and measure which performs better on time-to-approval, touchless rate, exception rate, and rejection rate. Routing only — never moves money.',
+	'experiments.metric.timeToApprovalDays': 'Time to approval (days)',
+	'experiments.metric.touchlessRatePct': 'Touchless rate',
+	'experiments.metric.exceptionRatePct': 'Exception rate',
+	'experiments.metric.rejectionRatePct': 'Rejection rate',
+
 	'experiments.modal.aria': 'Create experiment',
 	'experiments.modal.configA': 'Variant A config (control)',
 	'experiments.modal.configB': 'Variant B config (variant)',
@@ -4221,6 +4373,10 @@ export const en = {
 	'experiments.row.start': 'Start',
 	'experiments.row.stop': 'Stop',
 	'experiments.row.viewAria': 'View results for {name}',
+	'experiments.status.draft': 'Draft',
+	'experiments.status.running': 'Running',
+	'experiments.status.concluded': 'Concluded',
+
 	'experiments.table.empty': 'No experiments yet.',
 	'experiments.title': 'Workflow Experiments',
 	'experiments.toast.concludeFailed': 'Failed to conclude experiment.',
@@ -4243,6 +4399,11 @@ export const en = {
 	'vendorStatements.col.statementDate': 'Statement date',
 	'vendorStatements.col.statementTotal': 'Statement total',
 	'vendorStatements.col.status': 'Status',
+
+	// Reconciliation run status ($lib/types/vendorStatementRecon.ts)
+	'vendorStatements.status.open': 'Open',
+	'vendorStatements.status.resolved': 'Resolved',
+
 	'vendorStatements.col.vendor': 'Vendor',
 	'vendorStatements.empty': 'No reconciliations match your filters.',
 	'vendorStatements.kpi.blocking': '{n} blocking',
@@ -4334,6 +4495,19 @@ export const en = {
 	'vendorStatements.modal.thDifference': 'Difference',
 	'vendorStatements.modal.thClassification': 'Classification',
 	'vendorStatements.modal.thResolution': 'Resolution',
+
+	// Per-line classification / resolution + the source-format pill ($lib/types/vendorStatementRecon.ts)
+	'vendorStatements.classification.matched': 'Matched',
+	'vendorStatements.classification.amountMismatch': 'Amount mismatch',
+	'vendorStatements.classification.missingOurSide': 'Missing (our side)',
+	'vendorStatements.classification.missingTheirSide': 'Missing (their side)',
+	'vendorStatements.resolution.unresolved': 'Unresolved',
+	'vendorStatements.resolution.resolved': 'Resolved',
+	'vendorStatements.resolution.ignored': 'Ignored',
+	'vendorStatements.sourceFormat.manual': 'Entered by hand',
+	'vendorStatements.sourceFormat.csv': 'CSV upload',
+	'vendorStatements.sourceFormat.pdf': 'PDF (machine-read)',
+
 	'vendorStatements.modal.noLines': 'No statement lines.',
 	'vendorStatements.modal.resolve': 'Resolve',
 	'vendorStatements.modal.resolveAria': 'Resolve line {line}',

@@ -411,6 +411,10 @@ class PortalDiscountOfferResponse(BaseModel):
     """
 
     id: str
+    # The EFFECTIVE status (`discount_offers.effective_status`), not the stored
+    # column: an offer past its `valid_until` reads `expired` here whether or
+    # not the auto-capture sweep — off by default — has written that down. The
+    # AP side derives it the same way, so the two views of one offer agree.
     status: str  # offered | accepted | captured | declined | expired
     scope: str  # invoice | vendor
     invoice_id: str | None = None

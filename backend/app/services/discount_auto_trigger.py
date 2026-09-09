@@ -15,6 +15,28 @@ Every tick:
      ``accepted_tier`` / ``accepted_at`` and move ``status`` → ``accepted``, then
      write an append-only ``discount_offer.auto_accepted`` audit row.
 
+Expiry is materialized here, but it does NOT live here
+------------------------------------------------------
+The sweep also flips a lapsed ``offered`` row to ``expired``. That is a
+tidy-up, not the definition: this whole loop is behind
+``FEOH_DISCOUNT_OPTIMIZATION_ENABLED``, which is **off by default**, and an
+offer past its ``valid_until`` is off the table whether or not any background
+process ran. Auto-capture is a money-adjacent *policy* decision (an ROI, a
+threshold, a cost of capital) and belongs behind a switch; expiry is a
+*correctness* fact about the calendar and must not.
+
+They were sharing one switch, so with the sweep off a lapsed offer stayed
+``offered`` forever, the dashboard's ``missed`` bucket stayed empty, and
+``capture_rate_pct`` — captured / (captured + missed) — read ``100.00`` on one
+capture out of ten offers.
+
+The fix is to derive rather than to add a second always-on loop:
+``discount_offers.effective_status`` (and its SQL mirror) is what every read
+surface classifies by, so expiry is correct in local dev, in tests, and in any
+deployment that never starts a sweep. The write below adds the durable row
+state and the append-only ``discount_offer.expired`` audit entry on top of it.
+Same shape as ``payment_runs.derive_run_status`` (``docs/decisions.md`` §41).
+
 Money-path boundary (important)
 -------------------------------
 This sweep ONLY accepts an offer — it flags it for capture by transitioning
@@ -73,6 +95,7 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.discount_offers import (
     best_tier_for_date,
     expire_if_past,
+    has_lapsed,
     offer_reference_date,
 )
 from app.services.discount_roi import compute_roi, days_between
@@ -91,6 +114,9 @@ class AutoTriggerResult:
 
     tenants_scanned: int = 0
     offers_captured: int = 0
+    #: Lapsed offers materialized to `expired` this sweep. Not a capture — see
+    #: `TenantSweepOutcome.expired`.
+    offers_expired: int = 0
     #: Tenants whose sweep aborted outright (engine/connect/candidate-query
     #: failure).
     failures: int = 0
@@ -107,9 +133,14 @@ class AutoTriggerResult:
 
 @dataclass
 class TenantSweepOutcome:
-    """One tenant's auto-capture outcome — accepted count + per-offer failures."""
+    """One tenant's outcome — accepted + expired counts and per-offer failures."""
 
     captured: int = 0
+    #: Lapsed `offered` rows this tick materialized to `expired`. Counted apart
+    #: from `captured` because expiry is not a capture decision: it takes no
+    #: ROI, no threshold, and it is a tidy-up of a fact the read surfaces
+    #: already derive.
+    expired: int = 0
     offer_failures: int = 0
 
 
@@ -142,7 +173,11 @@ async def _resolve_due_date(db: AsyncSession, offer: DiscountOffer) -> date | No
 
     Returns ``None`` for vendor-scoped (bulk) offers or invoice-less offers; the
     caller then falls back to ``valid_until`` as the horizon (documented
-    approximation — a bulk offer spans many invoices with no single due date).
+    approximation — a bulk offer spans many invoices with no single due date),
+    and if there is no ``valid_until`` either the horizon is genuinely
+    **unknown**. Callers must propagate that as ``None`` rather than
+    substituting ``pay_by``: that reads as zero days accelerated, which is a
+    measurement, not an absence.
     """
     if offer.invoice_id is None:
         return None
@@ -198,6 +233,7 @@ async def run_auto_trigger_once(*, today: date | None = None) -> AutoTriggerResu
         try:
             outcome = await _sweep_tenant(db_name, ref_today, _resolve_cost_of_capital)
             result.offers_captured += outcome.captured
+            result.offers_expired += outcome.expired
             result.offer_failures += outcome.offer_failures
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
             logger.warning(
@@ -205,12 +241,13 @@ async def run_auto_trigger_once(*, today: date | None = None) -> AutoTriggerResu
             )
             result.failures += 1
 
-    if result.offers_captured or result.failures or result.offer_failures:
+    if result.offers_captured or result.offers_expired or result.failures or result.offer_failures:
         logger.info(
-            "[discount-auto-trigger] swept %d tenant(s); accepted=%d failed_sweeps=%d "
-            "failed_offers=%d",
+            "[discount-auto-trigger] swept %d tenant(s); accepted=%d expired=%d "
+            "failed_sweeps=%d failed_offers=%d",
             result.tenants_scanned,
             result.offers_captured,
+            result.offers_expired,
             result.failures,
             result.offer_failures,
         )
@@ -331,18 +368,42 @@ async def _sweep_tenant(
                             await db.rollback()
                             continue
 
-                        # An offer whose valid_until has passed never auto-expired
-                        # anywhere else — expire_if_past was never invoked by any
-                        # sweep. Piggyback on this one (already running
-                        # periodically) rather than standing up a separate
-                        # background loop. Expiry is a status write too, so it takes
-                        # the same claim.
-                        if offer.valid_until and offer.valid_until < ref_today:
+                        # Materialize expiry. This leg is NOT the auto-capture
+                        # decision and shares none of its policy: it takes no ROI,
+                        # no threshold and no cost of capital, and it moves no
+                        # money — it writes down a fact the calendar already
+                        # settled. It also is NOT what makes expiry correct: this
+                        # whole sweep is behind FEOH_DISCOUNT_OPTIMIZATION_ENABLED,
+                        # which is off by default, so every read surface derives
+                        # the effective status instead
+                        # (`discount_offers.effective_status`). What running here
+                        # adds is the durable row state plus the append-only audit
+                        # entry. Expiry is a status write, so it takes the same
+                        # claim.
+                        if has_lapsed(offer, as_of=ref_today):
                             claimed = await _claim_if_still_offered(db, offer_id)
                             if claimed is None:
                                 await db.rollback()
                                 continue
-                            expire_if_past(claimed, as_of=ref_today)
+                            if expire_if_past(claimed, as_of=ref_today):
+                                # A status change writes an audit row (project
+                                # invariant); this one used to commit silently, so
+                                # the only evidence an offer had lapsed was the
+                                # column itself.
+                                await dispatch_audit(
+                                    db,
+                                    correlation_id=uuid.uuid4(),
+                                    organization_id=claimed.organization_id,
+                                    actor_id=None,  # system actor
+                                    action="discount_offer.expired",
+                                    entity_type="discount_offer",
+                                    entity_id=claimed.id,
+                                    details={
+                                        "valid_until": claimed.valid_until.isoformat(),
+                                        "as_of": ref_today.isoformat(),
+                                    },
+                                )
+                                outcome.expired += 1
                             await db.commit()
                             continue
 
@@ -373,7 +434,19 @@ async def _sweep_tenant(
                         # deadline instead of at the invoice's net due date
                         # (days_between(pay_by, due_date)), NOT the discount period.
                         pay_by = _tier_deadline(offer, tier, ref_today)
-                        due_date = await _resolve_due_date(db, offer) or offer.valid_until or pay_by
+                        due_date = await _resolve_due_date(db, offer) or offer.valid_until
+                        if due_date is None:
+                            # No net due date to accelerate against, so there is
+                            # no APR and nothing can be SHOWN to clear the
+                            # threshold. `pay_by` used to be the last fallback,
+                            # which reports zero days accelerated — an offer
+                            # skipped for a fabricated 0.00 % APR rather than for
+                            # the honest reason. The outcome is the same (never
+                            # auto-accepted); the reason is now true. Surfacing
+                            # the gap beats a plausible-looking wrong figure
+                            # (`docs/decisions.md` §18).
+                            await db.rollback()
+                            continue
                         roi = compute_roi(
                             base_amount=offer.base_amount,
                             discount_percent=Decimal(str(tier["percent"])),

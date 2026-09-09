@@ -22,6 +22,43 @@ payment through the orchestrator when any of these is true:
 Domestic same-currency payments skip the orchestrator entirely — no
 FX call, no extra validation.
 
+## The org's home currency has ONE normaliser
+
+`settings.payments.home_currency` is free text in the tenant's own settings
+JSON — nothing validates it on write — and it denominates three separate
+decisions: what `Payment.source_amount` is expressed in, every money threshold
+in `settings.compliance`, and (via the comparison against the invoice's
+currency) **whether a payment takes the FX leg at all**.
+
+Four call sites normalised it four different ways. `compliance._home_currency`
+stripped and upper-cased. `currency_conversion.resolve_reporting_currency`
+stripped and upper-cased. `prepare_international_payment` only upper-cased what
+it was handed. And `api/payments._execute_single_payment` — the site that
+decides the FX leg — only upper-cased too.
+
+A single trailing space was therefore enough to route **every domestic payment
+through `international_wire`**: `"USD " != "USD"`, so a USD invoice looked
+foreign, `pick_corridor` returned the cross-border rail (SWIFT required, FX
+required), and a domestic vendor with no SWIFT/BIC then failed the payment
+outright — while the compliance gate, reading the same setting through its own
+stripping helper, saw an ordinary domestic payment.
+
+`international_payments.resolve_home_currency(org_settings)` is now the one
+owner, built on `normalize_currency_code` (trim + upper, `None` for anything
+blank). It never returns a blank code — a blank compares equal to nothing,
+which is how the wrong corridor got picked — degrading to
+`DEFAULT_HOME_CURRENCY` (`USD`) instead. `compliance._home_currency` delegates
+to it, `prepare_international_payment` normalises both sides of its comparison
+through `normalize_currency_code`, and `api/payments` calls it directly.
+`currency_conversion.resolve_reporting_currency` reads the same field as the
+second rung of a different question ("what do we roll UP in?") and is pinned to
+produce the identical answer by a test.
+
+**Tests:** `tests/test_payment_home_currency.py` — the normaliser's table, the
+padded-value regression at `prepare_international_payment` and end-to-end
+through `_execute_single_payment`, an agreement test across all three readers,
+and a source-scan guard listing the declared readers of the raw setting.
+
 ## Corridor selection
 
 `pick_corridor(source_currency, target_currency, target_country, requested_method=None)`
@@ -344,6 +381,28 @@ Sign convention matches GAAP / IFRS. A zero `fx_rate_at_invoice`
 raises `ValueError` — defensive against a caller passing a stale
 record.
 
+### Who books it, and when
+
+`realized_fx_gain_loss_for_settlement` is the production entry point: it speaks
+the persisted-row convention (`Invoice.reporting_fx_rate` multiplies, rather
+than `compute_fx_gain_loss`'s dividing convention) so no caller has to invert a
+rate. It returns `None` — never `0` — whenever there is nothing to measure: a
+domestic payment, an invoice with no accrual rate, a same-currency settlement,
+or an accrual and an outflow denominated in two different currencies (both are
+independently admin-settable, so subtracting them would write a confidently
+wrong number onto an immutable audit row).
+
+**It has exactly one caller**, `payment_settlement_record.record_completion`,
+and both paths on which a payment reaches `completed` — the processor webhook
+and the reconciler backstop — go through it. That is deliberate, and guarded
+(`tests/test_payment_completion_record.py`): the figure used to be computed
+inline in the webhook handler alone, so every cross-currency payment the
+backstop recovered booked no realized gain or loss at all, silently and
+permanently — nothing re-derives it once the payment is terminal. The figure
+rides `details.realized_fx_gain_loss` on the same append-only `payment.completed`
+audit row that records the money moving, as an exact decimal string. See
+`payments.md` § Settlement-amount verification.
+
 This `compute_fx_gain_loss` measures the **realized** gain/loss at
 settlement. The **unrealized** gain/loss on open (approved-but-unpaid)
 foreign-currency invoices — plus the reporting-currency rollup that
@@ -441,6 +500,7 @@ nullable / defaulted KYC columns and creates the append-only
 | `tests/test_corridor_quotes.py` | Cheapest + fastest ranking, unavailable provider can't win, adapter exception sanitised (no PII in `unavailable_reason`), `NoEligibleCorridorError` when zero providers quote, legacy single-provider shape, dedupe |
 | `tests/test_compliance.py` | Mock sanctions adapter (clear / match / review_required / beneficial-owner hit), `check_payment_compliance` verdict resolution (refuse on match + KYC gap; hold on review + AML), audit-row persistence, dispatcher fallback, **end-to-end** sanctions refusal through `execute_payment_run` (adapter NEVER called) |
 | `tests/test_international_payments.py` | `prepare_international_payment` happy paths + refusals; `compute_fx_gain_loss` directionality; `is_international_payment` predicate (incl. a method-only row and a non-positive locked rate); **end-to-end** through `execute_payment_run` with a EUR invoice on a USD-home org → locked rate + corridor + invoice flip |
+| `tests/test_payment_home_currency.py` | `resolve_home_currency` / `normalize_currency_code`; a padded `home_currency` no longer routes a domestic payment through `international_wire` (pure + DB-backed through `_execute_single_payment`); every reader of the setting resolves it identically; source-scan guard on new readers |
 | `tests/test_payment_methods.py` | The rail registry's **two** drift guards: every producible rail is card-or-reportable AND international-or-domestic; a source scan fails if any module under `app/` re-enumerates the international rail set as its own literal |
 
 ## The quote optimizer has a caller: `POST /api/payments/corridor-quotes`

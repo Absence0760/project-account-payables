@@ -290,7 +290,10 @@
 		color: var(--text-muted);
 		gap: 4px;
 	}
-	.filters input {
+	/* Text-entry recipe. No checkbox sits under this selector today, but it
+	   outranks the global control base in `app.css`, so the carve-out keeps a
+	   later one from losing its tick (`background:` resets the drawn mark). */
+	.filters input:not([type='checkbox']):not([type='radio']) {
 		padding: 6px 10px;
 		border-radius: 6px;
 		border: 1px solid var(--border);

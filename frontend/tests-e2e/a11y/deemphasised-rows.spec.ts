@@ -142,6 +142,22 @@ async function stubList(
 }
 
 test.describe('accessibility — de-emphasised rows (WCAG 1.4.3)', () => {
+	/**
+	 * Retire the response-rewriting route handlers before the test does.
+	 *
+	 * Two tests here call `route.fetch()` to get the real payload back before
+	 * editing it. A page that is still settling can leave a handler inside that
+	 * `await` when the last assertion resolves, and Playwright then tears the
+	 * test down around it — `route.fetch: Test ended.` / `apiResponse.json:
+	 * Response has been disposed`, reported as a failure of whichever test owned
+	 * the handler. `a11y/target-size.spec.ts` lost two tests and a CI worker to
+	 * exactly that; this file has the same exposure and had simply not been
+	 * unlucky yet. Same remedy, same reasoning — see the longer note there.
+	 */
+	test.afterEach(async ({ page }) => {
+		await page.unrouteAll({ behavior: 'ignoreErrors' });
+	});
+
 	test('a paused webhook subscription row has no axe violations', async ({ page }) => {
 		await stubList(page, '/api/webhooks', SUBSCRIPTIONS);
 		await page.goto('/admin/webhooks');

@@ -1534,26 +1534,8 @@ async def sync_vendors_from_erp_endpoint(
 
     vendor_dicts = [dataclasses.asdict(v) for v in erp_vendors]
 
-    result = await sync_vendors_from_erp(db, org_id, vendor_dicts, entity_id=entity_id)
-
-    # One PII-free summary row per sync — the trail records that a bulk payee
-    # change happened, who ran it and how much it moved. Mirrors
-    # `gl_account.synced_from_erp`; `entity_id=org_id` because a bulk sync has
-    # no single vendor to key on.
-    await dispatch_audit(
-        db,
-        correlation_id=uuid.uuid4(),
-        organization_id=org_id,
-        actor_id=user.id,
-        action="vendor.synced_from_erp",
-        entity_type="vendor",
-        entity_id=org_id,
-        details={
-            "created": result["created"],
-            "updated": result["updated"],
-            "unchanged": result["unchanged"],
-            "entity_id": str(entity_id) if entity_id else None,
-        },
+    result = await sync_vendors_from_erp(
+        db, org_id, vendor_dicts, entity_id=entity_id, actor_id=user.id
     )
     await db.commit()
 
@@ -1596,26 +1578,7 @@ async def import_vendors_from_csv(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
 
-    result = await import_vendors_csv(db, org_id, csv_text, entity_id=entity_id)
-
-    # One PII-free summary row per import — bulk payee creation belongs on the
-    # trail, keyed on `org_id` since the import spans many vendors. Counts only,
-    # never a vendor name or bank detail.
-    await dispatch_audit(
-        db,
-        correlation_id=uuid.uuid4(),
-        organization_id=org_id,
-        actor_id=user.id,
-        action="vendor.imported_from_csv",
-        entity_type="vendor",
-        entity_id=org_id,
-        details={
-            "imported": result.imported,
-            "skipped": result.skipped,
-            "errors": len(result.errors),
-            "entity_id": str(entity_id) if entity_id else None,
-        },
-    )
+    result = await import_vendors_csv(db, org_id, csv_text, entity_id=entity_id, actor_id=user.id)
     await db.commit()
     return result.to_dict()
 
@@ -1676,6 +1639,7 @@ async def invite_vendor_portal_user(
     org: Organization = Depends(get_tenant),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Create a supplier-portal user for a vendor and email them a temp
     password. Idempotent-ish: second invite for the same email is rejected
@@ -1702,15 +1666,20 @@ async def invite_vendor_portal_user(
     await db.flush()
     await db.refresh(vu)
 
-    # Provisioning a supplier-portal credential is an access-control change —
-    # and it was the one AP action tying an AP actor to a vendor identity they
-    # created that left no trace (the delete and password-reset paths beside it
-    # already audit). Keyed on the VENDOR so it stays on that vendor's trail;
-    # PII-free — the vendor-user id only, never the supplier's login address.
+    # Provisioning a supplier credential is an access-control change, and it is
+    # the one end of the pair that had no record: `vendor_user.deleted` audits
+    # the revoke, so a portal account could be created, used to submit invoices
+    # and stage bank-detail changes, then deleted — and the trail would show
+    # only the deletion. Keyed on the VENDOR (the durable entity), matching the
+    # delete row, so both ends of the credential's life sit on the same trail.
+    # PII-free by construction: the AP actor, the vendor and the new
+    # `VendorUser` id — never the supplier's login address, and never the temp
+    # password (which is returned to the caller and emailed, but must not be
+    # written into an append-only, WORM-shipped store).
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
-        organization_id=org.id,
+        organization_id=org_id,
         actor_id=user.id,
         action="vendor_user.invited",
         entity_type="vendor",

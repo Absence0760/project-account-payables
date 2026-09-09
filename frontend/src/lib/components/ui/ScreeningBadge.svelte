@@ -9,11 +9,12 @@
 	// and the detail modal — don't hand-roll these pills (the tone classes
 	// carry calibrated WCAG-checked text colours; see `docs/accessibility.md`).
 	import {
-		SCREENING_STATUS_LABELS,
-		RISK_LEVEL_LABELS,
+		riskLevelLabelKey,
+		screeningStatusLabelKey,
 		type ScreeningStatus,
 		type RiskLevel
 	} from '$lib/types/vendor';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let {
 		screening,
@@ -36,6 +37,22 @@
 		return 'grey';
 	}
 
+	// Verdict and risk level are message keys, not English literals — an
+	// unrecognised value renders raw rather than blank.
+	function screeningLabel(s: ScreeningStatus): string {
+		const key = screeningStatusLabelKey(s);
+		return key ? m(key) : s;
+	}
+
+	// The pill and its tooltip are COMPOSED strings — `{level} risk` in
+	// English, `Risiko: {level}` in German — so each is its own key with the
+	// level interpolated. Concatenating a translated level onto an English
+	// word here is exactly the mixed-language pill this badge had.
+	function riskLabel(r: RiskLevel): string {
+		const key = riskLevelLabelKey(r);
+		return key ? m(key) : r;
+	}
+
 	function riskTone(r: RiskLevel): string {
 		if (r === 'low') return 'grey';
 		if (r === 'medium') return 'amber';
@@ -46,20 +63,20 @@
 
 {#if screening}
 	<span class="screen-badge {screeningTone(screening, blocked)}">
-		{blocked ? 'Blocked' : SCREENING_STATUS_LABELS[screening]}
+		{blocked ? m('vendors.screening.blocked') : screeningLabel(screening)}
 	</span>
 {/if}
 {#if risk && risk !== 'unknown'}
-	<span class="screen-badge risk {riskTone(risk)}" title="Risk: {RISK_LEVEL_LABELS[risk]}">
-		{RISK_LEVEL_LABELS[risk]} risk
+	<span
+		class="screen-badge risk {riskTone(risk)}"
+		title={m('vendors.risk.title', { level: riskLabel(risk) })}
+	>
+		{m('vendors.risk.pill', { level: riskLabel(risk) })}
 	</span>
 {/if}
 {#if adverseMedia}
-	<span
-		class="screen-badge amber"
-		title="Adverse-media (negative news) hit — review the relationship"
-	>
-		Negative news
+	<span class="screen-badge amber" title={m('vendors.screening.adverseMediaTitle')}>
+		{m('vendors.screening.adverseMedia')}
 	</span>
 {/if}
 

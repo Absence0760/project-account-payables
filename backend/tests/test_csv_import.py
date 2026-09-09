@@ -130,7 +130,17 @@ async def test_import_vendors_happy_path():
     assert result.imported == 2
     assert result.skipped == 0
     assert result.errors == []
-    assert len(db.added) == 2
+    # The composition, not just the count: two Vendors, then the two
+    # `vendor.imported_csv` audit rows the importer writes for them (one per
+    # vendor actually created — see `backend/docs/csv-import.md` § Audit trail).
+    # A bare `len(db.added) == 2` passed for the wrong composition, which is how
+    # the audit rows could have been dropped without this test noticing.
+    assert [type(o).__name__ for o in db.added] == [
+        "Vendor",
+        "Vendor",
+        "AuditLog",
+        "AuditLog",
+    ]
     assert db.added[0].name == "Acme Supplies"
     assert db.added[0].accepts_virtual_cards is True
     assert db.added[1].accepts_virtual_cards is False
@@ -360,8 +370,11 @@ async def test_import_invoices_reuses_existing_vendor_by_code():
     result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
 
     assert result.imported == 1
-    # The vendor was reused — only an Invoice was added, no new Vendor.
-    assert [type(o).__name__ for o in db.added] == ["Invoice"]
+    # The vendor was reused — only an Invoice was added, no new Vendor. The
+    # `AuditLog` beside it is that invoice's own `invoice.imported_csv` row; a
+    # second `AuditLog` here would mean the importer had minted a vendor stub it
+    # should have found by code.
+    assert [type(o).__name__ for o in db.added] == ["Invoice", "AuditLog"]
     assert db.added[0].vendor_id == vendor.id
 
 
@@ -460,61 +473,6 @@ async def test_import_vendors_endpoint_role_gated_and_commits(realdb):
     async with mk() as s:
         count = (await s.execute(select(func.count()).select_from(Vendor))).scalar_one()
     assert count == 1
-
-
-async def test_import_vendors_endpoint_writes_a_summary_audit_row(realdb):
-    """A bulk payee create must leave one PII-free summary row on the trail
-    (invariant #3), keyed on the org and carrying counts only."""
-    from sqlalchemy import select
-
-    from app.models.workflow import AuditLog
-
-    file = {"file": ("vendors.csv", b"name,code\nAudited Vendor,VA1\n", "text/csv")}
-    async with realdb.client(key="a", role="ap_manager") as c:
-        assert (await c.post("/api/vendors/import-csv", files=file)).status_code == 200
-
-    mk = realdb.sessionmaker("a")
-    async with mk() as s:
-        rows = list(
-            (
-                await s.execute(
-                    select(AuditLog).where(AuditLog.action == "vendor.imported_from_csv")
-                )
-            ).scalars()
-        )
-    assert len(rows) == 1, rows
-    assert str(rows[0].entity_id) == str(realdb.info("a").org_id)
-    assert rows[0].details["imported"] == 1
-    assert "Audited Vendor" not in str(rows[0].details)
-
-
-async def test_import_invoices_endpoint_writes_a_summary_audit_row(realdb):
-    """Day-0 bulk AP load leaves one PII-free summary row (invariant #3);
-    `csv-import.md` promises imported rows "get a real audit trail"."""
-    from sqlalchemy import select
-
-    from app.models.workflow import AuditLog
-
-    csv_bytes = (
-        b"invoice_number,vendor_name,amount,invoice_date,status\n"
-        b"INV-AUD-1,Acme,50.00,2026-02-01,done\n"
-    )
-    file = {"file": ("invoices.csv", csv_bytes, "text/csv")}
-    async with realdb.client(key="a", role="ap_manager") as c:
-        assert (await c.post("/api/invoices/import-csv", files=file)).status_code == 200
-
-    mk = realdb.sessionmaker("a")
-    async with mk() as s:
-        rows = list(
-            (
-                await s.execute(
-                    select(AuditLog).where(AuditLog.action == "invoice.imported_from_csv")
-                )
-            ).scalars()
-        )
-    assert len(rows) == 1, rows
-    assert str(rows[0].entity_id) == str(realdb.info("a").org_id)
-    assert rows[0].details["imported"] == 1
 
 
 async def test_import_vendors_endpoint_rejects_non_utf8(realdb):

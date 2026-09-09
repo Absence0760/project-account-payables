@@ -844,18 +844,34 @@ async def _throttle_step_up(user_id) -> None:
     )
 
 
+async def _audit_mfa_event(user: User, *, action: str, details: dict) -> None:
+    """Write one PII-free MFA row onto the account's auth trail.
+
+    Every MFA row in this file goes through here so the shape can't drift: the
+    subject is always the account (`actor_id` and `entity_id` both `user.id`)
+    and `details` is always a small dict of fixed literals. A second factor is
+    a credential, so nothing that *is* the credential may enter the trail — not
+    the TOTP secret, not a submitted password or code, not a passkey's public
+    key. `dispatch_auth_audit` swallows its own failures, so an audit blip
+    never fails the request that changed the factor.
+    """
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action=action,
+        entity_id=user.id,
+        details=details,
+    )
+
+
 async def _audit_step_up_failure(user: User, *, operation: str) -> None:
     """Record a failed re-authentication against a second-factor change.
 
     PII-free by construction — `operation` is one of a fixed set of literals;
     the submitted password / code never enters the trail.
     """
-    await dispatch_auth_audit(
-        organization_id=user.organization_id,
-        actor_id=user.id,
-        action="auth.mfa.step_up.failure",
-        entity_id=user.id,
-        details={"operation": operation},
+    await _audit_mfa_event(
+        user, action="auth.mfa.step_up.failure", details={"operation": operation}
     )
 
 
@@ -1005,6 +1021,14 @@ async def enroll_mfa_verify(
     This is the only place a TOTP secret is written to the account row. Until
     it succeeds the previous factor (if any) remains live, so a half-finished
     enrollment can never leave the account with no second factor.
+
+    **Success is audited.** Step-up *failures* around a factor change were on
+    the trail long before the change itself was, which is the wrong way round:
+    on an account that can approve invoices or stage a bank-detail change, a
+    second factor being added or replaced is the more consequential event of
+    the two. `replaced` distinguishes an initial enrollment from one that
+    displaced a live authenticator — the case an incident responder is actually
+    looking for.
     """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
@@ -1014,21 +1038,16 @@ async def enroll_mfa_verify(
     if not await mfa.verify_totp(pending, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
+    # Read before the write — afterwards every account looks freshly enrolled.
+    replaced = bool(user.mfa_enabled and user.mfa_secret)
     user.mfa_secret = pending
     user.mfa_enabled = True
     user.mfa_enrolled_at = datetime.now(UTC)
     await db.commit()
     await mfa.clear_pending_totp_secret(user.id)
-    # Adding a second factor to an account that can approve invoices / stage
-    # bank changes is at least as audit-worthy as the step-up *failures* around
-    # it, and the passkey register/remove path already records its success.
-    # PII-free — the factor kind only, never the secret.
-    await dispatch_auth_audit(
-        organization_id=user.organization_id,
-        actor_id=user.id,
-        action="auth.mfa.enrolled",
-        entity_id=user.id,
-        details={"factor": "totp"},
+    # After the commit: the trail records factors that actually took effect.
+    await _audit_mfa_event(
+        user, action="auth.mfa.enrolled", details={"factor": "totp", "replaced": replaced}
     )
     org = await _load_user_org(db, user.organization_id)
     return _user_response(user, org)
@@ -1048,7 +1067,8 @@ async def disable_mfa(
     code from the authenticator being turned off, or an assertion from a
     registered passkey. (An SSO-only account has no password to re-enter; the
     passkey assertion is how it disables its own TOTP.) Throttled + audited on
-    failure like the rest.
+    failure like the rest — and, since a factor coming off is at least as
+    audit-worthy as one going on, audited on success too.
     """
     rp = await _relying_party(db, user.organization_id, host)
     await _throttle_step_up(user.id)
@@ -1070,13 +1090,7 @@ async def disable_mfa(
     # Drop any half-finished enrollment too, so a candidate minted before the
     # disable can't be promoted afterwards by a later verify call.
     await mfa.clear_pending_totp_secret(user.id)
-    await dispatch_auth_audit(
-        organization_id=user.organization_id,
-        actor_id=user.id,
-        action="auth.mfa.disabled",
-        entity_id=user.id,
-        details={"factor": "totp"},
-    )
+    await _audit_mfa_event(user, action="auth.mfa.disabled", details={"factor": "totp"})
     return _user_response(user, org)
 
 
@@ -1184,12 +1198,20 @@ async def passkey_register_finish(
     db.add(cred)
     await db.commit()
     await db.refresh(cred)
-    await dispatch_auth_audit(
-        organization_id=user.organization_id,
-        actor_id=user.id,
+    # `credential` is the API-visible passkey id (`webauthn_credentials.id`) —
+    # the same handle `GET /mfa/passkey` lists and `DELETE /mfa/passkey/{id}`
+    # takes — so a registration row and the removal row that later retires it
+    # name the same object. Never the authenticator's credential handle or its
+    # public key: neither belongs on a WORM-shipped trail.
+    await _audit_mfa_event(
+        user,
         action="auth.mfa.passkey.registered",
-        entity_id=user.id,
-        details={"name": cred.name, "rp_id": cred.rp_id},
+        details={
+            "factor": "passkey",
+            "credential": str(cred.id),
+            "name": cred.name,
+            "rp_id": cred.rp_id,
+        },
     )
     return _credential_to_response(cred, rp)
 
@@ -1269,12 +1291,10 @@ async def passkey_delete(
 
     await db.delete(cred)
     await db.commit()
-    await dispatch_auth_audit(
-        organization_id=user.organization_id,
-        actor_id=user.id,
+    await _audit_mfa_event(
+        user,
         action="auth.mfa.passkey.removed",
-        entity_id=user.id,
-        details={"name": cred.name},
+        details={"factor": "passkey", "credential": str(cred.id), "name": cred.name},
     )
 
 

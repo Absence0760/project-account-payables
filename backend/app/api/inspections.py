@@ -184,11 +184,15 @@ async def create_inspection(
     db.add(inspection)
     await db.flush()
 
-    # A quality inspection is the 4th leg of 4-way matching — a `pass` clears
-    # the quality gate on a real invoice, a `fail` flips it to `mismatch`. A
-    # hand-recorded one belongs on the append-only trail exactly like a
-    # QMS-synced one (`quality_inspection.synced`). PII-free: inspection number
-    # + result + PO/GR ids, no personal data.
+    # The 4-way-match quality gate: a `fail`/`partial` here is what flips an
+    # invoice's `po_match` to a quality hold, so a hand-entered inspection can
+    # block (or clear) a payable invoice. Its QMS-synced sibling has always
+    # audited via `services/qms_sync`; the manual path did not, which left the
+    # one inspection a human could fabricate as the only one with no record of
+    # who recorded it. Details mirror `quality_inspection.synced` exactly —
+    # inspection number and outcome only. The inspector's name, the accepted /
+    # rejected quantities and the free-text deviation notes are deliberately
+    # NOT recorded: the same PII-lean rule the sync path applies.
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -200,8 +204,8 @@ async def create_inspection(
         details={
             "inspection_number": inspection.inspection_number,
             "result": inspection.result,
-            "po_id": str(po_id) if po_id else None,
-            "gr_id": str(gr_id) if gr_id else None,
+            "po_resolved": po_id is not None,
+            "gr_resolved": gr_id is not None,
         },
     )
 

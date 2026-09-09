@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import and_, case, func, not_, select
+from sqlalchemy import case, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -29,6 +29,7 @@ from app.services.csv_import import (
 )
 from app.services.currency_conversion import (
     card_currency_sql,
+    invoice_reporting_amount_sql,
     payment_reporting_amount_sql,
     reporting_amount_for_row,
     resolve_reporting_currency,
@@ -121,20 +122,35 @@ async def get_dashboard(
     # `unconverted_count`). See backend/docs/multi-currency.md.
     reporting_currency = resolve_reporting_currency(org.settings)
     # Aggregate per currency in SQL instead of streaming every invoice into
-    # Python. The CASE expressions mirror `reporting_amount_for_row`: a row is
-    # "locked" (use its persisted `reporting_amount`) iff that column is set AND
-    # its `reporting_currency` equals the org's target; otherwise it falls back
-    # to face `amount`, and a foreign row (currency != target) is counted as
-    # unconverted. `rollup_from_grouped_rows` reduces these per-currency sums to
-    # the exact same `ReportingRollup` the row-at-a-time path produced.
-    tgt = reporting_currency.upper()
-    _cur_key = func.upper(func.coalesce(Invoice.currency, tgt))
-    _has_lock = and_(
-        Invoice.reporting_amount.isnot(None),
-        func.upper(Invoice.reporting_currency) == tgt,
+    # Python. The CASE expressions come from
+    # `currency_conversion.invoice_reporting_amount_sql`, the SQL statement of
+    # `reporting_amount_for_row`: a row is "locked" (use its persisted
+    # `reporting_amount`) iff that column is set AND its `reporting_currency`
+    # equals the org's target; otherwise it falls back to face `amount`, and a
+    # foreign row (currency != target) is counted as unconverted.
+    # `rollup_from_grouped_rows` reduces these per-currency sums to the exact
+    # same `ReportingRollup` the row-at-a-time path produced.
+    #
+    # This endpoint used to spell those two CASEs itself. They are now imported
+    # for the same reason the tile below reuses them rather than re-deriving:
+    # a second copy of the conversion rule is how two figures on one page start
+    # disagreeing. The imported version is also STRICTER in one respect — it
+    # requires `reporting_currency IS NOT NULL` explicitly, where the local copy
+    # left that to `UPPER(NULL) = tgt`. Under SQL's three-valued logic that made
+    # the lock test NULL for a row carrying a `reporting_amount` but no currency
+    # code, `NOT NULL` is NULL, and such a row fell through the `unconverted`
+    # CASE and was reported as converted while its FACE value was what got
+    # added. See `tests/test_dashboard_vendor_spend.py`.
+    _rep = invoice_reporting_amount_sql(
+        reporting_currency=reporting_currency,
+        amount=Invoice.amount,
+        currency=Invoice.currency,
+        persisted_reporting_amount=Invoice.reporting_amount,
+        persisted_reporting_currency=Invoice.reporting_currency,
     )
-    _rep_expr = case((_has_lock, Invoice.reporting_amount), else_=Invoice.amount)
-    _unconv_expr = case((and_(not_(_has_lock), _cur_key != tgt), 1), else_=0)
+    _cur_key = _rep.currency_key
+    _rep_expr = _rep.amount
+    _unconv_expr = _rep.unconverted
     rollup_rows = await db.execute(
         _inv(
             select(
@@ -190,10 +206,24 @@ async def get_dashboard(
     # order — which of two equal-spend vendors took rank 10 (and which fell off
     # the `[:10]`) could differ between two identical requests. The name
     # tiebreak makes the tile reproducible.
+    #
+    # Each row also carries `unconverted_count` — how many of that vendor's
+    # invoices went into `total` at FACE value because no rate lock bridged
+    # them. The tile folded them silently before: its `{vendor, amount}` shape
+    # had nowhere to say so, so a EUR-billing vendor with no locks ranked
+    # against USD vendors on a number that was not in the same currency as the
+    # label above it. It is one more `SUM` over a CASE already in this query,
+    # and a fallback nobody reports is just a wrong number
+    # (`docs/decisions.md` §35).
     _vendor_total = func.coalesce(func.sum(_rep_expr), 0)
+    _vendor_unconv = func.coalesce(func.sum(_unconv_expr), 0)
     vendor_rows = await db.execute(
         _inv(
-            select(Invoice.vendor_name, _vendor_total.label("total"))
+            select(
+                Invoice.vendor_name,
+                _vendor_total.label("total"),
+                _vendor_unconv.label("unconverted_count"),
+            )
             .where(
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
@@ -211,7 +241,12 @@ async def get_dashboard(
     # rollup. Stays `Decimal` into the response; `DashboardResponse` does the
     # single float hop at serialization, like every other money figure here.
     vendor_spend = [
-        {"vendor": vendor, "amount": Decimal(str(total))} for vendor, total in vendor_rows.all()
+        {
+            "vendor": vendor,
+            "amount": Decimal(str(total)),
+            "unconverted_count": int(unconverted or 0),
+        }
+        for vendor, total, unconverted in vendor_rows.all()
     ]
 
     # Aging buckets — boundaries are days past the due date:
@@ -232,7 +267,18 @@ async def get_dashboard(
     # above for the whole-book rollup): the persisted rate-locked
     # `reporting_amount` when it's locked for the org's target currency, else
     # face `amount` (foreign rows without a lock fall back to face value, same
-    # fallback the rest of this endpoint's reporting figures use).
+    # fallback the rest of this endpoint's reporting figures use) — and
+    # `aging_reporting_unconverted` counts exactly those fallbacks, so the
+    # chart can say its bands are part-converted instead of implying they are
+    # all in one currency.
+    #
+    # ONE count for the whole band set, not five. `AgingBuckets` is a single
+    # object holding five sums, so a per-band count would mean five more
+    # fields on a schema that two response keys share; the actionable fact —
+    # "some of this is unconverted" — is the same either way, and the invoices
+    # behind it are listable from `/invoices`. The bare `aging` deliberately
+    # gets no count at all: it is a face-value cross-currency sum in its
+    # entirety, so "N rows could not be converted" would understate it.
     aging_reporting_dec = {
         "current": Decimal("0"),
         "days_30": Decimal("0"),
@@ -240,6 +286,7 @@ async def get_dashboard(
         "days_90": Decimal("0"),
         "days_90_plus": Decimal("0"),
     }
+    aging_reporting_unconverted = 0
     # Aging covers the same open-payable population as the AP balance so the
     # bands reconcile with it (F-4): approved → payment_scheduled. The AP
     # balance has no due_date filter, so aging must not either — an open
@@ -264,16 +311,18 @@ async def get_dashboard(
                 _aging_bucket.label("bucket"),
                 func.coalesce(func.sum(Invoice.amount), 0),
                 func.coalesce(func.sum(_rep_expr), 0),
+                func.coalesce(func.sum(_unconv_expr), 0),
             )
             .where(Invoice.status.in_(OPEN_AP_STATUSES))
             .group_by(_aging_bucket)
         )
     )
-    for bucket, total, rep_total in aging_rows.all():
+    for bucket, total, rep_total, unconverted in aging_rows.all():
         aging_dec[bucket] = Decimal(str(total))
         aging_reporting_dec[bucket] = Decimal(str(rep_total))
+        aging_reporting_unconverted += int(unconverted or 0)
     aging = aging_dec
-    aging_reporting = aging_reporting_dec
+    aging_reporting = {**aging_reporting_dec, "unconverted_count": aging_reporting_unconverted}
 
     # Monthly trend (last 6 calendar months) — bucket by calendar month in SQL
     # rather than streaming every recent invoice into Python. Summing amounts
@@ -300,6 +349,13 @@ async def get_dashboard(
                 # Reporting-currency counterpart — same `_rep_expr` CASE as the
                 # aging buckets / whole-book rollup above.
                 func.coalesce(func.sum(_rep_expr), 0),
+                # ...and the same `_unconv_expr`, so each BAR says whether its
+                # own `reporting_amount` is fully converted. Per month rather
+                # than one figure for the series, because a trend is read bar
+                # against bar: a single foreign vendor onboarding in March
+                # contaminates March, and a whole-series count would not say
+                # which step in the line is the one not to trust.
+                func.coalesce(func.sum(_unconv_expr), 0),
             )
             .where(Invoice.invoice_date >= trend_start, Invoice.invoice_date.isnot(None))
             .group_by(_month_key)
@@ -312,8 +368,9 @@ async def get_dashboard(
             "count": count,
             "amount": Decimal(str(amount)),
             "reporting_amount": Decimal(str(rep_amount)),
+            "unconverted_count": int(unconverted or 0),
         }
-        for month, count, amount, rep_amount in trend_rows.all()
+        for month, count, amount, rep_amount, unconverted in trend_rows.all()
     ]
 
     # Upcoming payments (due within 7 days + overdue)

@@ -31,8 +31,25 @@ decreases as the window widens, is the *tightest still-open* window. The whole
 offer is dead once ``valid_until`` has passed (``as_of > valid_until``):
 :func:`best_tier_for_date` then returns ``None`` regardless of the tiers.
 
+Expiry is DERIVED, not read
+---------------------------
+An offer whose ``valid_until`` has passed is no longer on the table — that is a
+fact about the calendar, not a state anybody has to decide. The stored
+``expired`` status is only a *materialization* of it, and its sole writer is the
+auto-capture sweep, which is off by default. Reading the column therefore
+reported a lapsed offer as still ``offered`` forever in any deployment that
+never turned that sweep on (local dev, tests, and the shipped default).
+
+:func:`has_lapsed` / :func:`effective_status` are the one rule every read
+surface classifies by, with :func:`effective_status_sql` as its SQL mirror so a
+filtered/aggregated query can't reach a different answer than the Python one.
+Same shape as ``payment_runs.derive_run_status`` (``docs/decisions.md`` §41):
+derive the state from its own facts rather than trusting a column a gated writer
+maintains.
+
 Money is ``Decimal`` and tier percents are carried as Decimal-strings (never
-float) to match the JSONB storage on the model. See
+float) to match the JSONB storage on the model. Apart from the one SQL-mirror
+helper (an expression, not a query), this module does no DB or network work. See
 ``backend/docs/dynamic-discounting.md``.
 """
 
@@ -42,6 +59,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
+from sqlalchemy import and_, case
+
 from app.models.discount import (
     OFFER_SCOPE_VENDOR,
     OFFER_SOURCE_SUPPLIER,
@@ -50,6 +69,7 @@ from app.models.discount import (
     OFFER_STATUS_DECLINED,
     OFFER_STATUS_EXPIRED,
     OFFER_STATUS_OFFERED,
+    DiscountOffer,
 )
 
 _CENTS = Decimal("0.01")
@@ -262,6 +282,61 @@ def _add_days(d: date, days: int):
 
 
 # --------------------------------------------------------------------------- #
+# Expiry — derived from the calendar, never read from the column
+# --------------------------------------------------------------------------- #
+
+
+def has_lapsed(offer, *, as_of: date) -> bool:
+    """True when ``offer`` is still stored ``offered`` but its window has closed.
+
+    "Lapsed" is exactly the condition :func:`expire_if_past` writes down. Keeping
+    the predicate separate from the write is the point: the write only happens
+    when the auto-capture sweep is enabled, and the truth does not depend on
+    that.
+    """
+    if getattr(offer, "status", None) != OFFER_STATUS_OFFERED:
+        return False
+    valid_until = getattr(offer, "valid_until", None)
+    return valid_until is not None and valid_until < as_of
+
+
+def effective_status(offer, *, as_of: date) -> str:
+    """The offer's status as of ``as_of`` — ``expired`` for a lapsed ``offered``
+    row, the stored value otherwise.
+
+    Every read surface (list, detail, dashboard buckets) classifies through
+    this, so a lapsed offer is never reported as open and never lands in the
+    ``captured / missed`` denominator on the wrong side.
+    """
+    return OFFER_STATUS_EXPIRED if has_lapsed(offer, as_of=as_of) else offer.status
+
+
+def effective_status_sql(as_of: date):
+    """SQL mirror of :func:`effective_status`, as a ``CASE`` over
+    ``DiscountOffer``.
+
+    A ``WHERE``/``GROUP BY`` cannot call the Python predicate, and restating the
+    rule inline at each query is how the dashboard, the list filter and the
+    optimizer would drift apart — which is the class of bug this whole helper
+    exists to close.
+    ``tests/test_discounts_api.py::test_effective_status_sql_matches_the_python_rule``
+    evaluates both over the same rows (boundary day included) and pins them
+    together.
+    """
+    return case(
+        (
+            and_(
+                DiscountOffer.status == OFFER_STATUS_OFFERED,
+                DiscountOffer.valid_until.is_not(None),
+                DiscountOffer.valid_until < as_of,
+            ),
+            OFFER_STATUS_EXPIRED,
+        ),
+        else_=DiscountOffer.status,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Savings math
 # --------------------------------------------------------------------------- #
 
@@ -294,8 +369,21 @@ def accept_offer(offer, *, tier: dict, actor_id, now: datetime) -> None:
     offer.status = OFFER_STATUS_ACCEPTED
 
 
-def decline_offer(offer, *, now: datetime) -> None:
-    """Transition ``offered`` → ``declined``. Raises if not ``offered``."""
+def decline_offer(offer, *, now: datetime, as_of: date) -> None:
+    """Transition ``offered`` → ``declined``. Raises if it is not declinable.
+
+    ``as_of`` is required, not defaulted, because the guard it feeds is the
+    point: an offer whose window has already closed is EXPIRED
+    (:func:`effective_status`), and letting it be declined records a supplier
+    (or AP) decision that never happened. Both land in the dashboard's
+    ``missed`` bucket, so nothing is double-counted — but ``declined`` asserts
+    somebody refused the offer, and the append-only audit row written beside it
+    cannot be corrected afterwards. Every caller is a route with a clock; a
+    default would let a future one silently skip the check, which is the
+    completeness obligation ``docs/decisions.md`` §41 argues against.
+    """
+    if has_lapsed(offer, as_of=as_of):
+        raise ValueError("cannot decline an offer whose validity window has closed (expired)")
     if offer.status != OFFER_STATUS_OFFERED:
         raise ValueError(f"cannot decline an offer in status {offer.status!r} (must be 'offered')")
     offer.status = OFFER_STATUS_DECLINED
@@ -314,14 +402,18 @@ def mark_captured(offer, *, captured_amount: Decimal, now: datetime) -> None:
 
 
 def expire_if_past(offer, *, as_of: date) -> bool:
-    """Expire an ``offered`` offer whose ``valid_until`` is before ``as_of``.
+    """Materialize :func:`has_lapsed` onto the row: ``offered`` → ``expired``.
 
     Returns ``True`` if the status changed, ``False`` otherwise (already
     accepted/captured/declined/expired, no ``valid_until``, or still in window).
+
+    This is a **tidy-up, not the source of truth**. Its only caller is the
+    auto-capture sweep, which is off by default, so nothing that has to be
+    correct may depend on it having run — read surfaces go through
+    :func:`effective_status` instead. What the write adds is the durable row
+    state plus the append-only ``discount_offer.expired`` audit entry.
     """
-    if offer.status != OFFER_STATUS_OFFERED:
-        return False
-    if offer.valid_until is None or offer.valid_until >= as_of:
+    if not has_lapsed(offer, as_of=as_of):
         return False
     offer.status = OFFER_STATUS_EXPIRED
     return True

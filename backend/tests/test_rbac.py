@@ -62,12 +62,13 @@ from app.api.deps import (
     ROLE_CFO,
     get_api_key_principal,
     get_current_user,
-    require_permission,
     require_roles,
 )
 from app.api.portal_deps import get_current_vendor_user
 from app.api.scim import get_scim_tenant
 from app.main import app
+from tests.permission_gates import iter_dependants as _iter_dependants
+from tests.permission_gates import permission_gate_sets
 
 # ---------------------------------------------------------------------------
 # Dependency-tree resolution (by identity, never by name)
@@ -87,15 +88,10 @@ PRIMARY_AUTH_DEPENDENCIES: frozenset[Callable] = frozenset(
 
 # `require_permission(...)` returns a fresh closure per call, but every one of
 # them shares a single code object — so comparing `__code__` identifies the
-# factory exactly, where `__name__ == "checker"` merely guesses at it.
-_REQUIRE_PERMISSION_CODE = require_permission("user.manage").__code__
-
-
-def _iter_dependants(dependant) -> Iterable:
-    """Every `Dependant` reachable from a route's dependency tree, inclusive."""
-    yield dependant
-    for sub in getattr(dependant, "dependencies", []) or []:
-        yield from _iter_dependants(sub)
+# factory exactly, where `__name__ == "checker"` merely guesses at it. Both that
+# comparison and the dependency-tree walk live in `tests/permission_gates.py`,
+# because `test_sod_endpoint_wiring.py` asks the same question and a second copy
+# is how the two drifted apart in the first place.
 
 
 def _route_dependencies(route: APIRoute) -> set[Callable]:
@@ -823,20 +819,13 @@ def _gate_permissions(route: APIRoute) -> set[str] | None:
     """Return the set of permission strings a `require_permission(...)` gate on
     this route requires, or None if the route isn't permission-gated.
 
-    The gate is identified by its **code object**, not by the closure's name:
-    `require_permission` builds a new closure per call but they all share one
-    `__code__`, so this can't be satisfied by an unrelated function called
-    `checker` and can't be broken by renaming the real one. The permission set
-    is then read out of `needed_set` in that closure's cells, so the test
-    verifies the ACTUAL gate rather than merely that some auth dep exists."""
-    for dep in _route_dependencies(route):
-        if getattr(dep, "__code__", None) is not _REQUIRE_PERMISSION_CODE:
-            continue
-        for cell in getattr(dep, "__closure__", None) or ():
-            val = cell.cell_contents
-            if isinstance(val, frozenset) and val and all(isinstance(v, str) for v in val):
-                return set(val)
-    return None
+    The gate is identified by its **code object**, not by the closure's name —
+    see `tests/permission_gates.py`, which owns that comparison for this file and
+    for `test_sod_endpoint_wiring.py`. The permission set is read out of
+    `needed_set` in the closure's cells, so this verifies the ACTUAL gate rather
+    than merely that some auth dep exists."""
+    gates = permission_gate_sets(route)
+    return set(gates[0]) if gates else None
 
 
 def test_split_endpoints_are_permission_gated():

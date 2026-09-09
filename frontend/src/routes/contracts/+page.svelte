@@ -2,9 +2,9 @@
 	import type { Contract, ContractStatus, ContractType } from '$lib/types/contract';
 	import {
 		CONTRACT_STATUSES,
-		STATUS_LABELS,
+		contractStatusLabelKey,
 		STATUS_TONES,
-		CONTRACT_TYPE_LABELS
+		contractTypeLabelKey
 	} from '$lib/types/contract';
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import { contractStore } from '$lib/stores/contracts.svelte';
@@ -45,9 +45,16 @@
 	const canCreate = $derived(auth.isManager);
 	const canManage = $derived(auth.isManager);
 
+	// The status name is a message key, not an English literal — an
+	// unrecognised value from the API renders raw rather than blank.
+	const statusLabel = (s: string) => {
+		const key = contractStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
-		...CONTRACT_STATUSES.map((s) => ({ key: s, label: STATUS_LABELS[s] }))
+		...CONTRACT_STATUSES.map((s) => ({ key: s, label: statusLabel(s) }))
 	]);
 
 	interface VendorOption {
@@ -335,7 +342,8 @@
 	}
 
 	function typeLabel(t: ContractType): string {
-		return CONTRACT_TYPE_LABELS[t] ?? t;
+		const key = contractTypeLabelKey(t);
+		return key ? m(key) : t;
 	}
 </script>
 
@@ -404,7 +412,7 @@
 					<td>{typeLabel(contract.contract_type)}</td>
 					<td>
 						<Badge tone={STATUS_TONES[contract.status]} variant={contract.status}>
-							{STATUS_LABELS[contract.status]}
+							{statusLabel(contract.status)}
 						</Badge>
 					</td>
 					<td class="muted">{formatDate(contract.end_date)}</td>

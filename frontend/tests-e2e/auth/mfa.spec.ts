@@ -1,7 +1,6 @@
 import { createHmac } from 'node:crypto';
 
-import { expect, signIn, test } from '../fixtures/helpers';
-import { API_BASE, currentTenantSlug } from '../fixtures/helpers';
+import { API_BASE, currentTenantSlug, expect, signIn, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 
 /**
  * MFA e2e coverage — the two MFA surfaces in the web app:
@@ -382,7 +381,7 @@ test.describe('/login/mfa — real TOTP verification (MFA-enabled backend)', () 
 		// Enter a fresh code → verify → land on the dashboard.
 		await page.locator('input[autocomplete="one-time-code"]').fill(totpNow(secret));
 		await page.getByRole('button', { name: /Verify/ }).click();
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 
 		// Cleanup: disable MFA on this admin so the worker's other specs (which
 		// reuse the same seeded admin) aren't suddenly MFA-gated.

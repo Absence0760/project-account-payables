@@ -67,25 +67,69 @@ name: Dependabot lockfile sync
 # file a PR could write.
 #
 # ---------------------------------------------------------------------------
-# Known limitation: CI does not re-run on the synced commit
+# Known limitation: the synced commit's CI is parked awaiting approval
 # ---------------------------------------------------------------------------
 #
-# A push made with GITHUB_TOKEN does not start a new workflow run — GitHub
-# blocks that path to prevent loops. So after this workflow pushes, the PR's
-# head moves to a commit that no CI run has covered: the red check belonged to
-# the superseded commit and is gone, but nothing has re-verified the new one.
-# That loop-suppression is also what stops this workflow re-triggering itself.
+# A push made with GITHUB_TOKEN cannot start a workflow run unattended — GitHub
+# blocks that path to prevent loops, which is also what stops this workflow
+# re-triggering itself.
 #
-# The push job says so explicitly in its step summary. To get a verified green,
-# re-run CI against the new head (push an empty commit, or use the PR's
-# "Update branch"). Do NOT `@dependabot rebase` — that force-pushes Dependabot's
-# own branch and drops the lockfile commit.
+# What GitHub does instead is NOT "no run at all", and the difference decides
+# what an operator has to do. Observed on the first real Dependabot bumps this
+# workflow synced (#379, #381, 2026-09-07): the `pull_request` **synchronize**
+# event still creates the CI / Security / gitleaks runs against the new head,
+# and parks every one of them in `action_required` — queued, awaiting a
+# maintainer's approval. So the synced commit is unverified *pending one
+# approval*, not unverified with no path forward, and the PR reads red until
+# somebody gives it.
 #
-# Closing this properly needs a credential whose pushes DO retrigger workflows:
-# a fine-grained PAT with `Contents: Write` in the **Dependabot** secret store,
-# or (sturdier — no expiry, not bound to one person) a GitHub App token via
-# `actions/create-github-app-token`. Both are the same operator step this
-# workflow deliberately does not depend on. See docs/followups.md.
+# To get a verified green, approve the parked runs — either the PR checks tab's
+# "Approve and run", or:
+#
+#   gh run list --branch <dependabot-branch>        # the action_required ones
+#   gh api -X POST repos/<owner>/<repo>/actions/runs/<run_id>/approve
+#
+# Pushing an empty commit or using the PR's "Update branch" also works and needs
+# no approval, but it is strictly heavier than approving runs already queued
+# against the right SHA. Do NOT `@dependabot rebase` — that force-pushes
+# Dependabot's own branch and drops the lockfile commit.
+#
+# Removing the approval step needs a credential whose pushes retrigger workflows
+# unattended: a fine-grained PAT with `Contents: Write` in the **Dependabot**
+# secret store, or (sturdier — no expiry, not bound to one person) a GitHub App
+# token via `actions/create-github-app-token`. Both are the same operator step
+# this workflow deliberately does not depend on. See docs/followups.md.
+#
+# ---------------------------------------------------------------------------
+# Scorecard findings this file will always produce, and why they are accepted
+# ---------------------------------------------------------------------------
+#
+# Scorecard reads a workflow file, not a job graph, so the very split that
+# makes this safe is invisible to it. Three findings are therefore permanent
+# and are dismissed with these reasons rather than "fixed" — the only edits
+# that would silence them are the ones that break the design:
+#
+#   Dangerous-Workflow, on each `ref: …head.sha` checkout (frontend, backend)
+#       "untrusted code checkout" under `pull_request_target`. True as stated
+#       and deliberate: regenerating a lockfile means resolving the PR head's
+#       manifests, and `uv pip compile` may build an sdist, which runs a
+#       third-party `setup.py`. What makes it safe is what Scorecard cannot
+#       see — both jobs pin `permissions: contents: read`, set
+#       `persist-credentials: false`, and NAME NO SECRET, and a job is handed
+#       only the secrets it names. A `contents: read` token on a public repo
+#       is worth no more than an anonymous clone. Results leave those jobs as
+#       artifacts, never as a push.
+#
+#   Token-Permissions, on the push job's `contents: write`
+#       Irreducible: the job's entire purpose is to commit to the branch.
+#       It is also the one job that executes no PR-authored code — `git`
+#       plumbing and three `cp`s onto fixed paths, no install, no resolver,
+#       no script. Same shape as the dismissals on dependabot-auto-merge.yml
+#       and claude.yml, where the write grant IS the workflow.
+#
+# Both properties are load-bearing, so state them plainly if you edit this
+# file: adding a secret to a resolver job, or a build/install step to the push
+# job, collapses the split into the pwn-request this is written to avoid.
 
 on:
   pull_request_target:
@@ -461,10 +505,16 @@ jobs:
             # shellcheck disable=SC2086
             for f in $synced; do echo "- \`${f}\`"; done
             echo
-            echo "> **CI has not re-run on this commit.** A push made with"
-            echo "> \`GITHUB_TOKEN\` does not start a new workflow run, so the new"
-            echo "> head is unverified rather than green. Re-run CI against it"
-            echo "> (empty commit, or the PR's \"Update branch\") before merging."
+            echo "> **CI has not re-run on this commit yet.** A \`GITHUB_TOKEN\`"
+            echo "> push cannot start a run unattended, so this head's CI /"
+            echo "> Security / gitleaks runs are parked in \`action_required\`"
+            echo "> awaiting approval - which is why the PR still reads red."
+            echo "> **Approve them** to get a verified green before merging:"
+            echo "> the PR checks tab's \"Approve and run\", or"
+            echo "> \`gh api -X POST repos/${REPO}/actions/runs/<run_id>/approve\`"
+            echo "> for each run \`gh run list --branch ${PR_HEAD_REF}\` shows as"
+            echo "> \`action_required\`. An empty commit or \"Update branch\" also"
+            echo "> works, but is heavier than approving what is already queued."
             echo "> Do **not** \`@dependabot rebase\` - that force-pushes"
             echo "> Dependabot's branch and drops this commit."
           } >> "$GITHUB_STEP_SUMMARY"

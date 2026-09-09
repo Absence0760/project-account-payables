@@ -4,6 +4,7 @@
 // numbers (backend `float(...)`); date/datetime fields are ISO strings.
 
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type ExpenseStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'reimbursed';
@@ -46,20 +47,40 @@ const UNREACHABLE_EXPENSE_STATUSES: ExpenseStatus[] = ['rejected', 'reimbursed']
 // mirror, so a genuinely new status added above joins the chips by default and
 // only a deliberate, justified entry in UNREACHABLE_EXPENSE_STATUSES keeps one
 // out. The excluded values still live in the union and in
-// EXPENSE_STATUS_LABELS (a legacy / seeded row must still render its badge),
+// EXPENSE_STATUS_LABEL_KEYS (a legacy / seeded row must still render its badge),
 // and the page appends whatever status is *actively* filtered to the chip row,
 // so an explicit `?status=reimbursed` is never an invisible filter.
 export const EXPENSE_FILTER_STATUSES: ExpenseStatus[] = EXPENSE_STATUSES.filter(
 	(s) => !UNREACHABLE_EXPENSE_STATUSES.includes(s)
 );
 
-export const EXPENSE_STATUS_LABELS: Record<ExpenseStatus, string> = {
-	draft: 'Draft',
-	submitted: 'Submitted',
-	approved: 'Approved',
-	rejected: 'Rejected',
-	reimbursed: 'Reimbursed'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * Every surface that renders an expense status (the `/expenses` list, the
+ * report-detail line table and `ExpenseModal`) is inside the i18n extraction
+ * slice, so a hardcoded English map here put translated filter chips directly
+ * beside an untranslated `Reimbursed` badge. `Record<ExpenseStatus,
+ * MessageKey>` makes a new status a compile error rather than a blank badge,
+ * and `expense.test.ts` proves every key exists in the catalogue.
+ */
+export const EXPENSE_STATUS_LABEL_KEYS: Record<ExpenseStatus, MessageKey> = {
+	draft: 'expenses.status.draft',
+	submitted: 'expenses.status.submitted',
+	approved: 'expenses.status.approved',
+	rejected: 'expenses.status.rejected',
+	reimbursed: 'expenses.status.reimbursed'
 };
+
+/**
+ * The message key for a status, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank badge). `Expense.status` is typed `string` because the API is the
+ * source of truth.
+ */
+export function expenseStatusLabelKey(status: string): MessageKey | null {
+	return EXPENSE_STATUS_LABEL_KEYS[status as ExpenseStatus] ?? null;
+}
 
 /**
  * Badge tone per expense status. Hoisted out of `ExpenseModal`, which is where
@@ -93,10 +114,12 @@ export const EXPENSE_PAYMENT_METHODS: ExpensePaymentMethod[] = [
 	'virtual_card'
 ];
 
-export const EXPENSE_PAYMENT_METHOD_LABELS: Record<ExpensePaymentMethod, string> = {
-	out_of_pocket: 'Out of pocket',
-	corporate_card: 'Corporate card',
-	virtual_card: 'Virtual card'
+// The payment method is a `<select>` option and a table cell sitting beside
+// the translated status badge, so an English literal here reads as a gap.
+export const EXPENSE_PAYMENT_METHOD_LABEL_KEYS: Record<ExpensePaymentMethod, MessageKey> = {
+	out_of_pocket: 'expenses.method.outOfPocket',
+	corporate_card: 'expenses.method.corporateCard',
+	virtual_card: 'expenses.method.virtualCard'
 };
 
 export type ExpenseReportStatus =
@@ -118,15 +141,21 @@ export const EXPENSE_REPORT_STATUSES: ExpenseReportStatus[] = [
 	'cancelled'
 ];
 
-export const EXPENSE_REPORT_STATUS_LABELS: Record<ExpenseReportStatus, string> = {
-	draft: 'Draft',
-	submitted: 'Submitted',
-	pending_approval: 'Pending Approval',
-	approved: 'Approved',
-	rejected: 'Rejected',
-	reimbursed: 'Reimbursed',
-	cancelled: 'Cancelled'
+/** Message keys for the report status pill — see EXPENSE_STATUS_LABEL_KEYS. */
+export const EXPENSE_REPORT_STATUS_LABEL_KEYS: Record<ExpenseReportStatus, MessageKey> = {
+	draft: 'expenses.reports.status.draft',
+	submitted: 'expenses.reports.status.submitted',
+	pending_approval: 'expenses.reports.status.pendingApproval',
+	approved: 'expenses.reports.status.approved',
+	rejected: 'expenses.reports.status.rejected',
+	reimbursed: 'expenses.reports.status.reimbursed',
+	cancelled: 'expenses.reports.status.cancelled'
 };
+
+/** The message key for a report status, or `null` for an unrecognised one. */
+export function expenseReportStatusLabelKey(status: string): MessageKey | null {
+	return EXPENSE_REPORT_STATUS_LABEL_KEYS[status as ExpenseReportStatus] ?? null;
+}
 
 /**
  * Badge tone per expense-REPORT status. Two callers on the same page — the
@@ -402,11 +431,18 @@ export const EXPENSE_PREAPPROVAL_STATUSES: ExpensePreapprovalStatus[] = [
 	'rejected'
 ];
 
-export const EXPENSE_PREAPPROVAL_STATUS_LABELS: Record<ExpensePreapprovalStatus, string> = {
-	pending: 'Pending',
-	approved: 'Approved',
-	rejected: 'Rejected'
-};
+/** Message keys for the pre-approval status pill. */
+export const EXPENSE_PREAPPROVAL_STATUS_LABEL_KEYS: Record<ExpensePreapprovalStatus, MessageKey> =
+	{
+		pending: 'expenses.preapprovals.status.pending',
+		approved: 'expenses.preapprovals.status.approved',
+		rejected: 'expenses.preapprovals.status.rejected'
+	};
+
+/** The message key for a pre-approval status, or `null` for an unknown one. */
+export function expensePreapprovalStatusLabelKey(status: string): MessageKey | null {
+	return EXPENSE_PREAPPROVAL_STATUS_LABEL_KEYS[status as ExpensePreapprovalStatus] ?? null;
+}
 
 /** Badge tone per pre-approval status — a decision pending, taken, or refused. */
 export const EXPENSE_PREAPPROVAL_STATUS_TONES: Record<ExpensePreapprovalStatus, BadgeTone> = {
@@ -450,11 +486,17 @@ export const RECONCILIATION_STATUSES: ReconciliationStatus[] = [
 	'ignored'
 ];
 
-export const RECONCILIATION_STATUS_LABELS: Record<ReconciliationStatus, string> = {
-	unmatched: 'Unmatched',
-	matched: 'Matched',
-	ignored: 'Ignored'
+/** Message keys for the card-transaction reconciliation status pill. */
+export const RECONCILIATION_STATUS_LABEL_KEYS: Record<ReconciliationStatus, MessageKey> = {
+	unmatched: 'expenses.cards.status.unmatched',
+	matched: 'expenses.cards.status.matched',
+	ignored: 'expenses.cards.status.ignored'
 };
+
+/** The message key for a reconciliation status, or `null` for an unknown one. */
+export function reconciliationStatusLabelKey(status: string): MessageKey | null {
+	return RECONCILIATION_STATUS_LABEL_KEYS[status as ReconciliationStatus] ?? null;
+}
 
 /**
  * Badge tone per card-transaction reconciliation status.

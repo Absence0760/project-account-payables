@@ -1,4 +1,4 @@
-import { expect, test, signInAndWait } from '../fixtures/helpers';
+import { expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 import { expectNoA11yViolations } from '../a11y/axe-helper';
 import type { Page, Request, Route } from '@playwright/test';
 
@@ -125,7 +125,7 @@ test.describe('/adaptive — role gate', () => {
 			await page.goto('/adaptive');
 			// The backend 403s an ap_clerk on every /api/adaptive route, so the page
 			// redirects rather than rendering panels that can only fail.
-			await expect(page).toHaveURL(/:7777\/?$/, { timeout: 15_000 });
+			await expect(page).toHaveURL(TENANT_ROOT_URL, { timeout: 15_000 });
 			await expect(
 				page.getByRole('heading', { name: 'Adaptive Workflows', level: 1 })
 			).toHaveCount(0);

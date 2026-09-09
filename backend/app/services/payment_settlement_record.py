@@ -19,11 +19,22 @@ already terminal, a late webhook could never supply the missing verdict.
 
 One implementation, both callers, so the two cannot disagree about what
 "verified" means.
+
+The same drift reappeared one field over. Realized FX gain/loss — the number a
+foreign-currency invoice books at the moment it actually settles — was computed
+inline in the webhook handler and nowhere else, so every cross-currency payment
+the reconciler backstop recovered lost its realized-FX row silently. Rather
+than copy the block, :func:`record_completion` now owns the WHOLE "a payment
+just reached ``completed``" bookkeeping — settlement verdict AND realized FX —
+and both paths call it. A third completion path cannot reintroduce the gap
+without deliberately re-deriving what this module already returns;
+``tests/test_payment_completion_record.py`` is the drift guard on that.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -33,6 +44,7 @@ from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
+from app.services.international_payments import realized_fx_gain_loss_for_settlement
 from app.services.payment_settlement import (
     SettlementVerification,
     describe_discrepancy,
@@ -113,6 +125,96 @@ async def record_settlement(
     return verification
 
 
+@dataclass(frozen=True)
+class SettlementCompletion:
+    """Everything one ``completed`` payment books, for whichever path got there.
+
+    Two facts, and they are recorded together because they are decided
+    together and ride the SAME append-only audit row:
+
+    * ``verification`` — did the rail move what AP authorized?
+    * ``realized_fx_gain_loss`` — for a foreign-currency invoice, the
+      difference between the liability accrued at the invoice's locked rate
+      and the cash that actually left in the home currency. ``None`` (never
+      ``0``) whenever there is nothing to measure — a zero would assert we
+      measured and found no exposure.
+    """
+
+    verification: SettlementVerification
+    realized_fx_gain_loss: Decimal | None = None
+
+    @property
+    def is_discrepancy(self) -> bool:
+        return self.verification.is_discrepancy
+
+    def as_audit_details(self) -> dict:
+        """The ``audit_log.details`` fragment for a completion.
+
+        PII-free and exact: money serialises as a decimal STRING, never a
+        float. Written on EVERY completion — matched, mismatched and
+        unverified alike — so a rail that reports no amount is a visible
+        blind spot rather than a silent one. The FX key is absent, not zero,
+        when there is no exposure to report.
+        """
+        details: dict = {"settlement": self.verification.as_details()}
+        if self.realized_fx_gain_loss is not None:
+            details["realized_fx_gain_loss"] = str(self.realized_fx_gain_loss)
+        return details
+
+
+async def record_completion(
+    db: AsyncSession,
+    *,
+    payment: Payment,
+    adapter,
+    invoice: Invoice | None,
+    reported_amount: Decimal | None = None,
+    reported_currency: str | None = None,
+) -> SettlementCompletion:
+    """Book everything a payment reaching ``completed`` owes the record.
+
+    The ONE entry point for both completion paths — ``api/payments``'s webhook
+    handler and ``services/payment_reconciler``'s backstop poll. It exists as a
+    single function rather than a pair of calls each caller makes because the
+    pair had already drifted once: realized FX was computed inline on the
+    webhook path only, so a cross-currency payment the backstop recovered — the
+    case with the least evidence, by construction — booked no realized gain or
+    loss at all, and nothing downstream re-derives it (the webhook handler
+    refuses an already-terminal payment, so a late webhook could not supply it
+    either).
+
+    Does not commit, does not open exceptions and does not write the audit row:
+    the caller owns those, because the webhook additionally has to decide
+    whether to capture an early-pay discount off the same verdict.
+    """
+    verification = await record_settlement(
+        db,
+        payment=payment,
+        adapter=adapter,
+        invoice=invoice,
+        reported_amount=reported_amount,
+        reported_currency=reported_currency,
+    )
+    realized_fx: Decimal | None = None
+    if invoice is not None:
+        # Realized FX gain/loss, at the moment a foreign-currency invoice
+        # actually settles. The liability was accrued at the rate locked on the
+        # invoice when its reporting amount was materialized; what moved is
+        # `source_amount` in the home currency, and the difference is realized
+        # here and nowhere else. The helper returns `None` — never a zero — for
+        # a domestic payment, an invoice with no accrual rate, a same-currency
+        # settlement, or an accrual and an outflow denominated differently.
+        realized_fx = realized_fx_gain_loss_for_settlement(
+            invoice_amount=invoice.amount,
+            invoice_currency=invoice.currency,
+            reporting_currency=invoice.reporting_currency,
+            reporting_fx_rate=invoice.reporting_fx_rate,
+            paid_source_amount=payment.source_amount,
+            paid_source_currency=payment.source_currency,
+        )
+    return SettlementCompletion(verification=verification, realized_fx_gain_loss=realized_fx)
+
+
 async def open_settlement_mismatch_exception(
     db: AsyncSession,
     *,
@@ -166,4 +268,9 @@ async def open_settlement_mismatch_exception(
     )
 
 
-__all__ = ["record_settlement", "open_settlement_mismatch_exception"]
+__all__ = [
+    "SettlementCompletion",
+    "open_settlement_mismatch_exception",
+    "record_completion",
+    "record_settlement",
+]

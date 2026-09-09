@@ -152,13 +152,20 @@ what a contributor falls back to.
 
 Two things to know before trusting it:
 
-- **A `GITHUB_TOKEN` push does not start a new workflow run** (GitHub blocks
-  that path to prevent loops — which is also what stops the workflow
-  re-triggering itself). So after the sync, the PR's head is a commit no CI run
-  has covered: no longer red, but not verified either. Re-run CI against the new
-  head before merging — an empty commit, or the PR's "Update branch". Do **not**
+- **The synced commit's CI is parked awaiting approval.** A `GITHUB_TOKEN` push
+  cannot start a workflow run unattended (GitHub blocks that path to prevent
+  loops — which is also what stops the workflow re-triggering itself). What it
+  does instead is not "no run": the `synchronize` event still creates the CI /
+  Security / gitleaks runs against the new head and parks them in
+  `action_required`, so the PR keeps reading red until a maintainer approves
+  them. Approve the parked runs to get a verified green — the PR checks tab's
+  "Approve and run", or `gh api -X POST
+  repos/<owner>/<repo>/actions/runs/<run_id>/approve` for each run
+  `gh run list --branch <dependabot-branch>` shows as `action_required`. An
+  empty commit or the PR's "Update branch" also works but is heavier. Do **not**
   `@dependabot rebase`: that force-pushes Dependabot's branch and drops the
-  lockfile commit.
+  lockfile commit. (Observed on #379 / #381, 2026-09-07 — the first real bumps
+  this workflow synced.)
 - **It is a convenience layer, not the guard.**
   `tests/test_dependency_lock_sync.py` is still what makes drift loud, and the
   manual recipe is still the fallback. If the workflow fails, is skipped (a
@@ -208,6 +215,21 @@ check it isn't caught by a pattern there — `app/`, `alembic/`,
 `alembic.ini`, `main.py`, `pyproject.toml`, `requirements.lock` and
 `scripts/` are the deliberate keeps (`deploy/deploy.sh` and
 `deploy/add-tenant.sh` run `scripts/*.py` inside this image).
+
+### pip is not in the runtime image
+
+The install layer ends with `python -m pip uninstall -y pip`. `python:3.14-slim`
+ships pip as the **only** package in site-packages; this image installs with
+`uv` and runs the app from the copied source, so nothing invokes pip and no
+runtime path imports it. All it contributed was a `dist-info` for Trivy to match
+CVEs against — and it did, reporting CVE-2026-13346 (pip < 26.2.0, "arbitrary
+file installation via malicious package indexes") against an installer the image
+never calls. Deleting it retires that alert and every future pip CVE with it,
+instead of bumping the base digest each time one lands.
+
+`uv` stays on the PATH, so `uv pip install --system <pkg>` is still how you add
+something to a running container for debugging. `tests/test_container_supply_chain.py`
+guards the removal.
 
 ## CI test sharding
 

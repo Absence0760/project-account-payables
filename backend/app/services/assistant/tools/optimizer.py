@@ -166,5 +166,9 @@ async def optimize_discount_capture(
         total_savings_selected=result.total_savings_selected,
         total_outlay_selected=result.total_outlay_selected,
         unconvertible_count=result.unconvertible_count,
+        # Offers the optimizer could not rank (no net due date → no APR). They
+        # are not in `recommendations`, so without this count the copilot would
+        # answer as though they did not exist.
+        unrankable_count=result.unrankable_count,
         recommendations=recommendations,
     )

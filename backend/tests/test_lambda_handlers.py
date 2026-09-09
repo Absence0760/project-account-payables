@@ -185,15 +185,21 @@ async def test_process_message_unparseable_uuid_raises(module):
     create_engine.assert_not_called()
 
 
-async def test_audit_process_message_missing_tenant_db_name_raises():
-    """audit_lambda routes on ``tenant_db_name``; a message lacking it must
-    raise rather than build an engine against a malformed URL."""
+async def test_audit_process_message_missing_organization_id_raises():
+    """audit_lambda routes on ``organization_id`` — it re-derives the tenant DB
+    from the control plane rather than trusting the body's ``tenant_db_name`` —
+    so a message lacking the id must raise before an engine is built.
+
+    (It used to route on ``tenant_db_name`` itself: the one place a tenant DB
+    name was taken from an input instead of a resolved row at the point of use.)
+    """
     body = {
         "correlation_id": str(uuid.uuid4()),
-        "organization_id": str(uuid.uuid4()),
         "action": "payment.voided",
         "entity_type": "payment",
         "entity_id": str(uuid.uuid4()),
+        # Present, and deliberately ignored — it cannot substitute for the id.
+        "tenant_db_name": "feoh_acme",
     }
     create_engine = MagicMock()
     with (

@@ -67,6 +67,7 @@ from app.services.adaptive_workflows import (
     OutcomeStats,
     RoutingSuggestion,
     ThresholdRecommendation,
+    VendorApprovalPattern,
     VendorBaseline,
     _decimal_days,
     compute_approver_outcomes,
@@ -411,6 +412,32 @@ async def _approver_names(
 # ---------------------------------------------------------------------------
 
 
+def _vendor_pattern_dict(v: VendorApprovalPattern) -> dict:
+    """Serialise one per-vendor approval pattern.
+
+    ``unconverted_count`` rides along because the four money fields EXCLUDE
+    those approvals while ``sample_size`` still counts them: an average over
+    N-minus-k rows presented beside a sample count of N is a wrong number
+    unless the exclusion is disclosed (decisions.md §79/§82). The aggregate is
+    unchanged — the denominator is not silently moved, it is reported.
+    """
+    return {
+        "vendor_id": v.vendor_id,
+        "vendor_name": v.vendor_name,
+        "approved_count": v.approved_count,
+        "rejected_count": v.rejected_count,
+        "approval_rate_pct": str(v.approval_rate_pct),
+        "unmodified_count": v.unmodified_count,
+        "consistency_pct": str(v.consistency_pct),
+        "avg_approved_amount": str(v.avg_approved_amount),
+        "median_approved_amount": str(v.median_approved_amount),
+        "min_approved_amount": str(v.min_approved_amount),
+        "max_approved_amount": str(v.max_approved_amount),
+        "sample_size": v.sample_size,
+        "unconverted_count": v.unconverted_count,
+    }
+
+
 @router.get("/approval-patterns", response_model=ApprovalPatternsResponse)
 async def approval_patterns(
     days: int = Query(180, ge=1, le=730),
@@ -452,23 +479,7 @@ async def approval_patterns(
             }
             for a in approvers
         ],
-        vendors=[
-            {
-                "vendor_id": v.vendor_id,
-                "vendor_name": v.vendor_name,
-                "approved_count": v.approved_count,
-                "rejected_count": v.rejected_count,
-                "approval_rate_pct": str(v.approval_rate_pct),
-                "unmodified_count": v.unmodified_count,
-                "consistency_pct": str(v.consistency_pct),
-                "avg_approved_amount": str(v.avg_approved_amount),
-                "median_approved_amount": str(v.median_approved_amount),
-                "min_approved_amount": str(v.min_approved_amount),
-                "max_approved_amount": str(v.max_approved_amount),
-                "sample_size": v.sample_size,
-            }
-            for v in vendors
-        ],
+        vendors=[_vendor_pattern_dict(v) for v in vendors],
     )
 
 
@@ -568,13 +579,40 @@ def _subject_amount(inv: Invoice, reporting_currency: str) -> Decimal | None:
     return None if unconverted else amount
 
 
-def _anomaly_dict(a: InvoiceAnomaly) -> dict:
+def _anomaly_amount_currency(
+    inv: Invoice, subject: Decimal | None, *, reporting_currency: str
+) -> str:
+    """The currency ``InvoiceAnomaly.amount`` will actually be denominated in.
+
+    ``subject is None`` means ``_subject_amount`` could not express this invoice
+    in the reporting currency, so ``detect_invoice_anomaly`` displays the billed
+    figure instead — and the honest label for it is the invoice's own currency,
+    never the one it could not be converted into.
+    """
+    if subject is not None:
+        return (reporting_currency or "").strip().upper()
+    return (inv.currency or "").strip().upper()
+
+
+def _anomaly_dict(a: InvoiceAnomaly, *, amount_currency: str) -> dict:
+    """Serialise one anomaly.
+
+    ``amount_currency`` is required because ``InvoiceAnomaly.amount`` is not
+    always in the reporting currency: when the subject could not be expressed
+    there, ``detect_invoice_anomaly`` falls back to the BILLED figure for
+    display. Leaving the caller to guess is how the figure got labelled with the
+    org's reporting currency while being denominated in the invoice's own — a
+    wrong number on screen, not just a missing one. Passing it explicitly means
+    there is no default to forget, the same reason ``amount`` itself is a
+    required argument on ``detect_invoice_anomaly``.
+    """
     baseline: VendorBaseline | None = a.baseline
     return {
         "invoice_id": a.invoice_id,
         "vendor_id": a.vendor_id,
         "vendor_name": a.vendor_name,
         "amount": str(a.amount),
+        "amount_currency": amount_currency,
         "insufficient_history": a.insufficient_history,
         "baseline": None
         if baseline is None
@@ -660,18 +698,27 @@ async def anomalies(
             currency=reporting_currency,
         )
         tir = await _time_in_review_days(db, inv, entity_id=entity_id)
+        # The SUBJECT expressed in the same currency as the baseline. `None`
+        # means it could not be — the amount rules then abstain rather than
+        # compare across currencies, and the response reports the BILLED
+        # currency so the fallback figure is labelled with what it is in.
+        subject = _subject_amount(inv, reporting_currency)
         anomaly = detect_invoice_anomaly(
             inv,
             baseline,
-            # The SUBJECT expressed in the same currency as the baseline. `None`
-            # means it could not be — the amount rules then abstain rather than
-            # compare across currencies.
-            amount=_subject_amount(inv, reporting_currency),
+            amount=subject,
             proposed_approver_id=str(inv.assigned_to_id) if inv.assigned_to_id else None,
             time_in_review_days=tir,
             **kwargs,
         )
-        return InvoiceAnomalyResponse(**_anomaly_dict(anomaly))
+        return InvoiceAnomalyResponse(
+            **_anomaly_dict(
+                anomaly,
+                amount_currency=_anomaly_amount_currency(
+                    inv, subject, reporting_currency=reporting_currency
+                ),
+            )
+        )
 
     # Batch mode — scan in-review invoices, group by vendor, build each
     # baseline once.
@@ -704,16 +751,24 @@ async def anomalies(
                 currency=reporting_currency,
             )
         tir = await _time_in_review_days(db, inv, entity_id=entity_id)
+        subject = _subject_amount(inv, reporting_currency)
         anomaly = detect_invoice_anomaly(
             inv,
             baselines[vkey],
-            amount=_subject_amount(inv, reporting_currency),
+            amount=subject,
             proposed_approver_id=str(inv.assigned_to_id) if inv.assigned_to_id else None,
             time_in_review_days=tir,
             **kwargs,
         )
         if anomaly.flags:
-            flagged.append(_anomaly_dict(anomaly))
+            flagged.append(
+                _anomaly_dict(
+                    anomaly,
+                    amount_currency=_anomaly_amount_currency(
+                        inv, subject, reporting_currency=reporting_currency
+                    ),
+                )
+            )
     return AnomalyBatchResponse(total_scanned=len(invoices), flagged=flagged)
 
 

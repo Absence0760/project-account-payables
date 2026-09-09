@@ -18,8 +18,8 @@
 	} from '$lib/api/vendors';
 	import type { ScreeningReviewItem, SanctionsCheck } from '$lib/types/vendor';
 	import {
-		SCREENING_STATUS_LABELS,
-		RISK_LEVEL_LABELS,
+		screeningStatusLabelKey,
+		riskLevelLabelKey,
 		formatScreeningCategories as formatCategories
 	} from '$lib/types/vendor';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -43,6 +43,18 @@
 	// Block/unblock is the splittable granular permission; re-screen stays on
 	// the admin/ap_manager role (backend `require_roles`).
 	const canBlock = $derived(auth.can(PERM_VENDOR_BLOCK));
+
+	// The screening verdict is a message key, not an English literal — an
+	// unrecognised status renders raw rather than blank.
+	const screeningLabel = (s: string) => {
+		const key = screeningStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+
+	const riskLabel = (level: string) => {
+		const key = riskLevelLabelKey(level);
+		return key ? m(key) : level;
+	};
 	const canRescreen = $derived(auth.isManager);
 
 	const PAGE_SIZE = 20;
@@ -492,11 +504,11 @@
 		<dl class="meta">
 			<div>
 				<dt>Screening status</dt>
-				<dd>{SCREENING_STATUS_LABELS[selected.screening_status]}</dd>
+				<dd>{screeningLabel(selected.screening_status)}</dd>
 			</div>
 			<div>
 				<dt>Risk level</dt>
-				<dd>{RISK_LEVEL_LABELS[selected.risk_level]}{selected.risk_score ? ` (${selected.risk_score})` : ''}</dd>
+				<dd>{riskLabel(selected.risk_level)}{selected.risk_score ? ` (${selected.risk_score})` : ''}</dd>
 			</div>
 			<div>
 				<dt>Matched list</dt>

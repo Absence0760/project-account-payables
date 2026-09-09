@@ -21,8 +21,8 @@
 		applyVendorEnrichment
 	} from '$lib/api/vendors';
 	import {
-		RISK_LEVEL_LABELS,
-		ENRICHABLE_FIELD_LABELS,
+		riskLevelLabelKey,
+		ENRICHABLE_FIELD_LABEL_KEYS,
 		type Vendor,
 		type SanctionsCheck,
 		type ScreeningStatus,
@@ -72,6 +72,13 @@
 	// The performance score is gated admin / ap_manager / cfo on the backend
 	// (`_SCORE_ROLES`) — the same audience as enrichment, clerk excluded.
 	const canSeeScore = $derived(auth.isManager || auth.isCfo);
+
+	// The risk level is a message key, not an English literal — a level this
+	// build doesn't know renders raw rather than blank.
+	const riskLabel = (level: string) => {
+		const key = riskLevelLabelKey(level);
+		return key ? m(key) : level;
+	};
 
 	let history = $state<SanctionsCheck[]>([]);
 	let loadingHistory = $state(true);
@@ -281,7 +288,7 @@
 			<div class="kv">
 				<span class="kv-label">{m('vendors.modal.riskLevel')}</span>
 				<span class="kv-value">
-					{RISK_LEVEL_LABELS[vendor.risk_level]}{#if vendor.risk_score}
+					{riskLabel(vendor.risk_level)}{#if vendor.risk_score}
 						<span class="muted"> · {vendor.risk_score}</span>
 					{/if}
 				</span>
@@ -425,10 +432,12 @@
 											type="checkbox"
 											checked={selected.has(s.field)}
 											onchange={() => toggleField(s.field)}
-											aria-label={m('vendors.modal.applyFieldAria', { field: ENRICHABLE_FIELD_LABELS[s.field] })}
+											aria-label={m('vendors.modal.applyFieldAria', {
+												field: m(ENRICHABLE_FIELD_LABEL_KEYS[s.field])
+											})}
 										/>
 									</td>
-									<td>{ENRICHABLE_FIELD_LABELS[s.field]}</td>
+									<td>{m(ENRICHABLE_FIELD_LABEL_KEYS[s.field])}</td>
 									<td class="enrich-current muted" title={s.current_value ?? ''}>
 										{truncate(s.current_value)}
 									</td>
