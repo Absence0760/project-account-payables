@@ -42,8 +42,11 @@ test.describe('/cfo By-entity section', () => {
 		const name = `CFO Sub ${suffix}`;
 		const slug = `cfo-sub-${suffix}`;
 
+		// `createEntity` runs in the page context but only needs a document on the
+		// tenant origin: it reads the storage-state token out of localStorage and
+		// calls `fetch` itself, so it depends on nothing the page renders and
+		// never needed a quiet network.
 		await page.goto('/cfo');
-		await page.waitForLoadState('networkidle');
 		await createEntity(page, name, slug);
 
 		// Reload so the entity store picks up the new entity and the section
@@ -53,7 +56,6 @@ test.describe('/cfo By-entity section', () => {
 		);
 		await page.reload();
 		await byEntityResp;
-		await page.waitForLoadState('networkidle');
 
 		const section = page.getByTestId('by-entity-section');
 		await expect(section).toBeVisible();

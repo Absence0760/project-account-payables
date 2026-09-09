@@ -1,4 +1,11 @@
-import { API_BASE, deleteInvoicesWhere, expect, TENANT_ROOT_URL, tenantPsql, test } from './fixtures/helpers';
+import {
+	API_BASE,
+	deleteInvoicesWhere,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from './fixtures/helpers';
 
 /**
  * /discounts — Dynamic Discounting & Early-Payment Optimization dashboard.
@@ -19,7 +26,6 @@ import { API_BASE, deleteInvoicesWhere, expect, TENANT_ROOT_URL, tenantPsql, tes
 test.describe('/discounts (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/discounts');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the discounts surface — header, KPIs, optimizer, filters, table', async ({
@@ -158,12 +164,13 @@ test.describe('/discounts (clerk — read-only)', () => {
 		});
 
 		try {
-			await page.goto('/login');
-			await page.waitForLoadState('networkidle');
-			await page.locator('input[type="email"]').fill(tenantClerk.email);
-			await page.locator('input[type="password"]').fill(tenantClerk.password);
-			await page.locator('form button[type="submit"]').click();
-			await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
+			// The shared helper, not a hand-rolled copy of it: this block was a
+			// verbatim duplicate of signInAndWait, down to the same
+			// `waitForLoadState('networkidle')` after goto('/login'). It also
+			// misses what the helper adds — the cookie-consent init script, whose
+			// banner is fixed to the bottom of the viewport and intercepts clicks
+			// on exactly the filter chips and row controls this test then drives.
+			await signInAndWait(page, tenantClerk);
 
 			await page.goto('/discounts');
 			// The page stays put — the clerk is not bounced to the tenant root.

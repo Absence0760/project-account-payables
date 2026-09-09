@@ -28,7 +28,10 @@ test.describe('/exceptions pagination', () => {
 		seedExceptions(22);
 
 		await page.goto('/exceptions');
-		await page.waitForLoadState('networkidle');
+
+		// `.count()` is a one-shot read with no auto-wait of its own, so gate on
+		// the first row actually being rendered before counting.
+		await expect(page.locator('table tbody tr').first()).toBeVisible();
 
 		const firstPageRows = await page.locator('table tbody tr').count();
 		expect(firstPageRows).toBeLessThanOrEqual(20);

@@ -40,14 +40,12 @@ test.describe('SSO login via Keycloak', () => {
 
 	test('the login page renders the SSO button when SSO is configured', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('button.sso-btn')).toBeVisible();
 		await expect(page.locator('button.sso-btn')).toContainText('Sign in with');
 	});
 
 	test('full OIDC handshake signs the user in and lands on the dashboard', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 
 		// Click → window.location to backend /authorize → 302 to Keycloak.
 		await page.locator('button.sso-btn').click();
@@ -85,13 +83,19 @@ test.describe('SSO-only mode (mocked config)', () => {
 		);
 
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
+
+		// Assert the SSO-only branch has RENDERED before the two absence checks.
+		// The root layout renders nothing until its browser-only `$effect`
+		// resolves the tenant, so the pre-hydration document is empty and a
+		// `toHaveCount(0)` against it passes vacuously — it would hold even if
+		// the branch were broken. The positive assertions are the readiness
+		// signal; keep them first.
+		await expect(page.locator('.sso-only-note')).toBeVisible();
+		await expect(page.locator('button.sso-btn')).toBeVisible();
 
 		// Password form is gone; the SSO button is the only way in.
 		await expect(page.locator('input[type="password"]')).toHaveCount(0);
 		await expect(page.locator('input[type="email"]')).toHaveCount(0);
-		await expect(page.locator('button.sso-btn')).toBeVisible();
-		await expect(page.locator('.sso-only-note')).toBeVisible();
 	});
 
 	test('keeps the password form when sso_only is false', async ({ page }) => {
@@ -103,7 +107,6 @@ test.describe('SSO-only mode (mocked config)', () => {
 		);
 
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 
 		// SSO available, but password login still offered.
 		await expect(page.locator('input[type="password"]')).toBeVisible();
