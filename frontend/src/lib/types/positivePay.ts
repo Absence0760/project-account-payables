@@ -73,10 +73,31 @@ export const POSITIVE_PAY_STATUS_TONES: Record<PositivePayStatus, BadgeTone> = {
 export const BANK_FORMATS = ['csv', 'fixed_width'] as const;
 export type BankFormat = (typeof BANK_FORMATS)[number];
 
-export const BANK_FORMAT_LABELS: Record<BankFormat, string> = {
-	csv: 'CSV',
-	fixed_width: 'Fixed width'
+/**
+ * The i18n key carrying each formatter's label — never the English string.
+ * Three surfaces read it: the generate dialog's picker, the `/positive-pay`
+ * list's Format column and the detail header's meta pill. The latter two used
+ * to print the RAW key (`fixed_width`), so the same file read "Fixed width" in
+ * the dialog and `fixed_width` in the row one click away.
+ *
+ * `csv` keeps the value "CSV" in every locale — a file-format name, the same
+ * data-value convention that keeps `ACH` / `BACS` verbatim.
+ */
+export const BANK_FORMAT_LABEL_KEYS: Record<BankFormat, MessageKey> = {
+	csv: 'positivePay.bankFormat.csv',
+	fixed_width: 'positivePay.bankFormat.fixedWidth'
 };
+
+/**
+ * The message key for a formatter, or `null` for one this frontend doesn't
+ * know (the caller renders the raw value — visible and searchable — rather
+ * than a blank cell). `PositivePayFile.bank_format` is a bare `string` on the
+ * wire: the backend's formatter registry is pluggable, so a per-bank adapter
+ * can ship before this map catches up.
+ */
+export function bankFormatLabelKey(bankFormat: string): MessageKey | null {
+	return BANK_FORMAT_LABEL_KEYS[bankFormat as BankFormat] ?? null;
+}
 
 // --- Response shapes ------------------------------------------------------
 //
