@@ -128,6 +128,92 @@ test.describe('/admin/api-keys (admin)', () => {
 		expect(repeat.ok()).toBe(true);
 	});
 
+	/**
+	 * The METER, not just the panel.
+	 *
+	 * The test below only ever opens the usage view on a brand-new key, so it
+	 * asserts the panel renders — it cannot tell a working meter from one that
+	 * counts nothing, which is exactly what round 24's request-identity fix
+	 * changed. This one drives real `/api/v1` traffic with the minted key and
+	 * asserts the number the panel reports.
+	 *
+	 * It needs no waiting and no polling: `get_api_key_principal` upserts the
+	 * `api_key_usage` row and COMMITS it on the request's own control session
+	 * before the response is returned, so the count is durable the moment the
+	 * last call resolves. Anything that looked like a race here would be a real
+	 * defect, not something to sleep through.
+	 *
+	 * The meter fires on successful AUTHENTICATION, ahead of the `public_api`
+	 * entitlement gate and the per-key rate limit — so a tenant whose plan does
+	 * not include the public API still meters its 402s, and the assertion is on
+	 * the count rather than on a 200. A 401 is the one status that means nothing
+	 * was counted (the key did not authenticate), so it is named rather than
+	 * left to surface as a confusing "expected 3, received 0".
+	 *
+	 * On a SEEDED tenant these calls really do come back 402: `seed.py` lands
+	 * every org on the `free` plan, whose entitlements are `{}`, so `/api/v1`
+	 * is gated shut for the whole suite. Do NOT "fix" that here by moving the
+	 * worker's org onto `growth` for the duration — the subscription outlives a
+	 * crashed test and would put the tenant's billing surface somewhere the
+	 * billing specs do not expect. It belongs in the seed, and is recorded as a
+	 * follow-up. The count is what this test is about, and the count is exact.
+	 */
+	test('the usage panel counts the /api/v1 traffic made with the key', async ({ page }) => {
+		const headers = await apiHeaders(page);
+		const name = `e2e-usage-meter-${Date.now()}`;
+		const created = (await (
+			await page.request.post(`${API_BASE}/api/api-keys`, { headers, data: { name } })
+		).json()) as { api_key: ApiKeyResponse; key: string };
+
+		try {
+			// A fresh key has never been used, so the expected total is exactly
+			// what this test sends — no baseline arithmetic, nothing to drift.
+			const CALLS = 3;
+			const statuses: number[] = [];
+			for (let i = 0; i < CALLS; i++) {
+				const res = await page.request.get(`${API_BASE}/api/v1/invoices?page_size=1`, {
+					headers: { 'X-API-Key': created.key }
+				});
+				statuses.push(res.status());
+			}
+			expect(
+				statuses.filter((s) => s === 401),
+				`the key did not authenticate, so nothing was metered (statuses: ${statuses.join(', ')})`
+			).toEqual([]);
+
+			await page.goto('/admin/api-keys');
+			const row = page.locator('tr', { hasText: name });
+			await expect(row).toBeVisible();
+			await row.getByRole('button', { name: `View usage for ${name}` }).click();
+
+			const usageModal = page.getByRole('dialog', { name: 'API key usage' });
+			await expect(usageModal.getByTestId('usage-totals')).toBeVisible({ timeout: 10_000 });
+
+			// Both totals: all-time, and the trailing window the panel labels.
+			// Today's calls are inside any window, so the two must agree — a
+			// window lagging the total would mean the day bucket landed on the
+			// wrong date.
+			const stat = (label: string | RegExp) =>
+				usageModal.locator('.usage-stat', { hasText: label }).locator('.usage-num');
+			await expect(stat('Total requests')).toHaveText(String(CALLS));
+			await expect(stat(/Last \d+ days/)).toHaveText(String(CALLS));
+
+			// The per-day breakdown is the same figure, not a second source of
+			// truth: one day bucket, carrying all of them.
+			const dayRows = usageModal.locator('table tbody tr');
+			await expect(dayRows).toHaveCount(1);
+			await expect(dayRows.first().locator('td.num-col')).toHaveText(String(CALLS));
+
+			// "No requests yet" is a claim, and it must not be the one on screen.
+			await expect(usageModal.getByText('No requests yet.')).toHaveCount(0);
+
+			await usageModal.getByRole('button', { name: 'Close' }).click();
+			await expect(usageModal).toBeHidden();
+		} finally {
+			await revoke(page, created.api_key.id);
+		}
+	});
+
 	test('the per-key usage view renders totals + recent activity', async ({ page }) => {
 		const headers = await apiHeaders(page);
 		const name = `e2e-usage-${Date.now()}`;
