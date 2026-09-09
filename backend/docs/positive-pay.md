@@ -42,7 +42,7 @@ exact: `total_amount` is `Numeric(18, 2)` — never float.
 |-------|------|-------|
 | `id` | uuid PK | |
 | `organization_id` | uuid | Indexed. |
-| `payment_run_id` | uuid FK → payment_runs (nullable) | Set for `check_issue` (the run the cheques came from); NULL for `ach_authorization` (org-wide). Indexed. |
+| `payment_run_id` | uuid FK → payment_runs (nullable) | Set for `check_issue` (the run the cheques came from); NULL for `ach_authorization` (org-wide). Not separately indexed — `uq_positive_pay_run_format` leads on it; see § Indexes. |
 | `file_type` | varchar(20) | `check_issue` \| `ach_authorization`. Indexed. |
 | `bank_format` | varchar(30) | Formatter key, e.g. `csv` \| `fixed_width`. |
 | `status` | varchar(20) | `generated` → `returned_processed` (once the bank's return is processed). Indexed. |
@@ -108,6 +108,39 @@ file(s)" message, that tenant already accumulated the duplicates this index
 prevents: decide which file was actually sent to the bank, `DELETE
 /api/positive-pay/{id}` the others (which also removes the stored object), and
 re-run.
+
+### Indexes
+
+`positive_pay_files` carries one index per column the API actually filters on
+(`organization_id`, `entity_id`, `file_type`, `status`) plus
+`uq_positive_pay_run_format`. It deliberately carries **no** separate
+`(payment_run_id)` index:
+
+- A B-tree's leading column is independently searchable, so
+  `uq_positive_pay_run_format (payment_run_id, bank_format) WHERE payment_run_id
+  IS NOT NULL` serves every `payment_run_id = …` read a narrow index could —
+  including the referential-integrity probe the FK to `payment_runs` issues when
+  a parent run is deleted, which only ever looks for a non-NULL id and so
+  satisfies the partial predicate by construction.
+- Both real call sites (the check-issue idempotency lookup and its
+  post-`IntegrityError` re-read) qualify on `bank_format` too, so the composite
+  serves them **better**: both columns land in the `Index Cond` instead of the
+  second becoming a `Filter`.
+- The one read the partial composite cannot serve is `WHERE payment_run_id IS
+  NULL` — its predicate excludes those rows, so that would be a sequential scan.
+  No such query exists: the run-less `ach_authorization` files are reached
+  through `file_type` (indexed), and the list endpoint's only other use of the
+  column is `cast(payment_run_id AS text) ILIKE '%term%'`, which no B-tree on the
+  raw column serves either. **Adding a "list the run-less files" query is the
+  trigger to revisit this.**
+
+Migration 0048 built `ix_positive_pay_files_payment_run_id` (and the model
+declared it via `index=True`), so it was pure write overhead on every insert,
+`process-return` status update and delete. **0094 drops it, and the model drops
+`index=True` in the same commit** — a migration-only drop would reach only
+migrated tenants while every `create_all`-provisioned tenant kept re-creating
+it (`docs/decisions.md` §104 / §109). The parity guard's `EXEMPT` entry records
+why 0048's `CREATE` now has no model declaration.
 
 ## Formatter adapters (`services/positive_pay_adapters/`)
 
@@ -440,6 +473,13 @@ Typed client `$lib/api/positivePay.ts` over the shared `api` object; types in
   and refuses with an actionable, PII-free message rather than failing on the
   `CREATE UNIQUE INDEX` itself. See `docs/database.md` § Index parity between
   the two provisioning paths.
+- **0094_drop_redundant_ppf_index** — drops
+  `ix_positive_pay_files_payment_run_id`, a redundant prefix of
+  `uq_positive_pay_run_format` (see § Indexes for why, and for the one read the
+  composite does not cover). Ships with the matching removal of `index=True`
+  from `PositivePayFile.payment_run_id`, because a migration-only drop reaches
+  only migrated tenants. Tenant DB only (gated on the table existing), and
+  reversible — `downgrade()` recreates 0048's index verbatim.
 
 ## Local-first
 
