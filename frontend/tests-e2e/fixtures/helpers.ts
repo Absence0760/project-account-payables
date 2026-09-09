@@ -726,6 +726,57 @@ export function deleteVendorsWhere(predicate: string, slug?: string): void {
 }
 
 /**
+ * Delete the workflow definitions whose name starts with `namePrefix`, and
+ * everything that references them.
+ *
+ * `workflow_definitions` is referenced by three foreign keys and none of them
+ * cascade — `workflow_versions.definition_id`,
+ * `workflow_experiments.workflow_definition_id` and
+ * `workflow_instances.definition_id`, the last itself referenced by
+ * `workflow_steps.instance_id` — so a bare `DELETE FROM workflow_definitions`
+ * only works while the definition happens to have no children. Ten workflow
+ * specs each carried a byte-identical hand-rolled copy of that walk, differing
+ * only in the marker they swept by: the same trap `deleteInvoicesWhere` and
+ * `deleteVendorsWhere` were written for, plus the copies. The graph below was
+ * read from `pg_constraint` in a live tenant database, not from any spec.
+ *
+ * Unlike its two siblings this takes a NAME PREFIX rather than a WHERE clause
+ * body, because every caller sweeps by the marker it names its rows with, and
+ * the predicate carries a seatbelt no caller should be able to drop:
+ * `is_default = false`. That keeps a marker typo away from the seeded default
+ * `fixtures/globalSetup.ts` asserts the whole suite against — and away from
+ * the `Invoice Processing` stub `services/workflow_engine.py` mints as a
+ * last-resort fallback for an org with no active definition, which is neither
+ * seeded nor spec-created and whose deletion could leave a tenant with none.
+ *
+ * Sweeping by name rather than by id is what makes this teardown survive the
+ * failures the callers' own `finally` blocks cannot: a create whose POST landed
+ * before the nav or canvas render threw, and an interrupted run. It also
+ * reaches a row the API refuses to delete — `DELETE /api/workflows/{id}` 409s
+ * on an active definition and on one that is the snapshot source for an
+ * in-flight invoice.
+ */
+export function deleteWorkflowsWhere(namePrefix: string, slug?: string): void {
+	const doomed =
+		`SELECT id FROM workflow_definitions ` +
+		`WHERE name LIKE '${namePrefix}%' AND is_default = false`;
+
+	// Second level — `workflow_steps` references the instance, not the definition.
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN ` +
+			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`,
+		slug
+	);
+
+	// The three direct children.
+	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`, slug);
+	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`, slug);
+	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`, slug);
+
+	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`, slug);
+}
+
+/**
  * Page a Load-more list until `row` is present, then leave it to the caller's
  * own assertion.
  *
