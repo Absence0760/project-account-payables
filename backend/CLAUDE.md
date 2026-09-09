@@ -59,6 +59,47 @@ Deep-dive docs live in `backend/docs/`:
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
+
+## Running backend tooling from a git worktree
+
+`backend/.venv` does not carry into a worktree, and reusing the primary venv can
+silently run the **primary checkout's** code. The editable install registers a
+`sys.meta_path` finder mapping `app` to the primary tree. It is **appended**, so
+it sits after `PathFinder` and `PYTHONPATH` does win — the failure is a
+*fall-through*, not a precedence fight: you get the right tree whenever
+`sys.path` finds one, and the primary checkout when it does not.
+
+So `python main.py` and `pytest` were always correct (both put the checkout on
+`sys.path`), while `python scripts/seed.py`, `alembic`, `uvicorn` and
+`pytest --import-mode=importlib` were not. The worst is
+`alembic revision --autogenerate`, which emits a plausible migration diffed
+against another checkout's models.
+
+Three mechanisms cover it, and none is redundant:
+
+- **Per-script anchors** — every `scripts/*.py` that imports `app` puts its own
+  checkout on `sys.path` first. Correct *by default*.
+  `tests/test_script_checkout_anchor.py` globs the directory and derives its
+  exempt set as "does not import `app`", so a new script inherits the rule.
+- **`alembic.ini`** — `prepend_sys_path = %(here)s`, not `.`: the value is spliced
+  verbatim and resolved against the **cwd**. `path_separator = os` matters too,
+  since the legacy fallback splits on spaces as well as commas.
+- **`scripts/worktree/sitecustomize.py`** — for what we cannot edit. It is the
+  only one that *removes* the finder, so an unfixable name raises instead of
+  importing the wrong tree quietly. Opt-in via `PYTHONPATH`, and only the FIRST
+  `sitecustomize` on the path is imported, so anything ahead of it shadows it.
+
+For pytest specifically, prefer:
+
+```
+cd <worktree>/backend && PYTHONPATH=<primary>/backend/.venv/lib/python3.14/site-packages /usr/bin/python3 -m pytest tests/test_x.py -q
+```
+
+`PYTHONPATH` dirs get no `.pth` processing, so the finder is never installed at
+all — a bad `sys.path` becomes a loud `ModuleNotFoundError` rather than a silent
+wrong tree. See `docs/decisions.md` §124 and `frontend/tests-e2e/README.md`
+§ Running from a worktree.
+
 ## Stack
 
 - **FastAPI** on **Python 3.12+**, async throughout
