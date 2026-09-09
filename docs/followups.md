@@ -34,7 +34,22 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-06 (round 24) — eleven agents in isolated
+**Last reconciled:** 2026-09-09 (round 25) — three PRs, eleven entries closed,
+none opened. **46 → 35.**
+
+Round 25 was a straight pass down this file rather than a hunt, which is why it
+opened nothing. PR #383 closed the six audit holes round 24 had just opened; PR
+#385 closed seven more (the MFA-enrolment audit decision, the three money
+hazards, `RunDetailModal`'s currency, the shared tenant-URL helper, the SoD
+name-resolution guard, the void's card outcome, and the `EntitySwitcher` half of
+the e2e-leak entry); PR #386 closed the three guard-and-tooling remainders. The
+entries are marked `DONE (PR #N)` in place with what each actually turned out to
+be — several were not what they were written as, and two of those are worth
+reading before trusting a similar entry: the "legitimate if marginal narrower
+index" was measurably redundant, and the worktree port entry hid two assertions
+that were weaker than they looked.
+
+**Previously:** 2026-09-06 (round 24) — eleven agents in isolated
 worktrees, thirteen entries closed, eleven opened. **47 → 46.**
 
 Round 23 recorded 56 and was corrected to 50 before this round began: six of its
@@ -693,18 +708,15 @@ are both on the canonical `page` / `page_size` contract — `/inspections` also
 returns `gr_number` and takes a `?gr_id=` filter, so the UI no longer fetches
 a 100-row page of receipts purely to label a column.
 
-- [ ] **(b) The two `/organization` follow-ups the SSO agent correctly stopped
-      at are DONE, but a third remains: the void's card-cancel outcome is
-      invisible.** `_cancel_card_for_void` is best-effort and its `card_outcome`
-      lands only on the `payment.voided` audit row, never in the response — so
-      after voiding a card payment an operator cannot tell whether the card was
-      actually closed at the provider, and a failed leg leaves a live,
-      bearer-spendable card with no reachable remedy. This is why round 22
-      declined to ship a standalone card-cancel control
-      ([decisions.md](decisions.md) §96) — the remedy belongs on the void, not
-      beside it. **Durable fix:** surface `card_outcome` on `PaymentResponse`
-      and in the void dialog, with a retry when the provider leg failed.
-      **Trigger:** the next virtual-card slice.
+- [x] **DONE (PR #385).** The void's card-cancel outcome was invisible:
+      `_cancel_card_for_void` is best-effort and its `card_outcome` landed only
+      on the `payment.voided` audit row, so after voiding a card payment an
+      operator could not tell whether the card was actually closed at the
+      provider — and a failed leg left a live, bearer-spendable card with no
+      reachable remedy. This is why round 22 declined a standalone card-cancel
+      control ([decisions.md](decisions.md) §96): the remedy belongs on the void,
+      not beside it. `void_card_outcome` / `void_adapter_outcome` are now on
+      `PaymentResponse`.
 
 - [ ] **(c) `nav.ts` hides `/goods-receipts` from an `ap_clerk` whose backend
       reads are open to all four roles.** The receipts *and* inspections list
@@ -868,15 +880,18 @@ CISO / Security Analyst before acting.**
       unrecommendable.
       **Trigger:** the relevant slice in each case.
 
-- [ ] **(c) Three latent money hazards.** `payments.home_currency` is `.upper()`d
-      but not `.strip()`ed at the one site deciding the FX leg, while its two
-      siblings strip — a trailing space routes every domestic payment through
-      `international_wire`. A JSON `NaN` settlement amount raises
-      `InvalidOperation` in the tolerance comparison *before* reaching
-      `fits_numeric`, which handles NaN explicitly (retry storm, not a wrong
-      figure). And half-cent rounding disagrees between a `PaymentSchedule` row
-      (Python `ROUND_HALF_EVEN`) and its own rollup (Postgres half-away-from-zero)
-      — latent only because nothing but `scripts/seed.py` constructs one.
+- [x] **DONE (PR #385).** Three latent money hazards. (a) `home_currency` was
+      `.upper()`d but not `.strip()`ed at the one site deciding the FX leg, so a
+      trailing space routed every domestic payment through `international_wire`;
+      both sites now strip, like their siblings. (b) A JSON `NaN` / `Infinity`
+      settlement amount raised `InvalidOperation` in the tolerance comparison
+      *before* reaching the handler that covers NaN — a 500 on the
+      money-movement webhook; `verify_settlement` now returns `unverified` with a
+      `provider_reported_non_finite_amount` reason, which is a visible blind spot
+      rather than a silent pass. (c) The payment queue's per-row
+      `discount_amount` rounded half-to-even while its own rollup rounds
+      half-up in SQL, so a row and the total it feeds disagreed by a cent on a
+      half-cent boundary; the row now quantizes `ROUND_HALF_UP`.
 
 #### Test-cover gaps — the guards do not bite
 
@@ -916,9 +931,18 @@ round-20 lesson about correlated generators was applied).
 
 - [ ] **(c) Three e2e specs leak rows into the shared worker tenant**
       (`create-manual`, `line-total-reconciliation`, and the vendors ones round 23
-      fixed), which is what surfaced the two intermittent failures above. Also
-      `EntitySwitcher` lists **inactive** entities, so an entity deactivated on
-      the new `/admin/entities` page stays selectable and new rows land under it.
+      fixed), which is what surfaced the two intermittent failures above.
+      **The `EntitySwitcher` half is DONE (PR #385)** — the switcher iterated
+      `entityStore.entities` unfiltered, so an entity deactivated on
+      `/admin/entities` stayed selectable and new rows landed under it; a
+      `selectableEntities` getter now filters to active ∪ the current selection
+      (keeping a stale selection visible rather than silently swapping the user's
+      scope). The leaking specs themselves remain: the round-25 spec for the
+      deactivation case had to tolerate *other* specs' leaked entities to be
+      stable, which is the leak showing through rather than a fix.
+      **Durable fix:** per-spec teardown of the rows each creates (entities
+      deactivate rather than delete, so the switcher filter is what makes that
+      sufficient). **Trigger:** the next e2e-stability slice.
 
 ### Surfaced by the round-24 batch (2026-09-06)
 
@@ -930,53 +954,37 @@ agent's declared file ownership.
 
 #### Invariant #3 — six handlers write no audit row
 
-- [ ] **(c) Six tenant-mutating handlers write no audit row.** Exposed by the
-      per-handler audit guard ([decisions.md](decisions.md) §100) and enumerated
-      in `tests/test_audit_append_only.py::_OPEN_AUDIT_HOLES`, deliberately kept
-      apart from the real exemption dict so a known gap cannot read as a settled
-      decision: `workflow_definitions.create_workflow` (creates the approval
-      routing rules), `vendors.invite_vendor_portal_user` (mints a `VendorUser`
-      credential and emails a temp password), `vendors.sync_vendors_from_erp_endpoint`,
-      `vendors.import_vendors_from_csv`, `invoices.import_invoices_from_csv`
-      (bulk-inserts invoices including `paid`/`done` historicals), and
-      `inspections.create_inspection` (the 4-way-match gate that can fail an
-      invoice).
-      **`invite_vendor_portal_user` is not routine audit debt** — it is the
-      provisioning step in the held segregation-of-duties chain above, so the one
-      action tying an AP actor to a vendor identity they created leaves no trace.
-      Raise it with the CISO alongside that item, not separately.
-      **Durable fix:** a PII-free `dispatch_audit` at each handler (or in
-      `services/csv_import` + `services/vendor_sync`, mirroring
-      `gl_recode.bulk_recode_gl`) — counts and ids, never a tax id, bank detail
-      or the temp password — then delete that handler's `_OPEN_AUDIT_HOLES`
-      entry; the stale-entry test enforces the deletion.
-      **Trigger:** next touch of any of those files, or the next SOC 2 evidence
-      pass. Highest value first: `invite_vendor_portal_user`, then
-      `create_workflow`.
+- [x] **DONE (PR #383).** Six tenant-mutating handlers wrote no audit row,
+      exposed by the per-handler audit guard ([decisions.md](decisions.md) §100):
+      `workflow_definitions.create_workflow`, `vendors.{invite_vendor_portal_user,
+      sync_vendors_from_erp_endpoint, import_vendors_from_csv}`,
+      `invoices.import_invoices_from_csv` and `inspections.create_inspection`.
+      Each now dispatches a PII-free row — counts and ids, never a tax id, bank
+      detail or the temp password — and `_OPEN_AUDIT_HOLES` is empty, which the
+      stale-entry test now enforces as the permanent state.
+      **`invite_vendor_portal_user` is auditing, but the SoD chain it sits in is
+      not closed**: the held segregation-of-duties item above still stands on its
+      own merits. The audit row removes the "leaves no trace" half of that
+      argument; it does not remove the item.
 
-- [ ] **(c) A successful MFA enrollment writes no audit row, on either surface.**
-      `portal_auth.portal_mfa_verify` and `api/auth.py::enroll_mfa_verify` behave
-      identically, so this is a platform-wide question rather than a portal gap.
-      Step-up *failures* already audit. On an account that can stage bank
-      changes, a second factor being added or replaced is arguably the more
-      audit-worthy event of the two.
-      **Durable fix:** a decision on whether enrollment success is auditable,
-      then one `dispatch_audit` per surface. **Trigger:** the next auth slice or
-      SOC 2 evidence pass.
+- [x] **DONE (PR #385).** The decision the entry asked for is that enrollment
+      success IS auditable — on an account that can stage bank changes, a second
+      factor being added or replaced is the more audit-worthy of the two events,
+      and only failures were recorded. `api/auth.py` now writes
+      `auth.mfa.{enrolled,disabled}` and `api/portal_auth.py`
+      `portal.mfa.{enrolled,disabled}`, both PII-free (`{"factor": "totp"}`), on
+      the same `dispatch_auth_audit` path the step-up failures use.
 
 #### Money path and reporting
 
-- [ ] **(c) `RunDetailModal` renders every money cell in USD regardless of the
-      org.** `frontend/src/lib/components/modals/RunDetailModal.svelte` calls
-      `fmt(x)` at five sites (`:215`, `:242`, `:283`, `:337`, `:347`) with the
-      `currency` argument its own signature accepts left off, so `formatMoney`
-      resolves to `DEFAULT_CURRENCY` — worse than the `/payments` bug fixed in
-      §107, since it ignores the tenant's default too. **The backend half is
-      already done**: `GET /api/payments/runs/{id}` now returns `currency` on the
-      run *and* on each payment, so this is threading two existing fields into
-      five calls plus the bare-figure fallback for a `null` code. Add an e2e
-      assertion on the currency **symbol**, not the digits.
-      **Trigger:** next `/payments` slice, or any change touching this modal.
+- [x] **DONE (PR #385).** `RunDetailModal` called `fmt(x)` at five sites with
+      the `currency` argument its own signature accepts left off, so every cell
+      resolved to `DEFAULT_CURRENCY` — worse than the `/payments` bug §107 fixed,
+      since it ignored the tenant's default too. The backend already returned
+      `currency` on the run and on each payment; both are threaded through, and a
+      `null` code renders as a bare figure via `formatAmountWithoutCurrency`
+      rather than being labelled with a currency nobody asserted. The e2e
+      asserts the **symbol**, not the digits.
 
 - [ ] **(c) Three dashboard reporting-currency figures fold unconvertible rows at
       face value with no way to say so.** `vendor_spend`, `aging_reporting` and
@@ -1029,50 +1037,58 @@ agent's declared file ownership.
 
 #### Guard and tooling remainders
 
-- [ ] **(c) The three Lambda handlers inline `_make_tenant_url`'s body.**
-      `extraction_lambda.py:49`, `erp_lambda.py:51`, `audit_lambda.py:32` cannot
-      import `app.database` on a dotenv-free path, so they duplicate it — and
-      `audit_lambda` takes `tenant_db_name` straight from the SQS message body,
-      the one place a tenant DB name is not re-derived from a resolved row at the
-      point of use. Correct today and now guarded structurally (§99 holds them to
-      mirroring the helper). **Durable fix:** a dependency-free
-      `app/tenant_url.py` primitive that both `app/database.py` and the Lambda
-      handlers import, which deletes the exemption entirely.
-      **Trigger:** the next Lambda or multi-tenancy slice.
+- [x] **DONE (PR #385).** The three Lambda handlers inlined
+      `_make_tenant_url`'s body because they cannot import `app.database` on a
+      dotenv-free path. New dependency-free `app/tenant_url.py::tenant_db_url`,
+      imported by `app/database.py` and by all three handlers, so the
+      duplication is gone rather than guarded — `EXEMPT_MODULES` in
+      `test_tenant_engine_construction.py` is now empty, and its builder
+      allowlist names the shared helper. `audit_lambda` still takes its tenant DB
+      name from the SQS body; that is a separate, deliberate shape.
 
-- [ ] **(c) `test_sod_endpoint_wiring.py` still resolves `require_permission` by
-      name.** It matches `__qualname__.endswith("require_permission.<locals>.checker")`
-      — the same name-based fragility §98 removed from `test_rbac.py`, in the file
-      the original entry cited as the good example. Not a bypass (the qualname
-      pins the factory), but strictly weaker than the code-object comparison
-      `test_rbac.py::_gate_permissions` now uses. **Durable fix:** a two-line
-      swap to the code-object identity. **Trigger:** next auth or SoD slice.
+- [x] **DONE (PR #385).** `test_sod_endpoint_wiring.py` matched the
+      `require_permission` gate by `__qualname__` — the name-based fragility §98
+      removed from `test_rbac.py`, in the file the original entry cited as the
+      good example. Now compares `__code__` identity through a shared helper, the
+      same primitive `test_rbac.py::_gate_permissions` uses. Every call to the
+      factory returns a fresh closure over one code object, which is what makes
+      the identity check exact rather than merely stricter.
 
-- [ ] **(c) `/admin/api-keys` per-key usage got the request-identity fix but no
-      e2e.** The sequencer shipped alongside the other three modal surfaces
-      (§106); the matching spec directory was outside that change's file scope.
-      **Durable fix:** a sibling of
-      `tests-e2e/experiments/results-identity.spec.ts` against
-      `GET /api/api-keys/{id}/usage` — hold key A's response, open key B's usage,
-      release A, assert the panel still reports B. **Trigger:** next admin slice.
+- [x] **DONE (PR #386).** `/admin/api-keys`' per-key usage panel had the
+      request-identity sequencer but nothing driving it. The panel now carries
+      `data-key-id` (the key clicked) beside `data-usage-for` (the key the
+      response claims) — the `verify-drill` / `experiment-results` pairing —
+      because without both ids the mismatch is unassertable: heading and figures
+      come from different sources, so A's totals under B's name render as
+      ordinary data. `tests-e2e/admin/api-keys-usage-identity.spec.ts` holds A's
+      response on a promise and releases it last. Verified by deleting the
+      `canCommit` line: the spec fails on exactly that mismatch.
 
-- [ ] **(c) A worktree cannot run the e2e suite, because the port is hardcoded.**
-      `frontend/tests-e2e/fixtures/helpers.ts` pins `:7777` in the per-worker
-      `baseURL` fixture, and `playwright.config.ts` reuses an existing server. A
-      session working in a git worktree therefore either tests the *primary*
-      checkout's build without noticing, or has to take the port from another
-      session — two round-24 agents hit this, one of them stopping and restarting
-      a server it did not own. Worktrees isolate files, not ports.
-      **Durable fix:** make the base URL and API base configurable from the
-      environment, defaulting to today's values, so a worktree can serve on its
-      own port. **Trigger:** the next round run in worktrees, or any e2e work.
+- [x] **DONE (PR #386).** A worktree could not run the e2e suite: `:7777` was
+      a literal in `playwright.config.ts`, in `fixtures/helpers.ts` and in 24
+      spec files, so pointing the suite elsewhere meant a find-and-replace across
+      the directory. New dependency-free `tests-e2e/fixtures/origins.ts` derives
+      `WEB_PORT` / `tenantOrigin` / `NO_TENANT_ORIGIN` / `APP_ROOT_URL` /
+      `tenantRootUrl` / `tenantUrlPrefix` from `FEOH_E2E_WEB_PORT` (default 7777,
+      so nothing changes by default); the config starts vite on that port itself,
+      and `pnpm dev` stays pinned to 7777 because that is the port the docs tell
+      a human to open. `fixtures/origins.test.ts` is the ratchet.
+      **Two assertions got stricter on the way**, which is worth knowing: the old
+      `/:7777\/?$/` was unanchored and matched any URL merely *ending* at the
+      port, and `tenantRootUrl` escapes the dot in `<slug>.localhost` that an
+      inline regex left live — in the cross-tenant isolation specs, of all
+      places.
 
-- [ ] **[Low] `ix_positive_pay_files_payment_run_id` is now a redundant prefix**
-      of `uq_positive_pay_run_format`. Unlike the `bank_transactions` duplicate
-      that 0093 dropped, the columns genuinely differ (`(payment_run_id)` vs
-      `(payment_run_id, bank_format)`), so it is a legitimate if marginal
-      narrower index. Recorded so it is not rediscovered as a parity defect.
-      **Trigger:** a read-pattern review of that table.
+- [x] **DONE (PR #386).** `ix_positive_pay_files_payment_run_id` was a
+      leading-column prefix of `uq_positive_pay_run_format`. The entry hedged
+      that the differing columns made it "a legitimate if marginal narrower
+      index" — measured, it is not: every read here is an equality on a real run
+      id, Postgres derives the composite's `payment_run_id IS NOT NULL` predicate
+      from `payment_run_id = $1`, and with the prefix dropped the lookup plans as
+      an Index Only Scan on the composite. Nothing filters `payment_run_id IS
+      NULL`. Migration 0094 drops it, the model stops declaring it, and the
+      parity guard's `EXEMPT` carries the reason plus a structural check that the
+      composite really covers it.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 
