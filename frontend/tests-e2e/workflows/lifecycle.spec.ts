@@ -74,7 +74,10 @@ test.describe('workflow lifecycle', () => {
 	}) => {
 		const name = `${MARKER}Test Workflow ${Date.now()}`;
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
+		// The seeded default is always present, and matching on its name rules
+		// out DataTable's loading placeholder <tr> — which `table tbody tr`
+		// alone counts, and `count()` does no waiting of its own.
+		await expect(page.locator('table tbody tr', { hasText: 'Default Workflow' })).toBeVisible();
 		const beforeRows = await page.locator('table tbody tr').count();
 
 		await page.getByRole('button', { name: '+ New Workflow' }).click();
@@ -99,11 +102,12 @@ test.describe('workflow lifecycle', () => {
 
 			// Going back to the list shows the new row.
 			await page.goto('/workflows');
-			await page.waitForLoadState('networkidle');
-			expect(await page.locator('table tbody tr').count()).toBe(beforeRows + 1);
+			// The new row's own assertion runs FIRST: it auto-waits, and it is
+			// the signal that the list this test counts has actually landed.
 			await expect(
 				page.locator('table tbody tr', { hasText: name })
 			).toBeVisible();
+			expect(await page.locator('table tbody tr').count()).toBe(beforeRows + 1);
 		} finally {
 			await deleteWorkflowById(page, newId);
 		}
@@ -150,7 +154,6 @@ test.describe('workflow lifecycle', () => {
 		page
 	}) => {
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
 		const before = await listWorkflows(page);
 		const defaultWf = before.find((w) => w.is_default)!;
 		expect(defaultWf.is_active).toBe(true);

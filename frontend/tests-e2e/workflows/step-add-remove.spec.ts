@@ -139,7 +139,6 @@ test.describe('/workflows/[id] add/remove steps', () => {
 			});
 
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await expect(page.locator('.canvas .node')).toHaveCount(1);
 		} finally {
 			await deleteWorkflow(page, id);
