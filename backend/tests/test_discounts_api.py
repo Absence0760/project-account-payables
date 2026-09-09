@@ -138,6 +138,32 @@ async def test_create_invoice_offer_defaults_base_amount_and_audits(realdb):
         assert audit.entity_type == "discount_offer"
 
 
+async def test_create_offer_422s_a_malformed_id(realdb):
+    """A bad id is a 422, not the 500 an unguarded `uuid.UUID(str)` raised.
+
+    `DiscountOfferCreate` types `invoice_id` / `vendor_id` as `UUID`, so the
+    refusal happens in the schema before any query — the same fix
+    `BulkNegotiationRequest.vendor_id` carries. A valid uuid string still
+    coerces, so no existing caller changes.
+    """
+    async with realdb.client(key="a", role="ap_manager") as c:
+        by_invoice = await c.post(
+            "/api/discounts/offers",
+            json={"scope": "invoice", "invoice_id": "not-a-uuid", "tiers": _tiers()},
+        )
+        by_vendor = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "vendor",
+                "vendor_id": "not-a-uuid",
+                "base_amount": "1000.00",
+                "tiers": _tiers(),
+            },
+        )
+    assert by_invoice.status_code == 422, by_invoice.text
+    assert by_vendor.status_code == 422, by_vendor.text
+
+
 async def test_accept_offer_picks_best_tier_and_audits(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
@@ -528,6 +554,179 @@ async def test_bulk_negotiate_sums_open_invoices(realdb):
     body = resp.json()
     assert body["scope"] == "vendor"
     assert body["base_amount"] == 3000.0  # summed open balances
+
+
+async def test_bulk_negotiate_refuses_a_vendor_with_no_open_invoices(realdb):
+    """409 — the refusal the `/discounts` panel surfaces verbatim.
+
+    A vendor with nothing open has no balance to discount, and
+    `build_bulk_offer` would raise on an empty sum. The endpoint is the only
+    thing that knows this: `base_amount` is computed server-side from the
+    vendor's open invoices, so the caller cannot tell in advance and the
+    refusal has to be legible rather than a 500.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Nothing Open Ltd")
+    # Not `_OPEN_FOR_DISCOUNT`: an invoice still in review is not a balance we
+    # can offer to pay early.
+    await _add_invoice(mk, org_id, amount="900.00", vendor_id=vendor_id, status=InvoiceStatus.new)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/discounts/bulk-negotiate",
+            json={"vendor_id": vendor_id, "tiers": [{"days": 7, "percent": "2.00"}]},
+        )
+    assert resp.status_code == 409, resp.text
+    assert "no open invoices" in resp.json()["detail"]
+
+
+async def test_bulk_negotiate_refuses_a_vendor_from_another_entity(realdb):
+    """A vendor outside the caller's write entity is an opaque 404.
+
+    The open-invoice sum has always been entity-scoped; the vendor lookup was
+    not, so the two halves could disagree — an offer stamped entity A pointing
+    at entity B's supplier. And the refusals differed in a way that leaked:
+    an out-of-entity vendor answered 409 ("no open invoices"), which confirms
+    the id exists somewhere in the tenant, while a missing one answered 404.
+
+    The vendor here has an open invoice **in its own entity**, so under the old
+    behaviour this request reached the 409 rather than being refused outright.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with mk() as s:
+        sub = Entity(
+            organization_id=org_id,
+            name="EU Subsidiary",
+            slug=f"eu-{uuid.uuid4().hex[:6]}",
+            is_default=False,
+        )
+        s.add(sub)
+        await s.flush()
+        sub_id = sub.id
+        vendor = Vendor(organization_id=org_id, name="Subsidiary Supply Co", entity_id=sub_id)
+        s.add(vendor)
+        await s.flush()
+        vendor_id = vendor.id
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                entity_id=sub_id,
+                invoice_number=f"SUB-{uuid.uuid4().hex[:8]}",
+                vendor_name="Subsidiary Supply Co",
+                vendor_id=vendor_id,
+                amount=Decimal("4000.00"),
+                currency="USD",
+                due_date=utc_today() + timedelta(days=30),
+                status=InvoiceStatus.approved,
+            )
+        )
+        await s.commit()
+
+    payload = {"vendor_id": str(vendor_id), "tiers": [{"days": 7, "percent": "2.00"}]}
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # No `X-Entity-ID` → the write scope is the tenant's DEFAULT entity.
+        cross = await c.post("/api/discounts/bulk-negotiate", json=payload)
+        # With the subsidiary selected, the very same request succeeds — the
+        # refusal is about scope, not about the vendor being unusable.
+        own = await c.post(
+            "/api/discounts/bulk-negotiate",
+            json=payload,
+            headers={"X-Entity-ID": str(sub_id)},
+        )
+
+    assert cross.status_code == 404, cross.text
+    assert own.status_code == 201, own.text
+    assert own.json()["base_amount"] == 4000.0
+
+
+async def test_bulk_negotiate_404s_an_unknown_vendor(realdb):
+    mk = realdb.sessionmaker("a")
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/discounts/bulk-negotiate",
+            json={
+                "vendor_id": str(uuid.uuid4()),
+                "tiers": [{"days": 7, "percent": "2.00"}],
+            },
+        )
+    assert resp.status_code == 404, resp.text
+    assert mk is not None  # sessionmaker resolved; no rows needed for this one
+
+
+async def test_bulk_negotiate_422s_a_malformed_vendor_id(realdb):
+    """A bad id is a 422, not the 500 an unguarded `uuid.UUID(str)` raised.
+
+    `BulkNegotiationRequest.vendor_id` is typed `UUID`, so the refusal happens
+    in the schema before any query runs.
+    """
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/discounts/bulk-negotiate",
+            json={"vendor_id": "not-a-uuid", "tiers": [{"days": 7, "percent": "2.00"}]},
+        )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_bulk_negotiate_refuses_an_unknown_key(realdb):
+    """`extra="forbid"` — a misspelled `valid_until` must not create a
+    never-ending offer.
+
+    Silently dropped, the typo yields an offer with no end date: it has no net
+    due date, so the optimizer cannot rank it and it stands against the
+    vendor's whole open balance indefinitely. 422 is the honest answer to a
+    field we did not understand, exactly as on `POST /optimize`.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Typo Supply Co")
+    await _add_invoice(mk, org_id, amount="1000.00", vendor_id=vendor_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/discounts/bulk-negotiate",
+            json={
+                "vendor_id": vendor_id,
+                "tiers": [{"days": 7, "percent": "2.00"}],
+                "validUntil": _FUTURE,  # camelCase typo
+            },
+        )
+    assert resp.status_code == 422, resp.text
+
+    # And nothing was created — the refusal is total, not partial.
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(DiscountOffer).where(DiscountOffer.vendor_id == uuid.UUID(vendor_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+async def test_bulk_negotiate_is_gated_to_admin_and_ap_manager(realdb):
+    """`_WRITE_ROLES` — the gate the `/discounts` trigger button mirrors.
+
+    A CFO may ACCEPT an offer (`_ACCEPT_ROLES`) but may not propose one, and a
+    clerk may do neither. The page hides the control for both, so this is what
+    keeps the two layers honest.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Gated Bulk Co")
+    await _add_invoice(mk, org_id, amount="1000.00", vendor_id=vendor_id)
+    payload = {"vendor_id": vendor_id, "tiers": [{"days": 7, "percent": "2.00"}]}
+
+    for role in ("ap_clerk", "cfo"):
+        async with realdb.client(key="a", role=role) as c:
+            resp = await c.post("/api/discounts/bulk-negotiate", json=payload)
+        assert resp.status_code == 403, f"{role}: {resp.text}"
 
 
 async def test_optimize_reports_a_horizonless_bulk_offer_as_unrankable(realdb):

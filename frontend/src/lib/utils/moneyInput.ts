@@ -27,8 +27,11 @@
  * A non-negative decimal amount: digits, optionally a fractional part.
  *
  * Deliberately narrow. No thousands separators (ambiguous across the locales
- * this app ships), no currency symbols, no exponent, no sign — the one caller
- * is a cash budget, which the backend also constrains to `>= 0`. Digits are
+ * this app ships), no currency symbols, no exponent, no sign. Every caller
+ * sends a non-negative decimal the backend also constrains to `>= 0`: the
+ * optimizer's cash budget, a vendor-statement line amount, and a
+ * bulk-negotiation tier percent (which layers its own `0 < p < 100` bounds on
+ * top — see `$lib/types/discounts::normalizeTierPercent`). Digits are
  * bounded so a paste of a thousand characters is refused rather than sent.
  *
  * The fractional bound is generous on purpose. A budget beyond 2dp is not

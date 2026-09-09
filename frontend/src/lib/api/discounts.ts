@@ -71,3 +71,38 @@ export function optimizeDiscounts(cashBudget?: MoneyString): Promise<DiscountOpt
 	const body = cashBudget === undefined ? {} : { cash_budget: cashBudget };
 	return api.post<DiscountOptimization>('/api/discounts/optimize', body);
 }
+
+export interface BulkNegotiationPayload {
+	vendorId: string;
+	/** `percent` is the EXACT decimal string the user typed — see
+	 *  `$lib/types/discounts::normalizeTierPercent`. */
+	tiers: { days: number; percent: string }[];
+	validUntil?: string | null;
+	notes?: string | null;
+}
+
+/**
+ * Propose ONE vendor-scoped offer across a vendor's open invoices.
+ *
+ * "Bulk" describes the base, not the batch: the server sums that one vendor's
+ * open-invoice balances (`approved` → `payment_scheduled`, in the caller's
+ * entity) into a single offer's `base_amount`. There is no multi-vendor
+ * variant and no per-row skip-and-report result — the response is the created
+ * offer, at status `offered`, and accepting it stays a separate decision
+ * behind its own gate.
+ *
+ * The base is computed server-side, so the caller cannot know it in advance
+ * and must not display one it invented; the returned offer is the first honest
+ * sighting of that figure.
+ *
+ * Optional fields are omitted rather than sent as `null`: the request model is
+ * `extra="forbid"`, and omission is what "no end date" means to it.
+ */
+export function bulkNegotiateDiscount(payload: BulkNegotiationPayload): Promise<DiscountOffer> {
+	return api.post<DiscountOffer>('/api/discounts/bulk-negotiate', {
+		vendor_id: payload.vendorId,
+		tiers: payload.tiers,
+		...(payload.validUntil ? { valid_until: payload.validUntil } : {}),
+		...(payload.notes ? { notes: payload.notes } : {})
+	});
+}
