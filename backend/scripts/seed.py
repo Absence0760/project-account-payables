@@ -21,9 +21,31 @@ Two seed shapes:
 import argparse
 import asyncio
 import os
+import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
+
+# Anchor THIS checkout's `backend/` on sys.path before `app` is imported below.
+# Run as `python scripts/seed.py`, sys.path[0] is `scripts/` — so `app` is not on
+# sys.path at all, and a git worktree reusing the primary checkout's
+# `backend/.venv` resolves it through the editable install's baked-in
+# `__editable___backend_0_1_0_finder` instead. Measured: without this the seed
+# ran against the OTHER checkout's models, silently, with every line it printed
+# naming this one.
+#
+# Inserted at 1, never 0: `seed_extras` is imported bare further down and relies
+# on `scripts/` staying first. Idempotent, and a no-op in the checkout the venv
+# was installed from — there it only restates where `app` already resolves.
+# See `frontend/tests-e2e/README.md` § Running from a worktree.
+#
+# The path is spelled out twice rather than bound to a name on purpose: ruff's
+# E402 exempts `sys.path` manipulation before imports, but not a module-level
+# assignment beside it — hoisting this into a variable turns every import below
+# into a lint error.
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 
 import asyncpg
 from sqlalchemy import select, text

@@ -196,7 +196,14 @@ PLAYWRIGHT_WORKERS=1 pnpm test:frontend    # serial run, easier to debug a flake
 The `pnpm db:up` / `dev:backend` / `test:frontend` invocations are
 the root dispatch scripts; see the repo's root README for the rest.
 
-## Running from a worktree (`E2E_WEB_ORIGIN` / `PUBLIC_API_URL`)
+## Running from a worktree
+
+A worktree isolates **files**. It does not isolate ports, it does not carry
+`backend/.venv`, and it does not carry `frontend/node_modules`. Each of those
+three fails *silently* — the suite goes green, against a tree you did not edit
+— so all three are worth fixing before you trust a result measured from one.
+
+### Ports (`E2E_WEB_ORIGIN` / `PUBLIC_API_URL`)
 
 The dev server's port and the backend's origin are **configurable**, and both
 default to today's values — an ordinary run needs nothing:
@@ -245,6 +252,153 @@ Two things stay shared and are NOT covered by these variables:
   `organization/custom-domain-rejection.spec.ts`), so a second session on a
   non-default web origin must set `FEOH_TENANT_URL_TEMPLATE` on its backend to
   match, or those two fail while everything else passes.
+
+### The backend's Python imports (`backend/.venv` is the primary checkout's)
+
+**Symptom:** everything on screen names the worktree, and the code that ran
+came from the primary checkout. No error, no warning — the assertions simply
+measured a tree that was never edited, which makes a green result meaningless
+rather than merely wrong.
+
+`backend/.venv` does not carry into a worktree (its paths are absolute), so a
+worktree reuses the primary one. That venv holds an **editable install**:
+`pip install -e ".[dev]"` writes
+`site-packages/__editable___backend_0_1_0_finder.py`, whose
+`MAPPING = {'app': '<the checkout pip was run in>/backend/app'}` is baked in at
+install time and answers `import app` with that absolute path.
+
+**Why `PYTHONPATH` is not the problem** — a claim to the contrary has been
+written down twice in this repo and is wrong, so it is worth being precise.
+setuptools *appends* that finder:
+
+```python
+def install():
+    if not any(finder == _EditableFinder for finder in sys.meta_path):
+        sys.meta_path.append(_EditableFinder)      # append — after PathFinder
+```
+
+`sys.meta_path` ends up `[…, PathFinder, _EditableFinder]`, so `PathFinder` —
+which is the thing that reads `sys.path` — is consulted **first**. Anything
+genuinely on `sys.path`, `PYTHONPATH` entries included, beats the finder.
+
+The real failure is a **fall-through**: when `<worktree>/backend` is on
+`sys.path` at all, you get the right tree; when it is not, `PathFinder` finds
+nothing, the appended finder answers, and you silently get the other checkout.
+That distinction is what decides which commands are safe:
+
+| Command, run from `<worktree>/backend` | `sys.path[0]` | Which `app`? |
+| --- | --- | --- |
+| `python main.py` | the script's dir = `<worktree>/backend` | worktree ✅ |
+| `pytest tests/x.py` | pytest prepends `<worktree>/backend` | worktree ✅ |
+| `alembic upgrade head` / `revision --autogenerate` | `alembic.ini` prepends `<worktree>/backend` | worktree ✅ |
+| `python scripts/<anything>.py` | the script anchors `<worktree>/backend` | worktree ✅ |
+| `uvicorn app.main:app` | the venv's `bin/` | **primary ❌** |
+| `pytest --import-mode=importlib tests/x.py` | no prepend at all | **primary ❌** |
+
+The middle two ✅ rows are safe *by design*, and each fixes itself:
+
+- `backend/alembic.ini` sets `prepend_sys_path = %(here)s`, because
+  `alembic/env.py` imports `app.config` and `app.models` — an autogenerate
+  against the wrong tree writes a migration file that looks entirely plausible
+  and is wrong. `%(here)s`, not the `.` alembic's own template suggests: the
+  value is spliced onto `sys.path` verbatim, so `.` follows the process CWD
+  rather than the ini.
+- **Every** `backend/scripts/*.py` that imports `app` carries a two-line anchor
+  in its import prologue (`sys.path.insert(1, <this backend/>)`, guarded on
+  presence) — 13 of the 14 today. `pnpm seed` and `pnpm migrate:all` are the
+  first commands a contributor runs, so they must be right without anyone
+  having opted into the shim. Index 1, never 0 — `seed.py` imports
+  `seed_extras` bare and needs `scripts/` to stay first.
+  `backend/tests/test_script_checkout_anchor.py` **globs** the directory rather
+  than naming files, so a new script that imports `app` and forgets the anchor
+  fails the suite by name; a script that imports no `app` is exempt by that
+  same derivation.
+
+The other two ✅ rows are safe by *accident*: `python main.py` because a
+script's own directory lands on `sys.path`, and `pytest` only because the
+default `prepend` import mode walks up past `tests/__init__.py` to
+`<worktree>/backend` — the last row is that same console script with that one
+default changed, silently testing the primary checkout.
+
+**The fix — one env var, and it covers every row:**
+
+```bash
+PYTHONPATH=<worktree>/backend/scripts/worktree <primary>/backend/.venv/bin/python scripts/seed.py
+```
+
+`backend/scripts/worktree/sitecustomize.py` is a checked-in shim. `site`
+auto-imports a `sitecustomize` module at interpreter startup **if it is
+importable then** — which `sys.path[0]` is not, because the script's directory
+is inserted later; `PYTHONPATH` is the mechanism that works, and it is why a
+plain `cd` into that directory does nothing. Once loaded the shim puts the
+checkout you are running *from* on `sys.path` and removes the `__editable__*`
+finder, so a name it could not fix raises `ModuleNotFoundError` instead of
+resolving somewhere else. It is a **no-op inside the checkout the editable
+install points at**, and a no-op when it cannot work out which checkout you are
+in, so exporting it for a whole shell is safe and it is inert in the primary
+checkout. Guarded by `backend/tests/test_worktree_sitecustomize.py`.
+
+Export it once, from `<worktree>/backend`, and every command below is covered:
+
+```bash
+export VENV=<primary>/backend/.venv && export PYTHONPATH=<worktree>/backend/scripts/worktree
+$VENV/bin/pytest tests/test_x.py -q            # scoped files only — never the full suite
+$VENV/bin/python scripts/seed.py
+$VENV/bin/alembic upgrade head
+$VENV/bin/uvicorn app.main:app --reload --port 8001    # main.py hardcodes :8000, which the primary owns
+```
+
+`python main.py` is in the ✅ column and needs nothing beyond the venv's
+interpreter (`$VENV/bin/python main.py`) — its own directory lands on
+`sys.path` first. The reason to use the `uvicorn` line instead is the **port**,
+not the imports: `main.py` hardcodes `:8000`, so a worktree that runs it either
+fails to bind or, worse, is the thing that took the port from the primary
+checkout. Set `PUBLIC_API_URL` to match whatever port you pick (see *Ports*
+above). `uvicorn` is a console script, so it is one of the ❌ rows — the shim
+is what makes it load your tree.
+
+`git rev-parse --path-format=absolute --git-common-dir` prints
+`<primary>/.git` from inside a worktree, so `<primary>` is that path's
+directory — handy when scripting, but spell it out when pasting.
+
+**Verify which tree is actually being served.** Do this once per session; it is
+the whole point, and it is two seconds:
+
+```bash
+(cd scripts && $VENV/bin/python -c "import sitecustomize, app; print(sitecustomize.__file__); print(app.__file__)")
+```
+
+Run it from `scripts/` — that is the discriminating case, the one where nothing
+puts the worktree on `sys.path` for you. The first line proves the shim is
+active (a `ModuleNotFoundError` means `PYTHONPATH` is not set); the second must
+name **your** worktree. Or ask the shim what it sees, which also explains its
+verdict:
+
+```bash
+$VENV/bin/python scripts/worktree/sitecustomize.py
+```
+
+**The alternative, if you would rather not activate anything:** run pytest on
+the system interpreter with the venv's `site-packages` on `PYTHONPATH`.
+
+```bash
+PYTHONPATH=<primary>/backend/.venv/lib/python3.14/site-packages python3 -m pytest tests/test_x.py -q
+```
+
+`PYTHONPATH` directories get no `.pth` processing, so the editable finder is
+never installed at all — there is nothing to fall through *to*, and a bad
+`sys.path` becomes a loud `ModuleNotFoundError` rather than a quiet wrong
+answer. It needs the system python's minor version to match the venv's
+(both 3.14 today), and it does not help `python main.py` or any console script,
+which is why the shim is the recommendation.
+
+### The frontend's `node_modules`
+
+Not carried over either, and unlike the venv there is no shim — `pnpm install`
+in the worktree's `frontend/` before `pnpm check`, `pnpm test:unit` or
+`pnpm build`. The pnpm store is warm, so it is quick. Playwright's browser
+binaries live in `~/.cache/ms-playwright` and *are* shared, so
+`playwright install chromium` does not need repeating.
 
 ## Service-backed specs (gated)
 
