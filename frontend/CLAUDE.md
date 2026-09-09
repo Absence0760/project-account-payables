@@ -527,6 +527,22 @@ a definition as JSON). All wrap the shared `ui/Modal.svelte` and call the
   child the current role can see; a group hides when the role can see none.
   Add/move a route by editing `$lib/nav.ts` (with its `roles` gate) — don't
   hand-roll nav rows in the component.
+  **A `roles` gate is per ENTRY, derived from that route's own backend gate —
+  never a blanket list applied across a group.** A group's children routinely
+  disagree: in Procurement, `/purchase-orders` and `/goods-receipts` are
+  `get_current_user` (auth-gated, role-open) while `/budgets` is
+  `require_roles(ADMIN, AP_MANAGER, CFO)`, and a shared list cannot express
+  both. Copying a sibling's gate is how `ap_clerk` lost the two pages whose own
+  code says a clerk reads them.
+  Both directions are bugs, and the second is worse. **Too narrow** is a dead
+  end — a page the backend serves with no link to it. **Too wide** is a link
+  whose first paint 403s, and `permissions` makes it easy: `/payments` OR's in
+  `payment.execute` / `payment.void` for an SoD custom role, but the page's
+  mount effect fired three reads still on `require_roles`, so that row led
+  straight to three 403s. When you widen a nav entry, check what the PAGE loads
+  on mount, not just the endpoint the row is named after. Guard:
+  `src/lib/nav.test.ts` pins the exact Procurement link set each system role
+  sees, and asserts each entry carries its own gate.
 - `SectionTabs.svelte` — the per-page section sub-tab bar, rendered once in
   `routes/+layout.svelte` above the page slot. For a grouped route it renders
   the group's RBAC-visible children as tabs (suppressed when ≤1 is visible);

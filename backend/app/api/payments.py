@@ -697,7 +697,7 @@ async def payment_queue(
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """A page of approved invoices ready for payment (no live payment yet).
@@ -882,7 +882,7 @@ async def payment_queue(
 async def payment_queue_ids(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """The invoice ids of every SELECTABLE (non-blocked) queue row — the
@@ -949,7 +949,7 @@ PENDING_PAYMENT_STATUSES = ("pending", "processing", "submitted", "pending_compl
 async def payment_summary(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """KPIs for the payments page summary bar. Scoped to the selected entity.

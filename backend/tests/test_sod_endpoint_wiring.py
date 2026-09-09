@@ -214,6 +214,17 @@ CASES = [
     ("/api/payments", "GET", _EXECUTE_OR_VOID),
     ("/api/payments/counts", "GET", _EXECUTE_OR_VOID),
     ("/api/payments/{payment_id}", "GET", _EXECUTE_OR_VOID),
+    # The three reads the `/payments` PAGE fires on mount, unconditionally and
+    # before any tab is chosen. They stayed on `require_roles(ADMIN, AP_MANAGER,
+    # CFO)` while their siblings above migrated, so `nav.ts` — which OR's in
+    # `payment.execute` / `payment.void` precisely so a permission-only custom
+    # role can reach this page — showed that role a sidebar row whose first
+    # paint 403'd three times. A nav entry that admits a role the page's first
+    # load refuses is worse than a hidden page: the SoD split the permission
+    # layer exists for was unusable through the UI.
+    ("/api/payments/summary", "GET", _EXECUTE_OR_VOID),
+    ("/api/payments/queue", "GET", _EXECUTE_OR_VOID),
+    ("/api/payments/queue/ids", "GET", _EXECUTE_OR_VOID),
     # The run reads gate on `payment.execute` alone: a void-only role acts on
     # individual payments, not on runs.
     ("/api/payments/runs/", "GET", _EXECUTE),
