@@ -304,6 +304,67 @@ export interface Payment {
 	card_last_four: string | null;
 	card_provider: string | null;
 	card_id: string | null;
+	/**
+	 * Set ONLY by `POST /{id}/void` and its card-close retry
+	 * (`schemas/payment.py::PaymentResponse`). `void_card_outcome` is the
+	 * fine-grained provider tag; `void_card_disposition` is the VERDICT the
+	 * server derived from it (`services/card_issuance.card_cancel_disposition`).
+	 *
+	 * **Branch on the disposition, never on the tag.** A client enumerating
+	 * outcome strings mis-reads every tag added later — and it fails in the
+	 * dangerous direction, rendering a live, bearer-spendable card as closed.
+	 *
+	 * `null` on every non-void read: the leg never ran, and "we never asked" is
+	 * not "it is shut" (`docs/decisions.md` §34).
+	 */
+	void_card_outcome?: string | null;
+	void_card_disposition?: VoidCardDisposition | null;
+	void_adapter_outcome?: string | null;
+}
+
+/**
+ * The verdict on a voided card payment's card, from
+ * `services/card_issuance.CardCancelDisposition`.
+ *
+ * - `closed` — dead at the provider. Nothing to do.
+ * - `no_card` — this payment never issued a card.
+ * - `not_closed_final` — already CHARGED, so it can never be closed; a retry
+ *   cannot help and must not be offered.
+ * - `not_closed_retryable` — still LIVE and spendable. Retry the close via
+ *   `POST /api/payments/{id}/void/retry-card-cancel`.
+ */
+export type VoidCardDisposition =
+	| 'closed'
+	| 'no_card'
+	| 'not_closed_final'
+	| 'not_closed_retryable';
+
+/**
+ * Human label for a card-cancel outcome tag, or `null` when the tag is one this
+ * build doesn't know — the caller then renders the raw value, which is PII-free
+ * by construction (`card_cancel_error:*` carries an exception TYPE, never the
+ * provider's body). Same shape as `paymentMethodLabelKey` above, and for the
+ * same reason: the backend can add a tag before this map does.
+ */
+export function voidCardOutcomeLabelKey(outcome: string): MessageKey | null {
+	if (outcome.startsWith('card_cancel_error:')) return 'payments.void.card.outcome.error';
+	switch (outcome) {
+		case 'card_cancelled':
+		case 'cancelled':
+			return 'payments.void.card.outcome.cancelled';
+		case 'card_already_cancelled':
+			return 'payments.void.card.outcome.alreadyCancelled';
+		case 'card_already_charged':
+			return 'payments.void.card.outcome.alreadyCharged';
+		case 'card_cancel_rejected':
+			return 'payments.void.card.outcome.rejected';
+		case 'cards_not_configured':
+			return 'payments.void.card.outcome.cardsOff';
+		case 'card_provider_not_configured':
+			return 'payments.void.card.outcome.providerUnknown';
+		default:
+			return null;
+	}
 }
 
 export interface PaymentRun {

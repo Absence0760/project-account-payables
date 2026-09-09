@@ -431,6 +431,23 @@ export const messages = {
 	'payments.void.reasonPlaceholder': 'Warum wird diese Zahlung storniert?',
 	'payments.void.voiding': 'Wird storniert …',
 	'payments.void.confirm': 'Zahlung stornieren',
+	'payments.void.card.title': 'Virtuelle Karte nicht geschlossen',
+	'payments.void.card.retryable':
+		'Die Zahlung wurde storniert, ihre virtuelle Karte wurde beim Anbieter jedoch nicht geschlossen. Die Karte ist weiterhin aktiv und kann belastet werden, bis sie geschlossen wird.',
+	'payments.void.card.final':
+		'Die Zahlung wurde storniert, ihre virtuelle Karte war jedoch bereits belastet und kann daher nicht mehr geschlossen werden. Das Geld ist geflossen — klären Sie dies mit dem Lieferanten oder dem Kartenanbieter.',
+	'payments.void.card.closed': 'Die virtuelle Karte wurde beim Anbieter geschlossen.',
+	'payments.void.card.retry': 'Schließen der Karte erneut versuchen',
+	'payments.void.card.retrying': 'Karte wird geschlossen…',
+	'payments.void.card.retryFailed': 'Die Karte konnte weiterhin nicht geschlossen werden.',
+	'payments.void.card.outcome.cancelled': 'Beim Anbieter geschlossen',
+	'payments.void.card.outcome.alreadyCancelled': 'Beim Anbieter bereits geschlossen',
+	'payments.void.card.outcome.alreadyCharged':
+		'Bereits belastet — die Buchung kann nicht rückgängig gemacht werden',
+	'payments.void.card.outcome.rejected': 'Der Kartenanbieter hat das Schließen abgelehnt',
+	'payments.void.card.outcome.cardsOff': 'Die Kartenausgabe ist für diese Organisation deaktiviert',
+	'payments.void.card.outcome.providerUnknown': 'Der konfigurierte Kartenanbieter ist unbekannt',
+	'payments.void.card.outcome.error': 'Der Kartenanbieter war nicht erreichbar',
 	'payments.compliance.release.title': 'Compliance-Sperre freigeben',
 	'payments.compliance.release.warning': 'Dies führt dieselben Sanktions- und AML-Prüfungen wie der Zahlungslauf erneut aus und übergibt die Zahlung anschließend an den Zahlungsdienstleister. Eine weiterhin tatsächlich blockierte Zahlung bleibt gesperrt — dies ist niemals eine Umgehung. Wird im Audit-Log erfasst.',
 	'payments.compliance.release.confirm': 'Zahlung freigeben',

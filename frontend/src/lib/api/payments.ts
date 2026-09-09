@@ -1,14 +1,17 @@
-// Typed helpers for the payment-path RECOVERY exits — the two endpoints that
-// exist to un-strand money that has already moved. Everything routes through
-// the shared `api` client (Bearer + X-Tenant-Slug + X-Entity-ID + 401-bounce).
+// Typed helpers for the payment-path RECOVERY exits — the endpoints that exist
+// to un-strand money that has already moved, or to finish a reversal whose
+// best-effort leg did not land. Everything routes through the shared `api`
+// client (Bearer + X-Tenant-Slug + X-Entity-ID + 401-bounce).
 //
-// Both are `payment.execute`-gated on the server; the UI mirrors that with
-// `auth.can(PERM_PAYMENT_EXECUTE)` so a holder-less role never sees a control
-// that can only 403. Neither moves money — one reports money that already
-// moved, the other closes out a payable the rail short-paid.
+// Each mirrors its server gate in the UI so a holder-less role never sees a
+// control that can only 403: `retryRunErpSync` / `acceptPaymentSettlement` are
+// `payment.execute` (`PERM_PAYMENT_EXECUTE`), `voidPayment` /
+// `retryVoidCardCancel` are `payment.void` (`PERM_PAYMENT_VOID`). None of them
+// moves money — they report money that already moved, close out a payable the
+// rail short-paid, reverse the books, or shut a card the void could not.
 //
 // See `backend/docs/payments.md` § ERP Payment Sync + § Settlement-amount
-// verification.
+// verification + § Voiding a card payment.
 import { api } from '$lib/api';
 import type { Payment } from '$lib/types/payment';
 
@@ -67,4 +70,35 @@ export function retryRunErpSync(runId: string): Promise<RunErpSyncResult> {
  */
 export function acceptPaymentSettlement(paymentId: string, reason: string): Promise<Payment> {
 	return api.post<Payment>(`/api/payments/${paymentId}/settlement/accept`, { reason });
+}
+
+/**
+ * Void a completed or in-flight payment; the invoice returns to `approved`.
+ *
+ * Typed because the response is load-bearing beyond "it worked": for a
+ * `virtual_card` payment it carries `void_card_disposition`, the verdict on
+ * whether the card was actually closed at the provider. Both the rail reversal
+ * and the card close are best-effort (a provider outage must not block the
+ * accounting void), so a bare 200 does NOT mean the card is shut — read the
+ * disposition, and offer `retryVoidCardCancel` on `not_closed_retryable`.
+ */
+export function voidPayment(paymentId: string, reason: string): Promise<Payment> {
+	return api.post<Payment>(`/api/payments/${paymentId}/void`, { reason });
+}
+
+/**
+ * Re-attempt ONLY the card close for an already-voided card payment.
+ *
+ * The remedy sits on the void rather than beside it (`docs/decisions.md` §96,
+ * §130): `POST /api/cards/{id}/cancel` would also close the card, but it is
+ * reachable on a LIVE payment, where it kills the card while the payment and
+ * its invoice still claim money is in flight. This one 409s on anything but an
+ * already-`voided` card payment, so it can only ever finish a reversal.
+ *
+ * Idempotent — a second retry on an already-closed card returns
+ * `card_already_cancelled` (disposition `closed`), not an error. Moves no
+ * money, does not re-ask the payment rail, and does not re-void.
+ */
+export function retryVoidCardCancel(paymentId: string): Promise<Payment> {
+	return api.post<Payment>(`/api/payments/${paymentId}/void/retry-card-cancel`, {});
 }
