@@ -371,6 +371,202 @@ async def test_challenge_verify_wrong_code_rejected(mfa_on, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# The second-factor stage of a supplier sign-in leaves evidence
+# ---------------------------------------------------------------------------
+#
+# `/portal/auth/login` is the only portal handler that audits, and it audits
+# only REJECTIONS (`portal.login.failure`). Once a supplier enrols a second
+# factor, `/login` stops minting the token and hands back a challenge — so the
+# sign-in completes here instead, and before these rows turning MFA on took the
+# whole account's sign-in off the trail. `/mfa/challenge` is the portal twin of
+# `api/auth.verify_mfa`, which has audited both outcomes since it was built.
+#
+# Deliberately NOT audited: `/mfa/challenge/email`, which only issues a code —
+# see the reason string in `test_audit_append_only._TENANT_MUTATORS_WITHOUT_
+# DIRECT_AUDIT`, and `test_requesting_an_email_otp_writes_no_audit_row` below,
+# which pins that as a decision rather than an omission.
+
+
+def _audit_spy(monkeypatch):
+    """Replace the autouse stub with one whose calls this test reads."""
+    spy = AsyncMock()
+    monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", spy)
+    return spy
+
+
+def _audit_rows(spy) -> list[dict]:
+    return [call.kwargs for call in spy.await_args_list]
+
+
+async def _challenge(vu, code, monkeypatch, *, method="totp", ip="203.0.113.9"):
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    request = _fake_request()
+    request.client = SimpleNamespace(host=ip)
+    return await portal_mfa_challenge(
+        body=PortalMFAChallengeVerifyRequest(
+            challenge_token=mfa.create_vendor_challenge_token(vu.id),
+            code=code,
+            method=method,
+        ),
+        request=request,
+        slug="acme",
+        db=_mock_db(vendor_user=vu),
+    )
+
+
+@pytest.mark.asyncio
+async def test_challenge_verify_success_is_audited(mfa_on, monkeypatch):
+    """A completed second factor is a sign-in, and a sign-in is evidence."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    spy = _audit_spy(monkeypatch)
+
+    code = pyotp.TOTP(secret).now()
+    await _challenge(vu, code, monkeypatch)
+
+    (row,) = _audit_rows(spy)
+    assert row["action"] == "portal.mfa.verify.success"
+    assert row["organization_id"] == vu.organization_id
+    # Subject is the vendor user on both axes, matching every other portal MFA
+    # row — an auditor filters the trail by `entity_id`.
+    assert row["actor_id"] == vu.id
+    assert row["entity_id"] == vu.id
+    assert row["details"] == {"method": "totp", "ip": "203.0.113.9"}
+    # The row is about a credential; it must never carry one.
+    assert secret not in repr(row)
+    assert code not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_challenge_verify_failure_is_audited(mfa_on, monkeypatch):
+    """A guessing campaign against the second factor is what the trail is for.
+
+    The per-account failure budget that throttles it is a Redis rolling window
+    — it forgets, so it is a brake, not evidence.
+    """
+    vu = _vendor_user(mfa_secret=pyotp.random_base32(), mfa_enabled=True)
+    spy = _audit_spy(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await _challenge(vu, "000000", monkeypatch)
+
+    assert exc.value.status_code == 401
+    (row,) = _audit_rows(spy)
+    assert row["action"] == "portal.mfa.verify.failure"
+    assert row["details"] == {"method": "totp", "ip": "203.0.113.9"}
+    assert "000000" not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_challenge_verify_records_which_factor_was_used(mfa_on, monkeypatch):
+    """`method` is the whole reason issuing an email OTP needs no row of its own:
+    the redemption row says a backup code was the factor that let someone in."""
+    vu = _vendor_user(mfa_secret=pyotp.random_base32(), mfa_enabled=True)
+    monkeypatch.setattr(
+        "app.api.portal_auth.mfa.verify_vendor_email_otp", AsyncMock(return_value=True)
+    )
+    spy = _audit_spy(monkeypatch)
+
+    await _challenge(vu, "123456", monkeypatch, method="email")
+
+    (row,) = _audit_rows(spy)
+    assert row["action"] == "portal.mfa.verify.success"
+    assert row["details"]["method"] == "email"
+
+
+@pytest.mark.asyncio
+async def test_no_success_row_when_the_session_could_not_be_minted(mfa_on, monkeypatch):
+    """The row goes on the trail only once the sign-in actually took effect.
+
+    `_mint_portal_session` registers the session in Redis and lets its failures
+    propagate; `dispatch_auth_audit` swallows its own. Auditing first would let
+    a Redis blip leave a permanent, immutable row asserting a completed sign-in
+    for a request that 500'd and handed the caller no token — the same reason
+    the enrollment rows are written after their commit (decisions §111), and the
+    order `api/auth.verify_mfa` already uses.
+    """
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    monkeypatch.setattr(
+        "app.api.portal_auth._mint_portal_session",
+        AsyncMock(side_effect=RuntimeError("redis is down")),
+    )
+    spy = _audit_spy(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        await _challenge(vu, pyotp.TOTP(secret).now(), monkeypatch)
+
+    assert _audit_rows(spy) == [], "the trail claimed a sign-in that never happened"
+
+
+@pytest.mark.asyncio
+async def test_the_audited_factor_is_the_branch_taken_not_the_caller_s_string(mfa_on, monkeypatch):
+    """`PortalMFAChallengeVerifyRequest.method` is an unconstrained `str` — its
+    employee twin pins `^(totp|email)$` — so anything but "email" falls through
+    to TOTP verification. The row must name the factor that was actually
+    verified, not restate the request: an audit trail is append-only and shipped
+    to a WORM store, which makes it the worst possible place to echo unbounded
+    caller-controlled text, and a row claiming a factor nobody used is worse
+    than no row.
+    """
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    spy = _audit_spy(monkeypatch)
+
+    # Verifies as TOTP (the fall-through), so it must be audited as TOTP.
+    await _challenge(vu, pyotp.TOTP(secret).now(), monkeypatch, method="EMAIL</b>x")
+
+    (row,) = _audit_rows(spy)
+    assert row["details"]["method"] == "totp"
+    assert "EMAIL</b>x" not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_vendor_user_with_no_org_writes_no_row(mfa_on, monkeypatch):
+    """`dispatch_auth_audit` resolves the tenant DB from `organization_id`, so
+    there is nowhere to route a row for a vendor user that predates it. Skipping
+    is the existing `_audit_portal_mfa_event` contract — pinned here because
+    sign-in is the one path where losing the row silently would matter most."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, organization_id=None)
+    spy = _audit_spy(monkeypatch)
+
+    res = await _challenge(vu, pyotp.TOTP(secret).now(), monkeypatch)
+
+    assert isinstance(res, PortalTokenResponse), "the sign-in itself must still succeed"
+    assert _audit_rows(spy) == []
+
+
+@pytest.mark.asyncio
+async def test_requesting_an_email_otp_writes_no_audit_row(mfa_on, monkeypatch):
+    """Issuing a backup code is deliberately unaudited — a pinned decision.
+
+    Three reasons, none of them "not done yet". The auditable event is the code
+    being REDEEMED, which `/mfa/challenge` records with its `method`. The send
+    is already bounded by a per-IP and a per-account cap. And the endpoint is
+    204-on-every-path precisely so it cannot be used to discover which supplier
+    addresses exist and are enrolled — a row would be written for exactly that
+    set, rebuilding the oracle inside the trail. Its employee twin
+    (`api/auth.request_email_otp`) is unaudited on the same terms; auditing only
+    the supplier surface would be a knowingly asymmetric control.
+    """
+    vu = _vendor_user(mfa_secret=pyotp.random_base32(), mfa_enabled=True)
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.api.portal_auth._send_vendor_email_otp", AsyncMock())
+    spy = _audit_spy(monkeypatch)
+
+    await portal_request_email_otp(
+        body=PortalMFAEmailChallengeRequest(
+            challenge_token=mfa.create_vendor_challenge_token(vu.id)
+        ),
+        request=_fake_request(),
+        db=_mock_db(vendor_user=vu),
+    )
+
+    assert _audit_rows(spy) == []
+
+
+# ---------------------------------------------------------------------------
 # Email-OTP backup factor — request a code, then verify it
 # ---------------------------------------------------------------------------
 
