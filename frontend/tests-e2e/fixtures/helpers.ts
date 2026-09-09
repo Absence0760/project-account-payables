@@ -508,6 +508,29 @@ export function controlPsql(query: string): string {
 }
 
 /**
+ * Delete the virtual cards matching `predicate`, and everything referencing them.
+ *
+ * Shared by the invoice and vendor teardowns, because a card hangs off BOTH an
+ * invoice (and its payment) and a vendor, and carries three references of its
+ * own that neither caller should have to know about. Not exported: a spec
+ * deleting a card in isolation should be deleting its invoice or its vendor.
+ *
+ * `corporate_card_transactions` is an imported feed row that merely *points* at
+ * the card, so its link is cleared rather than the row deleted — the same
+ * distinction `deleteInvoicesWhere` draws for `vendor_statement_recon_lines`.
+ */
+function deleteVirtualCardsWhere(predicate: string, slug?: string): void {
+	const cards = `SELECT id FROM virtual_cards WHERE ${predicate}`;
+	tenantPsql(`DELETE FROM card_rebates WHERE virtual_card_id IN (${cards})`, slug);
+	tenantPsql(`DELETE FROM card_reveal_tokens WHERE card_id IN (${cards})`, slug);
+	tenantPsql(
+		`UPDATE corporate_card_transactions SET virtual_card_id = NULL WHERE virtual_card_id IN (${cards})`,
+		slug
+	);
+	tenantPsql(`DELETE FROM virtual_cards WHERE ${predicate}`, slug);
+}
+
+/**
  * Delete the invoices matching `predicate`, and everything that references them.
  *
  * `invoices` is referenced by 16 foreign keys and none of them cascade, so a
@@ -538,8 +561,11 @@ export function deleteInvoicesWhere(predicate: string, slug?: string): void {
 		`DELETE FROM bank_transactions WHERE matched_payment_id IN (SELECT id FROM payments WHERE invoice_id IN (${ids}))`,
 		slug
 	);
-	tenantPsql(
-		`DELETE FROM virtual_cards WHERE payment_id IN (SELECT id FROM payments WHERE invoice_id IN (${ids}))`,
+	// A card can hang off the payment or off the invoice, and carries children
+	// of its own — `deleteVirtualCardsWhere` owns that sub-graph for both this
+	// helper and `deleteVendorsWhere`.
+	deleteVirtualCardsWhere(
+		`payment_id IN (SELECT id FROM payments WHERE invoice_id IN (${ids})) OR invoice_id IN (${ids})`,
 		slug
 	);
 
@@ -561,7 +587,6 @@ export function deleteInvoicesWhere(predicate: string, slug?: string): void {
 		'payments',
 		'peppol_transmissions',
 		'supplier_chat_threads',
-		'virtual_cards',
 		'workflow_instances'
 	]) {
 		tenantPsql(`DELETE FROM ${table} WHERE invoice_id IN (${ids})`, slug);
@@ -577,6 +602,127 @@ export function deleteInvoicesWhere(predicate: string, slug?: string): void {
 	);
 
 	tenantPsql(`DELETE FROM invoices WHERE ${predicate}`, slug);
+}
+
+/**
+ * Delete the vendors matching `predicate`, and everything that references them.
+ *
+ * `vendors` is referenced by 17 foreign keys and only two of them cascade
+ * (`vendor_change_requests`, `vendor_users`), so a bare
+ * `DELETE FROM vendors WHERE ...` only works while the vendor happens to have
+ * none of the other fifteen kinds of child. Seventeen specs hand-rolled that
+ * delete, each maintaining its own partial child list — `vendors/import-csv`
+ * knew about `sanctions_checks`, `invoices/coding-suggestions` about
+ * `vendor_extraction_priors`, most about nothing — which is the same trap
+ * `deleteInvoicesWhere` was written for, one table over: the list is only
+ * correct until the app writes a child the spec never anticipated.
+ *
+ * The graph below was derived from `pg_constraint` against a live tenant
+ * database rather than from any spec's list, and is walked to its leaves:
+ * invoices (delegated), the procurement chain (catalogs → items, contracts →
+ * line items, requisitions → line items, POs → receipts → GR line items and
+ * inspections), virtual cards (delegated), statement reconciliations, and the
+ * eight flat children.
+ *
+ * Rows that exist only because of the vendor are deleted; independent records
+ * that merely point at one of its rows (an invoice's `contract_id`, an intake
+ * request's `converted_po_id`, another requisition's catalog line) have the
+ * link cleared instead. `predicate` is the WHERE clause body, so callers can
+ * scope by id, `name LIKE`, `entity_id`, or anything else.
+ */
+export function deleteVendorsWhere(predicate: string, slug?: string): void {
+	const ids = `SELECT id FROM vendors WHERE ${predicate}`;
+	const pos = `SELECT id FROM purchase_orders WHERE vendor_id IN (${ids})`;
+	const grs = `SELECT id FROM goods_receipts WHERE po_id IN (${pos})`;
+	const reqs = `SELECT id FROM purchase_requisitions WHERE vendor_id IN (${ids})`;
+	const contracts = `SELECT id FROM contracts WHERE vendor_id IN (${ids})`;
+	const catalogs = `SELECT id FROM catalogs WHERE vendor_id IN (${ids})`;
+	const templates = `SELECT id FROM recurring_invoice_templates WHERE vendor_id IN (${ids})`;
+
+	// Invoices own a 16-table sub-graph of their own; delegate rather than
+	// restate it. This also clears the vendor's payments, exceptions, chat
+	// threads and workflow rows.
+	deleteInvoicesWhere(`vendor_id IN (${ids})`, slug);
+
+	// Procurement, leaves first. An inspection can hang off either the PO or
+	// the goods receipt, so both parents are covered before either is deleted.
+	tenantPsql(`DELETE FROM gr_line_items WHERE gr_id IN (${grs})`, slug);
+	tenantPsql(`DELETE FROM quality_inspections WHERE po_id IN (${pos}) OR gr_id IN (${grs})`, slug);
+	tenantPsql(`DELETE FROM goods_receipts WHERE po_id IN (${pos})`, slug);
+	tenantPsql(`DELETE FROM po_line_items WHERE po_id IN (${pos})`, slug);
+
+	tenantPsql(`DELETE FROM requisition_line_items WHERE requisition_id IN (${reqs})`, slug);
+	tenantPsql(
+		`UPDATE requisition_line_items SET catalog_item_id = NULL WHERE catalog_item_id IN (SELECT id FROM catalog_items WHERE catalog_id IN (${catalogs}) OR vendor_id IN (${ids}))`,
+		slug
+	);
+	tenantPsql(
+		`UPDATE punchout_sessions SET converted_requisition_id = NULL WHERE converted_requisition_id IN (${reqs})`,
+		slug
+	);
+	tenantPsql(`DELETE FROM punchout_sessions WHERE catalog_id IN (${catalogs})`, slug);
+
+	// The intake → requisition → PO conversion chain points forward, so the
+	// vendor's own intakes go first and any surviving one is unlinked.
+	tenantPsql(`DELETE FROM intake_requests WHERE vendor_id IN (${ids})`, slug);
+	tenantPsql(
+		`UPDATE intake_requests SET converted_po_id = NULL WHERE converted_po_id IN (${pos})`,
+		slug
+	);
+	tenantPsql(
+		`UPDATE intake_requests SET converted_requisition_id = NULL WHERE converted_requisition_id IN (${reqs})`,
+		slug
+	);
+	tenantPsql(
+		`UPDATE purchase_requisitions SET converted_po_id = NULL WHERE converted_po_id IN (${pos})`,
+		slug
+	);
+	tenantPsql(
+		`UPDATE purchase_requisitions SET contract_id = NULL WHERE contract_id IN (${contracts})`,
+		slug
+	);
+	tenantPsql(`DELETE FROM purchase_requisitions WHERE vendor_id IN (${ids})`, slug);
+	tenantPsql(`DELETE FROM purchase_orders WHERE vendor_id IN (${ids})`, slug);
+
+	// A catalog item can belong to the vendor directly or through its catalog.
+	tenantPsql(
+		`DELETE FROM catalog_items WHERE catalog_id IN (${catalogs}) OR vendor_id IN (${ids})`,
+		slug
+	);
+	tenantPsql(`DELETE FROM catalogs WHERE vendor_id IN (${ids})`, slug);
+
+	tenantPsql(`DELETE FROM contract_line_items WHERE contract_id IN (${contracts})`, slug);
+	tenantPsql(`UPDATE invoices SET contract_id = NULL WHERE contract_id IN (${contracts})`, slug);
+	tenantPsql(`DELETE FROM contracts WHERE vendor_id IN (${ids})`, slug);
+
+	deleteVirtualCardsWhere(`vendor_id IN (${ids})`, slug);
+
+	// `vendor_statement_recon_lines` cascades from its reconciliation.
+	tenantPsql(`DELETE FROM vendor_statement_reconciliations WHERE vendor_id IN (${ids})`, slug);
+
+	// A generated invoice outlives its template's vendor only if it belongs to
+	// another one, but the link still has to go before the template does.
+	tenantPsql(
+		`UPDATE invoices SET recurring_template_id = NULL WHERE recurring_template_id IN (${templates})`,
+		slug
+	);
+
+	// Flat children. `vendor_change_requests` and `vendor_users` cascade today;
+	// they are listed anyway so the graph does not depend on that staying true.
+	for (const table of [
+		'credit_memos',
+		'discount_offers',
+		'invoice_embeddings',
+		'recurring_invoice_templates',
+		'sanctions_checks',
+		'vendor_change_requests',
+		'vendor_extraction_priors',
+		'vendor_users'
+	]) {
+		tenantPsql(`DELETE FROM ${table} WHERE vendor_id IN (${ids})`, slug);
+	}
+
+	tenantPsql(`DELETE FROM vendors WHERE ${predicate}`, slug);
 }
 
 /**
