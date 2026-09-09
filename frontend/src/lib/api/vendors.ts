@@ -19,6 +19,36 @@ import type {
 } from '$lib/types/vendor';
 import type { ImportResult } from '$lib/types/csvImport';
 
+// --- Vendor picker options ---
+
+/** Vendor option from `GET /api/vendors` — picker value is the uuid `id`. */
+export interface VendorOption {
+	id: string;
+	name: string;
+	code?: string | null;
+}
+
+/**
+ * Vendor picker options. `/api/vendors` returns a paginated envelope and is
+ * gated to admin/ap_manager/cfo — an ap_clerk gets a 403, so we unwrap the
+ * envelope and degrade to an empty list rather than failing the whole page.
+ *
+ * Lives here, beside the rest of the vendor surface, rather than in
+ * `api/catalogs.ts` where it was first written: four modals and two pages now
+ * want a vendor picker, and a `/discounts` page reaching into the catalogs
+ * module for a generic vendor list is the wrong dependency (root `CLAUDE.md`
+ * guard rail 10). `api/catalogs.ts` re-exports both symbols so its existing
+ * importers are unchanged.
+ */
+export async function listVendors(): Promise<VendorOption[]> {
+	try {
+		const res = await api.get<{ items: VendorOption[] }>('/api/vendors?page_size=100');
+		return res.items ?? [];
+	} catch {
+		return [];
+	}
+}
+
 // --- List / select-all-matching / sort ---
 
 export interface VendorListParams {
