@@ -4621,3 +4621,192 @@ for.
 A guard that has never been run is a guard whose coverage nobody knows. The file
 header records the experiment so the next reader does not have to re-derive
 whether these assertions bite.
+
+## 124. The editable-install finder is appended, so `PYTHONPATH` wins and the failure is a fall-through
+
+Two source-of-truth notes asserted that `backend/.venv`'s editable install beats
+`sys.path`, so a worktree could not override it. Both were wrong, and the
+correction changes which commands are dangerous.
+
+`__editable___backend_0_1_0_finder.install()` ends in
+`sys.meta_path.append(_EditableFinder)` — **append**, so it lands *after*
+`PathFinder`, the finder that reads `sys.path`. `PYTHONPATH` therefore does win.
+The real failure is a **fall-through**: when `<worktree>/backend` is on
+`sys.path` you get the right tree, and when it is not, `PathFinder` finds nothing
+and the appended finder answers with the primary checkout.
+
+That reclassifies every entry point. `python main.py` (script dir on `sys.path`)
+and `pytest` (which prepends the rootdir) were always correct. `python
+scripts/seed.py` (`sys.path[0]` is `scripts/`), `alembic`, `uvicorn`, and
+`pytest --import-mode=importlib` were always wrong. The worst of those is
+`alembic revision --autogenerate`, whose output is a plausible-looking migration
+diffed against a different checkout's models.
+
+`pytest`'s safety is also **incidental**: it depends on `prepend` import mode
+walking up past `tests/__init__.py`. The recommended invocation —
+`PYTHONPATH=<primary-venv-site-packages> /usr/bin/python3 -m pytest` — is safe
+for a stronger reason: `PYTHONPATH` directories get no `.pth` processing, so the
+finder is never installed at all. There is nothing to fall through to, and a bad
+`sys.path` becomes a loud `ModuleNotFoundError` instead of a silent wrong tree.
+
+Three mechanisms now cover the class, and they are not redundant:
+
+* **Per-script anchors** — every `backend/scripts/*.py` that imports `app` puts
+  its own checkout on `sys.path` first. Correct *by default*, which is what the
+  shim structurally cannot be.
+* **`alembic.ini`** — `prepend_sys_path = %(here)s`, not `.`. The value is spliced
+  verbatim and resolved against the **cwd**, so `.` would have pointed at the
+  repo root. `path_separator = os` is not cosmetic either: the legacy fallback
+  splits on spaces as well as commas, so a checkout under a path containing a
+  space would become two nonexistent directories.
+* **`scripts/worktree/sitecustomize.py`** — covers what we cannot edit
+  (`uvicorn`, `--import-mode=importlib`), and is the only one that *removes* the
+  finder, so a name it cannot fix raises rather than importing quietly.
+
+The guard globs the directory and derives its exempt set as the complement of
+"imports `app`", so a new script inherits the rule instead of being forgotten.
+It also asserts it found something: every case is parametrized, and a broken glob
+would collect zero cases and read as a pass.
+
+## 125. An absent KPI figure is a dash; *pending* is announced, not drawn
+
+`aggMoney(undefined, …)` formatted `0`, so money KPIs flashed a zero before their
+response landed — a figure nobody had computed, displayed as a computed one
+(§34's class). The fix had to be one convention on `KpiCard`, because fixing one
+page would have left its own five-card row inconsistent.
+
+An absent figure renders the em dash. Absence is keyed on **nullish**, never on
+falsiness, so a genuine computed `0` still renders `0`.
+
+Whether the figure is absent because it is *still arriving* is carried in the
+accessibility layer alone: a `pending` card looks identical but sets
+`aria-busy`, hides the dash from the accessibility tree, and puts
+screen-reader-only text in its place. Two glyphs would tell a sighted reader
+nothing — the difference is only actionable to someone who cannot watch the card
+settle. A pending or unavailable card also drops its highlight tint, because the
+tint is a *verdict* and there is no figure to have a verdict about.
+
+Rejected: a shimmer skeleton, because the em dash is already this app's glyph for
+an unknown and is already inside `formatMoney`'s placeholder. A second vocabulary
+for the same fact would read as a *different kind of nothing* beside a sibling
+card legitimately showing a dash. `kpiValue.test.ts` pins `KPI_NO_FIGURE ===
+formatMoney(null)` so the two owners cannot drift. Also rejected: `aria-live`, as
+a KPI row settles every card at once and would fire a burst of announcements over
+whatever the reader was on.
+
+`pending` is a prop rather than something the component infers, because only the
+page knows whether its fetch is in flight. The `/bank-reconciliation` adoption
+validated the split: it reused the page's existing loading flag with no new
+state, and because the component consults `pending` only when the value is
+actually missing, a filter or search re-fetch keeps the figures on screen instead
+of blanking them.
+
+The sharpest case was not the flash. `/bank-reconciliation` derived its red tints
+from `(… ?? 0) > 0`, so before its data arrived the page rendered *untinted* and
+positively claimed nothing was unmatched and there were no discrepancies — a
+clean bill of health on a fraud control, asserted while still asking.
+
+## 126. A supplier sign-in with a second factor is still a sign-in
+
+`portal.login.success` first shipped on the password-only path, with the MFA path
+writing only `portal.mfa.verify.success`. That is not a gap, it is a **biased
+sample**: an auditor querying successful supplier sign-ins would have silently
+missed exactly the accounts carrying a second factor, and nothing in the result
+would have said so. It is why the hole was not half-fixed when the first row
+landed.
+
+The two rows answer different questions. The factor row says *which* second
+factor was used; it does not say a session was minted. Whether a sign-in is
+recorded at all must not depend on whether the account happens to be enrolled.
+The employee twin already wrote both, so the portal is reaching parity rather
+than inventing a convention.
+
+The row is written **after** `_mint_portal_session`, not before. Minting
+registers the session in Redis and lets its failures propagate, while the audit
+dispatch swallows its own — so auditing first can leave a permanent, immutable
+row asserting a completed sign-in for a request that returned no token (§111's
+principle, and the order `api/auth.verify_mfa` uses).
+
+A successful challenge now writes two rows, so the tests' single-row unpacks no
+longer say what they used to. They select by action through a helper that keeps
+the "exactly one" assertion the unpack was worth writing for. The failure-path
+unpack is untouched: a refused factor still writes one row and no sign-in row,
+which now has its own test.
+
+## 127. Three teardown owners, and the third takes a prefix rather than a predicate
+
+`deleteInvoicesWhere` earned its place because a bare delete only succeeds while
+the row happens to have no children. `vendors` and `workflow_definitions` were
+the same trap one table over — 18 hand-rolled call sites and ~10 duplicated
+purges respectively, each maintaining its own partial child list.
+
+`deleteVendorsWhere(predicate, slug?)` matches the original's shape and delegates
+to it rather than restating the invoice graph. Rows that exist only because of
+the vendor are deleted; independent records that merely point at one of its rows
+have the link cleared.
+
+`deleteWorkflowsWhere(namePrefix, slug?)` deliberately **does not** take a
+predicate. A tenant's seeded default must survive every teardown, and so must the
+fallback definition the engine mints when an org has none active — so the
+`is_default = false` seatbelt belongs to the helper, not to each caller. A
+free-form WHERE would let one caller write the teardown that empties a tenant.
+
+Two consequences worth recording. The guard's failure message is now per-table,
+because a single template telling the next author to pass a predicate would send
+them to write exactly what the guard had just refused. And deriving the vendor
+graph turned up a latent bug in the *original* owner: it deleted `virtual_cards`
+without first clearing `card_rebates`, so an invoice whose card had earned a
+rebate would have failed teardown in precisely the way the guard exists to
+prevent.
+
+## 128. An unordered `LIMIT 1` is dangerous only when the candidate set is too wide
+
+`cards/lifecycle.spec.ts` picked a payable invoice with `LIMIT 1`, no `ORDER BY`
+and no vendor filter, while `generate_cards` skips any invoice with no screenable
+vendor and returns a cheerful `201` with an empty list. On a tenant holding three
+vendorless payable rows stranded months earlier, the spec deterministically drew
+one and asserted against nothing.
+
+The fix is an ordering that is a *total* order (the primary key), plus the two
+decline conditions SQL can state honestly, plus a named non-empty assertion so an
+exhausted fixture fails loudly instead of passing vacuously.
+
+The generalisable part is the discriminator, because the idiom appears at roughly
+twenty sites and most are fine: **an unordered `LIMIT 1` is only dangerous when
+the candidate set is wider than what the code under test accepts.** Picking any
+active vendor and then creating your own invoice against it is safe — every
+candidate is equally valid. Picking any *payable* invoice when the endpoint
+accepts a strictly narrower set is not, and it is worse when the endpoint
+declines with a success status, because nothing surfaces as an error.
+
+## 129. The seed entitles one demo tenant, and deliberately leaves the workers unentitled
+
+Every seeded org landed on `free`, whose entitlements are `{}`, so
+`require_api_entitlement("public_api")` returned 402 for the whole suite and for
+local dev. The public Developer API was unexercisable end to end without
+hand-editing the control plane, which guard rail 7 says it must not be.
+
+`acme` now seeds onto a plan carrying `public_api`. `techflow` stays on `free`
+**on purpose**: a seed where everyone is entitled makes the 402 as unreachable as
+the 200 used to be, and the refusal path deserves local coverage too.
+
+Every `e2eN` worker also stays on `free`. Worker tenants are interchangeable by
+design, so entitling one would make *which shard drew which tenant* observable
+from a test's behaviour. A `scripts/` toggle was rejected for the opposite
+reason: an opt-in command leaves the surface dark by default on a fresh clone,
+which is the thing guard rail 7 forbids.
+
+Seeding the plan was only half the fix. `ensure_subscription` no-ops once an org
+holds any live subscription and `seed_control_plane` returned early on an
+already-seeded control plane, so no number of re-runs could repair a dev box that
+was already stranded. The baseline now runs on both branches of that guard and
+**repoints** the existing live row rather than inserting a second one that
+`uq_subscription_one_live_per_org` forbids.
+
+That repoint exposed a latent collision shared with `change_plan`: a *canceled*
+row still occupies the `(organization_id, plan_id)` slot, so re-subscribing to a
+previously-cancelled plan raises. The three writers now share one owner whose
+primitive is narrower than any of them — *free the slot so it can be occupied* —
+because one INSERTs and one repoints, so neither could delegate to the other. The
+guard was never missing from `change_plan`; that call site is de-duplication, not
+a fix.

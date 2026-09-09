@@ -500,6 +500,27 @@ after all.
 skipped. They fail loudly on a fully-seeded local tenant, which is the correct
 behaviour for a test whose premise is not yet understood.
 
+**Round 27 ruled out one candidate cause, and named a discriminator for the
+class.** `cards/lifecycle.spec.ts` failed on the same "only on a fully-seeded
+tenant" pattern and was root-caused: its fixture query took the first payable
+invoice with no `ORDER BY` and no vendor filter, while the endpoint under test
+skips a vendorless invoice and returns a cheerful `201` with an empty list. On
+`feoh_e2e1` — which holds three vendorless payable rows stranded in June — it
+drew one every time, so that failure was deterministic rather than intermittent.
+That is fixed ([decisions.md](decisions.md) §128).
+
+It is **not** these two cases. `queue-blocked.spec.ts:61` uses
+`SELECT id FROM vendors WHERE status='active' LIMIT 1` and then creates its own
+invoice against whatever it gets, so every candidate is equally valid and row
+order cannot select something the code under test rejects. Different root cause;
+this entry stays open.
+
+The reusable rule: **an unordered `LIMIT 1` is only dangerous when the candidate
+set is wider than what the code under test accepts.** Then row order silently
+decides whether the test exercises anything. The idiom appears at roughly twenty
+sites and the overwhelming majority are the benign kind. When triaging the next
+"passes in CI, fails locally" case, apply that test before assuming volume.
+
 ---
 
 ## Local e2e tenant databases drift behind `alembic head`, and the suite blames the app
