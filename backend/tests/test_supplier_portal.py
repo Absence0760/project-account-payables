@@ -213,3 +213,214 @@ def test_portal_payment_item_carries_currency():
     src = inspect.getsource(portal.list_my_payments)
     assert "Invoice.currency" in src
     assert "currency=inv_currency" in src
+
+
+# ---------- a successful supplier sign-in leaves evidence -------------------
+#
+# `/portal/auth/login` audited rejections (`portal.login.failure`) and, once a
+# supplier enrolled a second factor, the completion of that factor at
+# `/portal/auth/mfa/challenge` (`portal.mfa.verify.success`). The password-only
+# success path wrote nothing at all — so "successful supplier sign-ins"
+# returned only the MFA'd subset. That is a biased sample rather than an
+# obvious gap, which is exactly why it survived: it reads as an answer.
+#
+# The employee twin (`api/auth.login`) has written `auth.login.success` since it
+# was built; these pin the portal's equivalent, and that it stays PII-free.
+
+
+@pytest.fixture
+def _portal_session_redis(monkeypatch):
+    """A sign-in REGISTERS the session (a Redis zset + companion hash). The
+    autouse conftest fake is key/value only, so swap in the richer stand-in."""
+    from tests.test_session_management import FakeRedis
+
+    fake = FakeRedis()
+
+    async def _get_redis():
+        return fake
+
+    monkeypatch.setattr("app.redis.get_redis", _get_redis)
+    return fake
+
+
+def _portal_login_request(ip: str = "203.0.113.7") -> SimpleNamespace:
+    """Stand-in for the FastAPI Request the portal auth routes read: the client
+    peer (recorded on the audit row) and the User-Agent (a coarse device label
+    on the session entry — never stored raw)."""
+    return SimpleNamespace(
+        client=SimpleNamespace(host=ip),
+        headers={"user-agent": "Chrome on macOS"},
+    )
+
+
+def _portal_vendor_user(**overrides):
+    base = dict(
+        id=uuid.uuid4(),
+        vendor_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        email="rep@supplier.example",
+        full_name="Supplier Rep",
+        hashed_password="not-a-real-hash",
+        is_active=True,
+        must_change_password=False,
+        mfa_secret=None,
+        mfa_enabled=False,
+        mfa_enrolled_at=None,
+        last_login_at=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _portal_login_db(vendor_user=None):
+    """A MagicMock tenant session whose one `execute(...)` resolves the vendor
+    user (or `None` for an unknown address)."""
+    db = MagicMock()
+
+    def _execute(*_a, **_k):
+        res = MagicMock()
+        res.scalar_one_or_none.return_value = vendor_user
+        return res
+
+    db.execute = AsyncMock(side_effect=_execute)
+    db.commit = AsyncMock()
+    return db
+
+
+def _spy_on_portal_audits(monkeypatch):
+    """Replace both audit writers `portal_login` reaches — the awaited one used
+    on success and the fire-and-forget one used on rejection — so a test can
+    tell which path wrote what."""
+    awaited = AsyncMock()
+    queued = MagicMock()
+    monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", awaited)
+    monkeypatch.setattr("app.api.portal_auth.queue_auth_audit", queued)
+    return awaited, queued
+
+
+async def _attempt_portal_login(
+    monkeypatch, *, vendor_user, password="hunter2-correct", password_ok=True, ip="203.0.113.7"
+):
+    """Drive `portal_login`, returning (result, awaited-rows, queued-rows).
+
+    The bcrypt verify is stubbed at `pwd_context` — the real awaitable wrapper
+    still runs, only the ~200 ms hash cost is skipped.
+    """
+    from app.api.portal_auth import portal_login
+    from app.schemas.portal import PortalLoginRequest
+
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: password_ok)
+    awaited, queued = _spy_on_portal_audits(monkeypatch)
+
+    result = await portal_login(
+        body=PortalLoginRequest(email="rep@supplier.example", password=password),
+        request=_portal_login_request(ip),
+        slug="acme",
+        db=_portal_login_db(vendor_user),
+    )
+    return (
+        result,
+        [call.kwargs for call in awaited.await_args_list],
+        [call.kwargs for call in queued.call_args_list],
+    )
+
+
+@pytest.mark.asyncio
+async def test_password_only_sign_in_writes_one_login_success_row(
+    monkeypatch, _portal_session_redis
+):
+    """The row an auditor asking "who signed in?" reads — and its exact shape."""
+    from app.schemas.portal import PortalTokenResponse
+
+    vu = _portal_vendor_user()
+    result, awaited, queued = await _attempt_portal_login(monkeypatch, vendor_user=vu)
+
+    assert isinstance(result, PortalTokenResponse)
+    assert result.access_token
+    assert queued == [], "a completed sign-in is not a rejection"
+
+    (row,) = awaited
+    assert row["action"] == "portal.login.success"
+    assert row["organization_id"] == vu.organization_id
+    # Subject is the vendor user on both axes, matching every other portal auth
+    # row — an auditor filters the trail by `entity_id`.
+    assert row["actor_id"] == vu.id
+    assert row["entity_id"] == vu.id
+    # PII-free and CLOSED: the client IP plus a fixed literal, nothing else. The
+    # supplier contact's address is third-party PII the trail never restates,
+    # and `method` is what separates this from the MFA completion row.
+    assert row["details"] == {"ip": "203.0.113.7", "method": "password"}
+    assert vu.email not in repr(row)
+    assert vu.full_name not in repr(row)
+    assert "hunter2-correct" not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_rejected_sign_in_still_writes_the_failure_row_and_no_success(monkeypatch):
+    """The failure row is unchanged — still queued OFF the response path, so a
+    known address stays indistinguishable from an unknown one by timing — and
+    nothing about the new success row leaks onto a rejection."""
+    from app.api.portal_auth import portal_login
+    from app.schemas.portal import PortalLoginRequest
+
+    vu = _portal_vendor_user()
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.utils.passwords.pwd_context.verify", lambda *_a, **_k: False)
+    awaited, queued = _spy_on_portal_audits(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await portal_login(
+            body=PortalLoginRequest(email=vu.email, password="wrong-password"),
+            request=_portal_login_request(),
+            slug="acme",
+            db=_portal_login_db(vu),
+        )
+
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Invalid credentials"
+    assert awaited.await_args_list == [], "a rejection must never claim a sign-in"
+
+    (row,) = [call.kwargs for call in queued.call_args_list]
+    assert row["action"] == "portal.login.failure"
+    assert row["organization_id"] == vu.organization_id
+    assert row["entity_id"] == vu.id
+    assert row["details"] == {"ip": "203.0.113.7", "reason": "bad_password"}
+    assert vu.email not in repr(row)
+    assert "wrong-password" not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_no_success_row_when_the_session_could_not_be_minted(monkeypatch):
+    """The row goes on the trail only once the sign-in actually took effect.
+
+    `_mint_portal_session` registers the session in Redis and lets its failures
+    propagate; `dispatch_auth_audit` swallows its own. Auditing first would let
+    a Redis blip leave a permanent, immutable row asserting a completed sign-in
+    for a request that 500'd and handed the caller no token — the same order
+    `portal_mfa_challenge` and `api/auth.verify_mfa` already use.
+    """
+    monkeypatch.setattr(
+        "app.api.portal_auth._mint_portal_session",
+        AsyncMock(side_effect=RuntimeError("redis is down")),
+    )
+
+    with pytest.raises(RuntimeError):
+        await _attempt_portal_login(monkeypatch, vendor_user=_portal_vendor_user())
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_vendor_user_with_no_org_signs_in_without_a_row(
+    monkeypatch, _portal_session_redis
+):
+    """`dispatch_auth_audit` resolves the tenant DB from `organization_id`, so
+    there is nowhere to route a row for a vendor user that predates it. Skipping
+    is the existing portal-audit contract — and the sign-in must still work."""
+    from app.schemas.portal import PortalTokenResponse
+
+    result, awaited, _ = await _attempt_portal_login(
+        monkeypatch, vendor_user=_portal_vendor_user(organization_id=None)
+    )
+
+    assert isinstance(result, PortalTokenResponse)
+    assert awaited == []
