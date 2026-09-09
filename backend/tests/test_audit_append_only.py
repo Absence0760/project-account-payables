@@ -586,6 +586,49 @@ def test_entity_and_gl_account_mutations_dispatch_audit():
         assert "dispatch_audit" in inspect.getsource(handler), handler.__name__
 
 
+def test_round_24_open_audit_holes_are_closed():
+    """The six mutators round 24 enumerated in `_OPEN_AUDIT_HOLES` — a Day-0
+    CSV load of a tenant's AP ledger, an ERP vendor pull, a bulk vendor
+    import, the one AP action that mints a vendor identity, a workflow
+    definition, and a hand-recorded 4-way-match quality inspection — now each
+    dispatch a PII-free audit row (invariant #3).
+
+    Pinned by name here so a refactor that drops one `dispatch_audit` call
+    fails loudly even if the route-discovery sweep ever stops reaching that
+    handler — the belt to the sweep's suspenders.
+
+    Three of the six audit **per row inside their service**, not once at the
+    route: an import that creates 400 invoices writes 400 rows, each keyed on
+    the invoice's own `correlation_id` so it is reachable from that invoice's
+    trail. A single route-level summary row keyed on the org would be
+    invisible from every invoice it describes, which is the trail an auditor
+    actually walks. So the assertion follows the delegation rather than
+    demanding the call sit in the handler — the same distinction
+    `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT` draws above.
+    """
+    from app.api import inspections, vendors, workflow_definitions
+    from app.services import csv_import, vendor_sync
+
+    # Audits directly in the handler.
+    direct = [
+        workflow_definitions.create_workflow,
+        vendors.invite_vendor_portal_user,
+        inspections.create_inspection,
+    ]
+    # Audits in the service the handler delegates to (one row per created row).
+    delegated = [
+        csv_import.import_invoices_csv,
+        csv_import.import_vendors_csv,
+        vendor_sync.sync_vendors_from_erp,
+    ]
+    missing = [
+        f"{fn.__module__}.{fn.__name__}"
+        for fn in (*direct, *delegated)
+        if not _handler_audits(fn, fn.__module__)
+    ]
+    assert not missing, f"these tenant-mutating paths write no audit row: {missing}"
+
+
 # ---------------------------------------------------------------------------
 # Audit-shipper preserves rows on ship (stamp, don't delete)
 # ---------------------------------------------------------------------------

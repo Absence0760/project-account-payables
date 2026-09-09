@@ -160,6 +160,30 @@ async def test_create_workflow_starts_inactive(realdb):
     assert body["steps_config"]["steps"][0]["type"] == "extraction"
 
 
+async def test_create_workflow_writes_an_audit_row(realdb):
+    """Creating a workflow definition is a control change — the approval
+    routing every invoice in its entity is bound to — so it must leave an
+    append-only row (invariant #3), like the from-template and import paths."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    async with realdb.client(key="a", role="admin") as c:
+        wf_id = (await _create_workflow(c)).json()["id"]
+
+    async with realdb.sessionmaker("a")() as s:
+        rows = list(
+            (
+                await s.execute(select(AuditLog).where(AuditLog.action == "workflow.created"))
+            ).scalars()
+        )
+    mine = [r for r in rows if str(r.entity_id) == wf_id]
+    assert len(mine) == 1, rows
+    assert mine[0].actor_id is not None
+    assert mine[0].details["name"] == "Custom WF"
+    assert mine[0].details["step_count"] == len(_STEPS)
+
+
 async def test_create_workflow_rbac(realdb):
     for role in ("ap_manager", "ap_clerk", "cfo"):
         async with realdb.client(key="a", role=role) as c:

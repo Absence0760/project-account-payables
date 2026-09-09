@@ -1720,6 +1720,7 @@ async def invite_vendor_portal_user(
             "Portal-user welcome email failed for %s (vendor=%s)", body.email, vendor.id
         )
 
+    await db.commit()
     return PortalInviteResponse(
         user=_vendor_user_response(vu), temp_password=temp_password, portal_url=portal_url
     )

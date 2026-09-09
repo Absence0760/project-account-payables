@@ -482,6 +482,11 @@ families (`financing_adapters`, `fx_adapters`, …):
   a synthetic `pass` clearing the quality gate on a real invoice, a synthetic
   `fail` flipping others to `mismatch`, and rows indistinguishable from genuine
   ones in the UI. The sweep already guarded this; the route did not.
+- **Hand-recorded inspections audit too.** `POST /api/inspections` (admin /
+  ap_manager) writes an append-only `quality_inspection.created` row (PII-free:
+  inspection number + result + PO/GR ids), the manual-entry counterpart of the
+  sweep's `quality_inspection.synced` — a `pass` clears the 4-way quality gate
+  on a real invoice, so who recorded it belongs on the trail (invariant #3).
 - **A NAMED provider we have no adapter for is refused, never `mock`.** The
   opt-in rule above covers an org that configured *nothing*; this is the other
   half — an org that configured *something we cannot honour*.

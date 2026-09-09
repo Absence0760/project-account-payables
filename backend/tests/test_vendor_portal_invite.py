@@ -161,3 +161,37 @@ async def test_deleting_a_portal_user_writes_an_audit_row(realdb):
     assert mine[0].actor_id is not None
     # PII-free: the id, never the supplier's email address.
     assert "revoke-me@supplier.example" not in str(mine[0].details)
+
+
+async def test_inviting_a_portal_user_writes_an_audit_row(realdb):
+    """Provisioning a supplier-portal credential is the one AP action tying an
+    AP actor to a vendor identity they created — it must leave a trace
+    (invariant #3), keyed on the vendor and PII-free.
+    """
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker(TENANT)
+    org_id = realdb.info(TENANT).org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Invite Audit Co")
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        created = await c.post(
+            f"/api/vendors/{vendor_id}/portal-users",
+            json={"email": "invited@supplier.example", "full_name": "Invited"},
+        )
+    assert created.status_code == 201, created.text
+    vendor_user_id = created.json()["user"]["id"]
+
+    async with mk() as s:
+        rows = list(
+            (
+                await s.execute(select(AuditLog).where(AuditLog.action == "vendor_user.invited"))
+            ).scalars()
+        )
+    mine = [r for r in rows if r.details.get("vendor_user_id") == vendor_user_id]
+    assert len(mine) == 1, "inviting a portal user must leave exactly one audit row"
+    assert str(mine[0].entity_id) == str(vendor_id)
+    assert mine[0].actor_id is not None
+    assert "invited@supplier.example" not in str(mine[0].details)

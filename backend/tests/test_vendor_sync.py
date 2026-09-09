@@ -292,6 +292,43 @@ async def test_sync_erp_endpoint_happy_path(realdb):
     assert count == 2
 
 
+async def test_sync_erp_endpoint_writes_an_audit_row_per_vendor(realdb):
+    """A bulk payee pull from the ERP must leave the trail an auditor walks
+    (invariant #3) — one row per vendor the sync actually changed, keyed on
+    THAT vendor, carrying the AP actor who ran it.
+
+    Deliberately per-vendor rather than one summary row keyed on the org: a
+    summary row is invisible from every vendor it describes, and "which payee
+    did this pull change, and who ran it" is the question a bank-redirect
+    investigation asks. Route-level counterpart to the service-level coverage
+    in `test_audit_open_holes.py`.
+    """
+    from app.models.workflow import AuditLog
+
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post("/api/vendors/sync-erp")).status_code == 200
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        rows = list(
+            (
+                await s.execute(select(AuditLog).where(AuditLog.action == "vendor.synced_from_erp"))
+            ).scalars()
+        )
+        vendor_ids = {str(v) for v in (await s.execute(select(Vendor.id))).scalars()}
+    # Both mock ERP vendors are new on the first run, so both are audited.
+    assert len(rows) == 2, rows
+    assert {str(r.entity_id) for r in rows} == vendor_ids
+    assert all(r.actor_id is not None for r in rows)
+    assert all(r.details["change"] == "created" for r in rows)
+    # The ERP payload carries tax_id / address / email / phone and the sync
+    # writes them onto the vendor row; none may reach an append-only,
+    # WORM-shipped store.
+    for row in rows:
+        assert set(row.details) == {"change", "erp_vendor_id", "name", "code"}
+
+
 async def test_sync_erp_endpoint_idempotent_second_run(realdb):
     await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
     async with realdb.client(key="a", role="ap_manager") as c:
