@@ -565,24 +565,46 @@ decide.
       high effort, diffuse payoff — defer unless a design partner asks).
 ### Surfaced while clearing the open-PR backlog (2026-09-02)
 
-- [ ] **(b) The Dependabot pip-grouping fix is applied but UNVERIFIED.**
-      `patterns: ["*"]` was added alongside `update-types` on the
-      `backend-minor-patch` group on 2026-09-05, matching the two groups in that
-      file that demonstrably do group (`actions`, `fake-erp`). A Dependabot
-      config change cannot be verified without waiting for its next scheduled
-      run, so this is a candidate, not a fix.
-      **Note the hypothesis is already partly contradicted:** the `npm` group has
-      the identical no-`patterns` shape and groups anyway, so `patterns` may not
-      be the operative difference.
-      **Confirmed if** next Monday's pip bumps arrive on one
+- [ ] **(b) The Dependabot pip-grouping `patterns` fix is REFUTED; a second
+      candidate is now under test (round 28).** The entry's own refute condition
+      was met. `patterns: ["*"]` went on the `backend-minor-patch` group on
+      2026-09-05; the next scheduled run, Monday 2026-09-07, still delivered
+      #379 (`ruff`) and #381 (`boto3`) on separate
+      `dependabot/pip/backend/<dep>-gte-…` branches. The entry had already
+      suspected this — the `npm` group has no `patterns` and groups anyway.
+      **What the refutation exposed:** the operative difference is
+      `update-types` on an ecosystem where Dependabot can see no lockfile. Our
+      locks are `requirements.lock` / `requirements-dev.lock`, and pip-compile
+      support only recognises a lockfile whose name ends in `.txt` and matches
+      an `.in` basename — which is exactly why the `fake-erp` group, on
+      `requirements.in` + `requirements.txt`, does group. For `/backend`
+      Dependabot therefore reads only `pyproject.toml`'s ranges, resolves no
+      concrete version, computes no semver update type, and every member falls
+      out of a group filtered by one. The branch names corroborate it:
+      `boto3-gte-1.43.88-and-lt-2` is a requirement-range edit, not a version
+      bump.
+      **Applied this round:** `update-types` dropped from `backend-minor-patch`,
+      leaving `patterns: ["*"]` alone — structurally identical to the two
+      groups that demonstrably work. The accepted cost is that a major can now
+      ride in the same PR as patches, which is the lesser evil while every bump
+      arrives alone and each one costs a hand recompile of the locks.
+      **Confirmed if** the next Monday run delivers the pip bumps on one
       `dependabot/pip/backend/backend-minor-patch-…` branch; **refuted if** they
-      again arrive as separate `dependabot/pip/backend/<dep>-gte-…` branches.
-      **If confirmed:** apply the same one-liner to `terraform-minor-patch`,
-      which carries the same untested shape and was deliberately left alone.
+      again arrive separately — in which case the remaining lead is renaming the
+      locks to the `.in`/`.txt` pair pip-compile support recognises.
+      **Do NOT** copy this to `terraform-minor-patch`: it has a real
+      `.terraform.lock.hcl`, its `update-types` resolves, and it groups today
+      (#332, #345, #380).
       **Trigger:** next Monday's Dependabot run.
 
-- [ ] **(b) Confirm the `packageManager` pin stopped Dependabot dropping the
-      pnpm overrides.** Two npm PRs in one day (#344, #351) arrived with the whole
+- [x] **(b) CONFIRMED (round 28) — the `packageManager` pin held.** PR #378
+      (`vitest` 4.1.11 → 5.0.0, opened Monday 2026-09-07, the first Dependabot
+      npm PR after the pin) rewrote `frontend/pnpm-lock.yaml` and left the
+      `overrides:` block untouched — zero `overrides` lines in its diff — and
+      merged green. The block is present in both `frontend/package.json` and
+      `frontend/pnpm-lock.yaml` on `main` today. The recurrence recipe below
+      stays recorded because it is the remedy if it ever returns.
+      Two npm PRs in one day (#344, #351) had arrived with the whole
       `overrides:` block deleted from `frontend/pnpm-lock.yaml` while
       `package.json` still declared `pnpm.overrides` for `cookie@<0.7.0` and
       `undici@<7.28.0`, red on every job that installs. Root cause was that
