@@ -198,6 +198,12 @@ CASES = [
     # only `payment.execute`, so an org that splits them keeps reversal away
     # from whoever initiates. ---
     ("/api/payments/{payment_id}/void", "POST", _VOID),
+    # `void/retry-card-cancel` re-attempts the card close for an ALREADY-voided
+    # card payment — the other half of a reversal, so the same gate as the void
+    # it completes. Deliberately NOT the card router's bare
+    # `require_roles(ADMIN, AP_MANAGER, CFO)`: an org that split the duties and
+    # withheld `payment.void` from `ap_manager` must not find this reachable.
+    ("/api/payments/{payment_id}/void/retry-card-cancel", "POST", _VOID),
     # `compliance/dismiss` gives up on a held payment and flips it to `failed`.
     # Its sibling `/release` gates on `payment.execute`: the two halves of the
     # compliance-hold exit are deliberately on opposite sides of the split.

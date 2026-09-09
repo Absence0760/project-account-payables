@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -513,6 +514,60 @@ async def cancel_card_at_provider(
         )
         return f"card_cancel_error:{exc.__class__.__name__}"
     return "cancelled" if confirmed else "card_cancel_rejected"
+
+
+# --- The verdict a void's card leg reports -----------------------------------
+#
+# `_cancel_card_for_void` (api/payments.py) returns a fine-grained outcome tag
+# that rides the `payment.voided` audit row. The UI must not branch on that
+# vocabulary — a client enumerating outcome strings mis-classifies every tag
+# added later, and it fails in the dangerous direction ("unknown means fine").
+# So the VERDICT is derived here, once, beside the function that produces the
+# outcomes, and travels on the response as
+# `PaymentResponse.void_card_disposition`:
+#
+#   closed                 the card is dead at the provider. Nothing to do.
+#   no_card                this payment never had a card, or none is linked.
+#   not_closed_final       the card was already CHARGED. It cannot be un-spent,
+#                          so a retry can never help — the remedy is a vendor /
+#                          chargeback conversation, and `card_settlement_block`
+#                          is what stops a later run settling against it.
+#   not_closed_retryable   the provider leg did not confirm a close (outage,
+#                          refusal, cards switched off, unregistered provider).
+#                          The card is LIVE and bearer-spendable; retrying the
+#                          close is the remedy, and it lives on the void
+#                          (`POST /api/payments/{id}/void/retry-card-cancel`).
+#
+# `None` means the leg never ran — a non-card payment, or a read that was not a
+# void. Deliberately NOT folded into `closed`: "we never asked" is not "it is
+# shut" (docs/decisions.md §34).
+CardCancelDisposition = Literal["closed", "no_card", "not_closed_final", "not_closed_retryable"]
+
+# `cancelled` is `cancel_card_at_provider`'s own success tag; `card_cancelled`
+# is what the void path records for the same event. Both mean the same closed
+# card, so both are listed rather than relying on the caller to translate.
+_CARD_CLOSED_OUTCOMES = frozenset({"card_cancelled", "cancelled", "card_already_cancelled"})
+_CARD_NO_CARD_OUTCOMES = frozenset({"no_card_linked"})
+_CARD_FINAL_OUTCOMES = frozenset({"card_already_charged"})
+
+
+def card_cancel_disposition(outcome: str | None) -> CardCancelDisposition | None:
+    """Classify one card-cancel `outcome` tag into the verdict the UI renders.
+
+    An unknown tag classifies as ``not_closed_retryable`` on purpose: only the
+    tags enumerated as closing a card may claim one, so a new failure tag added
+    to `cancel_card_at_provider` surfaces (and is offered a retry) rather than
+    silently reading as success.
+    """
+    if outcome is None:
+        return None
+    if outcome in _CARD_CLOSED_OUTCOMES:
+        return "closed"
+    if outcome in _CARD_NO_CARD_OUTCOMES:
+        return "no_card"
+    if outcome in _CARD_FINAL_OUTCOMES:
+        return "not_closed_final"
+    return "not_closed_retryable"
 
 
 async def notify_vendor_of_card(
