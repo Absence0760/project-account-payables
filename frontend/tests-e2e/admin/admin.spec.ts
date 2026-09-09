@@ -8,7 +8,6 @@ import { expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helper
 test.describe('/admin', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/admin');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('lists the seeded users', async ({ page, tenantAdmin }) => {

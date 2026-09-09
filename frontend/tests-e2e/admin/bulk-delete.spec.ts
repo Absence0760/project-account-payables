@@ -47,7 +47,6 @@ test.describe('/admin bulk delete', () => {
 			created.push(await createUser(page, `bar-${Date.now()}-1`));
 			created.push(await createUser(page, `bar-${Date.now()}-2`));
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			// Pick the two newest rows (top of the table) — they're the
 			// just-created users.
@@ -81,7 +80,17 @@ test.describe('/admin bulk delete', () => {
 		const b = await createUser(page, `del-${ts}-b`);
 
 		await page.reload();
-		await page.waitForLoadState('networkidle');
+		// `count()` is a point-in-time read, so wait for the two rows this test
+		// created to be on the page before taking the baseline the final
+		// `toHaveCount(beforeRows - 2)` is measured against. Matching on the
+		// email also rules out `DataTable`'s loading placeholder row, which
+		// `table tbody tr` alone would count.
+		await expect(
+			page.locator('table tbody tr', { hasText: `e2e-bulk-del-${ts}-a` })
+		).toBeVisible();
+		await expect(
+			page.locator('table tbody tr', { hasText: `e2e-bulk-del-${ts}-b` })
+		).toBeVisible();
 		const beforeRows = await page.locator('table tbody tr').count();
 
 		// Select via API id — find the row by email substring.
