@@ -268,8 +268,17 @@ async def test_reconciler_records_the_settled_figure_when_it_settles_a_payment()
         return_value=SettlementReport(available=True, amount=Decimal("250.00"), currency="USD")
     )
 
+    # The FX columns are part of an `Invoice` row, so the stub carries them:
+    # `_settle_from_poll` now also computes realized FX from this object, and a
+    # stub missing a column the real row always has tests a shape production
+    # never sees. Domestic here (no reporting rate), so the figure is `None`.
     invoice = SimpleNamespace(
-        id=payment.invoice_id, currency="USD", amount=Decimal("500.00"), invoice_number="INV-1"
+        id=payment.invoice_id,
+        currency="USD",
+        amount=Decimal("500.00"),
+        invoice_number="INV-1",
+        reporting_currency=None,
+        reporting_fx_rate=None,
     )
     inv_res = MagicMock()
     inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
@@ -292,7 +301,7 @@ async def test_reconciler_records_the_settled_figure_when_it_settles_a_payment()
     db.add = MagicMock()
     org = SimpleNamespace(id=uuid.uuid4(), settings={})
 
-    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+    verification, _realized_fx = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
         db, payment=payment, adapter=adapter, org=org
     )
 
@@ -325,7 +334,14 @@ async def test_reconciler_settlement_fetch_failure_leaves_the_columns_null():
     adapter.provider_name = "mock"
     adapter.fetch_settlement = AsyncMock(side_effect=RuntimeError("processor down"))
 
-    invoice = SimpleNamespace(id=payment.invoice_id, currency="USD", invoice_number="INV-1")
+    invoice = SimpleNamespace(
+        id=payment.invoice_id,
+        currency="USD",
+        amount=Decimal("500.00"),
+        invoice_number="INV-1",
+        reporting_currency=None,
+        reporting_fx_rate=None,
+    )
     inv_res = MagicMock()
     inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
     db = AsyncMock()
@@ -333,7 +349,7 @@ async def test_reconciler_settlement_fetch_failure_leaves_the_columns_null():
     db.add = MagicMock()
     org = SimpleNamespace(id=uuid.uuid4(), settings={})
 
-    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+    verification, _realized_fx = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
         db, payment=payment, adapter=adapter, org=org
     )
 
@@ -382,7 +398,14 @@ async def test_reconciler_flags_a_settlement_discrepancy_it_resolved_itself():
         return_value=SettlementReport(available=True, amount=Decimal("5000.00"), currency="USD")
     )
 
-    invoice = SimpleNamespace(id=payment.invoice_id, currency="USD", invoice_number="INV-OVER")
+    invoice = SimpleNamespace(
+        id=payment.invoice_id,
+        currency="USD",
+        amount=Decimal("500.00"),
+        invoice_number="INV-OVER",
+        reporting_currency=None,
+        reporting_fx_rate=None,
+    )
     inv_res = MagicMock()
     inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
     generic = MagicMock()
@@ -401,7 +424,7 @@ async def test_reconciler_flags_a_settlement_discrepancy_it_resolved_itself():
     db.add = MagicMock(side_effect=added.append)
     org = SimpleNamespace(id=uuid.uuid4(), settings={})
 
-    verification = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+    verification, _realized_fx = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
         db, payment=payment, adapter=adapter, org=org
     )
 
@@ -412,3 +435,125 @@ async def test_reconciler_flags_a_settlement_discrepancy_it_resolved_itself():
     assert payment.settled_amount == Decimal("5000.00")
     flags = [row for row in added if getattr(row, "exception_type", None) == "fraud_flag"]
     assert len(flags) == 1, f"expected one fraud_flag, got {[type(r).__name__ for r in added]}"
+
+
+# ---------------------------------------------------------------------------
+# Realized FX — the backstop is a settlement moment too
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconciler_computes_realized_fx_for_a_foreign_invoice():
+    """Realized FX is measurable only when a payment settles, and a payment
+    settles down TWO paths: the processor webhook and this backstop.
+
+    Only the webhook computed it. So every cross-currency payment the backstop
+    recovered lost the figure permanently — its invoice's accrual stayed on the
+    books against an outflow nothing ever reconciled it to. That is the
+    population with the LEAST evidence, since the backstop exists precisely for
+    the case where the webhook never arrived.
+    """
+    from app.services import payment_reconciler
+
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_fx",
+        payment_run_id=uuid.uuid4(),
+        status="submitted",
+        completed_at=None,
+        settled_amount=None,
+        settled_currency=None,
+        submitted_at=None,
+        amount=Decimal("1000.00"),
+        correlation_id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        method="international_wire",
+        # What actually left the bank, in the home currency.
+        source_amount=Decimal("1050.00"),
+        source_currency="USD",
+        settled_amount_unstorable=False,
+    )
+    # Accrued 1000 EUR * 1.10 = 1100 USD; paid 1050 USD -> a 50 USD gain.
+    invoice = SimpleNamespace(
+        id=payment.invoice_id,
+        currency="EUR",
+        amount=Decimal("1000.00"),
+        invoice_number="INV-FX",
+        reporting_currency="USD",
+        reporting_fx_rate=Decimal("1.10"),
+    )
+
+    adapter = MagicMock()
+    adapter.provider_name = "mock"
+    adapter.fetch_settlement = AsyncMock(
+        return_value=SettlementReport(available=True, amount=Decimal("1000.00"), currency="EUR")
+    )
+
+    inv_res = MagicMock()
+    inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
+    generic = MagicMock()
+    generic.scalar = MagicMock(return_value=0)
+    generic.scalar_one_or_none = MagicMock(return_value=None)
+    generic.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    calls = {"n": 0}
+
+    async def _execute(*_a, **_kw):
+        calls["n"] += 1
+        return inv_res if calls["n"] == 1 else generic
+
+    db = AsyncMock()
+    db.execute = _execute
+    db.add = MagicMock()
+    org = SimpleNamespace(id=uuid.uuid4(), settings={})
+
+    _verification, realized_fx = await payment_reconciler._settle_from_poll(  # type: ignore[attr-defined]
+        db, payment=payment, adapter=adapter, org=org
+    )
+
+    assert realized_fx == Decimal("50.00")
+
+
+@pytest.mark.asyncio
+async def test_reconciler_audit_row_carries_the_realized_fx_figure():
+    """The figure has to reach the append-only row, not just be computed.
+
+    Same key and same exact-decimal-string convention as the webhook path, so
+    the two completion paths are queryable as one population rather than two
+    shapes that happen to look alike.
+    """
+    from app.services import payment_reconciler
+
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="completed",
+        amount=Decimal("1000.00"),
+        method="international_wire",
+        reference="REF-FX",
+        correlation_id=uuid.uuid4(),
+        payment_run_id=None,
+    )
+    org = SimpleNamespace(id=uuid.uuid4(), settings={})
+
+    with patch("app.services.audit_dispatch.dispatch_audit", new_callable=AsyncMock) as audit:
+        await payment_reconciler._audit_reconcile_transition(  # type: ignore[attr-defined]
+            AsyncMock(),
+            org=org,
+            payment=payment,
+            previous_status="submitted",
+            source="reconciler_poll",
+            realized_fx=Decimal("50.00"),
+        )
+    assert audit.call_args.kwargs["details"]["realized_fx_gain_loss"] == "50.00"
+
+    # Absent, not zero, when there is nothing to measure — a zero would claim
+    # we looked and found no exposure.
+    with patch("app.services.audit_dispatch.dispatch_audit", new_callable=AsyncMock) as audit:
+        await payment_reconciler._audit_reconcile_transition(  # type: ignore[attr-defined]
+            AsyncMock(),
+            org=org,
+            payment=payment,
+            previous_status="submitted",
+            source="reconciler_poll",
+            realized_fx=None,
+        )
+    assert "realized_fx_gain_loss" not in audit.call_args.kwargs["details"]

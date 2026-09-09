@@ -8,7 +8,7 @@ This sits **on top of** the payment-level FX machinery — it does not replace i
 
 | Layer | Lives in | What it does | When the rate is locked |
 |---|---|---|---|
-| **Payment FX** (existing) | `services/international_payments.py`, `services/fx_adapters/` | Locks an FX rate on the `Payment` row at submission; computes **realized** gain/loss (`realized_fx_gain_loss_for_settlement`) when a foreign invoice settles, and records it on the settlement audit row. | At payment submission |
+| **Payment FX** (existing) | `services/international_payments.py`, `services/fx_adapters/` | Locks an FX rate on the `Payment` row at submission; computes **realized** gain/loss (`realized_fx_for_settled_payment`, over `realized_fx_gain_loss_for_settlement`) when a foreign invoice settles, and records it on the settlement audit row — on **both** completion paths, see § Realized FX is recorded on both completion paths. | At payment submission |
 | **Reporting FX** (this doc) | `services/currency_conversion.py` | Converts each invoice's `amount` into the org reporting currency, materializes the rate on the invoice row, rolls multi-currency volume into one total, computes **unrealized** gain/loss on open invoices. | When the invoice is created / mutated |
 | **Expense FX** | `services/expense_currency.py` | Converts each expense line into its **report's** currency (`expenses.converted_*`) so a report total isn't a cross-currency sum, and the report total into the **org reporting** currency (`expense_reports.reporting_*`) so the CFO threshold compares like with like. | Line: on attach / amount-or-currency edit / report-currency change. Report: at submit |
 | **Expense-policy thresholds** | `services/expense_policy.py` | Compares an expense against a policy's money thresholds **in the policy's `threshold_currency`**, so a €200 expense isn't judged against a USD 100 limit as bare numbers. | Never — it locks nothing. It **reuses** the line's existing lock (row above) and fails closed when none bridges the two currencies. |
@@ -260,3 +260,33 @@ upcoming-total on `GET /api/dashboard`, AP-balance / working-capital on
 `GET /api/analytics/cfo`, and outstanding-amount on `GET /api/analytics/by-entity`
 each correctly converting a mixed USD/EUR invoice or payment set). All
 deterministic against the mock FX adapter.
+
+## Realized FX is recorded on both completion paths
+
+A payment reaches `completed` two ways, and realized FX is measurable only at
+that moment:
+
+1. the processor **webhook** (`api/payments.payment_webhook`), and
+2. the **reconciler backstop** (`services/payment_reconciler`), which polls
+   `get_payment_status` for a payment whose webhook never arrived.
+
+Only the first computed the figure. Every cross-currency payment the backstop
+recovered therefore lost its realized gain/loss permanently — the invoice's
+accrual stayed on the books against an outflow nothing ever reconciled it to,
+and because `payment_webhook` refuses an already-terminal payment, a late
+webhook could not supply it afterwards either. That is the population with the
+*least* evidence, since the backstop exists precisely for the case where the
+webhook never came.
+
+Both paths now go through `international_payments.realized_fx_for_settled_payment(invoice, payment)`,
+a thin row-level wrapper over `realized_fx_gain_loss_for_settlement`. Sharing
+one call is what stops the two drifting again — the same reasoning that already
+makes `record_settlement` shared between them. Every "not measurable" rule
+(domestic payment, missing accrual rate, same-currency settlement, accrual and
+outflow denominated in different currencies) stays in the underlying function,
+so the two paths cannot disagree about when a figure exists.
+
+The value lands on the append-only audit row under the same key,
+`details.realized_fx_gain_loss`, as an exact decimal string — **absent, never
+zero**, when there is nothing to measure. A zero would assert that we looked and
+found no exposure, which is a different claim from having none to look for.

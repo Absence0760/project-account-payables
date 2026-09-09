@@ -60,7 +60,7 @@ from app.services.currency_conversion import (
 from app.services.exception_lifecycle import record_decision
 from app.services.international_payments import (
     is_international_payment,
-    realized_fx_gain_loss_for_settlement,
+    realized_fx_for_settled_payment,
 )
 from app.services.payment_adapters import (
     PaymentAdapter,
@@ -4068,15 +4068,11 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
                 # else. `None` for a domestic payment, an invoice with no
                 # accrual rate, or a same-currency settlement — a zero would
                 # claim we measured and found no exposure.
-                if settled_invoice is not None:
-                    realized_fx = realized_fx_gain_loss_for_settlement(
-                        invoice_amount=settled_invoice.amount,
-                        invoice_currency=settled_invoice.currency,
-                        reporting_currency=settled_invoice.reporting_currency,
-                        reporting_fx_rate=settled_invoice.reporting_fx_rate,
-                        paid_source_amount=payment.source_amount,
-                        paid_source_currency=payment.source_currency,
-                    )
+                # Through the shared row-level wrapper, not a second spelling of
+                # the six-argument call: the reconciler backstop is the OTHER path
+                # a payment reaches `completed` on and it must compute this
+                # identically (it used not to compute it at all).
+                realized_fx = realized_fx_for_settled_payment(settled_invoice, payment)
 
             # Append-only audit trail for the webhook-driven status transition.
             # This is the production money-movement event — the processor's

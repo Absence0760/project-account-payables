@@ -31,6 +31,7 @@ from app.database import _make_tenant_url, control_session_factory
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
+from app.services.international_payments import realized_fx_for_settled_payment
 from app.services.payment_adapters import PaymentStatus, SettlementReport, get_payment_adapter
 from app.services.payment_settlement import SettlementVerification
 from app.services.payment_settlement_record import (
@@ -130,7 +131,7 @@ async def _settle_from_poll(
     org: Organization,
     reported_amount: Decimal | None = None,
     reported_currency: str | None = None,
-) -> SettlementVerification:
+) -> tuple[SettlementVerification, Decimal | None]:
     """Verify + record what the processor settled for a payment THIS sweep
     completed, and flag a discrepancy.
 
@@ -185,7 +186,12 @@ async def _settle_from_poll(
             org=org,
             verification=verification,
         )
-    return verification
+    # Realized FX, measurable only at settlement — and this path never measured
+    # it, so every cross-currency payment the backstop recovered lost the figure
+    # permanently while its invoice's accrual stayed on the books. The invoice is
+    # already loaded here; the webhook path computes it through the SAME shared
+    # helper. `None` (not zero) whenever there is nothing to measure.
+    return verification, realized_fx_for_settled_payment(invoice, payment)
 
 
 async def _audit_reconcile_transition(
@@ -196,6 +202,7 @@ async def _audit_reconcile_transition(
     previous_status: str | None,
     source: str,
     settlement: SettlementVerification | None = None,
+    realized_fx: Decimal | None = None,
 ) -> None:
     """Append-only audit row for a reconciler-driven terminal transition.
 
@@ -231,6 +238,11 @@ async def _audit_reconcile_transition(
             # unverified alike), so a rail that reports no amount is a
             # visible blind spot rather than a silent one.
             **({"settlement": settlement.as_details()} if settlement else {}),
+            # Exact decimal string, never a float. Absent (not zero) when there
+            # is no FX exposure to measure — a zero would claim we looked and
+            # found none. Same key and same convention as the webhook path's
+            # row, so the two are queryable as one population.
+            **({"realized_fx_gain_loss": str(realized_fx)} if realized_fx is not None else {}),
         },
     )
 
@@ -546,8 +558,9 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                         payment.status = upstream.value
                         payment.completed_at = now
                         settlement: SettlementVerification | None = None
+                        realized_fx: Decimal | None = None
                         if payment.status == "completed":
-                            settlement = await _settle_from_poll(
+                            settlement, realized_fx = await _settle_from_poll(
                                 db,
                                 payment=payment,
                                 adapter=_PREFETCHED_ONLY,
@@ -562,6 +575,7 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                             previous_status=previous_status,
                             source="reconciler_poll",
                             settlement=settlement,
+                            realized_fx=realized_fx,
                         )
                         # Durable per-payment commit, mirroring
                         # `api/payments._dispatch_run_payments`. Two things depend

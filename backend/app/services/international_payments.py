@@ -278,6 +278,37 @@ def realized_fx_gain_loss_for_settlement(
     return _gain_loss(accrued=accrued, paid_home_amount=paid_source_amount)
 
 
+def realized_fx_for_settled_payment(invoice, payment) -> Decimal | None:
+    """:func:`realized_fx_gain_loss_for_settlement` over the two ORM rows.
+
+    A payment reaches ``completed`` down two paths — the processor webhook and
+    the reconciler backstop — and the realized figure is only measurable at that
+    moment. The webhook path spelled the six-argument call out inline and the
+    backstop did not make it at all, so **every cross-currency payment the
+    backstop recovered lost its realized FX permanently**: the invoice's accrual
+    stayed on the books against an outflow nothing ever reconciled it to. That
+    is precisely the population with the least evidence, since the backstop
+    exists for the case where the webhook never arrived.
+
+    Wrapping the call is what stops the two paths drifting again — the same
+    reason ``record_settlement`` is shared between them. Every "not measurable"
+    rule (domestic payment, missing accrual rate, same-currency settlement,
+    accrual and outflow in different currencies) stays in the function below;
+    this only unpacks the rows, and returns ``None`` when there is no invoice to
+    unpack.
+    """
+    if invoice is None:
+        return None
+    return realized_fx_gain_loss_for_settlement(
+        invoice_amount=invoice.amount,
+        invoice_currency=invoice.currency,
+        reporting_currency=invoice.reporting_currency,
+        reporting_fx_rate=invoice.reporting_fx_rate,
+        paid_source_amount=payment.source_amount,
+        paid_source_currency=payment.source_currency,
+    )
+
+
 def is_international_payment(payment: Payment) -> bool:
     """Row-level predicate: does this Payment have an international leg?
 
