@@ -15,7 +15,6 @@ test.describe('/signup (no tenant)', () => {
 
 	test('renders the create-workspace form', async ({ page }) => {
 		await page.goto('/signup');
-		await page.waitForLoadState('networkidle');
 
 		await expect(
 			page.getByRole('heading', { name: 'Create your workspace' })
@@ -28,7 +27,6 @@ test.describe('/signup (no tenant)', () => {
 
 	test('slug-check rejects an already-taken slug', async ({ page }) => {
 		await page.goto('/signup');
-		await page.waitForLoadState('networkidle');
 
 		// `acme` is seeded — slug-check should mark it unavailable.
 		// The page shows a `.hint.bad` with the rejection reason; the
@@ -43,7 +41,6 @@ test.describe('/signup (no tenant)', () => {
 
 	test('slug-check accepts a fresh slug', async ({ page }) => {
 		await page.goto('/signup');
-		await page.waitForLoadState('networkidle');
 
 		// Time-suffixed slug ensures it's never been used (avoids
 		// inter-run pollution if the DB persists between local dev runs).

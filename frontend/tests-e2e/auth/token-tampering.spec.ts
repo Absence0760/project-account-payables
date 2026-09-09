@@ -106,7 +106,11 @@ test.describe('token tampering', () => {
 		// session. Without this, the negative tests above could pass
 		// because the SPA always boots anon — making them meaningless.
 		await page.reload();
-		await page.waitForLoadState('networkidle');
+		// The sidebar profile button renders only for an authenticated
+		// session, so it is the real "the SPA re-hydrated auth state on
+		// boot" signal — and the raw localStorage read below does no
+		// waiting of its own.
+		await expect(page.locator('.profile-btn')).toBeVisible();
 
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));
 		expect(token, 'reload must preserve the session').toBeTruthy();

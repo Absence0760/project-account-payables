@@ -34,7 +34,6 @@ async function tokenAfterLogin(
 	creds: { email: string; password: string }
 ): Promise<string> {
 	await page.goto(`${baseURL}/login`);
-	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(creds.email);
 	await page.locator('input[type="password"]').fill(creds.password);
 	await page.locator('form button[type="submit"]').click();
