@@ -111,6 +111,40 @@ foreign / missing invoice id on `GET /api/v1/invoices/{id}` is a `404` — and a
 key for tenant A literally cannot see tenant B's row (the session is bound to A's
 DB), so a cross-tenant id is simply "not found", never leaked.
 
+## Trying it locally
+
+The public API is entitlement-gated, so it needs a tenant on a plan that grants
+`public_api`. `scripts/seed.py` provides one: **`acme` is seeded on `growth`**,
+which grants it. Nothing else is required — no cloud account, no Stripe key, no
+hand-editing of the control plane (guard rail 7).
+
+```bash
+pnpm db:up && pnpm seed && pnpm dev:backend
+```
+
+Then mint a key as the seeded acme admin and call the API with it:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login -H 'Content-Type: application/json' -H 'X-Tenant-Slug: acme' -d '{"email":"demo@acme.com","password":"demo"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+KEY=$(curl -s -X POST http://localhost:8000/api/api-keys -H "Authorization: Bearer $TOKEN" -H 'X-Tenant-Slug: acme' -H 'Content-Type: application/json' -d '{"name":"local-dev"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["key"])')
+curl -s -i http://localhost:8000/api/v1/invoices?page_size=1 -H "X-API-Key: $KEY"
+```
+
+`200`, with the tenant's invoices. The mint response is the only place the
+plaintext key ever appears, so capture it in that same step.
+
+**`techflow` stays on `free` on purpose.** Run the same three commands against
+`techflow` / `admin@techflow.com` and `/api/v1` answers
+`402 {"detail":"Your plan does not include this feature."}` — the refusal path
+stays exercisable locally instead of being something only a paying customer
+could ever hit. Move a tenant across the gate with
+`POST /api/billing/change-plan {"plan_code": "growth"}` (the `mock` billing
+adapter handles it with no Stripe key).
+
+Every `e2e<N>` Playwright worker tenant is on `free` too, deliberately — see
+`docs/billing.md` § Which plan the seed lands each tenant on for why the demo
+tenant, and not a worker tenant, is the entitled one.
+
 ## `/api/v1` read surface
 
 All routes are behind `require_api_scope("read")` (→ `get_api_key_principal`)
@@ -118,13 +152,8 @@ All routes are behind `require_api_scope("read")` (→ `get_api_key_principal`)
 paid-plan feature, 402 without it — and read through `get_api_key_db` (the
 tenant session resolved from the key).
 
-**Local dev:** a freshly provisioned org (including the two demo tenants,
-`scripts/seed.py`) starts on the `free` plan, which does not grant
-`public_api` — so `/api/v1` 402s out of the box, by design. Unlock it locally
-with no cloud account by upgrading via `POST /api/billing/change-plan
-{"plan_code": "growth"}` (the `mock` billing adapter handles this with no
-Stripe key). See `docs/billing.md` § Default plan catalog + baseline
-Subscription and § Entitlement gating.
+**Local dev:** the seeded `acme` tenant is entitled out of the box and
+`techflow` is not — see [Trying it locally](#trying-it-locally) above.
 
 | Method | Path | Returns |
 |--------|------|---------|

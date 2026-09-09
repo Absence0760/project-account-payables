@@ -24,7 +24,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/organization branding contrast advisory', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('warns for a colour white text cannot sit on, and clears when it can', async ({

@@ -1,4 +1,25 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from '../fixtures/helpers';
+
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`.
+ *
+ * The id-based delete below is the polite path (it goes through the API and
+ * leaves an audit row), but it only fires when `workflowId` holds the id of
+ * the row the LAST `beforeEach` made: a `beforeEach` that throws after its
+ * POST landed leaves the new row unreferenced, and the stale `workflowId`
+ * then deletes nothing that still exists. Sweeping by name needs no id.
+ *
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children — and the `is_default = false` seatbelt that keeps a
+ * marker typo away from the seeded default.
+ */
+const MARKER = 'e2e-matrix-';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
 	return {
@@ -94,11 +115,13 @@ test.describe('/workflows/[id] — approval matrix editor', () => {
 	let workflowId: string;
 
 	test.beforeEach(async ({ page }) => {
-		workflowId = await createWorkflow(page, `e2e-matrix-${Date.now()}`);
+		workflowId = await createWorkflow(page, `${MARKER}${Date.now()}`);
 	});
 
 	test.afterEach(async ({ page }) => {
 		if (workflowId) await deleteWorkflow(page, workflowId);
+		// Backstop for anything the id-based delete could not reach.
+		deleteWorkflowsWhere(MARKER);
 	});
 
 	test('routing_rules + parallel_mode + escalation round-trip through PATCH', async ({

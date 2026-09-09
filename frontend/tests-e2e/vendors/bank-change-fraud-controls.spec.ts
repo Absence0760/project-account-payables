@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteVendorsWhere,
 	expect,
 	tenantPsql,
 	test
@@ -141,9 +142,7 @@ function deleteVendorCascade(vendorId: string): void {
 	// rows are intentionally NOT deleted — they're PII-free and harmless.
 	// Wrapped so cleanup never throws on a partial setup.
 	try {
-		tenantPsql(`DELETE FROM vendor_change_requests WHERE vendor_id='${vendorId}'`, SLUG);
-		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id='${vendorId}'`, SLUG);
-		tenantPsql(`DELETE FROM vendors WHERE id='${vendorId}'`, SLUG);
+		deleteVendorsWhere(`id='${vendorId}'`, SLUG);
 	} catch {
 		/* best-effort */
 	}

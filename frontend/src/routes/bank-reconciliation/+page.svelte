@@ -465,22 +465,41 @@
 	{/snippet}
 
 	<!-- KPI row — every figure is the WHOLE-SET count/total from
-	     `/outstanding`, never a reduce over the rendered rows. -->
+	     `/outstanding`, never a reduce over the rendered rows.
+
+	     `null`, never `?? 0`, until the response lands. The coercion was worse
+	     here than a flashed zero: `(… ?? 0) > 0` also evaluated false, so the
+	     two tinted cards rendered UNTINTED and the row actively read "nothing
+	     unmatched, no discrepancies" — a clean bill of health, on a fraud
+	     control, while it was still asking. `KpiCard` renders the shared
+	     no-figure dash and withholds the tint until there is a figure to have a
+	     verdict about (`docs/decisions.md` §34).
+
+	     `pending` is only consulted when the value is missing, so a re-fetch
+	     (age filter, debounced search, post-resolve refresh) keeps the figures
+	     already on screen rather than blanking them; a FAILED load leaves them
+	     absent-but-not-loading, and the retry banner below says why. -->
 	<div class="kpi-row">
 		<!-- Uncleared is deliberately NOT tinted: payments in transit are the
 		     normal state of a period, not an alarm. The two beside it are —
 		     money left the account we can't account for, and money that left
 		     differently from how it was authorised. -->
-		<KpiCard value={outstanding?.uncleared_count ?? 0} label={m('bankRecon.kpi.uncleared')} />
 		<KpiCard
-			value={outstanding?.unmatched_debit_count ?? 0}
-			label={m('bankRecon.kpi.unmatched')}
-			highlight={(outstanding?.unmatched_debit_count ?? 0) > 0 ? 'red' : null}
+			value={outstanding?.uncleared_count ?? null}
+			label={m('bankRecon.kpi.uncleared')}
+			pending={outstandingLoading}
 		/>
 		<KpiCard
-			value={outstanding?.discrepancy_count ?? 0}
+			value={outstanding?.unmatched_debit_count ?? null}
+			label={m('bankRecon.kpi.unmatched')}
+			highlight={outstanding && outstanding.unmatched_debit_count > 0 ? 'red' : null}
+			pending={outstandingLoading}
+		/>
+		<KpiCard
+			value={outstanding?.discrepancy_count ?? null}
 			label={m('bankRecon.kpi.discrepancies')}
-			highlight={(outstanding?.discrepancy_count ?? 0) > 0 ? 'red' : null}
+			highlight={outstanding && outstanding.discrepancy_count > 0 ? 'red' : null}
+			pending={outstandingLoading}
 		/>
 	</div>
 

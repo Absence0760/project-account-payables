@@ -38,8 +38,17 @@ class PaymentQueueStore extends ChangeNotifier {
   bool get fromCache => _fromCache;
 
   bool isSelected(String invoiceId) => _selection.containsKey(invoiceId);
-  PaymentMethod methodFor(String invoiceId) =>
-      _selection[invoiceId] ?? PaymentMethod.ach;
+
+  /// The rail a row will ACTUALLY be paid on: the backend's pin when it sent
+  /// one, else the operator's pick, else ACH.
+  ///
+  /// A pinned row is the only rail `POST /api/payments/runs` accepts for that
+  /// invoice, so a stale operator pick must never win over it. Takes the row
+  /// rather than an id so the pin travels with the data and no caller can look
+  /// it up wrongly — the mobile counterpart of the web page's `methodFor()`.
+  PaymentMethod methodFor(PaymentQueueItem item) =>
+      item.requiredMethod ?? _selection[item.id] ?? PaymentMethod.ach;
+
   int get selectedCount => _selection.length;
   bool get hasSelection => _selection.isNotEmpty;
 
@@ -57,18 +66,35 @@ class PaymentQueueStore extends ChangeNotifier {
     _selection.clear();
   }
 
-  void toggleSelection(String invoiceId) {
-    if (_selection.containsKey(invoiceId)) {
-      _selection.remove(invoiceId);
+  /// Tick / untick a queue row.
+  ///
+  /// A row a payment run would refuse ([PaymentQueueItem.isSelectable]) can
+  /// never enter the selection: `create_payment_run_for_invoices` hard-409s the
+  /// WHOLE batch on it, so one fully-credited or exception-held invoice used to
+  /// take every other invoice in the run down with it. The guard lives HERE,
+  /// with the state change, rather than only on the checkbox — the screen
+  /// disables the control too, but the store is the chokepoint every caller
+  /// goes through.
+  void toggleSelection(PaymentQueueItem item) {
+    if (!item.isSelectable) return;
+    if (_selection.containsKey(item.id)) {
+      _selection.remove(item.id);
     } else {
-      _selection[invoiceId] = PaymentMethod.ach;
+      // Seed from the row's own pin when it has one — defaulting a
+      // card-claimed invoice to ACH would stage a run the backend refuses.
+      _selection[item.id] = methodFor(item);
     }
     notifyListeners();
   }
 
-  void setMethod(String invoiceId, PaymentMethod method) {
-    // Picking a method implicitly selects the row.
-    _selection[invoiceId] = method;
+  /// Choose the rail for a row (implicitly selecting it).
+  ///
+  /// A pinned row ignores [method] entirely: the backend accepts exactly one
+  /// rail for it, so honouring the operator's pick would be honouring a choice
+  /// they were never really offered.
+  void setMethod(PaymentQueueItem item, PaymentMethod method) {
+    if (!item.isSelectable) return;
+    _selection[item.id] = item.requiredMethod ?? method;
     notifyListeners();
   }
 
@@ -94,10 +120,7 @@ class PaymentQueueStore extends ChangeNotifier {
       _fromCache = false;
       _loading = false;
 
-      // Drop selections for invoices that have left the queue (paid / voided).
-      _selection.removeWhere(
-        (id, _) => !_queue.any((item) => item.id == id),
-      );
+      _reconcileSelection();
 
       await OfflineStore.instance.put(
         'payment_queue',
@@ -114,6 +137,10 @@ class PaymentQueueStore extends ChangeNotifier {
               .toList();
           _fromCache = true;
           _loading = false;
+          // The cached rows carry their own `blocked` / `required_method`, so
+          // the offline queue is reconciled exactly like a live one — a row
+          // that was blocked when it was cached stays unselectable offline.
+          _reconcileSelection();
           notifyListeners();
           return;
         }
@@ -122,6 +149,29 @@ class PaymentQueueStore extends ChangeNotifier {
       _loading = false;
       _error = describeApiError(e);
       notifyListeners();
+    }
+  }
+
+  /// Re-derive the selection against the queue that was just loaded.
+  ///
+  /// Three things can change under a selected row between fetches, and all
+  /// three are resolved here rather than at send time, so the checkbox and the
+  /// method dropdown show the truth as soon as the list refreshes:
+  ///
+  /// * it left the queue (paid / voided) — dropped;
+  /// * it became unselectable (an exception was raised on it, a credit memo
+  ///   covered it) — dropped, because a run containing it would 409 as a whole;
+  /// * it gained a pinned rail (a virtual card was issued against it) — its
+  ///   stored method is overwritten with the pin.
+  void _reconcileSelection() {
+    final byId = {for (final item in _queue) item.id: item};
+    _selection.removeWhere((id, _) {
+      final row = byId[id];
+      return row == null || !row.isSelectable;
+    });
+    for (final entry in _selection.entries.toList()) {
+      final pinned = byId[entry.key]!.requiredMethod;
+      if (pinned != null) _selection[entry.key] = pinned;
     }
   }
 
@@ -141,9 +191,19 @@ class PaymentQueueStore extends ChangeNotifier {
   /// null on failure with [error] set.
   Future<String?> createRunFromSelection() async {
     if (_selection.isEmpty) return null;
-    final selections = _selection.entries
-        .map((e) => PaymentRunSelection(invoiceId: e.key, method: e.value))
-        .toList();
+    // Belt-and-braces on the rail: `_reconcileSelection` already pinned every
+    // selected row that has a `required_method`, but resolving again against
+    // the live queue means a future selection path that skips [setMethod]
+    // still can't send a rail the backend refuses. A row no longer in the
+    // queue keeps its stored method — the server is the authority on it.
+    final byId = {for (final item in _queue) item.id: item};
+    final selections = _selection.entries.map((e) {
+      final row = byId[e.key];
+      return PaymentRunSelection(
+        invoiceId: e.key,
+        method: row == null ? e.value : methodFor(row),
+      );
+    }).toList();
     try {
       final result = await PaymentApi.createRun(selections);
       _selection.clear();
@@ -222,5 +282,12 @@ class PaymentQueueStore extends ChangeNotifier {
         'discount_eligible': i.discountEligible,
         'discount_date': i.discountDate?.toIso8601String(),
         'discount_amount': i.discountAmountDisplay,
+        // Round-trip the refusal verdict too. Without it a cached row came
+        // back with `blocked: false` and no pin, so the offline queue offered
+        // a checkbox on an invoice the backend refuses — the exact hazard the
+        // live queue closes.
+        'blocked': i.blocked,
+        'blocked_reason': i.blockedReason,
+        'required_method': i.requiredMethodCode,
       };
 }

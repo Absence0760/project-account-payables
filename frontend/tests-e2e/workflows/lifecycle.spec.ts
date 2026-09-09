@@ -1,4 +1,10 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Workflow lifecycle — create, delete, activate. These tests *mutate*
@@ -8,6 +14,22 @@ import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers
  * touches it is `is_active` flipping in the activation-invariant test,
  * which the test reverses at the end.
  */
+
+/**
+ * Every workflow definition these tests create is named `${MARKER}…`, so the
+ * `afterEach` below can sweep by name rather than by id.
+ *
+ * The `finally` blocks are not enough on their own here. Every test creates
+ * its row through the UI and only enters its `try` once `waitForURL` has
+ * handed back an id, so a create that lands the POST and then fails to settle
+ * leaks the row; and the delete-via-the-list test has no `try` at all, so any
+ * failure after the create leaks unconditionally. Sweeping by name needs no id.
+ *
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children — and the `is_default = false` seatbelt that keeps a
+ * marker typo away from the seeded default.
+ */
+const MARKER = 'WF Lifecycle E2E ';
 
 async function deleteWorkflowById(
 	page: import('@playwright/test').Page,
@@ -45,10 +67,12 @@ async function listWorkflows(page: import('@playwright/test').Page) {
 }
 
 test.describe('workflow lifecycle', () => {
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
+
 	test('create-from-modal redirects to the detail page and adds a list row', async ({
 		page
 	}) => {
-		const name = `Test Workflow ${Date.now()}`;
+		const name = `${MARKER}Test Workflow ${Date.now()}`;
 		await page.goto('/workflows');
 		await page.waitForLoadState('networkidle');
 		const beforeRows = await page.locator('table tbody tr').count();
@@ -100,7 +124,7 @@ test.describe('workflow lifecycle', () => {
 	test('non-default workflow can be deleted via the list', async ({ page }) => {
 		// Create a throwaway workflow, then delete via the list-row button.
 		await page.goto('/workflows');
-		const name = `Delete Me ${Date.now()}`;
+		const name = `${MARKER}Delete Me ${Date.now()}`;
 		await page.getByRole('button', { name: '+ New Workflow' }).click();
 		await page.locator('#wf-name').fill(name);
 		await page.getByRole('button', { name: /^Create$/ }).click();
@@ -131,7 +155,7 @@ test.describe('workflow lifecycle', () => {
 		const defaultWf = before.find((w) => w.is_default)!;
 		expect(defaultWf.is_active).toBe(true);
 
-		const name = `Activate Me ${Date.now()}`;
+		const name = `${MARKER}Activate Me ${Date.now()}`;
 		await page.getByRole('button', { name: '+ New Workflow' }).click();
 		await page.locator('#wf-name').fill(name);
 		await page.getByRole('button', { name: /^Create$/ }).click();

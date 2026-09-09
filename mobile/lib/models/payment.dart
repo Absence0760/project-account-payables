@@ -7,12 +7,24 @@ enum PaymentMethod {
   const PaymentMethod(this.value);
   final String value;
 
-  static PaymentMethod fromString(String s) {
-    return PaymentMethod.values.firstWhere(
-      (e) => e.value == s,
-      orElse: () => PaymentMethod.ach,
-    );
+  /// Strict parse — `null` for a rail code this build doesn't know.
+  ///
+  /// Exists because [fromString]'s ACH fallback is only right where the value
+  /// is DISPLAYED. Where the rail is a decision (the payment queue's
+  /// `required_method`, which names the ONE rail a run will accept for that
+  /// invoice), silently reading an unknown code as `ach` would stage the run
+  /// on a rail the backend refuses — the 409 the queue exists to prevent. Such
+  /// a row is treated as unselectable instead; see
+  /// `PaymentQueueItem.isSelectable`.
+  static PaymentMethod? tryFromString(String s) {
+    for (final e in PaymentMethod.values) {
+      if (e.value == s) return e;
+    }
+    return null;
   }
+
+  static PaymentMethod fromString(String s) =>
+      tryFromString(s) ?? PaymentMethod.ach;
 
   String get label => switch (this) {
     PaymentMethod.ach => 'ACH',

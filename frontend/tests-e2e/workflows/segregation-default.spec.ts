@@ -1,4 +1,10 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Segregation of duties on a UI-created workflow.
@@ -24,10 +30,22 @@ interface WorkflowStep {
 	config: Record<string, unknown>;
 }
 
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so the
+ * `afterEach` below can sweep by name rather than by id — the only teardown
+ * that survives `createWorkflow` throwing after its POST has already landed,
+ * or a run that is interrupted mid-test.
+ *
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children — and the `is_default = false` seatbelt that keeps a
+ * marker typo away from the seeded default.
+ */
+const MARKER = 'Segregation E2E ';
+
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	await page.goto('/workflows');
 	await page.getByRole('button', { name: '+ New Workflow' }).click();
-	await page.locator('#wf-name').fill(`Segregation E2E ${Date.now()}`);
+	await page.locator('#wf-name').fill(`${MARKER}${Date.now()}`);
 	await page.getByRole('button', { name: /^Create$/ }).click();
 	await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
 	const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
@@ -61,6 +79,8 @@ async function selectApprovalStep(page: import('@playwright/test').Page) {
 }
 
 test.describe('/workflows approval-step segregation of duties', () => {
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
+
 	test('a UI-created workflow PERSISTS require_segregation = true', async ({ page }) => {
 		const id = await createWorkflow(page);
 		try {

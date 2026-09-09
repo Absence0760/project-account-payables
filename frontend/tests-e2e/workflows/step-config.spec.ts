@@ -1,4 +1,29 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from '../fixtures/helpers';
+
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so
+ * teardown can find them by name instead of by id.
+ *
+ * That is the point of sweeping by name: the `finally` blocks below only run
+ * once the test body HAS an id, so `createWorkflow` throwing after its POST
+ * already landed — a slow editor render, a nav that never settles — leaks the
+ * row it just made, and an interrupted run leaks every row in flight. This
+ * tenant is still carrying eight `Step Config E2E <ts>` rows from exactly
+ * that.
+ *
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children go first or the delete raises — and the
+ * `is_default = false` seatbelt: a marker typo can then still never reach the
+ * seeded default the whole suite is asserted against by
+ * `fixtures/globalSetup.ts`.
+ */
+const MARKER = 'Step Config E2E ';
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	// Use the UI's create flow so we land on the detail page with the
@@ -6,7 +31,7 @@ async function createWorkflow(page: import('@playwright/test').Page): Promise<st
 	// redirect; we read the new id from the URL once it lands.
 	await page.goto('/workflows');
 	await page.getByRole('button', { name: '+ New Workflow' }).click();
-	await page.locator('#wf-name').fill(`Step Config E2E ${Date.now()}`);
+	await page.locator('#wf-name').fill(`${MARKER}${Date.now()}`);
 	await page.getByRole('button', { name: /^Create$/ }).click();
 	await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
 	const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
@@ -39,6 +64,8 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/workflows/[id] step config', () => {
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
+
 	test('renaming a step persists through PATCH and reload', async ({ page }) => {
 		const id = await createWorkflow(page);
 

@@ -2,6 +2,7 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	currentTenantSlug,
+	deleteVendorsWhere,
 	expect,
 	signInAndWait,
 	tenantPsql,
@@ -67,8 +68,7 @@ function flagForReview(vendorId: string): void {
 
 function deleteVendorCascade(vendorId: string): void {
 	try {
-		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id='${vendorId}'`, SLUG);
-		tenantPsql(`DELETE FROM vendors WHERE id='${vendorId}'`, SLUG);
+		deleteVendorsWhere(`id='${vendorId}'`, SLUG);
 	} catch {
 		/* best-effort */
 	}

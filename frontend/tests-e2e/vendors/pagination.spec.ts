@@ -1,4 +1,11 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteVendorsWhere,
+	expect,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /vendors pagination. Bulk-insert vendors past the page_size=20 boundary and
@@ -17,7 +24,7 @@ function seedVendors(n: number): void {
 }
 
 function purge(): void {
-	tenantPsql(`DELETE FROM vendors WHERE name LIKE '${MARKER}%'`);
+	deleteVendorsWhere(`name LIKE '${MARKER}%'`);
 }
 
 test.describe('/vendors pagination', () => {

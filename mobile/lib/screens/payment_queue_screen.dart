@@ -29,6 +29,58 @@ String _methodLabel(AppLocalizations l, PaymentMethod m) => switch (m) {
       PaymentMethod.virtualCard => l.payMethodVirtualCard,
     };
 
+/// Localized sentence for why a payment run would refuse — or constrain — a
+/// queue row.
+///
+/// `blocked_reason` is a stable CODE from the backend's fixed, PII-free
+/// vocabulary (a `PAYMENT_BLOCKING_EXCEPTION_TYPES` member, or one of
+/// `services/payment_runs`' own reason constants) — deliberately NOT the
+/// exception's description, which can carry vendor / bank / amount detail. An
+/// unrecognised or absent code falls back to the generic sentence rather than
+/// rendering a raw identifier at the operator. Mirrors the web page's
+/// `blockedReason()`.
+String _blockedReasonLabel(AppLocalizations l, String? code) => switch (code) {
+      'duplicate' => l.payQueueBlockedDuplicate,
+      'fraud_flag' => l.payQueueBlockedFraudFlag,
+      'line_total_mismatch' => l.payQueueBlockedLineTotalMismatch,
+      'payment_reconciliation' => l.payQueueBlockedPaymentReconciliation,
+      'fully_credited' => l.payQueueBlockedFullyCredited,
+      // Not a block — the row is pinned to the card rail. Its own sentence
+      // says so, rather than the "can't be paid" generic.
+      'live_virtual_card' => l.payQueueBlockedLiveVirtualCard,
+      _ => l.payQueueBlockedGeneric,
+    };
+
+/// The sentence for a row's refusal verdict, or `null` when there is nothing
+/// to say. The ONE derivation — the chip and the screen-reader announcement
+/// both read it, so they can never disagree about whether a row has a reason.
+///
+/// Non-null when the backend sent a code (it sends one for a PINNED row too,
+/// which is how the UI can say why the rail is fixed) OR when we refuse the
+/// row ourselves — an unnameable pin has to explain itself even though the
+/// server sent no code for it.
+String? _verdictReason(AppLocalizations l, PaymentQueueItem item) =>
+    item.blockedReason != null || !item.isSelectable
+        ? _blockedReasonLabel(l, item.blockedReason)
+        : null;
+
+/// The refusal verdict, as the tail of a queue row's single merged
+/// announcement. Empty when a run would neither refuse nor constrain the row.
+///
+/// Split out because it has three distinct arms and an inline interpolation of
+/// them once rendered the literal string "null" for a rail pinned with no
+/// accompanying reason code.
+String _verdictAnnounce(AppLocalizations l, PaymentQueueItem item) {
+  final reason = _verdictReason(l, item);
+  if (!item.isSelectable) return ', ${l.payQueueBlockedAnnounce(reason!)}';
+  final pinned = item.requiredMethod;
+  final parts = <String>[
+    if (pinned != null) l.payQueuePinnedMethod(_methodLabel(l, pinned)),
+    ?reason,
+  ];
+  return parts.isEmpty ? '' : ', ${parts.join(', ')}';
+}
+
 /// Localized label for a payment-run status string. Unknown statuses fall back
 /// to the server-supplied value capitalized (mirrors the old behaviour).
 String _runStatusLabel(AppLocalizations l, String status) => switch (status) {
@@ -200,6 +252,14 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     final l = AppLocalizations.of(context);
     final store = PaymentQueueStore.instance;
     final selected = store.isSelected(item.id);
+    // A row a payment run would refuse on every rail. Its checkbox is disabled
+    // and it can't be tapped into the selection — one such invoice in a batch
+    // 409s the WHOLE draft run, taking every other invoice down with it.
+    // `hasUnknownRequiredMethod` joins it: the backend pinned a rail this build
+    // can't name, so we can't honour the pin and must not offer the row.
+    final selectable = item.isSelectable;
+    final pinnedMethod = item.requiredMethod;
+    final reason = _verdictReason(l, item);
     final dueText = item.dueDate != null
         ? l.payQueueDue(_dateFormat.format(item.dueDate!))
         : l.payQueueNoDueDate;
@@ -215,13 +275,21 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
       label: '${item.vendorName}, ${_money(item.amountDisplay)}, '
           '${subtitleParts.join(', ')}'
           '${item.isOverdue ? ', ${l.payQueueOverdue}' : ''}'
+          // The verdict is spoken, not just coloured — a screen-reader user
+          // meeting a disabled checkbox has to be told why it is disabled, and
+          // one whose rail was chosen for them has to be told which.
+          '${_verdictAnnounce(l, item)}'
           '${selected ? ', ${l.payQueueSelected}' : ''}',
       excludeSemantics: true,
       child: ListTile(
         leading: _canManage
             ? Checkbox(
                 value: selected,
-                onChanged: (_) => store.toggleSelection(item.id),
+                // `null` renders the Material disabled state AND makes the
+                // control untappable; the store refuses the same row anyway,
+                // so the guard holds even if this ever regresses.
+                onChanged:
+                    selectable ? (_) => store.toggleSelection(item) : null,
               )
             : null,
         title: Row(
@@ -241,31 +309,105 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
         ),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 4),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Flexible(
-                child: Text(
-                  item.invoiceNumber,
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
-                  overflow: TextOverflow.ellipsis,
-                ),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      item.invoiceNumber,
+                      style:
+                          TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    dueText,
+                    style: TextStyle(
+                      color: item.isOverdue
+                          ? Colors.red.shade700
+                          : Colors.grey.shade700,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const Spacer(),
+                  // A pinned row shows the rail it is fixed to instead of a
+                  // picker — offering four options where the backend accepts
+                  // one is offering a choice that doesn't exist.
+                  if (_canManage && selectable && pinnedMethod != null)
+                    _pinnedMethodChip(pinnedMethod)
+                  else if (_canManage && selectable && selected)
+                    _methodDropdown(item),
+                ],
               ),
-              const SizedBox(width: 12),
-              Text(
-                dueText,
-                style: TextStyle(
-                  color: item.isOverdue
-                      ? Colors.red.shade700
-                      : Colors.grey.shade700,
-                  fontSize: 12,
+              if (reason != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: _reasonChip(reason, blocked: !selectable),
                 ),
-              ),
-              const Spacer(),
-              if (_canManage && selected) _methodDropdown(item),
             ],
           ),
         ),
-        onTap: _canManage ? () => store.toggleSelection(item.id) : null,
+        // Blocked rows stay visible and readable — an operator has to see WHAT
+        // is blocked to go and clear it — they just aren't selectable.
+        onTap: _canManage && selectable
+            ? () => store.toggleSelection(item)
+            : null,
+      ),
+    );
+  }
+
+  /// The rail a pinned row will be paid on. Read-only by design: it is the one
+  /// rail `POST /api/payments/runs` accepts for this invoice. The row's own
+  /// merged announcement already speaks it (see [_verdictAnnounce]), so the
+  /// chip is excluded from the semantics tree rather than repeating itself.
+  Widget _pinnedMethodChip(PaymentMethod method) {
+    final l = AppLocalizations.of(context);
+    final label = l.payQueuePinnedMethod(_methodLabel(l, method));
+    return ExcludeSemantics(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.blue.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          label,
+          // Darkened for AA contrast over the pale tint (>=4.5:1), the same
+          // rule the run-status chips follow.
+          style: TextStyle(
+            color: Colors.blue.shade900,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Why a run would refuse — or pin — this row. The row's Semantics already
+  /// speaks the sentence, so the chip itself is excluded from the tree.
+  Widget _reasonChip(String reason, {required bool blocked}) {
+    final (tint, textColor) = blocked
+        ? (Colors.red, Colors.red.shade900)
+        : (Colors.blueGrey, Colors.blueGrey.shade800);
+    return ExcludeSemantics(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: tint.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          reason,
+          style: TextStyle(
+            color: textColor,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
       ),
     );
   }
@@ -276,7 +418,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     return Semantics(
       label: l.payMethodLabel(item.invoiceNumber),
       child: DropdownButton<PaymentMethod>(
-        value: store.methodFor(item.id),
+        value: store.methodFor(item),
         isDense: true,
         underline: const SizedBox.shrink(),
         items: PaymentMethod.values
@@ -289,7 +431,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
             )
             .toList(),
         onChanged: (m) {
-          if (m != null) store.setMethod(item.id, m);
+          if (m != null) store.setMethod(item, m);
         },
       ),
     );

@@ -2,6 +2,7 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	deleteInvoicesWhere,
+	deleteVendorsWhere,
 	expect,
 	tenantPsql,
 	test
@@ -436,7 +437,7 @@ test.describe('discounting money path (API)', () => {
 			// so those rows must be removed before the entity delete. The invoices
 			// above were rebound to the real vendor and are already gone, so
 			// nothing else references these rows.
-			tenantPsql(`DELETE FROM vendors WHERE entity_id='${entityId}'`);
+			deleteVendorsWhere(`entity_id='${entityId}'`);
 			tenantPsql(`DELETE FROM entities WHERE id='${entityId}'`);
 		}
 	});

@@ -262,8 +262,23 @@
 			<KpiCard value={fmt(forecast.totals.scheduled_amount)} label={m('cfo.kpi.projectedOutflow')} />
 			<KpiCard value={fmt(forecast.totals.committed_amount)} label={m('cfo.kpi.committed')} />
 			<KpiCard value={fmt(forecast.totals.pending_amount)} label={m('cfo.kpi.pipeline')} />
+			<!-- The three cards above read the forecast this branch is gated on;
+			     this one reads the SEPARATE what-if response. `?? '0'` was
+			     actively defeating the honest answer — `fmt` is `formatMoney`,
+			     which already returns the no-figure dash for a missing amount,
+			     and the coercion turned it into a green "$0 available if you pay
+			     early", a figure nobody computed on the one card a CFO acts on
+			     (`docs/decisions.md` §34).
+
+			     Unreachable today: all three requests commit together out of one
+			     `Promise.all`, so `whatif` is never null while `forecast` is
+			     set. It is a trap rather than a live bug — splitting that
+			     `Promise.all` to let the forecast paint before the slower
+			     what-if is an obvious future change, and it would have silently
+			     armed the zero. `null` hands the case to `KpiCard`, which also
+			     drops the green tint when there is no figure to call good news. -->
 			<KpiCard
-				value={fmt(whatif?.scenarios.early.total_discount_captured ?? '0')}
+				value={whatif ? fmt(whatif.scenarios.early.total_discount_captured) : null}
 				label={m('cfo.kpi.discountIfEarly')}
 				highlight="green"
 			/>

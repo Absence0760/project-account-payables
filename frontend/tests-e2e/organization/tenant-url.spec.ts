@@ -58,7 +58,6 @@ function brandingCard(page: import('@playwright/test').Page) {
 test.describe('/organization tenant URL override', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('shows the effective platform default while the override is empty', async ({ page }) => {
@@ -68,7 +67,6 @@ test.describe('/organization tenant URL override', () => {
 			if (before.tenant_url_template) {
 				await putBranding(page, { ...before, tenant_url_template: '' });
 				await page.reload();
-				await page.waitForLoadState('networkidle');
 			}
 
 			const card = brandingCard(page);
@@ -123,7 +121,6 @@ test.describe('/organization tenant URL override', () => {
 			// A reload re-hydrates the field from settings.brand rather than
 			// silently falling back to the platform default.
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await expect(brandingCard(page).getByLabel('Email Link Base URL')).toHaveValue(override);
 		} finally {
 			await putBranding(page, before);
@@ -138,7 +135,6 @@ test.describe('/organization tenant URL override', () => {
 				tenant_url_template: 'https://ap.acme-e2e-clear.test'
 			});
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			const card = brandingCard(page);
 			await card.getByLabel('Email Link Base URL').fill('');
@@ -200,7 +196,6 @@ test.describe('/organization tenant URL override — non-admin', () => {
 		// panel) with a banner saying why. The server gate above is unchanged
 		// and remains the authority — this is the UI catching up to it.
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 
 		await expect(page.getByTestId('org-readonly-banner')).toBeVisible();
 		const card = brandingCard(page);

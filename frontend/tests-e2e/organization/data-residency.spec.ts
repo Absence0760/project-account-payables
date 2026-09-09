@@ -39,7 +39,6 @@ async function setRegion(page: import('@playwright/test').Page, region: string):
 test.describe('/organization data residency', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	function panel(page: import('@playwright/test').Page) {
@@ -105,7 +104,6 @@ test.describe('/organization data residency', () => {
 			const other = deployed === 'eu' ? 'ca' : 'eu';
 			await setRegion(page, other);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			const card = panel(page);
 			await expect(card.locator('.residency-alignment.warn')).toBeVisible();

@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, signInAndWait, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteVendorsWhere, expect, signInAndWait, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /vendors — external firmographics enrichment "Apply" flow in VendorModal.
@@ -35,27 +35,15 @@ async function createTestVendor(
 /**
  * Delete the test vendor (the vendor API has no DELETE; use SQL).
  *
- * Each statement stands alone. This used to open with a DELETE from
- * `exceptions WHERE vendor_id=…` — a column that table does not have — so the
- * very first statement threw, the shared catch swallowed it, and NOTHING was
- * ever cleaned up: every run of this spec leaked its vendor and invoices into
- * the worker's tenant.
+ * `deleteVendorsWhere` owns the vendor's whole child graph, so this spec no
+ * longer maintains its own list of it. That list is what broke before: it
+ * opened with a DELETE from `exceptions WHERE vendor_id=…` — a column that
+ * table does not have — so the very first statement threw, the shared catch
+ * swallowed it, and NOTHING was ever cleaned up.
  */
 function deleteTestVendor(id: string): void {
 	try {
-		deleteInvoicesWhere(`vendor_id='${id}'`);
-	} catch {
-		/* best-effort */
-	}
-	for (const table of ['sanctions_checks', 'vendor_extraction_priors', 'invoice_embeddings']) {
-		try {
-			tenantPsql(`DELETE FROM ${table} WHERE vendor_id='${id}'`);
-		} catch {
-			/* best-effort */
-		}
-	}
-	try {
-		tenantPsql(`DELETE FROM vendors WHERE id='${id}'`);
+		deleteVendorsWhere(`id='${id}'`);
 	} catch {
 		/* best-effort */
 	}

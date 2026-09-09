@@ -34,64 +34,35 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-08 (round 26) — five agents, each in its own git
-worktree, fifteen entries closed, ten opened. **45 → 39.**
+**Last reconciled:** 2026-09-09 (round 27) — ten agents, each in its own git
+worktree, plus two integration agents. **All ten** round-26 entries closed, five
+opened. **39 → 34.**
 
-Three of the fifteen were closed by **disagreeing with the entry**, which is the
-part worth carrying forward. One recorded a two-line fix that would have been a
-regression ([decisions.md](decisions.md) §119). One described work that round 25
-had already done, with the real gap one layer over (§117). One had been marked
-DONE by an earlier PR while half of what it describes was still broken (§120). An
-entry is a lead, not a specification — and a round that only implements its
-entries will ship at least one of those three unchanged.
+Three entries were **disproved rather than completed**, which is now the pattern
+three rounds running. The worktree entry had the import mechanism backwards, and
+so did the durable note behind it: the editable-install finder is *appended* to
+`sys.meta_path`, so `PYTHONPATH` does win and the failure is a fall-through. That
+reclassified the hazard — `pytest` was always safe, `python scripts/seed.py` and
+`alembic revision --autogenerate` never were. The vendor-teardown entry was wrong
+on all three of its numbers. The dashboard-disclosure entry prescribed a fix that
+would have been vacuous for two of its three cases, because an absence assertion
+over an empty data series passes whatever the guard says.
 
-The round also produced the first evidence for a guard that had never been run:
-§114's target-size spec was landed without execution, and running it showed five
-of six cases bite while the sixth was vacuous (§123). It caught a real shipping
-WCAG failure that §114 itself had caused (§121).
+The round also produced a rule worth carrying: **an unordered `LIMIT 1` in a
+fixture is only dangerous when the candidate set is wider than what the code
+under test accepts.** Then row order silently decides whether the test exercises
+anything. Roughly twenty sites use the idiom; one was the dangerous kind, because
+the endpoint under test declined the rest *with a success status*.
 
-(The previous line read **45 → 37** after round 25. The figure below is counted
-from this file's own checkboxes, which is the source of truth.)
-
-(Issue #321's header said 46. This file's own checkbox count was 45 — the two had
-drifted by one before this round, so the reconciled figure is counted from the
-file, which is the source of truth.)
-
-This is the first round whose count fell materially, and the reason is worth
-recording: the agents were told that a finding outside their own slice must be
-*routed to whoever owns that file*, not written down. Seven findings moved
-between agents mid-round and were fixed rather than filed — the queue rollup's
-NULL-currency lock went from the analytics agent to the payments agent, the
-supplier-portal split-brain went back to the agent whose own fix had created it,
-and the modal-checkbox rendering bug went to the a11y agent once the i18n agent
-released those files.
-
-Two findings were larger than the entries that surfaced them:
-
-* **The same defect was found twice, independently, in two hand-written copies of
-  one SQL expression.** `api/dashboard.py` and `api/payments.py` each carried an
-  inline "is this row's amount locked to a reporting currency" CASE, and both
-  omitted `reporting_currency IS NOT NULL` — under three-valued logic `NOT NULL`
-  on a NULL yields NULL, so a row with a reporting amount but no currency code
-  was counted as **converted** while its face value was what got summed. Two
-  agents reached it from opposite directions in the same round. Both now use one
-  owner, `currency_conversion.invoice_reporting_amount_sql`.
-* **A guard that greps for a function name cannot see a second name for the same
-  thing.** The audit drift-guard scanned for `dispatch_audit`; four handlers
-  called `dispatch_auth_audit`, so they read as unaudited, sat in the exemption
-  dict, and their reason strings were never re-validated — two had been false
-  for a round. Widening the scan deleted four exemptions outright. The same
-  shape recurred in analytics, where a guard keyed on
-  `vendor_rollup_to_reporting_currency` missed a fifth per-invoice fold that
-  spelled the call differently; it now matches the *shape* of the defect.
+Nine findings were routed between agents mid-round and fixed rather than filed;
+two more spanned branches and fell to the integrator. Closing a class rather than
+its instances was the round's other theme — the teardown owner now covers three
+tables with a guard per table, and every script that imports `app` is anchored
+behind a glob guard that fails on a script nobody has written yet.
 
 The two segregation-of-duties items remain **held for security review** and were
 again deliberately not touched. They are SOC 2 CC6.3 controls; changing who may
 approve what is a control-design decision, not a bug fix.
-
-Round 24's own narrative is pruned: eleven agents closed thirteen entries, the
-reasoning is in [decisions.md](decisions.md) §98-§109, and all but two of the
-entries it opened are now closed.
 
 ## (c) Feature work — sized and unstarted
 
@@ -1014,134 +985,111 @@ useful part:
       shipping** 2.5.8 failure on `/organization` caused by round 25's own
       checkbox fix — see [decisions.md](decisions.md) §121 and §123.
 
-### Surfaced by the round-26 batch (2026-09-08)
+### Surfaced by the round-27 batch (2026-09-09)
 
-Five agents closed fifteen entries. As in round 25, every one returned something
-its entry had not predicted, and three entries were **wrong about the work**
-rather than merely incomplete: the `resolve_reporting_currency` "two-line fix"
-would have been a regression (§119), the audit-export connection hold was
-**already closed** by round 25 and the real gap was its control-plane half
-(§117), and the payment-queue entry had been marked done by PR #377 while two of
-the four refusals it describes were still invisible (§120).
+Ten agents, each in its own worktree, closed **all ten** round-26 entries. Two
+integration agents then closed work that spanned two of those slices and could
+not have been done inside either. Nothing from round 26 remains open.
 
-- [ ] **(c) `PortalMFAChallengeVerifyRequest.method` is an unconstrained `str`.**
-      Its employee twin pins `^(totp|email)$`, so `POST /portal/auth/mfa/challenge`
-      with `method: "sms"` silently verifies TOTP instead of 422ing, and a client
-      typo is invisible. Harmless to the audit trail — the new row derives its
-      `method` from the branch actually taken, never from the request — but the
-      two surfaces should not disagree about what a factor name is.
-      **Durable fix:** add `pattern="^(totp|email)$"` to that field in
-      `app/schemas/portal.py`, matching `MFAVerifyRequest`. One line, and a
-      tightening rather than a break (the typed frontend client sends only those
-      two values). Left out because `app/schemas/` was outside that agent's file
-      allowlist. **Trigger:** the next portal-auth slice.
+The round's most useful result was not a fix. **The worktree entry below was
+wrong about its own mechanism, and so was the durable note it came from.** The
+editable-install finder is *appended* to `sys.meta_path`, so it sits after
+`PathFinder` and `PYTHONPATH` does win. The failure is a **fall-through**, not a
+precedence fight: you get the right checkout whenever `sys.path` finds one, and
+the primary checkout when it does not. That reclassified which commands were
+actually dangerous — `python main.py` and `pytest` were always fine, while
+`python scripts/seed.py` and `alembic revision --autogenerate` were silently
+wrong, the second producing a plausible migration diffed against the wrong
+models. Three entries this round were disproved on measurement rather than
+merely completed, which is the pattern rounds 25 and 26 also hit: an entry is a
+lead, and a round that only implements its entries ships at least one wrong fix.
 
-- [ ] **(c) A successful supplier sign-in is still unaudited on the
-      password-only path.** The portal writes `portal.login.failure` on rejection
-      and, as of round 26, `portal.mfa.verify.success` once a second factor is
-      enrolled — but `portal_login`'s non-MFA success path writes nothing, so
-      there is no `portal.login.success` at all. An auditor querying successful
-      supplier sign-ins sees only the MFA'd subset, which is a biased sample
-      rather than a gap, and is why this was not half-fixed.
-      **Durable fix:** one `dispatch_auth_audit(action="portal.login.success",
-      details={"ip", "method": "password"})` before `_mint_portal_session`,
-      awaited rather than queued (the account provably exists by then), plus the
-      row in `docs/authentication.md`'s action table. **Trigger:** the next auth
-      slice, or the SOC 2 evidence pass.
+Two entries were wrong on their numbers. The vendor teardown said "17
+non-cascading FKs, 17 call sites, 16 files"; the graph has 15 non-cascading FKs
+and 18 call sites across 17 files. The workflow leak called itself harmless
+because the rows were inactive — but one leaked definition still had a live
+instance pointing at it, so the API refuses to delete it and only a SQL sweep
+can. And the dashboard-disclosure entry prescribed a fix that would have been
+**vacuous** for two of its three cases, because an absence assertion over an
+empty data series passes whatever the guard says.
 
-- [ ] **(c) The three dashboard chart disclosures have no e2e coverage.**
-      `vendor_spend` / `aging_reporting` / `monthly_trend` each now carry a
-      `role="alert"` unconverted notice, unit-tested, but
-      `tests-e2e/dashboard/discount-capture.spec.ts`'s stub sets
-      `vendor_spend: []`, `monthly_trend: []` and an `aging_reporting` that omits
-      `unconverted_count` — so every notice is exercised only on its no-notice
-      branch. Nothing breaks (`undefined > 0` is false), but the disclosures are
-      unguarded end to end. Not closed because `frontend/tests-e2e/` belonged to
-      another agent that round.
-      **Durable fix:** three stub variants asserting each notice's testid, and
-      complete the stub's `aging_reporting` so the TS interface and the fixture
-      agree — `ReportingAgingBuckets.unconverted_count` is non-optional and the
-      stub is the incomplete half. **Trigger:** the next dashboard or e2e slice.
+Routing again beat filing. Nine findings moved between agents mid-round and were
+fixed rather than written down: a stale comment went from the schema agent to the
+route agent, the same zero-while-loading defect on two further pages went back to
+the agent that had just built the convention, and the card-lifecycle spec's
+unordered fixture select went to the agent that diagnosed it. Two more spanned
+branches and fell to the integrator — the supplier sign-in audit row, which
+needed one agent's route and another's test file at once, and the workflow
+teardown consolidation, which needed both halves of a class two separate agents
+had closed in parallel.
 
-- [ ] **(c) The `/discounts` money KPIs brief-render `$0` while loading.**
-      `aggMoney(undefined, …)` formats `0`, so Captured / Missed / Projected
-      savings each flash a zero before the response lands. The capture-rate card
-      was moved off that pattern deliberately; the money cards were left, because
-      the zero-while-loading convention is app-wide and changing it on one page
-      would make the five-card row inconsistent. Arguably the same §34 class — a
-      figure nobody has computed yet, displayed as a computed one.
-      **Durable fix:** decide the convention once (a skeleton, or an em dash, for
-      every aggregate KPI pre-response) and apply it across `KpiCard` rather than
-      page by page. **Trigger:** the next design pass on `KpiCard`.
+- [ ] **(c) 242 `networkidle` waits remain across the suite.** Round 27 measured
+      the `organization/` directory at a **13.3% failure rate** (10/75 runs) and
+      took it to 0 across 264 consecutive runs by deleting all 22 of its waits.
+      The failure screenshots proved it is not an app race: the panel was fully
+      rendered at the moment of the 30s timeout. `networkidle` is a
+      no-network-for-500ms heuristic that Playwright itself discourages, and
+      every site in that directory was also strictly redundant, because the next
+      line was already an auto-waiting assertion.
+      **Durable fix:** the same treatment per directory, biggest first —
+      `invoices` 27, `expenses` 19, `vendors`/`portal`/`auth` 17 each,
+      `entities`/`bank-reconciliation` 15 each, `admin` 13, `workflows` 11, then
+      a long tail. **Not a bulk sed:** `fixtures/helpers.ts` holds 3 sites and
+      **two are commented as load-bearing** for Svelte 5 form-hydration timing.
+      Each site needs the "is the next line already auto-waiting?" test applied
+      individually. **Trigger:** the next flake-doctor pass or e2e slice.
 
-- [ ] **(c) The mobile app still stages payment runs the backend refuses.**
-      `mobile/lib/models/payment_queue.dart`'s `PaymentQueueItem.fromJson`
-      parses none of `blocked` / `blocked_reason` / `required_method`, and
-      `PaymentRunSelection` lets a row be submitted on an arbitrary method — so a
-      mobile user can select a fully-credited or card-claimed invoice and take the
-      whole batch down with the 409 the web queue now prevents. Pre-dates round 26
-      (the fields were only partly shipped before it) and `mobile/` was outside
-      that slice's scope.
-      **Durable fix:** parse the three fields, disable a `blocked` row's
-      selection, and pin `required_method` the way `methodFor()` does on web.
-      **Trigger:** the next mobile payments slice, or any report of a failed run
-      from the app.
+- [ ] **(c) `workflow_versions` grows unbounded on the SEEDED default.**
+      `invoice-routing` and `deactivation-snapshot` both PATCH the seeded
+      `Default Workflow`'s steps and PATCH them back, and every PATCH
+      auto-snapshots a version. Measured on `e2e5`: 0 → 5 → 9 across two suite
+      runs; `e2e2` is at 14. A different row class from the definition leak round
+      27 closed — these are child rows of a *seeded* row, invisible to the
+      `/workflows` list and reachable only through that definition's Version
+      History modal, and no spec reads them.
+      **Durable fix:** the two specs delete the `workflow_versions` rows they
+      created for the seeded definition's id during their own run. Deliberately
+      not done inside `deleteWorkflowsWhere`, which is scoped to test-created
+      definitions by name and must never touch a seeded row.
+      **Trigger:** the next workflows slice, or the first spec that reads version
+      history and finds a hundred of them.
 
-- [ ] **(c) `organization/email-intake.spec.ts` is flaky on
-      `waitForLoadState('networkidle')`.** Measured 2–3 failures per 15 runs, at
-      the same rate with and without an unrelated CSS change on that page, so
-      `networkidle` is the cause and not a regression. It is not one site: **273
-      `networkidle` calls across 110 spec files.**
-      **Durable fix:** wait on the real signal each spec already asserts next
-      (the panel's own `data-testid`), starting with the sites that actually fail.
-      **Trigger:** the next flake-doctor pass or e2e slice.
+- [ ] **(c) The dashboard's response types are declared inline in the route, so
+      no e2e fixture can be typechecked against them.** `DashboardData` and
+      `ReportingAgingBuckets` live in `frontend/src/routes/+page.svelte` and are
+      not exported. `pnpm check` skips `tests-e2e/` anyway, so both dashboard
+      stubs are hand-maintained shapes that drift silently the moment the API
+      gains a non-optional field. That is exactly how round 26's disclosure gap
+      stayed invisible: the stub omitted `unconverted_count`, and `undefined > 0`
+      is false.
+      **Durable fix:** lift them into `$lib/types/` — `analytics.ts` already holds
+      `DashboardDiscountCapture` — and have the fixtures `satisfies` the type.
+      **Trigger:** the next dashboard slice, or the next fixture that drifts.
 
-- [ ] **(c) Seeded tenants cannot reach `/api/v1` at all.** `seed.py` lands every
-      org on the `free` plan, whose entitlements are `{}`, so
-      `require_api_entitlement("public_api")` 402s every public-API call for the
-      whole e2e suite and for local dev — confirmed from the backend access log.
-      That makes the public Developer API unexercisable end to end without
-      hand-editing the control plane, which guard rail 7 says it should not be.
-      (The new api-key usage e2e asserts the meter's own counts rather than a
-      200, because the meter fires on successful authentication ahead of the
-      entitlement gate, so the figures are exact regardless.)
-      **Durable fix:** give the seed one tenant on a `public_api`-bearing plan, or
-      a documented `scripts/` toggle. Do **not** do it from a spec — the
-      subscription outlives a crashed test and perturbs the billing specs.
-      **Trigger:** the next public-API or billing slice.
+- [ ] **(c) `/cfo` withholds its whole KPI row while loading instead of using the
+      new pending affordance.** Round 27 gave `KpiCard` a convention: an absent
+      figure renders an em dash, and *pending* is announced (`aria-busy` plus
+      screen-reader-only text) rather than drawn. `/discounts` and
+      `/bank-reconciliation` adopt it; `/cfo` gates the row behind `{:else if
+      forecast}` so it collapses instead. Both satisfy
+      [decisions.md](decisions.md) §34 — neither shows a figure nobody computed —
+      so this is a consistency question, **not a defect**, and it is recorded
+      rather than fixed for that reason.
+      **Durable fix:** if one convention is wanted, `/cfo`'s row takes the same
+      `pending` treatment. `tests-e2e/a11y/kpi-pending.spec.ts` is already written
+      so adopting it is a one-line swap to `expectRowPending`, and pins the
+      invariant rather than the mechanism in the meantime.
+      **Trigger:** the next design pass on `KpiCard`, or the next `/cfo` slice.
 
-- [ ] **(c) `vendors` has 17 non-cascading FKs and 17 hand-rolled
-      `DELETE FROM vendors` teardowns across 16 spec files** — the exact trap
-      `deleteInvoicesWhere` and `meta/teardown-guard.spec.ts` exist for, one table
-      over. Each hand-rolled site maintains its own partial child list
-      (`import-csv` knows about `sanctions_checks`; most know about nothing).
-      **Durable fix:** a `deleteVendorsWhere(predicate, slug?)` owning the graph,
-      plus extending the teardown guard's regex to `vendors` and migrating all 17
-      call sites. Sized but not started — it touches 16 files, so it wants its own
-      slice. **Trigger:** the first teardown FK failure on a vendor, or the next
-      e2e hygiene slice.
+- [ ] **(b) Leaked `meter_test_*` plan rows in the shared local control plane.**
+      Orgs `pytesta` / `pytesta3` hold live subscriptions on
+      `meter_test_a3927f51` / `meter_test_ee53c2f4`, left by a pytest run that
+      did not clean up after itself. Local dev boxes only — CI builds its control
+      plane fresh.
+      **Durable fix:** delete the rows; if it recurs, the fixture that mints a
+      throwaway plan needs a teardown. **Trigger:** the next time a billing spec
+      behaves oddly on a long-lived local box.
 
-- [ ] **[Low] Workflow definitions leak too.** `e2e2` holds 8
-      `Step Config E2E <ts>` rows plus `Snapshot B <ts>` and `Invoice Processing`;
-      `e2e1` holds `Sim WF <ts>`. All inactive, so harmless to the workflow-shape
-      guard, but they are rows the `/workflows` list pages and the bulk-delete
-      spec page through.
-      **Durable fix:** an `afterEach` per workflow spec, by name prefix.
-      **Trigger:** the next workflows slice.
-
-- [ ] **(c) Running the backend from a worktree silently serves the PRIMARY
-      checkout.** `backend/.venv` is an editable install whose
-      `__editable___backend_0_1_0_finder.py` registers a `MetaPathFinder` mapping
-      `app` → `<primary>/backend/app`. `sys.meta_path` beats `sys.path`, so
-      `PYTHONPATH` cannot override it: a worktree reusing that venv runs the
-      primary checkout's backend and every e2e assertion measures the wrong tree.
-      This is the same trap the `worktree pytest venv` note records for pytest,
-      and it applies to `python main.py` too. Worked around in round 26 with a
-      scratch `sitecustomize.py` stripping `__editable__*` finders from
-      `sys.meta_path`.
-      **Durable fix:** document it in `tests-e2e/README.md` § Running from a
-      worktree, and ideally ship the `sitecustomize.py` shim as a checked-in
-      helper so it is not re-derived. **Trigger:** the next worktree e2e run.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 

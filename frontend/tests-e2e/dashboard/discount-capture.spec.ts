@@ -16,6 +16,15 @@ import { expect, test } from '../fixtures/helpers';
  */
 
 const AGING = { current: 0, days_30: 0, days_60: 0, days_90: 0, days_90_plus: 0 };
+// `aging_reporting` is `ReportingAgingBuckets` — the five bands PLUS a
+// non-optional `unconverted_count`. The bare `aging` is `AgingBuckets` and
+// deliberately carries none (it is a face-value cross-currency sum in its
+// entirety), so the two are NOT the same shape and this fixture must not
+// serve one object for both. Omitting the count left the page's
+// `unconverted_count > 0` guard reading `undefined`, which is falsy — so the
+// aging disclosure could only ever be exercised on its no-notice branch from
+// here. Both branches live in `unconverted-disclosures.spec.ts`.
+const AGING_REPORTING = { ...AGING, unconverted_count: 0 };
 
 function dashboard(discount: Record<string, unknown>) {
 	return {
@@ -41,7 +50,7 @@ function dashboard(discount: Record<string, unknown>) {
 		pipeline: { new: 4 },
 		vendor_spend: [],
 		aging: AGING,
-		aging_reporting: AGING,
+		aging_reporting: AGING_REPORTING,
 		monthly_trend: [],
 		upcoming_payments: [],
 		upcoming_total_amount: 0,

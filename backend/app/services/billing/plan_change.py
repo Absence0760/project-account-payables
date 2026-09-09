@@ -60,6 +60,7 @@ from app.models.organization import Organization
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.billing.entitlements import get_active_subscription
 from app.services.billing.period import current_period
+from app.services.billing.plan_catalog import clear_stale_canceled_subscription
 from app.services.billing.proration import ProrationResult, compute_proration
 from app.services.billing.provisioning import provision_org_billing
 
@@ -240,16 +241,11 @@ async def change_plan(
     )
 
     # Guard the (org, plan) unique constraint: a leftover *canceled* row for the
-    # target plan would collide when we repoint plan_id. Drop the stale canceled
-    # row first (history of a plan the org is re-adopting; the live row is the
-    # source of truth) so the repoint is safe.
-    await control_db.execute(
-        Subscription.__table__.delete().where(
-            Subscription.organization_id == org.id,
-            Subscription.plan_id == new_plan.id,
-            Subscription.status == "canceled",
-        )
-    )
+    # target plan would collide when we repoint plan_id. Freeing that slot is
+    # shared with `plan_catalog.ensure_subscription` and the seed's repair —
+    # one owner, so a fourth writer inherits the rule instead of rediscovering
+    # it as a production IntegrityError.
+    await clear_stale_canceled_subscription(control_db, organization_id=org.id, plan_id=new_plan.id)
 
     # Repoint the subscription. The provider-side amendment (issuing the
     # proration line) is the live adapter's job on its next invoice cycle; the

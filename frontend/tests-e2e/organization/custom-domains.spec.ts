@@ -30,7 +30,6 @@ async function setDomains(
 test.describe('/organization custom domains', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/organization');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('Custom Domains section renders', async ({ page }) => {
@@ -71,7 +70,6 @@ test.describe('/organization custom domains', () => {
 			// Seed via API so the test starts from a known one-domain state.
 			await setDomains(page, [...before, host]);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			const card = page.locator('section.card', {
 				has: page.getByRole('heading', { name: 'Custom Domains' })

@@ -1,9 +1,27 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from '../fixtures/helpers';
+
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so the
+ * `afterEach` below can sweep by name rather than by id — the only teardown
+ * that survives `createWorkflow` throwing after its POST has already landed,
+ * or a run that is interrupted mid-test.
+ *
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children — and the `is_default = false` seatbelt that keeps a
+ * marker typo away from the seeded default.
+ */
+const MARKER = 'Add Remove E2E ';
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	await page.goto('/workflows');
 	await page.getByRole('button', { name: '+ New Workflow' }).click();
-	await page.locator('#wf-name').fill(`Add Remove E2E ${Date.now()}`);
+	await page.locator('#wf-name').fill(`${MARKER}${Date.now()}`);
 	await page.getByRole('button', { name: /^Create$/ }).click();
 	await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
 	const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
@@ -34,6 +52,8 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/workflows/[id] add/remove steps', () => {
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
+
 	test('Add Approval step appends to pipeline and selects the new step', async ({
 		page
 	}) => {

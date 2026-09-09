@@ -95,8 +95,12 @@
 	{:else if data}
 		<div class="kpi-row">
 			<KpiCard value={`${data.dpo_current.toFixed(1)}d`} label={m('cfoMetrics.kpi.dpo')} />
+			<!-- `null`, not a hand-written dash: `KpiCard` owns the glyph, so there is
+			     one spelling of "no figure" and `kpiValue.test.ts` pins it. Passing the
+			     dash as a value also rendered `data-kpi-state="value"`, which is a claim
+			     that a figure exists. -->
 			<KpiCard
-				value={data.cash_conversion_cycle !== null ? `${data.cash_conversion_cycle.toFixed(1)}d` : '—'}
+				value={data.cash_conversion_cycle !== null ? `${data.cash_conversion_cycle.toFixed(1)}d` : null}
 				label={m('cfoMetrics.kpi.ccc')}
 				sub={data.cash_conversion_cycle === null ? m('cfoMetrics.kpi.cccUnavailable') : null}
 			/>

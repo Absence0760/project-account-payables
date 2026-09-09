@@ -1,10 +1,30 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteWorkflowsWhere,
 	expect,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
+
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so the
+ * `afterEach` below can sweep by name rather than by id.
+ *
+ * Each test creates its row before entering its `try`, and the second one
+ * then runs two `tenantPsql` calls before it — so a failed lookup or INSERT
+ * leaks the definition with no `finally` to catch it. Sweeping by name needs
+ * no id and runs whatever the body did. The first test also deliberately
+ * ACTIVATES its definition, and the DELETE endpoint refuses an active one, so
+ * a body that dies before the `finally` deactivates it leaks a row the API
+ * cannot remove at all.
+ *
+ * `deleteWorkflowsWhere` owns the walk below the definition — which is also
+ * what clears the synthetic instance the second test wedges its definition
+ * with — and the `is_default = false` seatbelt that keeps a marker typo away
+ * from the seeded default.
+ */
+const MARKER = 'WF Delete Safety ';
 
 async function createWorkflow(
 	page: import('@playwright/test').Page,
@@ -58,6 +78,8 @@ async function patchWorkflow(
  */
 
 test.describe('/workflows delete cascade safety', () => {
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
+
 	test('refuses delete of an active (non-default) workflow', async ({ page }) => {
 		// Create a new workflow + activate it. Activation deactivates the
 		// seeded default, so we revert at the end.
@@ -68,7 +90,7 @@ test.describe('/workflows delete cascade safety', () => {
 			.items;
 		const defaultWf = before.find((w) => w.is_default)!;
 
-		const id = await createWorkflow(page, `Active Safety ${Date.now()}`);
+		const id = await createWorkflow(page, `${MARKER}Active ${Date.now()}`);
 		try {
 			await patchWorkflow(page, id, { is_active: true });
 
@@ -86,7 +108,7 @@ test.describe('/workflows delete cascade safety', () => {
 	test('refuses delete when workflow_instances point at it (clean 409, not FK 500)', async ({
 		page
 	}) => {
-		const id = await createWorkflow(page, `Instance Safety ${Date.now()}`);
+		const id = await createWorkflow(page, `${MARKER}Instance ${Date.now()}`);
 
 		// Insert a synthetic instance pointing at this definition. The
 		// invoice_id FK requires a real invoice — pick the first existing
@@ -118,7 +140,7 @@ test.describe('/workflows delete cascade safety', () => {
 	});
 
 	test('inactive non-default workflow with no instances deletes cleanly', async ({ page }) => {
-		const id = await createWorkflow(page, `Plain Delete ${Date.now()}`);
+		const id = await createWorkflow(page, `${MARKER}Plain ${Date.now()}`);
 		// Newly created workflows start is_active=false, is_default=false, with
 		// zero instances → all three safety guards clear; delete returns 204.
 		const resp = await deleteWorkflow(page, id);

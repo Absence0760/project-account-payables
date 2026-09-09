@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 
 import 'package:feohledger_mobile/api/api_client.dart';
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/models/payment.dart';
 import 'package:feohledger_mobile/screens/payment_queue_screen.dart';
 import 'package:feohledger_mobile/services/offline_store.dart';
 import 'package:feohledger_mobile/stores/auth_store.dart';
@@ -27,7 +28,17 @@ http.Response _json(Object body, [int status = 200]) => http.Response(
       headers: {'content-type': 'application/json'},
     );
 
-Map<String, dynamic> _queueItem(String id, {double amount = 100}) => {
+/// One row of `GET /api/payments/queue`, including the three refusal fields
+/// `app/api/payments.py::payment_queue` stamps from
+/// `services/payment_runs.run_refusal_reasons`.
+Map<String, dynamic> _queueItem(
+  String id, {
+  double amount = 100,
+  bool blocked = false,
+  String? blockedReason,
+  String? requiredMethod,
+}) =>
+    {
       'id': id,
       'invoice_number': 'INV-$id',
       'vendor_name': 'Vendor $id',
@@ -37,6 +48,9 @@ Map<String, dynamic> _queueItem(String id, {double amount = 100}) => {
       'status': 'approved',
       'is_overdue': false,
       'discount_eligible': false,
+      'blocked': blocked,
+      'blocked_reason': blockedReason,
+      'required_method': requiredMethod,
     };
 
 const _summary = {
@@ -565,5 +579,145 @@ void main() {
       );
       expect(find.textContaining('{"detail"'), findsNothing);
     });
+  });
+
+  // A row `POST /api/payments/runs` would refuse must be impossible to select:
+  // it 409s the WHOLE batch, so one held invoice used to take every other
+  // invoice in the draft down with it. It still RENDERS — an operator has to
+  // see what to go and clear — with the reason spelled out.
+  testWidgets('a blocked row is unselectable and says why', (tester) async {
+    await loginThen(
+      ['ap_manager'],
+      _screenClient(queue: [
+        _queueItem('1', blocked: true, blockedReason: 'fully_credited'),
+      ]),
+    );
+
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+    await _pumpUntil(tester, find.text('Vendor 1'));
+
+    // The reason is rendered from the app's own label map, never the raw code.
+    expect(find.text('Fully covered by credit memos — nothing to pay'),
+        findsOneWidget);
+    expect(find.textContaining('fully_credited'), findsNothing);
+
+    final checkbox = tester.widget<Checkbox>(find.byType(Checkbox));
+    expect(checkbox.onChanged, isNull, reason: 'blocked checkbox is disabled');
+
+    // Tapping the row itself is inert too — the Create Run bar never appears.
+    await tester.tap(find.text('Vendor 1'));
+    await tester.pump();
+    expect(PaymentQueueStore.instance.hasSelection, isFalse);
+    expect(find.text('Create Run'), findsNothing);
+  });
+
+  testWidgets('an unresolved-exception row renders its own reason',
+      (tester) async {
+    await loginThen(
+      ['ap_manager'],
+      _screenClient(queue: [
+        _queueItem('1', blocked: true, blockedReason: 'payment_reconciliation'),
+      ]),
+    );
+
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+    await _pumpUntil(tester, find.text('Vendor 1'));
+
+    expect(
+      find.text('Earlier payment unreconciled — may still be in flight'),
+      findsOneWidget,
+    );
+  });
+
+  // A live virtual card already claims the invoice: every rail BUT
+  // `virtual_card` is refused, because that one converges onto the existing
+  // card instead of opening a second outflow. The row stays selectable, pinned.
+  testWidgets('a rail-pinned row offers no method picker and pays on the pin',
+      (tester) async {
+    http.Request? captured;
+    await loginThen(
+      ['ap_manager'],
+      _screenClient(
+        queue: [
+          _queueItem('1',
+              blockedReason: 'live_virtual_card',
+              requiredMethod: 'virtual_card'),
+        ],
+        onPost: (req) {
+          if (req.url.path.endsWith('/payments/runs')) {
+            captured = req;
+            return _json({
+              'id': 'run1',
+              'status': 'draft',
+              'requires_cfo_approval': false,
+              'message': 'Payment run created',
+            });
+          }
+          return _json({'items': [], 'total': 0});
+        },
+      ),
+    );
+
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+    await _pumpUntil(tester, find.text('Vendor 1'));
+
+    // Selectable, and the pinned rail is stated rather than offered as one of
+    // four options the backend would refuse three of.
+    expect(find.text('Pay by Virtual Card'), findsOneWidget);
+    expect(
+      find.text('A live virtual card claims this invoice — pay it by card'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byType(Checkbox));
+    await tester.pump();
+    expect(find.byType(DropdownButton<PaymentMethod>), findsNothing,
+        reason: 'a pinned row must not offer a rail choice');
+
+    await tester.tap(find.text('Create Run'));
+    await _pumpUntilTrue(tester, () => captured != null);
+
+    final items =
+        (jsonDecode(captured!.body) as Map<String, dynamic>)['items'] as List;
+    expect(items.single['method'], 'virtual_card');
+  });
+
+  testWidgets('a rail this build cannot name is treated as unselectable',
+      (tester) async {
+    await loginThen(
+      ['ap_manager'],
+      _screenClient(queue: [
+        _queueItem('1',
+            blockedReason: 'live_virtual_card',
+            requiredMethod: 'rtp_instant'),
+      ]),
+    );
+
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+    await _pumpUntil(tester, find.text('Vendor 1'));
+
+    final checkbox = tester.widget<Checkbox>(find.byType(Checkbox));
+    expect(checkbox.onChanged, isNull);
+    expect(find.textContaining('rtp_instant'), findsNothing);
+  });
+
+  testWidgets('a pinned row with no reason code renders the rail, not "null"',
+      (tester) async {
+    // The reason and the pin are separate fields; nothing guarantees a future
+    // backend sends both. Interpolating an absent reason once put the literal
+    // string "null" in the row's screen-reader announcement.
+    await loginThen(
+      ['ap_manager'],
+      _screenClient(queue: [
+        _queueItem('1', requiredMethod: 'virtual_card'),
+      ]),
+    );
+
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
+    await _pumpUntil(tester, find.text('Vendor 1'));
+
+    expect(find.text('Pay by Virtual Card'), findsOneWidget);
+    expect(find.textContaining('null'), findsNothing);
+    expect(find.bySemanticsLabel(RegExp('null')), findsNothing);
   });
 }

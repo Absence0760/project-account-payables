@@ -398,16 +398,43 @@ def _audit_rows(spy) -> list[dict]:
     return [call.kwargs for call in spy.await_args_list]
 
 
-async def _challenge(vu, code, monkeypatch, *, method="totp", ip="203.0.113.9"):
+def _audit_row(spy, action: str) -> dict:
+    """The one row for `action`, asserting there is exactly one.
+
+    A successful MFA challenge writes TWO rows — `portal.mfa.verify.success`
+    (which factor) and `portal.login.success` (a session was minted), matching
+    what the employee twin writes. So a bare single-row unpack no longer says
+    what it used to; select by action instead, and keep the "exactly one"
+    assertion that made the unpack worth writing.
+    """
+    rows = [r for r in _audit_rows(spy) if r["action"] == action]
+    assert len(rows) == 1, f"expected exactly one {action} row, got {len(rows)}"
+    return rows[0]
+
+
+async def _challenge(vu, code, monkeypatch, *, method="totp", ip="203.0.113.9", validated=True):
+    """Drive `portal_mfa_challenge` directly.
+
+    `validated=False` builds the body with `model_construct`, skipping Pydantic
+    — the only way to ask what the HANDLER does with a `method` the schema
+    would refuse, now that it pins `^(totp|email)$`. Used by exactly one test,
+    to keep the route's own derivation covered as the second gate.
+    """
     monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
     request = _fake_request()
     request.client = SimpleNamespace(host=ip)
+    fields = {
+        "challenge_token": mfa.create_vendor_challenge_token(vu.id),
+        "code": code,
+        "method": method,
+    }
+    body = (
+        PortalMFAChallengeVerifyRequest(**fields)
+        if validated
+        else PortalMFAChallengeVerifyRequest.model_construct(**fields)
+    )
     return await portal_mfa_challenge(
-        body=PortalMFAChallengeVerifyRequest(
-            challenge_token=mfa.create_vendor_challenge_token(vu.id),
-            code=code,
-            method=method,
-        ),
+        body=body,
         request=request,
         slug="acme",
         db=_mock_db(vendor_user=vu),
@@ -424,7 +451,7 @@ async def test_challenge_verify_success_is_audited(mfa_on, monkeypatch):
     code = pyotp.TOTP(secret).now()
     await _challenge(vu, code, monkeypatch)
 
-    (row,) = _audit_rows(spy)
+    row = _audit_row(spy, "portal.mfa.verify.success")
     assert row["action"] == "portal.mfa.verify.success"
     assert row["organization_id"] == vu.organization_id
     # Subject is the vendor user on both axes, matching every other portal MFA
@@ -435,6 +462,59 @@ async def test_challenge_verify_success_is_audited(mfa_on, monkeypatch):
     # The row is about a credential; it must never carry one.
     assert secret not in repr(row)
     assert code not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_an_mfa_sign_in_is_also_a_sign_in(mfa_on, monkeypatch):
+    """A supplier who carries a second factor still appears in `login.success`.
+
+    Without this the action returned only the password-only subset, which is a
+    BIASED SAMPLE rather than a gap: an auditor querying successful supplier
+    sign-ins would silently miss exactly the accounts that are best protected,
+    and nothing in the result would say so. That is why it was not half-fixed
+    when the password-only row landed.
+
+    The factor row and the sign-in row answer different questions — *which
+    second factor* versus *a session was minted* — and the employee twin
+    already writes both (`auth.mfa.verify.success` + `auth.login.success`).
+    """
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    spy = _audit_spy(monkeypatch)
+
+    code = pyotp.TOTP(secret).now()
+    await _challenge(vu, code, monkeypatch)
+
+    assert {r["action"] for r in _audit_rows(spy)} == {
+        "portal.mfa.verify.success",
+        "portal.login.success",
+    }
+
+    row = _audit_row(spy, "portal.login.success")
+    assert row["organization_id"] == vu.organization_id
+    assert row["actor_id"] == vu.id
+    assert row["entity_id"] == vu.id
+    # The method names the factor actually used, so the two rows can be
+    # reconciled without joining them; the shape mirrors the employee twin's
+    # `password+mfa:{factor}`.
+    assert row["details"] == {"ip": "203.0.113.9", "method": "password+mfa:totp"}
+    # PII-free and closed, the same rule the password-only row is held to.
+    assert set(row["details"]) == {"ip", "method"}
+    assert vu.email not in repr(row)
+    assert secret not in repr(row)
+    assert code not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_no_sign_in_row_when_the_second_factor_is_wrong(mfa_on, monkeypatch):
+    """A refused factor is not a sign-in, so it gets no sign-in row."""
+    vu = _vendor_user(mfa_secret=pyotp.random_base32(), mfa_enabled=True)
+    spy = _audit_spy(monkeypatch)
+
+    with pytest.raises(HTTPException):
+        await _challenge(vu, "000000", monkeypatch)
+
+    assert [r["action"] for r in _audit_rows(spy)] == ["portal.mfa.verify.failure"]
 
 
 @pytest.mark.asyncio
@@ -469,7 +549,7 @@ async def test_challenge_verify_records_which_factor_was_used(mfa_on, monkeypatc
 
     await _challenge(vu, "123456", monkeypatch, method="email")
 
-    (row,) = _audit_rows(spy)
+    row = _audit_row(spy, "portal.mfa.verify.success")
     assert row["action"] == "portal.mfa.verify.success"
     assert row["details"]["method"] == "email"
 
@@ -501,24 +581,32 @@ async def test_no_success_row_when_the_session_could_not_be_minted(mfa_on, monke
 
 @pytest.mark.asyncio
 async def test_the_audited_factor_is_the_branch_taken_not_the_caller_s_string(mfa_on, monkeypatch):
-    """`PortalMFAChallengeVerifyRequest.method` is an unconstrained `str` — its
-    employee twin pins `^(totp|email)$` — so anything but "email" falls through
-    to TOTP verification. The row must name the factor that was actually
-    verified, not restate the request: an audit trail is append-only and shipped
-    to a WORM store, which makes it the worst possible place to echo unbounded
-    caller-controlled text, and a row claiming a factor nobody used is worse
-    than no row.
+    """The second gate. `PortalMFAChallengeVerifyRequest.method` now pins
+    `^(totp|email)$` (see the closed-vocabulary section at the foot of this
+    file), so an unrecognised factor no longer reaches the handler over HTTP —
+    but the route still derives the audited factor from the branch it actually
+    took, and that must stay true independently of the schema. An audit trail
+    is append-only and shipped to a WORM store, which makes it the worst
+    possible place to echo unbounded caller-controlled text, and a row claiming
+    a factor nobody used is worse than no row.
+
+    Built with `model_construct` to bypass validation — the point is what the
+    handler does on its own, not what the validator catches first.
     """
     secret = pyotp.random_base32()
     vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
     spy = _audit_spy(monkeypatch)
 
     # Verifies as TOTP (the fall-through), so it must be audited as TOTP.
-    await _challenge(vu, pyotp.TOTP(secret).now(), monkeypatch, method="EMAIL</b>x")
+    await _challenge(
+        vu, pyotp.TOTP(secret).now(), monkeypatch, method="EMAIL</b>x", validated=False
+    )
 
-    (row,) = _audit_rows(spy)
+    row = _audit_row(spy, "portal.mfa.verify.success")
     assert row["details"]["method"] == "totp"
     assert "EMAIL</b>x" not in repr(row)
+    # The sign-in row derives its method from the same branch, never the caller.
+    assert "EMAIL</b>x" not in repr(_audit_row(spy, "portal.login.success"))
 
 
 @pytest.mark.asyncio
@@ -870,3 +958,118 @@ async def test_portal_step_up_is_rate_limited_per_account(mfa_on):
     assert 429 in statuses, f"expected a 429 once over the cap, got {statuses}"
     assert vu.mfa_enabled is True
     assert vu.mfa_secret == secret
+
+
+# ---------------------------------------------------------------------------
+# `method` is a closed vocabulary, and both surfaces agree on it
+#
+# `PortalMFAChallengeVerifyRequest.method` was an unconstrained `str` while its
+# employee twin (`schemas/auth.MFAVerifyRequest`) pinned `^(totp|email)$`. The
+# route reads it as `"email" if body.method == "email" else "totp"`, so every
+# unrecognised value — `sms`, a client typo, a trailing newline — fell through
+# to TOTP and came back a *success*: the supplier asked to clear the challenge
+# with a factor this app has never had, and got a session. The audit trail was
+# never at risk (the row derives its factor from the branch actually taken,
+# never from the request), but the two surfaces disagreed about what a factor
+# name is, and a typo was invisible to the caller.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "sms",  # a factor this app has never had
+        "totpx",  # a suffix typo
+        "TOTP",  # right factor, wrong case — the route compares exactly
+        "",  # empty string
+        "totp email",  # both, which is not a thing
+        "totp\n",  # the anchors must bind the WHOLE value, not a prefix line
+        "email\n",
+    ],
+)
+def test_portal_mfa_challenge_rejects_unknown_factor_at_schema_level(method):
+    """An unrecognised factor name is rejected by Pydantic before the handler
+    runs — not silently downgraded to TOTP."""
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        PortalMFAChallengeVerifyRequest(challenge_token="x", code="123456", method=method)
+
+
+def test_portal_mfa_challenge_accepts_both_real_factors():
+    """The change is a tightening, not a break: both shipped factors still
+    pass, and omitting `method` still defaults to TOTP. The field stays
+    optional here (unlike the employee twin, which requires it), so a client
+    sending only `{challenge_token, code}` is unaffected."""
+    for method in ("totp", "email"):
+        body = PortalMFAChallengeVerifyRequest(challenge_token="x", code="123456", method=method)
+        assert body.method == method
+
+    assert PortalMFAChallengeVerifyRequest(challenge_token="x", code="123456").method == "totp"
+
+
+def test_portal_and_employee_mfa_verify_agree_on_the_factor_vocabulary():
+    """Drift guard. Two surfaces verifying the same second factor must not
+    disagree about what a factor is called — that disagreement is the bug this
+    section closes, and it is one edit away from returning."""
+    from app.schemas.auth import MFAVerifyRequest
+
+    def _pattern(model, field):
+        return [
+            item.pattern
+            for item in model.model_fields[field].metadata
+            if getattr(item, "pattern", None) is not None
+        ]
+
+    portal = _pattern(PortalMFAChallengeVerifyRequest, "method")
+    employee = _pattern(MFAVerifyRequest, "method")
+    assert portal == ["^(totp|email)$"], portal
+    assert portal == employee, (portal, employee)
+
+
+@pytest.mark.asyncio
+async def test_portal_mfa_challenge_endpoint_422s_on_unknown_factor(mfa_on):
+    """End-to-end through the ASGI app: `method: "sms"` is refused at the
+    request boundary and the handler never runs, while the two real factors get
+    past validation INTO the handler — which then 401s on the junk challenge
+    token. The 401 is the point: it is the handler's refusal, not the
+    validator's, so `totp`/`email` provably still reach the code."""
+    import httpx
+
+    from app.main import app
+    from app.tenant import get_tenant_db, get_tenant_slug
+
+    async def _slug() -> str:
+        return "acme"
+
+    async def _db():
+        return MagicMock()
+
+    app.dependency_overrides[get_tenant_slug] = _slug
+    app.dependency_overrides[get_tenant_db] = _db
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            payload = {"challenge_token": "not-a-real-token", "code": "123456"}
+
+            bad = await client.post(
+                "/api/portal/auth/mfa/challenge", json={**payload, "method": "sms"}
+            )
+            assert bad.status_code == 422, bad.text
+            # The error names the offending field, so a client typo is visible
+            # instead of quietly verifying a different factor. `method` is a
+            # closed factor name, never a credential — the response echoes
+            # neither the submitted code nor the challenge token.
+            locs = [tuple(err["loc"]) for err in bad.json()["detail"]]
+            assert ("body", "method") in locs, bad.text
+            assert "not-a-real-token" not in bad.text
+            assert "123456" not in bad.text
+
+            for method in ("totp", "email"):
+                ok = await client.post(
+                    "/api/portal/auth/mfa/challenge", json={**payload, "method": method}
+                )
+                assert ok.status_code == 401, (method, ok.status_code, ok.text)
+    finally:
+        app.dependency_overrides.pop(get_tenant_slug, None)
+        app.dependency_overrides.pop(get_tenant_db, None)

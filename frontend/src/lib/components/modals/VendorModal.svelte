@@ -638,17 +638,9 @@
 		word-break: break-word;
 		font-weight: 500;
 	}
-	.visually-hidden {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
-	}
+	/* `.visually-hidden` (used on the enrich table's pick column header) is the
+	   shared recipe in app.css — this component's private copy was the second
+	   of two identical ones. */
 	.timeline {
 		list-style: none;
 		margin: 0;

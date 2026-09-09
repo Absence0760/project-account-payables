@@ -88,6 +88,40 @@ async def ensure_plan_catalog(session: AsyncSession) -> dict[str, Plan]:
     return by_code
 
 
+async def clear_stale_canceled_subscription(
+    session: AsyncSession, *, organization_id: uuid.UUID, plan_id: uuid.UUID
+) -> None:
+    """Free the ``(organization_id, plan_id)`` slot by deleting a leftover
+    CANCELED subscription row occupying it.
+
+    ``uq_subscription_org_plan`` is ``UNIQUE (organization_id, plan_id)`` with
+    **no status filter** — deliberately, so an org can never hold two rows for
+    one plan — while ``uq_subscription_one_live_per_org`` is the partial index
+    that bounds the LIVE count. A canceled row therefore keeps occupying its
+    slot forever, and any write that tries to put the org back on that plan
+    raises ``IntegrityError`` rather than succeeding: the INSERT in
+    :func:`ensure_subscription` below, and the in-place ``plan_id`` repoint in
+    ``services/billing/plan_change.py::change_plan`` and
+    ``scripts/seed.py::ensure_public_api_entitled``.
+
+    ``change_plan`` has always cleared the row inline for exactly this reason.
+    This is that same rule, named once, so a fourth writer inherits it instead
+    of rediscovering it as a production ``IntegrityError``.
+
+    Deleting is the established resolution, not a new one: the canceled row is
+    convenience history of a plan the org is re-adopting, the live row is the
+    source of truth, and the durable record of a plan change is the append-only
+    ``billing.plan_changed`` audit row — not this table. Caller commits.
+    """
+    await session.execute(
+        Subscription.__table__.delete().where(
+            Subscription.organization_id == organization_id,
+            Subscription.plan_id == plan_id,
+            Subscription.status == "canceled",
+        )
+    )
+
+
 async def ensure_subscription(
     session: AsyncSession, *, organization_id: uuid.UUID, plan_code: str
 ) -> Subscription | None:
@@ -99,6 +133,13 @@ async def ensure_subscription(
     (a fresh control DB before `ensure_plan_catalog` has run) — mirrors the
     "skip silently, don't crash provisioning" pattern already used for the
     admin role lookup in `tenant_provisioning._provision_into`.
+
+    Having NO live subscription is not the same as the `(org, plan)` slot
+    being free: `uq_subscription_org_plan` ignores status, so an org whose
+    subscription to this very plan was CANCELED (the dunning sweep is the
+    path that does that) still occupies it, and the INSERT below raised
+    `IntegrityError` instead of resubscribing. Hence
+    :func:`clear_stale_canceled_subscription` first.
     """
     existing = (
         await session.execute(
@@ -114,6 +155,10 @@ async def ensure_subscription(
     plan = (await session.execute(select(Plan).where(Plan.code == plan_code))).scalar_one_or_none()
     if plan is None:
         return None
+
+    await clear_stale_canceled_subscription(
+        session, organization_id=organization_id, plan_id=plan.id
+    )
 
     # Stamp the first billing window. Plans are flat monthly, and every reader
     # of these columns (proration, the dunning grace clock, the subscription

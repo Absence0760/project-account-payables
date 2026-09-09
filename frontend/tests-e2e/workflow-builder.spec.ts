@@ -1,4 +1,10 @@
-import { API_BASE, authedTenantHeaders, expect, test } from './fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from './fixtures/helpers';
 
 /**
  * No-Code Workflow Builder — management UI e2e.
@@ -24,6 +30,25 @@ import { API_BASE, authedTenantHeaders, expect, test } from './fixtures/helpers'
 
 import type { Page } from '@playwright/test';
 
+/**
+ * Every workflow definition this spec creates is named `${MARKER}…`, so the
+ * `afterEach` below can sweep by name in SQL rather than through the API.
+ *
+ * `deleteWorkflowByName` already sweeps by name, but only from inside a
+ * `finally` the test has to reach: every create here happens BEFORE the `try`
+ * (template pick, `+ New Workflow`, cXML import), so a create whose nav or
+ * canvas render fails leaks the row it just made — and an interrupted run
+ * leaks whatever is in flight. This tenant is still carrying a `Sim WF <ts>`
+ * from exactly that. The SQL sweep also reaches a row the API refuses (the
+ * DELETE 409s on an active definition or one with instances), which the
+ * name-based API delete silently cannot.
+ *
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children — and the `is_default = false` seatbelt that keeps a
+ * marker typo away from the seeded default.
+ */
+const MARKER = 'WF Builder E2E ';
+
 async function deleteWorkflowByName(page: Page, name: string) {
 	const resp = await page.request.get(`${API_BASE}/api/workflows?page_size=100`, {
 		headers: await authedTenantHeaders(page),
@@ -37,6 +62,8 @@ async function deleteWorkflowByName(page: Page, name: string) {
 }
 
 test.describe('no-code workflow builder management', () => {
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
+
 	test('toolbar exposes template + import entry points', async ({ page }) => {
 		await page.goto('/workflows');
 		await page.waitForLoadState('networkidle');
@@ -47,7 +74,7 @@ test.describe('no-code workflow builder management', () => {
 	test('create a workflow from a template, open it, and see steps render', async ({
 		page,
 	}) => {
-		const name = `Template WF ${Date.now()}`;
+		const name = `${MARKER}Template WF ${Date.now()}`;
 		await page.goto('/workflows');
 		await page.waitForLoadState('networkidle');
 
@@ -82,7 +109,7 @@ test.describe('no-code workflow builder management', () => {
 		// The canvas drag-to-reorder is pointer-only; the per-node ↑/↓ buttons are
 		// its keyboard + single-pointer alternative. Verify a keyboard user can
 		// reorder: Tab to the button, activate with Enter, see the order flip.
-		const name = `Reorder WF ${Date.now()}`;
+		const name = `${MARKER}Reorder WF ${Date.now()}`;
 		await page.goto('/workflows');
 		await page.getByRole('button', { name: '+ New Workflow' }).click();
 		await page.locator('#wf-name').fill(name);
@@ -123,7 +150,7 @@ test.describe('no-code workflow builder management', () => {
 	});
 
 	test('version history shows ≥1 version after an edit', async ({ page }) => {
-		const name = `Versioned WF ${Date.now()}`;
+		const name = `${MARKER}Versioned WF ${Date.now()}`;
 		// Create via the standard create modal (no template dependency).
 		await page.goto('/workflows');
 		await page.getByRole('button', { name: '+ New Workflow' }).click();
@@ -170,7 +197,7 @@ test.describe('no-code workflow builder management', () => {
 	});
 
 	test('simulation renders a step path for a sample invoice', async ({ page }) => {
-		const name = `Sim WF ${Date.now()}`;
+		const name = `${MARKER}Sim WF ${Date.now()}`;
 		await page.goto('/workflows');
 		await page.getByRole('button', { name: '+ New Workflow' }).click();
 		await page.locator('#wf-name').fill(name);
@@ -206,8 +233,8 @@ test.describe('no-code workflow builder management', () => {
 	test('export then import a definition round-trips into a new workflow', async ({
 		page,
 	}) => {
-		const srcName = `Export Src ${Date.now()}`;
-		const importName = `Imported ${Date.now()}`;
+		const srcName = `${MARKER}Export Src ${Date.now()}`;
+		const importName = `${MARKER}Imported ${Date.now()}`;
 
 		// Create a source workflow whose definition we export.
 		await page.goto('/workflows');

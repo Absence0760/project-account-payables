@@ -778,6 +778,42 @@ class AppLocalizationsPt extends AppLocalizations {
   String get payQueueSelected => 'selecionada';
 
   @override
+  String get payQueueBlockedDuplicate => 'Possível duplicata — por resolver';
+
+  @override
+  String get payQueueBlockedFraudFlag => 'Alerta de fraude — por resolver';
+
+  @override
+  String get payQueueBlockedLineTotalMismatch =>
+      'Os totais das linhas não conferem — por resolver';
+
+  @override
+  String get payQueueBlockedPaymentReconciliation =>
+      'Pagamento anterior não conciliado — pode ainda estar em trânsito';
+
+  @override
+  String get payQueueBlockedFullyCredited =>
+      'Totalmente coberta por notas de crédito — nada a pagar';
+
+  @override
+  String get payQueueBlockedLiveVirtualCard =>
+      'Um cartão virtual ativo cobre esta fatura — pague-a com cartão';
+
+  @override
+  String get payQueueBlockedGeneric =>
+      'Uma exceção por resolver bloqueia o pagamento';
+
+  @override
+  String payQueueBlockedAnnounce(String reason) {
+    return 'não pode ser paga: $reason';
+  }
+
+  @override
+  String payQueuePinnedMethod(String method) {
+    return 'Pagar com $method';
+  }
+
+  @override
   String payMethodLabel(String invoiceNumber) {
     return 'Forma de pagamento para $invoiceNumber';
   }
@@ -2492,6 +2528,42 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
 
   @override
   String get payQueueSelected => 'selecionada';
+
+  @override
+  String get payQueueBlockedDuplicate => 'Possível duplicata — por resolver';
+
+  @override
+  String get payQueueBlockedFraudFlag => 'Alerta de fraude — por resolver';
+
+  @override
+  String get payQueueBlockedLineTotalMismatch =>
+      'Os totais das linhas não conferem — por resolver';
+
+  @override
+  String get payQueueBlockedPaymentReconciliation =>
+      'Pagamento anterior não conciliado — pode ainda estar em trânsito';
+
+  @override
+  String get payQueueBlockedFullyCredited =>
+      'Totalmente coberta por notas de crédito — nada a pagar';
+
+  @override
+  String get payQueueBlockedLiveVirtualCard =>
+      'Um cartão virtual ativo cobre esta fatura — pague-a com cartão';
+
+  @override
+  String get payQueueBlockedGeneric =>
+      'Uma exceção por resolver bloqueia o pagamento';
+
+  @override
+  String payQueueBlockedAnnounce(String reason) {
+    return 'não pode ser paga: $reason';
+  }
+
+  @override
+  String payQueuePinnedMethod(String method) {
+    return 'Pagar com $method';
+  }
 
   @override
   String payMethodLabel(String invoiceNumber) {

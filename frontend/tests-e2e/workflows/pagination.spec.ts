@@ -1,4 +1,11 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /workflows pagination. The workflows list previously returned a bare array;
@@ -7,6 +14,15 @@ import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixt
  * the boundary and assert the contract.
  */
 
+/**
+ * The rows this spec seeds are bulk-INSERTed and never handed to the API, so
+ * nothing FK-references them today and a bare definition delete would succeed.
+ * Teardown still goes through `deleteWorkflowsWhere`, which owns the walk
+ * below the definition — a definition that ever acquires a child stops being
+ * deletable, and this is the file the next spec's teardown gets copied from —
+ * plus the `is_default = false` seatbelt that keeps a marker typo away from
+ * the seeded default `fixtures/globalSetup.ts` asserts against.
+ */
 const MARKER = 'PAGE-WF-';
 
 function seedWorkflows(n: number): void {
@@ -18,12 +34,8 @@ function seedWorkflows(n: number): void {
 	);
 }
 
-function purge(): void {
-	tenantPsql(`DELETE FROM workflow_definitions WHERE name LIKE '${MARKER}%'`);
-}
-
 test.describe('/workflows pagination', () => {
-	test.afterEach(() => purge());
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
 
 	test('Load more appends the next page', async ({ page }) => {
 		// Hit the page once so the default workflow exists, giving the SQL seed a

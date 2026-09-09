@@ -63,6 +63,118 @@ void main() {
     });
   });
 
+  // `GET /api/payments/queue` stamps every row with the verdict
+  // `services/payment_runs.run_refusal_reasons` gives it — the SAME predicate
+  // set `POST /api/payments/runs` enforces. Parsing it is what stops the app
+  // staging a batch the backend then hard-409s as a whole.
+  group('PaymentQueueItem refusal verdict', () {
+    Map<String, dynamic> row({
+      bool? blocked,
+      String? blockedReason,
+      String? requiredMethod,
+    }) =>
+        {
+          'id': 'inv1',
+          'invoice_number': 'INV-001',
+          'vendor_name': 'Acme',
+          'amount': '1500.00',
+          'currency': 'USD',
+          'status': 'approved',
+          'is_overdue': false,
+          'discount_eligible': false,
+          'blocked': ?blocked,
+          'blocked_reason': blockedReason,
+          'required_method': requiredMethod,
+        };
+
+    test('parses blocked + blocked_reason and refuses selection', () {
+      final item = PaymentQueueItem.fromJson(
+        row(blocked: true, blockedReason: 'fully_credited'),
+      );
+
+      expect(item.blocked, isTrue);
+      expect(item.blockedReason, 'fully_credited');
+      expect(item.requiredMethodCode, isNull);
+      expect(item.requiredMethod, isNull);
+      expect(item.isSelectable, isFalse);
+    });
+
+    test('a rail-pinned row is NOT blocked — payable, on one rail', () {
+      final item = PaymentQueueItem.fromJson(row(
+        blocked: false,
+        blockedReason: 'live_virtual_card',
+        requiredMethod: 'virtual_card',
+      ));
+
+      expect(item.blocked, isFalse);
+      // The reason travels with a pinned row too, so the UI can say WHY.
+      expect(item.blockedReason, 'live_virtual_card');
+      expect(item.requiredMethod, PaymentMethod.virtualCard);
+      expect(item.hasUnknownRequiredMethod, isFalse);
+      expect(item.isSelectable, isTrue);
+    });
+
+    test('an unnameable pinned rail fails CLOSED, it does not become ACH', () {
+      // `PaymentMethod.fromString` falls back to ACH, which is right where the
+      // value is displayed and catastrophic here: the backend has just said
+      // this invoice is refused on every rail but one, so guessing ACH stages
+      // the run on a rail it refuses.
+      final item = PaymentQueueItem.fromJson(row(
+        blockedReason: 'live_virtual_card',
+        requiredMethod: 'rtp_instant',
+      ));
+
+      expect(item.requiredMethodCode, 'rtp_instant');
+      expect(item.requiredMethod, isNull);
+      expect(item.hasUnknownRequiredMethod, isTrue);
+      expect(item.isSelectable, isFalse);
+    });
+
+    test('an older backend that omits the fields leaves the row selectable',
+        () {
+      // Fail-safe, not fail-secure: the gate is enforced server-side, so a
+      // missing field means the pre-flight hint is skipped and the 409 is what
+      // the user sees — never an unusable queue.
+      final item = PaymentQueueItem.fromJson({
+        'id': 'inv1',
+        'invoice_number': 'INV-001',
+        'vendor_name': 'Acme',
+        'amount': '1500.00',
+        'currency': 'USD',
+        'status': 'approved',
+        'is_overdue': false,
+        'discount_eligible': false,
+      });
+
+      expect(item.blocked, isFalse);
+      expect(item.blockedReason, isNull);
+      expect(item.requiredMethod, isNull);
+      expect(item.isSelectable, isTrue);
+    });
+
+    test('every reason the backend can send parses as a plain code', () {
+      // The vocabulary is `PAYMENT_BLOCKING_EXCEPTION_TYPES` plus
+      // `services/payment_runs`' own constants. Kept verbatim — the label map
+      // in the screen is the only place it is turned into prose, and a code
+      // this build doesn't know must still round-trip rather than throw.
+      for (final code in const [
+        'duplicate',
+        'fraud_flag',
+        'line_total_mismatch',
+        'payment_reconciliation',
+        'fully_credited',
+        'live_payment',
+        'live_virtual_card',
+        'some_future_reason',
+      ]) {
+        final item =
+            PaymentQueueItem.fromJson(row(blocked: true, blockedReason: code));
+        expect(item.blockedReason, code);
+        expect(item.isSelectable, isFalse);
+      }
+    });
+  });
+
   group('PaymentSummary.fromJson', () {
     test('parses the KPI bar payload', () {
       final s = PaymentSummary.fromJson({

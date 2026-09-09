@@ -21,18 +21,41 @@ Two seed shapes:
 import argparse
 import asyncio
 import os
+import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
+
+# Anchor THIS checkout's `backend/` on sys.path before `app` is imported below.
+# Run as `python scripts/seed.py`, sys.path[0] is `scripts/` — so `app` is not on
+# sys.path at all, and a git worktree reusing the primary checkout's
+# `backend/.venv` resolves it through the editable install's baked-in
+# `__editable___backend_0_1_0_finder` instead. Measured: without this the seed
+# ran against the OTHER checkout's models, silently, with every line it printed
+# naming this one.
+#
+# Inserted at 1, never 0: `seed_extras` is imported bare further down and relies
+# on `scripts/` staying first. Idempotent, and a no-op in the checkout the venv
+# was installed from — there it only restates where `app` already resolves.
+# See `frontend/tests-e2e/README.md` § Running from a worktree.
+#
+# The path is spelled out twice rather than bound to a name on purpose: ruff's
+# E402 exempts `sys.path` manipulation before imports, but not a module-level
+# assignment beside it — hoisting this into a variable turns every import below
+# into a lint error.
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 
 import asyncpg
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_CLERK, ROLE_AP_MANAGER, ROLE_CFO
 from app.config import settings
 from app.database import _make_tenant_url, control_engine, control_session_factory
 from app.models import Base
+from app.models.billing import Plan
 from app.models.credit_memo import CreditMemo
 from app.models.exception import Exception as APException
 from app.models.gl_account import GLAccount
@@ -51,7 +74,12 @@ from app.models.workflow import (
     WorkflowInstance,
     WorkflowStep,
 )
-from app.services.billing.plan_catalog import ensure_plan_catalog, ensure_subscription
+from app.services.billing.entitlements import get_active_subscription, has_entitlement
+from app.services.billing.plan_catalog import (
+    clear_stale_canceled_subscription,
+    ensure_plan_catalog,
+    ensure_subscription,
+)
 from app.services.tenant_provisioning import CONTROL_TABLES
 from app.utils.passwords import pwd_context
 
@@ -77,6 +105,36 @@ TECH_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
 # colliding with peers. Default N=4; bump via FEOH_E2E_TENANT_COUNT for higher
 # parallelism. Setting it to 0 skips the e2e seed entirely.
 E2E_TENANT_COUNT = int(os.environ.get("FEOH_E2E_TENANT_COUNT", "4"))
+
+# The single entitlement the app actually gates today (`api/v1/*` via
+# `require_api_entitlement`). Named once so the seed's demo policy below and
+# its drift guard in `tests/test_seed_billing_baseline.py` read the same word.
+PUBLIC_API_ENTITLEMENT = "public_api"
+
+# Which plan each seeded tenant lands on. Codes come from
+# `services/billing/plan_catalog.DEFAULT_PLAN_CATALOG`.
+#
+# `acme` is the tenant `docs/getting-started.md` tells a new contributor to log
+# into, so it lands on a plan whose entitlements include `public_api`.
+# Otherwise every `/api/v1` call made with a freshly minted API key 402s and
+# the public Developer API is unreachable on a fresh clone without hand-editing
+# the control plane — which guard rail 7 (local-first) says it must not be.
+#
+# `techflow` deliberately stays on `free`, so a local stack demonstrates BOTH
+# sides of the entitlement gate: one tenant that reaches `/api/v1` and one that
+# is correctly refused. A seed where every tenant is entitled would make the
+# 402 path unexercisable in exactly the way the 200 path used to be.
+ACME_PLAN_CODE = "growth"
+TECHFLOW_PLAN_CODE = "free"
+
+# Every e2e worker tenant stays on `free`, and this is load-bearing rather than
+# incidental: `frontend/tests-e2e/billing/billing.spec.ts` parks whatever live
+# subscription the worker's org holds, runs against its own fixture plans, then
+# restores the parked row by id. That works because each worker tenant is
+# interchangeable with the next. Entitling one of them would make which shard
+# drew which tenant observable, so the public-API demo tenant is `acme` — an
+# org the e2e suite only ever uses for cross-tenant isolation, never billing.
+E2E_PLAN_CODE = "free"
 
 # Control-plane vs tenant table split is owned by
 # `app.services.tenant_provisioning.CONTROL_TABLES` (imported above). Seeding
@@ -242,6 +300,77 @@ async def create_tenant_tables(db_name: str):
     print(f"  Tenant tables ready in: {db_name}")
 
 
+async def ensure_public_api_entitled(
+    session: AsyncSession, *, organization_id: uuid.UUID, plan_code: str
+) -> bool:
+    """Guarantee ``organization_id``'s live subscription grants ``public_api``,
+    moving the EXISTING subscription onto ``plan_code`` when it does not.
+
+    Why the seed can't just call ``ensure_subscription(plan_code="growth")``:
+    that helper deliberately no-ops once the org holds any live subscription,
+    because a second live row is a state ``uq_subscription_one_live_per_org``
+    forbids. A control plane seeded by an older revision of this script
+    therefore pins the demo tenant to whatever it landed on first, and no
+    number of ``pnpm seed`` runs can repair it — ``/api/v1`` stays 402'd on
+    every dev box that was ever seeded before.
+
+    So repoint the live row's ``plan_id`` in place instead of adding one: one
+    live subscription throughout, the unique index never challenged.
+
+    Upgrade-only. An org whose live plan already grants the feature is left
+    byte-identical, so an operator (or a test fixture) that moved the tenant
+    onto a richer plan is never quietly downgraded by a re-seed. Returns
+    ``True`` only when a row was actually moved.
+    """
+    active = await get_active_subscription(session, organization_id)
+    if active is None:
+        await ensure_subscription(session, organization_id=organization_id, plan_code=plan_code)
+        return False
+
+    subscription, plan = active
+    if has_entitlement(dict(plan.entitlements or {}), PUBLIC_API_ENTITLEMENT):
+        return False
+
+    target = (
+        await session.execute(select(Plan).where(Plan.code == plan_code))
+    ).scalar_one_or_none()
+    if target is None or target.id == subscription.plan_id:
+        # No catalog plan to move to (a control plane predating the catalog),
+        # or the tenant is already on it and the operator has since stripped
+        # the entitlement. Either way, leave the row alone rather than guess.
+        return False
+
+    # Free the `(org, plan)` slot before repointing into it —
+    # `uq_subscription_org_plan` ignores status, so a leftover CANCELED row on
+    # the target plan collides the moment we set `plan_id`. One owner for that
+    # rule, shared with `change_plan` and `ensure_subscription`.
+    await clear_stale_canceled_subscription(
+        session, organization_id=organization_id, plan_id=target.id
+    )
+    subscription.plan_id = target.id
+    await session.flush()
+    return True
+
+
+async def ensure_demo_billing_baseline(session: AsyncSession) -> None:
+    """Bind the two demo tenants to their seeded plans (:data:`ACME_PLAN_CODE`
+    / :data:`TECHFLOW_PLAN_CODE`) and repair an already-seeded control plane.
+
+    Idempotent and safe to call on every run — that is the point. It is the
+    one part of :func:`seed_control_plane` that must also reach a control
+    plane seeded by an older revision, mirroring the same backfill
+    :func:`seed_e2e_control_plane` already does for the worker tenants.
+    Caller commits.
+    """
+    await ensure_plan_catalog(session)
+    await ensure_subscription(session, organization_id=ACME_ORG_ID, plan_code=ACME_PLAN_CODE)
+    await ensure_subscription(session, organization_id=TECH_ORG_ID, plan_code=TECHFLOW_PLAN_CODE)
+    # Acme is the tenant the public Developer API is demoed from, so its live
+    # subscription has to grant `public_api` even when a previous seed already
+    # parked it on `free`.
+    await ensure_public_api_entitled(session, organization_id=ACME_ORG_ID, plan_code=ACME_PLAN_CODE)
+
+
 async def seed_control_plane():
     """Seed organizations, users, and roles into the control-plane DB."""
     async with control_session_factory() as session:
@@ -251,7 +380,16 @@ async def seed_control_plane():
             {"id": ACME_ORG_ID},
         )
         if result.scalar() > 0:
-            print("  Control plane already seeded. Skipping.")
+            # Orgs / users / roles are already in place, but the billing
+            # baseline still runs: it is the only part of this function that
+            # has to reach a control plane seeded by an OLDER revision of this
+            # script (the same reason `seed_e2e_control_plane` backfills past
+            # its own `continue`). Without this, a demo tenant stuck on a plan
+            # that grants no `public_api` could never be repaired by re-running
+            # the seed.
+            print("  Control plane already seeded — refreshing billing baseline only.")
+            await ensure_demo_billing_baseline(session)
+            await session.commit()
             return
 
         # Orgs. The two tenants intentionally diverge on settings so a
@@ -394,13 +532,15 @@ async def seed_control_plane():
         # Baseline billing (issue #180) — without a live Subscription every
         # entitlement-gated feature (the public Developer API) 402s forever
         # and POST /api/billing/change-plan 404s with no plan to upgrade
-        # FROM. Demo tenants land on "free" like any real signup.
-        await ensure_plan_catalog(session)
-        await ensure_subscription(session, organization_id=ACME_ORG_ID, plan_code="free")
-        await ensure_subscription(session, organization_id=TECH_ORG_ID, plan_code="free")
+        # FROM. Which plan each demo tenant lands on, and why they differ, is
+        # documented on ACME_PLAN_CODE / TECHFLOW_PLAN_CODE above.
+        await ensure_demo_billing_baseline(session)
 
         await session.commit()
-        print("  Seeded 2 orgs, 6 users, 4 roles, 2 subscriptions")
+        print(
+            f"  Seeded 2 orgs, 6 users, 4 roles, 2 subscriptions "
+            f"(acme={ACME_PLAN_CODE}, techflow={TECHFLOW_PLAN_CODE})"
+        )
 
 
 # Per-status workflow progress: (completed step types, the one active/incomplete
@@ -1778,7 +1918,7 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
         # `continue` above, so a re-seed backfills them too.
         await ensure_plan_catalog(session)
         for _db_name, e2e_org_id, _label in created:
-            await ensure_subscription(session, organization_id=e2e_org_id, plan_code="free")
+            await ensure_subscription(session, organization_id=e2e_org_id, plan_code=E2E_PLAN_CODE)
 
         await session.commit()
 

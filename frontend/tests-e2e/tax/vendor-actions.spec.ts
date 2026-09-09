@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteInvoicesWhere, deleteVendorsWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /tax — the 1099 admin WORKFLOW (not just the read-only report table):
@@ -81,12 +81,11 @@ test.describe('/tax — vendor tax workflow (admin/ap_manager)', () => {
 		tenantPsql(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE vendor_name='${vendorName}')`);
 		deleteInvoicesWhere(`vendor_name='${vendorName}'`);
 		tenantPsql(`DELETE FROM tax_1099_filings WHERE tax_year=${new Date().getFullYear()} AND idempotency_key LIKE '%${new Date().getFullYear()}%'`);
-		// Vendor create runs synchronous sanctions screening by default
-		// (`FEOH_VENDOR_SCREENING_ENABLED`), which leaves a `sanctions_checks`
-		// row with no ON DELETE CASCADE — clear it before the vendor or the
-		// delete 500s on the FK.
-		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id='${vendorId}'`);
-		tenantPsql(`DELETE FROM vendors WHERE id='${vendorId}'`);
+		// `deleteVendorsWhere` owns the vendor's child graph. Vendor create
+		// runs synchronous sanctions screening by default
+		// (`FEOH_VENDOR_SCREENING_ENABLED`), and that FK does not cascade, so
+		// a bare vendor delete would 500 on it.
+		deleteVendorsWhere(`id='${vendorId}'`);
 	});
 
 	test('uploads a W-9, verifies a TIN, and downloads the 1099 PDF from the vendor tax modal', async ({ page }) => {

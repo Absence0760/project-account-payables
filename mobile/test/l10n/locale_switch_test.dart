@@ -276,6 +276,52 @@ void main() {
   });
 
   testWidgets(
+      'the payment-queue refusal batch (blocked reasons / pinned rail) '
+      'switches with the locale', (tester) async {
+    // Guards the `blocked_reason` label map + the pinned-rail chip. These are
+    // the only prose the operator gets for a row a payment run would refuse —
+    // the backend deliberately sends a bare CODE (never the exception's
+    // description, which can carry vendor / bank / amount detail), so an
+    // untranslated arm here means a non-English operator is told nothing.
+    final probe = Builder(
+      builder: (context) {
+        final l = AppLocalizations.of(context);
+        return Scaffold(
+          body: Column(
+            children: [
+              Text(l.payQueueBlockedFullyCredited),
+              Text(l.payQueueBlockedLiveVirtualCard),
+              Text(l.payQueueBlockedAnnounce('X')),
+              Text(l.payQueuePinnedMethod('Y')),
+            ],
+          ),
+        );
+      },
+    );
+
+    await LocaleStore.instance.setLocale(const Locale('en'));
+    await tester.pumpWidget(host(probe));
+    await tester.pump();
+    expect(find.text('Fully covered by credit memos — nothing to pay'),
+        findsOneWidget);
+    expect(find.text('can’t be paid: X'), findsOneWidget); // placeholder
+    expect(find.text('Pay by Y'), findsOneWidget); // placeholder
+
+    await LocaleStore.instance.setLocale(const Locale('de'));
+    await tester.pump();
+    expect(find.text('Vollständig durch Gutschriften gedeckt — nichts zu zahlen'),
+        findsOneWidget);
+    expect(find.text('kann nicht bezahlt werden: X'), findsOneWidget);
+    expect(find.text('Zahlung per Y'), findsOneWidget);
+    expect(find.text('Pay by Y'), findsNothing);
+
+    await LocaleStore.instance.setLocale(const Locale('ja'));
+    await tester.pump();
+    expect(find.text('支払えません: X'), findsOneWidget);
+    expect(find.text('Y で支払う'), findsOneWidget);
+  });
+
+  testWidgets(
       'the login / admin / org-settings / workflows batch switches with '
       'the locale', (tester) async {
     // Guards the round-3 extraction batch (login + MFA + admin users + org

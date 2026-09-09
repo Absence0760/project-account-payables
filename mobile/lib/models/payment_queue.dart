@@ -32,6 +32,30 @@ class PaymentQueueItem {
   /// Display string for the discount amount, null when not eligible.
   final String? discountAmountDisplay;
 
+  /// A payment run would refuse this invoice on EVERY rail — an unresolved
+  /// payment-blocking exception, or credit memos covering it in full. Its
+  /// checkbox is disabled: selecting it would 409 the whole batch.
+  final bool blocked;
+
+  /// Why a run would refuse — or constrain — this row. A stable, PII-free
+  /// CODE from the backend's fixed vocabulary (a `PAYMENT_BLOCKING_EXCEPTION_TYPES`
+  /// member, or one of `services/payment_runs`' own reason constants), never a
+  /// row's description, which can carry vendor / bank / amount detail. Render
+  /// it through the screen's label map, never raw.
+  ///
+  /// Populated for a [requiredMethodCode] row too, so the UI can say WHY the
+  /// rail is pinned.
+  final String? blockedReason;
+
+  /// The RAW rail code a run would accept for this invoice, and only this one
+  /// — today a live virtual card already claims it, and `virtual_card`
+  /// converges onto that card instead of opening a second outflow. Not
+  /// blocked: the row stays selectable, pinned to this rail.
+  ///
+  /// Kept as the raw string the backend sent; [requiredMethod] is the strict
+  /// parse, because a code this build can't name must not be guessed.
+  final String? requiredMethodCode;
+
   PaymentQueueItem({
     required this.id,
     required this.invoiceNumber,
@@ -45,7 +69,37 @@ class PaymentQueueItem {
     required this.discountEligible,
     this.discountDate,
     this.discountAmountDisplay,
+    this.blocked = false,
+    this.blockedReason,
+    this.requiredMethodCode,
   });
+
+  /// The single rail this row may be paid on, or `null` for "any".
+  ///
+  /// Strict: an unrecognised code resolves to `null` here and turns the row
+  /// UNSELECTABLE via [isSelectable], rather than falling back to ACH — which
+  /// would stage the run on a rail the backend has just said it refuses. This
+  /// is the same fail-closed direction the backend takes when it can no longer
+  /// name one converging rail (`CARD_CLAIM_ONLY_METHOD = None`, at which point
+  /// it stops sending `required_method` and marks the row blocked outright).
+  PaymentMethod? get requiredMethod {
+    final code = requiredMethodCode;
+    if (code == null || code.isEmpty) return null;
+    return PaymentMethod.tryFromString(code);
+  }
+
+  /// The backend pinned a rail this build has no name for. Not blocked
+  /// server-side, but this client cannot honour the pin, so it must not offer
+  /// the row.
+  bool get hasUnknownRequiredMethod =>
+      requiredMethodCode != null &&
+      requiredMethodCode!.isNotEmpty &&
+      requiredMethod == null;
+
+  /// May this row be put into a draft run? The one predicate the selection
+  /// path reads — so "blocked" and "pinned to a rail we can't name" can never
+  /// diverge between the store's guard and the screen's checkbox.
+  bool get isSelectable => !blocked && !hasUnknownRequiredMethod;
 
   factory PaymentQueueItem.fromJson(Map<String, dynamic> json) {
     DateTime? parseDate(Object? v) {
@@ -68,6 +122,12 @@ class PaymentQueueItem {
       discountAmountDisplay: json['discount_amount'] == null
           ? null
           : moneyToDisplay(json['discount_amount']),
+      // Absent / non-`true` reads as NOT blocked — byte-for-byte the behaviour
+      // before these fields existed, so an older backend degrades to the
+      // server-side gate (a 409) rather than to an unusable queue.
+      blocked: json['blocked'] == true,
+      blockedReason: json['blocked_reason'] as String?,
+      requiredMethodCode: json['required_method'] as String?,
     );
   }
 }

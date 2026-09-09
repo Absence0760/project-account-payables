@@ -1,4 +1,4 @@
-import { expect, tenantPsql, test } from '../fixtures/helpers';
+import { deleteVendorsWhere, expect, test } from '../fixtures/helpers';
 
 /**
  * /vendors — Day-0 CSV import. `POST /api/vendors/import-csv` is
@@ -13,8 +13,7 @@ test.describe('/vendors — Import CSV', () => {
 	const marker = `E2E-IMPORT-${Date.now()}`;
 
 	test.afterEach(async () => {
-		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE '${marker}%')`);
-		tenantPsql(`DELETE FROM vendors WHERE name LIKE '${marker}%'`);
+		deleteVendorsWhere(`name LIKE '${marker}%'`);
 	});
 
 	test('imports a CSV, reports the row-level result, and the new vendor appears in the list', async ({ page }) => {

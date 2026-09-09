@@ -133,6 +133,46 @@ async def _reject_portal_login(
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
 
+async def _audit_portal_login_success(vu: VendorUser, *, ip: str, method: str) -> None:
+    """Record that a supplier sign-in actually COMPLETED — the counterpart to
+    `_reject_portal_login`'s row.
+
+    Rejections have been on the trail since they were built, but the
+    password-only success path wrote nothing at all. That did not leave an
+    obvious hole an auditor would notice: a supplier who has enrolled a second
+    factor completes at `/portal/auth/mfa/challenge`, which DOES write
+    (`portal.mfa.verify.success`), so "successful supplier sign-ins" returned
+    the MFA'd subset — a biased sample, which reads as an answer and is worse
+    than a visible gap.
+
+    **Awaited**, unlike the failure row. `queue_auth_audit` exists because
+    writing a row resolves the tenant DB from the control plane and commits,
+    and on the REJECTION branches only an account that exists can do any of
+    that — so awaiting there made a known address measurably slower than an
+    unknown one. Here the account provably exists (its password just verified),
+    so there is no second branch to be faster and no oracle to open.
+
+    PII-free, same shape as the employee twin (`api/auth.login` →
+    `auth.login.success`): the client IP plus a fixed `method` literal, subject
+    identified by id on both axes — never the supplier contact's address, which
+    is third-party PII the trail does not restate.
+
+    Skipped for a legacy row with no `organization_id` — the audit dispatcher
+    resolves the tenant DB from it, so there is nowhere to route to. Same guard
+    as `_audit_portal_mfa_event`; `dispatch_auth_audit` swallows its own
+    failures, so a blip never breaks the sign-in either way.
+    """
+    if not vu.organization_id:
+        return
+    await dispatch_auth_audit(
+        organization_id=vu.organization_id,
+        actor_id=vu.id,
+        action="portal.login.success",
+        entity_id=vu.id,
+        details={"ip": ip, "method": method},
+    )
+
+
 async def _mint_portal_session(
     vu: VendorUser, request: Request, *, method: str
 ) -> PortalTokenResponse:
@@ -235,7 +275,15 @@ async def portal_login(
         challenge_token = mfa.create_vendor_challenge_token(vu.id)
         return PortalMFAChallengeResponse(mfa_challenge_token=challenge_token)
 
-    return await _mint_portal_session(vu, request, method="password")
+    # Mint FIRST, audit second — the same order `portal_mfa_challenge` and
+    # `api/auth.verify_mfa` use, for the same reason: `_mint_portal_session`
+    # registers the session in Redis and lets its failures propagate, while
+    # `dispatch_auth_audit` swallows its own, so auditing first would let a
+    # Redis blip leave a permanent, immutable row asserting a completed sign-in
+    # for a request that 500'd and handed back no token.
+    session = await _mint_portal_session(vu, request, method="password")
+    await _audit_portal_login_success(vu, ip=ip, method="password")
+    return session
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -500,12 +548,17 @@ async def portal_mfa_challenge(
     # factor exactly what an auditor is looking for.
     ip = resolve_client_ip(request) or "unknown"
     # The factor the rows name is derived from the branch actually taken, never
-    # echoed from `body.method`. `PortalMFAChallengeVerifyRequest.method` is an
-    # unconstrained `str` (its employee twin pins `^(totp|email)$`), so anything
-    # other than "email" falls through to TOTP — restating the caller's string
-    # would put unbounded request-controlled text into an append-only,
-    # WORM-shipped trail AND label the row with a factor that was not the one
-    # verified. Deriving it makes the branch and the label the same fact.
+    # echoed from `body.method` — defence in depth, kept even though
+    # `PortalMFAChallengeVerifyRequest.method` now pins `^(totp|email)$` like
+    # its employee twin (the two still differ on optionality: the portal field
+    # defaults to `totp`, because making it required would break a client
+    # sending only `{challenge_token, code}`). The schema is one validator on
+    # one edge; this is the invariant. Anything other than "email" falls
+    # through to TOTP verification, so restating the caller's string would
+    # label the row with a factor that was not the one verified — and would put
+    # request-controlled text into an append-only, WORM-shipped trail on the
+    # word of a pattern living in another file. Deriving it makes the branch
+    # and the label the same fact.
     factor = "email" if body.method == "email" else "totp"
 
     async def _audit_verify_failure() -> None:
@@ -541,6 +594,14 @@ async def portal_mfa_challenge(
     await _audit_portal_mfa_event(
         vu, action="portal.mfa.verify.success", details={"method": factor, "ip": ip}
     )
+    # AND the sign-in row, the same as the password-only path above. The factor
+    # row says which second factor was used; it does not say a session was
+    # minted, and an auditor asking "who signed in?" should not have to know
+    # that supplier sign-ins are recorded under two different action names
+    # depending on whether the account happens to carry a factor. The employee
+    # twin already writes both (`auth.mfa.verify.success` + `auth.login.success`,
+    # `api/auth.verify_mfa`); this is the portal reaching parity with it.
+    await _audit_portal_login_success(vu, ip=ip, method=f"password+mfa:{factor}")
     return session
 
 

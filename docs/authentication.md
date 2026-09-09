@@ -240,6 +240,7 @@ Action names:
 | Passkey registered (`/mfa/passkey/register/verify`) | `auth.mfa.passkey.registered` — PII-free, records `{factor: "passkey", credential, name, rp_id}`. `credential` is the API-visible passkey id (`webauthn_credentials.id`), never the authenticator's credential handle or its public key |
 | Passkey removed (`DELETE /mfa/passkey/{id}`) | `auth.mfa.passkey.removed` — same shape, so the removal row joins to the registration row on `credential` |
 | Failed supplier-portal password login | `portal.login.failure` — records `{ip, reason}` (`bad_password` \| `no_password` \| `inactive`) and identifies the account by `entity_id`, never by address (a supplier contact's email is third-party PII we don't restate on every guess). Queued off the response path, like its employee twin |
+| Successful supplier-portal password login | `portal.login.success` — PII-free, records `{ip, method: "password"}` and identifies the account by `actor_id`/`entity_id`, never by address (same rule as the failure row). **Awaited**, unlike the failure row: the account provably exists by then, so the tenant-DB round trip cannot become the account-existence oracle `queue_auth_audit` avoids. Written on BOTH sign-in paths: the password-only one, and `/portal/auth/mfa/challenge` once a second factor is enrolled (as `password+mfa:{factor}`, beside that stage's own `portal.mfa.verify.success`). One action is therefore the whole population — an earlier version wrote it only on the password path, which made the action a biased sample rather than a gap, silently omitting exactly the best-protected accounts. Mirrors the employee twin, which writes `auth.login.success` alongside `auth.mfa.verify.success` |
 | Supplier-portal second factor verified / rejected (`/portal/auth/mfa/challenge`) | `portal.mfa.verify.success` · `portal.mfa.verify.failure` — PII-free, records `{method, ip}` where `method` is `totp` \| `email`. The portal twin of `auth.mfa.verify.*`; see [the note below](#the-supplier-portals-second-factor-stage-is-on-the-trail-issuing-a-backup-code-is-not) for why issuing an email backup code has no row of its own |
 | Successful SSO login | `auth.sso.login.success` |
 | Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
@@ -250,10 +251,11 @@ Login-failure rows for unknown emails are dropped — without an `organization_i
 
 #### The supplier portal's second-factor stage is on the trail; issuing a backup code is not
 
-`/portal/auth/login` audits rejections only. Once a supplier enrols a second
-factor it stops minting the token altogether and hands back a challenge, so the
-sign-in *completes* at `/portal/auth/mfa/challenge` — which meant that turning
-MFA on for a supplier account took that account's sign-in off the trail
+`/portal/auth/login` audits both outcomes — `portal.login.failure` on rejection
+and `portal.login.success` once the session is minted. Once a supplier enrols a
+second factor it stops minting the token altogether and hands back a challenge,
+so the sign-in *completes* at `/portal/auth/mfa/challenge` — which meant that
+turning MFA on for a supplier account took that account's sign-in off the trail
 entirely, in exchange for a stronger credential. That handler now writes
 `portal.mfa.verify.success` / `.failure`, matching its employee twin
 (`api/auth.verify_mfa`), which has audited both outcomes since it was built. The

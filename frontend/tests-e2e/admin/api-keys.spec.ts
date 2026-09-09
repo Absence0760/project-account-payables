@@ -193,13 +193,16 @@ test.describe('/admin/api-keys (admin)', () => {
 	 * was counted (the key did not authenticate), so it is named rather than
 	 * left to surface as a confusing "expected 3, received 0".
 	 *
-	 * On a SEEDED tenant these calls really do come back 402: `seed.py` lands
-	 * every org on the `free` plan, whose entitlements are `{}`, so `/api/v1`
-	 * is gated shut for the whole suite. Do NOT "fix" that here by moving the
-	 * worker's org onto `growth` for the duration — the subscription outlives a
-	 * crashed test and would put the tenant's billing surface somewhere the
-	 * billing specs do not expect. It belongs in the seed, and is recorded as a
-	 * follow-up. The count is what this test is about, and the count is exact.
+	 * On a WORKER tenant these calls really do come back 402, and still will:
+	 * `seed.py` puts the demo `acme` tenant on a `public_api`-bearing plan so
+	 * the surface is reachable on a fresh clone, but deliberately leaves every
+	 * `e2eN` worker on `free`. Worker tenants are interchangeable by design, so
+	 * entitling one would make which shard drew which tenant observable — and a
+	 * seed where everyone is entitled makes the 402 as unreachable as the 200
+	 * used to be. Do NOT "fix" it here by moving the worker's org onto `growth`
+	 * for the duration either: the subscription outlives a crashed test and
+	 * would put the tenant's billing surface somewhere the billing specs do not
+	 * expect. The count is what this test is about, and the count is exact.
 	 */
 	test('the usage panel counts the /api/v1 traffic made with the key', async ({ page }) => {
 		const headers = await apiHeaders(page);
