@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
+from app.tenant_url import tenant_db_url
 
 # ---------------------------------------------------------------------------
 # Commit-before-response (read-after-write durability)
@@ -179,9 +180,13 @@ _tenant_engines: dict[str, AsyncEngine] = {}
 
 
 def _make_tenant_url(db_name: str) -> str:
-    """Replace the database name in the base URL."""
-    base = settings.database_url
-    return base.rsplit("/", 1)[0] + "/" + db_name
+    """Replace the database name in the base URL.
+
+    Delegates to the dependency-free `app.tenant_url.tenant_db_url` so the three
+    Lambda handlers — which cannot import this module — can share the exact same
+    derivation instead of inlining it.
+    """
+    return tenant_db_url(settings.database_url, db_name)
 
 
 def get_tenant_engine(db_name: str) -> AsyncEngine:

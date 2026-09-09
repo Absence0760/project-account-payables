@@ -45,8 +45,11 @@ async def _process_message(body: dict) -> None:
             await control_engine.dispose()
             return
 
-    # Connect to the tenant DB
-    tenant_url = db_url.rsplit("/", 1)[0] + "/" + org.db_name
+    # Connect to the tenant DB — same derivation as
+    # `app.database._make_tenant_url`, shared via the dependency-free helper.
+    from app.tenant_url import tenant_db_url
+
+    tenant_url = tenant_db_url(db_url, org.db_name)
     tenant_engine = create_async_engine(tenant_url)
     tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
