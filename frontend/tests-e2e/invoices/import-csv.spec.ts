@@ -21,7 +21,6 @@ test.describe('/invoices — Import CSV', () => {
 
 	test('imports a CSV, reports the row-level result (skip-and-report), and the invoice lands as done', async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 
 		await page.getByRole('button', { name: 'Import CSV' }).click();
 		const modal = page.getByRole('dialog', { name: 'Import CSV' });

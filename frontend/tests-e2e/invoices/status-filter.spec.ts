@@ -14,7 +14,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/invoices status filter', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('All chip is active by default', async ({ page }) => {

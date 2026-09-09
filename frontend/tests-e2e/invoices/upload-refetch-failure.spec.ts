@@ -37,7 +37,6 @@ test.describe('/invoices upload recovery', () => {
 
 	test('a failed post-upload refetch re-enables the Upload button', async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 
 		const uploadBtn = page.getByRole('button', { name: '+ Upload Invoices' });
 		await expect(uploadBtn).toBeEnabled();
@@ -78,7 +77,6 @@ test.describe('/invoices upload recovery', () => {
 		// Recovery is real, not cosmetic: a subsequent refetch succeeds.
 		breakList = false;
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 		await expect(page.getByRole('button', { name: '+ Upload Invoices' })).toBeEnabled();
 	});
 });

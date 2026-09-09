@@ -79,7 +79,6 @@ async function setErp(page: import('@playwright/test').Page, erp: unknown) {
 test.describe('/invoices — Send to ERP button', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('approved invoice: "Send to ERP" advances via the mock ERP (no financial-freeze 409)', async ({
@@ -103,7 +102,6 @@ test.describe('/invoices — Send to ERP button', () => {
 
 			// Open the approved invoice's detail modal from the list.
 			await page.goto('/invoices');
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: inv.invoice_number }).first();
 			await expect(row).toBeVisible({ timeout: 10_000 });
 			await row.getByRole('button', { name: 'Edit' }).click();

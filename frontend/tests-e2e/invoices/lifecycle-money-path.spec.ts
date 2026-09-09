@@ -168,7 +168,6 @@ test.describe('/invoices lifecycle — forward money path', () => {
 		// Land on the queue so localStorage (token) is populated for the API
 		// request context, mirroring the other invoice specs.
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('new → ready_for_review → approved → ERP → done, each step audited', async ({ page }) => {
@@ -261,7 +260,6 @@ test.describe('/invoices lifecycle — forward money path', () => {
 test.describe('/invoices lifecycle — reject / rework loop', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('ready_for_review → rejected → resubmit → ready_for_review, with an exception + audit rows', async ({
@@ -321,7 +319,6 @@ test.describe('/invoices lifecycle — reject / rework loop', () => {
 test.describe('/invoices lifecycle — invalid-transition guards (409)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('cannot send a NEW (unapproved) invoice to ERP', async ({ page }) => {
@@ -377,7 +374,6 @@ test.describe('/invoices lifecycle — invalid-transition guards (409)', () => {
 test.describe('/invoices lifecycle — RBAC + segregation of duties on approval', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('an ap_clerk cannot approve (403); a manager can (200)', async ({ page }) => {
@@ -433,7 +429,6 @@ test.describe('/invoices lifecycle — RBAC + segregation of duties on approval'
 test.describe('/invoices lifecycle — void back-edge to approved', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('voiding a payment returns a payment_scheduled invoice to approved + audits it', async ({
@@ -498,7 +493,6 @@ test.describe('/invoices lifecycle — approve through the real modal UI', () =>
 	// segregation of duties (that has its own dedicated test above).
 	test('clicking Approve in the modal flips the invoice to approved', async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 		const inv = await createNewInvoice(page);
 		tenantPsql(`update invoices set uploaded_by_id=NULL where id='${inv.id}'`);
 		await action(page, inv.id, 'complete');
@@ -507,7 +501,6 @@ test.describe('/invoices lifecycle — approve through the real modal UI', () =>
 		try {
 			// Reload the queue so the freshly-promoted row is rendered.
 			await page.goto('/invoices');
-			await page.waitForLoadState('networkidle');
 
 			await page
 				.locator('table tbody tr', { hasText: inv.invoice_number })
