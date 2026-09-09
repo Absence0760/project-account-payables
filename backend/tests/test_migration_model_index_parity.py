@@ -30,8 +30,10 @@ i.e. correctness rather than performance:
 Eighteen were genuinely missing and are now declared on their models (migration
 0093 restates the CREATEs so an already-provisioned database catches up). Two
 were not missing at all — the same index under another name, or superseded by a
-stronger one — and are reconciled in 0093 instead of duplicated onto a model;
-they are the entries in ``EXEMPT`` below.
+stronger one — and are reconciled in 0093 instead of duplicated onto a model.
+A third of that kind was found later: ``ix_positive_pay_files_payment_run_id``
+is a leading-column prefix of ``uq_positive_pay_run_format``, dropped in 0094.
+All three are the entries in ``EXEMPT`` below.
 
 What this file pins
 -------------------
@@ -42,9 +44,10 @@ What this file pins
 2. **An exemption needs a written reason, and stays honest.** Each ``EXEMPT``
    entry is re-checked: the index must still be created by a migration and must
    still be undeclared, so a stale exemption fails rather than rotting.
-3. **The two exemptions' reasons are true**, checked structurally rather than
-   taken on trust — each is covered by a model-declared twin on the same
-   column(s) with the same predicate.
+3. **Each exemption's reason is true**, checked structurally rather than taken
+   on trust — every one is covered by a model-declared twin: the same column(s)
+   and predicate for the first two, a leading-column prefix whose predicate an
+   equality implies for the third.
 4. **The two builds produce identical indexes** — proven on a real Postgres by
    dropping what ``create_all`` built and re-creating it from migration 0093's
    own SQL, then comparing ``pg_get_indexdef`` output. Same name is not enough;
@@ -71,19 +74,21 @@ from app.models.base import Base
 
 VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
 _MIGRATION_PATH = VERSIONS_DIR / "0093_migration_only_indexes.py"
+_MIGRATION_0094_PATH = VERSIONS_DIR / "0094_positive_pay_index_prune.py"
 
 TENANT = "a"
 
 
-def _migration_module():
-    """Import 0093 for its declarations (it never touches ``op`` at import)."""
-    spec = importlib.util.spec_from_file_location("_mig_0093", _MIGRATION_PATH)
+def _load_migration(name: str, path: Path):
+    """Import a revision for its declarations (neither touches ``op`` at import)."""
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-MIGRATION = _migration_module()
+MIGRATION = _load_migration("_mig_0093", _MIGRATION_PATH)
+MIGRATION_0094 = _load_migration("_mig_0094", _MIGRATION_0094_PATH)
 #: The 18 indexes 0093 ENSURES exist (their own revisions still own them).
 ENSURED: list[tuple[str, str, str]] = MIGRATION._ENSURED
 UNIQUE_NAMES: frozenset[str] = MIGRATION._UNIQUE_INDEX_NAMES
@@ -107,6 +112,18 @@ EXEMPT: dict[str, str] = {
         "unique index serves every read the non-unique one could, so declaring "
         "this on the model would build a second, redundant index on a hot "
         "table. Migration 0093 drops it instead (downgrade recreates it)."
+    ),
+    "ix_positive_pay_files_payment_run_id": (
+        "Redundant prefix, not missing. Migration 0048 built it as a plain "
+        "btree on (payment_run_id) alongside uq_positive_pay_run_format — "
+        "UNIQUE on (payment_run_id, bank_format) WHERE payment_run_id IS NOT "
+        "NULL — which leads on the same column. Every read here is an equality "
+        "on a real run id, and Postgres proves payment_run_id = $1 satisfies "
+        "the partial predicate, so the composite serves them and the FK's own "
+        "referential check too; nothing filters payment_run_id IS NULL. "
+        "Declaring this on the model would rebuild a second btree on the same "
+        "column for pure write overhead. Migration 0094 drops it (downgrade "
+        "recreates it)."
     ),
     "ix_vendor_change_requests_org_id": (
         "A second name for an index the model already declares. Migration 0022 "
@@ -303,6 +320,49 @@ def test_the_superseded_bank_index_is_covered_by_its_unique_twin():
         statement == "DROP INDEX IF EXISTS ix_bank_transactions_matched_payment"
         for _table, statement in MIGRATION._UPGRADE
     )
+
+
+def test_the_positive_pay_run_index_is_a_prefix_of_its_unique_composite():
+    """``ix_positive_pay_files_payment_run_id``'s exemption claims
+    ``uq_positive_pay_run_format`` covers it as a leading-column prefix.
+    Checked, not assumed: the composite leads on the same column, and its
+    partial predicate is one an equality on that column implies — which is what
+    makes it usable for the prefix's reads rather than merely wider."""
+    twin = next(
+        index
+        for index in Base.metadata.tables["positive_pay_files"].indexes
+        if index.name == "uq_positive_pay_run_format"
+    )
+    assert [column.name for column in twin.columns] == ["payment_run_id", "bank_format"]
+    assert twin.unique
+    # `payment_run_id = <a real id>` implies this, so the planner may use the
+    # partial index for every lookup the dropped prefix served.
+    assert str(twin.dialect_options["postgresql"]["where"]) == "payment_run_id IS NOT NULL"
+
+    # The model must NOT re-declare the prefix, or `create_all` rebuilds it.
+    assert "ix_positive_pay_files_payment_run_id" not in _declared_names("positive_pay_files")
+
+    prefix = MIGRATION_INDEXES["ix_positive_pay_files_payment_run_id"]
+    assert prefix.body.replace(" ", "") == "positive_pay_files(payment_run_id)"
+    assert not prefix.unique
+
+    # And 0094 removes it rather than leaving both on a migrated tenant.
+    assert MIGRATION_0094._INDEX == "ix_positive_pay_files_payment_run_id"
+    assert MIGRATION_0094._TABLE == "positive_pay_files"
+    # Idempotent both ways, and the downgrade restores 0048's exact spelling.
+    assert "IF NOT EXISTS" in MIGRATION_0094._RECREATE
+    assert MIGRATION_0094._RECREATE.endswith("(payment_run_id)")
+
+
+def test_0094_never_touches_the_unique_index_it_relies_on():
+    """0094's whole argument is that ``uq_positive_pay_run_format`` covers the
+    prefix it drops. A revision that dropped or recreated the composite as a
+    side effect would remove the idempotency backstop
+    ``docs/positive-pay.md`` depends on — so it must name only the prefix."""
+    source = _MIGRATION_0094_PATH.read_text()
+    body = source.split('"""', 2)[-1]  # exclude the docstring's prose
+    assert "uq_positive_pay_run_format" not in body
+    assert "CREATE UNIQUE" not in body
 
 
 def test_the_renamed_vendor_change_index_is_the_same_index_under_the_models_name():

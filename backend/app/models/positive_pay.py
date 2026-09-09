@@ -78,8 +78,17 @@ class PositivePayFile(Base, EntityMixin, TimestampMixin):
 
     # The payment run this check-issue file was generated for. NULL for an
     # ``ach_authorization`` file (which is org-wide, not run-scoped).
+    #
+    # Deliberately NOT ``index=True``: ``uq_positive_pay_run_format`` above
+    # leads on this column, and every lookup here is an equality on a real run
+    # id — which Postgres can prove satisfies that index's
+    # ``payment_run_id IS NOT NULL`` predicate, so the partial unique index
+    # serves them (and the FK's own referential check) already. A second btree
+    # would only be write overhead on the same column. Migration 0094 drops the
+    # one migration 0048 built; ``EXEMPT`` in
+    # ``tests/test_migration_model_index_parity.py`` records why.
     payment_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("payment_runs.id"), index=True
+        UUID(as_uuid=True), ForeignKey("payment_runs.id")
     )
 
     # 'check_issue' | 'ach_authorization'.
