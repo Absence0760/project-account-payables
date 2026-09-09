@@ -769,6 +769,41 @@ class AppLocalizationsEn extends AppLocalizations {
   String get payQueueSelected => 'selected';
 
   @override
+  String get payQueueBlockedDuplicate => 'Possible duplicate — unresolved';
+
+  @override
+  String get payQueueBlockedFraudFlag => 'Fraud flag — unresolved';
+
+  @override
+  String get payQueueBlockedLineTotalMismatch =>
+      'Line totals don’t match — unresolved';
+
+  @override
+  String get payQueueBlockedPaymentReconciliation =>
+      'Earlier payment unreconciled — may still be in flight';
+
+  @override
+  String get payQueueBlockedFullyCredited =>
+      'Fully covered by credit memos — nothing to pay';
+
+  @override
+  String get payQueueBlockedLiveVirtualCard =>
+      'A live virtual card claims this invoice — pay it by card';
+
+  @override
+  String get payQueueBlockedGeneric => 'Unresolved exception blocks payment';
+
+  @override
+  String payQueueBlockedAnnounce(String reason) {
+    return 'can’t be paid: $reason';
+  }
+
+  @override
+  String payQueuePinnedMethod(String method) {
+    return 'Pay by $method';
+  }
+
+  @override
   String payMethodLabel(String invoiceNumber) {
     return 'Payment method for $invoiceNumber';
   }

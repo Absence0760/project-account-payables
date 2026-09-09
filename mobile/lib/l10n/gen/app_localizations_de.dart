@@ -779,6 +779,42 @@ class AppLocalizationsDe extends AppLocalizations {
   String get payQueueSelected => 'ausgewählt';
 
   @override
+  String get payQueueBlockedDuplicate => 'Mögliches Duplikat — ungeklärt';
+
+  @override
+  String get payQueueBlockedFraudFlag => 'Betrugsverdacht — ungeklärt';
+
+  @override
+  String get payQueueBlockedLineTotalMismatch =>
+      'Positionssummen stimmen nicht überein — ungeklärt';
+
+  @override
+  String get payQueueBlockedPaymentReconciliation =>
+      'Frühere Zahlung nicht abgestimmt — möglicherweise noch unterwegs';
+
+  @override
+  String get payQueueBlockedFullyCredited =>
+      'Vollständig durch Gutschriften gedeckt — nichts zu zahlen';
+
+  @override
+  String get payQueueBlockedLiveVirtualCard =>
+      'Eine aktive virtuelle Karte beansprucht diese Rechnung — per Karte bezahlen';
+
+  @override
+  String get payQueueBlockedGeneric =>
+      'Ungeklärte Ausnahme blockiert die Zahlung';
+
+  @override
+  String payQueueBlockedAnnounce(String reason) {
+    return 'kann nicht bezahlt werden: $reason';
+  }
+
+  @override
+  String payQueuePinnedMethod(String method) {
+    return 'Zahlung per $method';
+  }
+
+  @override
   String payMethodLabel(String invoiceNumber) {
     return 'Zahlungsmethode für $invoiceNumber';
   }

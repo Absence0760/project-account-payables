@@ -187,4 +187,22 @@ void main() {
       expect(data.upcoming.totalAmount, 500.0);
     });
   });
+
+  group('PaymentMethod parsing', () {
+    test('fromString keeps its ACH fallback for display paths', () {
+      expect(PaymentMethod.fromString('wire'), PaymentMethod.wire);
+      expect(PaymentMethod.fromString('virtual_card'), PaymentMethod.virtualCard);
+      expect(PaymentMethod.fromString('rtp_instant'), PaymentMethod.ach);
+    });
+
+    test('tryFromString is strict — null for a rail this build cannot name',
+        () {
+      // The payment queue's `required_method` is a DECISION, not a label: an
+      // unknown code read as ACH would stage a run on the one rail the backend
+      // has just refused. `PaymentQueueItem.isSelectable` reads this null.
+      expect(PaymentMethod.tryFromString('check'), PaymentMethod.check);
+      expect(PaymentMethod.tryFromString('rtp_instant'), isNull);
+      expect(PaymentMethod.tryFromString(''), isNull);
+    });
+  });
 }

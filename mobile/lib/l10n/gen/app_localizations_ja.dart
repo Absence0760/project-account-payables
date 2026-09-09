@@ -758,6 +758,39 @@ class AppLocalizationsJa extends AppLocalizations {
   String get payQueueSelected => '選択済み';
 
   @override
+  String get payQueueBlockedDuplicate => '重複の可能性 — 未解決';
+
+  @override
+  String get payQueueBlockedFraudFlag => '不正フラグ — 未解決';
+
+  @override
+  String get payQueueBlockedLineTotalMismatch => '明細合計が一致しません — 未解決';
+
+  @override
+  String get payQueueBlockedPaymentReconciliation =>
+      '過去の支払いが未照合 — 処理中の可能性があります';
+
+  @override
+  String get payQueueBlockedFullyCredited => 'クレジットメモで全額相殺済み — 支払額はありません';
+
+  @override
+  String get payQueueBlockedLiveVirtualCard =>
+      '有効なバーチャルカードがこの請求書を押さえています — カードで支払ってください';
+
+  @override
+  String get payQueueBlockedGeneric => '未解決の例外が支払いをブロックしています';
+
+  @override
+  String payQueueBlockedAnnounce(String reason) {
+    return '支払えません: $reason';
+  }
+
+  @override
+  String payQueuePinnedMethod(String method) {
+    return '$method で支払う';
+  }
+
+  @override
   String payMethodLabel(String invoiceNumber) {
     return '$invoiceNumber の支払方法';
   }

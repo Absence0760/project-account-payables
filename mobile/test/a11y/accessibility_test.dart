@@ -17,6 +17,7 @@ import 'package:feohledger_mobile/screens/admin_users_screen.dart';
 import 'package:feohledger_mobile/screens/approvals_screen.dart';
 import 'package:feohledger_mobile/screens/cash_flow_screen.dart';
 import 'package:feohledger_mobile/screens/org_settings_screen.dart';
+import 'package:feohledger_mobile/screens/payment_queue_screen.dart';
 import 'package:feohledger_mobile/screens/exception_detail_screen.dart';
 import 'package:feohledger_mobile/screens/exceptions_screen.dart';
 import 'package:feohledger_mobile/screens/invoices_screen.dart';
@@ -25,9 +26,11 @@ import 'package:feohledger_mobile/screens/notifications_screen.dart';
 import 'package:feohledger_mobile/screens/workflows_screen.dart';
 import 'package:feohledger_mobile/services/offline_store.dart';
 import 'package:feohledger_mobile/stores/admin_user_store.dart';
+import 'package:feohledger_mobile/stores/auth_store.dart';
 import 'package:feohledger_mobile/stores/cash_flow_store.dart';
 import 'package:feohledger_mobile/stores/exception_store.dart';
 import 'package:feohledger_mobile/stores/org_settings_store.dart';
+import 'package:feohledger_mobile/stores/payment_queue_store.dart';
 import 'package:feohledger_mobile/stores/invoice_store.dart';
 import 'package:feohledger_mobile/stores/notification_store.dart';
 import 'package:feohledger_mobile/stores/workflow_store.dart';
@@ -939,6 +942,122 @@ void main() {
       // The low-balance alert exposes one merged announcement (WCAG 1.3.1).
       expect(find.bySemanticsLabel(RegExp('^Low balance alert')),
           findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('PaymentQueueScreen', () {
+    setUp(() {
+      PaymentQueueStore.instance.reset();
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets(
+        'a queue carrying a blocked row + a rail-pinned row meets tap-target + '
+        'label + contrast', (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.url.path == '/api/auth/login') {
+            return http.Response(jsonEncode({'access_token': 'tok'}), 200,
+                headers: {'content-type': 'application/json'});
+          }
+          if (req.url.path.endsWith('/auth/me')) {
+            return http.Response(
+                jsonEncode({
+                  'id': 'u1',
+                  'email': 'demo@acme.com',
+                  'full_name': 'Demo User',
+                  'organization_id': 'org1',
+                  'roles': ['ap_manager'],
+                }),
+                200,
+                headers: {'content-type': 'application/json'});
+          }
+          if (req.url.path.endsWith('/payments/queue')) {
+            return http.Response(
+                jsonEncode({
+                  'items': [
+                    {
+                      'id': '1',
+                      'invoice_number': 'INV-1',
+                      'vendor_name': 'Acme Supplies',
+                      'amount': 1500.0,
+                      'currency': 'USD',
+                      'due_date': '2026-02-01',
+                      'status': 'approved',
+                      'is_overdue': false,
+                      'discount_eligible': false,
+                      // Refused on every rail — exercises the red reason chip.
+                      'blocked': true,
+                      'blocked_reason': 'duplicate',
+                      'required_method': null,
+                    },
+                    {
+                      'id': '2',
+                      'invoice_number': 'INV-2',
+                      'vendor_name': 'Beta Ltd',
+                      'amount': 900.0,
+                      'currency': 'USD',
+                      'due_date': '2026-02-05',
+                      'status': 'approved',
+                      'is_overdue': false,
+                      'discount_eligible': false,
+                      // Payable, pinned to one rail — exercises the blue
+                      // pinned-rail chip + the muted reason chip.
+                      'blocked': false,
+                      'blocked_reason': 'live_virtual_card',
+                      'required_method': 'virtual_card',
+                    },
+                  ],
+                  'total': 2,
+                  'total_amount': 2400.0,
+                  'total_savings': 0.0,
+                }),
+                200,
+                headers: {'content-type': 'application/json'});
+          }
+          if (req.url.path.endsWith('/payments/summary')) {
+            return http.Response(
+                jsonEncode({
+                  'total_paid': 1000.0,
+                  'total_pending': 200.0,
+                  'payment_count': 5,
+                  'total_rebates': 12.0,
+                  'queue_count': 2,
+                }),
+                200,
+                headers: {'content-type': 'application/json'});
+          }
+          return http.Response(jsonEncode({'items': [], 'total': 0}), 200,
+              headers: {'content-type': 'application/json'});
+        }),
+      );
+      await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+      await tester.pumpWidget(_screenHost(const PaymentQueueScreen()));
+      await _pumpUntil(tester, find.text('Acme Supplies'));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // The two new chips render darkened text over a pale tint; this is what
+      // proves they clear AA rather than shipping a colour-only cue.
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+
+      // A disabled checkbox is a colour cue on its own, so the row's single
+      // merged announcement has to carry the reason (WCAG 1.3.1 / 1.4.1).
+      expect(
+        find.bySemanticsLabel(
+            RegExp('can’t be paid: Possible duplicate — unresolved')),
+        findsOneWidget,
+      );
+      // …and the pinned row announces which rail it is fixed to.
+      expect(
+        find.bySemanticsLabel(RegExp('Pay by Virtual Card')),
+        findsOneWidget,
+      );
       handle.dispose();
     });
   });

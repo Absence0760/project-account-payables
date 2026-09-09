@@ -777,6 +777,42 @@ class AppLocalizationsEs extends AppLocalizations {
   String get payQueueSelected => 'seleccionada';
 
   @override
+  String get payQueueBlockedDuplicate => 'Posible duplicado: sin resolver';
+
+  @override
+  String get payQueueBlockedFraudFlag => 'Alerta de fraude: sin resolver';
+
+  @override
+  String get payQueueBlockedLineTotalMismatch =>
+      'Los totales de las líneas no cuadran: sin resolver';
+
+  @override
+  String get payQueueBlockedPaymentReconciliation =>
+      'Pago anterior sin conciliar: puede seguir en tránsito';
+
+  @override
+  String get payQueueBlockedFullyCredited =>
+      'Cubierta por completo con notas de crédito: nada que pagar';
+
+  @override
+  String get payQueueBlockedLiveVirtualCard =>
+      'Una tarjeta virtual activa cubre esta factura: páguela con tarjeta';
+
+  @override
+  String get payQueueBlockedGeneric =>
+      'Una excepción sin resolver bloquea el pago';
+
+  @override
+  String payQueueBlockedAnnounce(String reason) {
+    return 'no se puede pagar: $reason';
+  }
+
+  @override
+  String payQueuePinnedMethod(String method) {
+    return 'Pagar con $method';
+  }
+
+  @override
   String payMethodLabel(String invoiceNumber) {
     return 'Método de pago para $invoiceNumber';
   }

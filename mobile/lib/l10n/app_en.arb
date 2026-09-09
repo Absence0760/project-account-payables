@@ -339,6 +339,25 @@
   },
   "payQueueOverdue": "overdue",
   "payQueueSelected": "selected",
+  "payQueueBlockedDuplicate": "Possible duplicate — unresolved",
+  "payQueueBlockedFraudFlag": "Fraud flag — unresolved",
+  "payQueueBlockedLineTotalMismatch": "Line totals don’t match — unresolved",
+  "payQueueBlockedPaymentReconciliation": "Earlier payment unreconciled — may still be in flight",
+  "payQueueBlockedFullyCredited": "Fully covered by credit memos — nothing to pay",
+  "payQueueBlockedLiveVirtualCard": "A live virtual card claims this invoice — pay it by card",
+  "payQueueBlockedGeneric": "Unresolved exception blocks payment",
+  "payQueueBlockedAnnounce": "can’t be paid: {reason}",
+  "@payQueueBlockedAnnounce": {
+    "placeholders": {
+      "reason": { "type": "String" }
+    }
+  },
+  "payQueuePinnedMethod": "Pay by {method}",
+  "@payQueuePinnedMethod": {
+    "placeholders": {
+      "method": { "type": "String" }
+    }
+  },
   "payMethodLabel": "Payment method for {invoiceNumber}",
   "@payMethodLabel": {
     "placeholders": {
