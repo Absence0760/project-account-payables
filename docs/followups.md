@@ -34,35 +34,43 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-09 (round 27) — ten agents, each in its own git
-worktree, plus two integration agents. **All ten** round-26 entries closed, five
-opened. **39 → 34.**
+**Last reconciled:** 2026-09-09 (round 28) — ten agents, each in its own git
+worktree, plus integrator verification of the merged branch. **Thirteen** entries
+closed, ten opened. **34 → 31** — by category, **20 (c)** · **7 (a)** · **4 (b)**.
+The closure count outruns the net because a round that closes thirteen entries
+also learns ten things; a file that only shrank would mean the agents stopped
+looking.
 
-Three entries were **disproved rather than completed**, which is now the pattern
-three rounds running. The worktree entry had the import mechanism backwards, and
-so did the durable note behind it: the editable-install finder is *appended* to
-`sys.meta_path`, so `PYTHONPATH` does win and the failure is a fall-through. That
-reclassified the hazard — `pytest` was always safe, `python scripts/seed.py` and
-`alembic revision --autogenerate` never were. The vendor-teardown entry was wrong
-on all three of its numbers. The dashboard-disclosure entry prescribed a fix that
-would have been vacuous for two of its three cases, because an absence assertion
-over an empty data series passes whatever the guard says.
+**Both segregation-of-duties items are closed**, under the repo owner's explicit
+authorisation, which is what satisfies the standing "loop in the CISO" gate on
+that section. They were the two highest-severity items in the file and had been
+deliberately untouched by rounds 24–27. A new control-design question opened in
+their place — exception resolution has no segregation check at all — and is held
+on the same terms.
 
-The round also produced a rule worth carrying: **an unordered `LIMIT 1` in a
-fixture is only dangerous when the candidate set is wider than what the code
-under test accepts.** Then row order silently decides whether the test exercises
-anything. Roughly twenty sites use the idiom; one was the dangerous kind, because
-the endpoint under test declined the rest *with a success status*.
+**Four entries were wrong about themselves**, which is now the pattern four
+rounds running and the reason an entry is a lead rather than a specification.
+The `networkidle` count was 250, not 242 (the original count matched only
+single-quoted call sites). The CSV-import entry claimed two sibling paths had "no
+creator column to fix with"; both already carried the actor in their signatures.
+The bank-redirect entry named only the invite route, missing the password-reset
+route that is the same hole against an existing supplier — and finding it
+mattered, because the fix's soundness rests on those two being *exhaustive*. And
+the bulk-negotiate entry described a multi-vendor batch; the endpoint returns one
+offer, so the bulk-selection UI the entry implied would have been the wrong shape
+entirely.
 
-Nine findings were routed between agents mid-round and fixed rather than filed;
-two more spanned branches and fell to the integrator. Closing a class rather than
-its instances was the round's other theme — the teardown owner now covers three
-tables with a guard per table, and every script that imports `app` is anchored
-behind a glob guard that fails on a script nobody has written yet.
+**One belief cost two rounds and was retired by looking.** The `networkidle`
+sweep had preserved sites on a documented Svelte 5 form-hydration hazard. The app
+server-renders no form at all, in dev or in the built artifact, so the hazard is
+unreachable — a comment asserting a hazard is not evidence of one.
 
-The two segregation-of-duties items remain **held for security review** and were
-again deliberately not touched. They are SOC 2 CC6.3 controls; changing who may
-approve what is a control-design decision, not a bug fix.
+**Three guards found defects on their first run**, which is the argument for
+writing the guard rather than fixing the instances in front of you: typechecking
+the e2e tree caught currency typed as `number` and money typed as a string in the
+dashboard; the uploader-stamping guard needed a second pass because its first
+version was blind to a re-export spelling; and the workflow-version teardown
+guard found a third offending spec nobody had named.
 
 ## (c) Feature work — sized and unstarted
 
@@ -286,22 +294,23 @@ since it IS a `BrandConfig` field and `model_dump()` emits `""` for an omitted
 one. `BUILD_TIME_API_URL_BASELINE` is now empty — the ratchet shrank to zero as
 designed, and roadmap Priority 13 moved to the archive.
 
-- [ ] **(b) True end-to-end e2e for the vanity host needs two env lines.** The
-      unit layer covers the classification rules exhaustively and the e2e spec
-      locks the *platform*-host half (the catastrophic regression path — a
-      platform subdomain must keep sending its slug and keep calling the
-      build-time origin). The vanity half is unit-only because
-      `PUBLIC_PLATFORM_DOMAINS` reaches neither run mode: locally the suite
-      boots `pnpm dev` (which loads `.env.development`), and CI serves a
-      production-mode `vite build` that does not. Unset means *no host is a
-      vanity host*, so the same navigation would assert opposite things in the
-      two environments — which is why the spec does not fake it.
-      **Durable fix:** add `PUBLIC_PLATFORM_DOMAINS` beside `PUBLIC_API_URL` in
-      `playwright.config.ts` `webServer.env` **and** in the CI build step, then
-      add a second hostname that serves both the SPA and `/api` (neither `vite
-      dev` nor `vite preview` proxies `/api`, so a same-origin call 404s at the
-      static server today).
-      **Trigger:** the same first vanity-domain onboarding.
+- [x] **DONE (round 28).** The entry named two blockers; there were three.
+      `PUBLIC_PLATFORM_DOMAINS` now reaches both run modes from one module, so the
+      local dev server and the CI production build cannot disagree — and unset
+      **fails loudly** (the legacy rule reads `127.0.0.1` as a 4-label platform
+      host with slug `127`) rather than asserting the inverse, which was the
+      entry's stated reason for not writing the spec.
+      The third blocker: the vanity origin has to be an **IP literal**, because
+      every hostname the harness can reach is `*.localhost` and `localhost` is
+      itself the declared platform domain, so no `.localhost` name can ever
+      classify as vanity. A literal only connects to the address the server
+      *bound*, and Vite's default binds the `localhost` name — which resolves to
+      `::1` here despite `/etc/hosts` order — so the harness pins
+      `--host 127.0.0.1`. `vite.config.ts` also proxies `/api` same-origin with
+      `changeOrigin: false`, the operator requirement `white-label.md` already
+      stated. Verified by the integrator: both tests in
+      `tests-e2e/tenant/vanity-host.spec.ts` pass. See
+      [decisions.md](decisions.md) §139.
 
 ### Surfaced by the round-19 parallel sweep (2026-09-05)
 
@@ -643,16 +652,21 @@ a read-only fact (§94).
 
 What remains from those sweeps:
 
-- [ ] **(c) `POST /api/discounts/bulk-negotiate` has no caller.** The last
-      member of the round-21 caller-less group. Round 22 closed the
-      audit-verification, sweep-health and card-rebate members; round 23 closed
-      `POST /api/payments/corridor-quotes` (the `/payments` advisory quote
-      panel), `POST /api/exceptions/{id}/agent-resolve` (a runner on the agent
-      dashboard that used to only report on activity it could not trigger) and
-      both `/api/enrichment` read endpoints (vendor score in `VendorModal`,
-      coding suggestions in `InvoiceModal`).
-      **Durable fix:** a small addition to `/discounts`, which already exists.
-      **Trigger:** take it opportunistically when next in that page.
+- [x] **DONE (round 28) — and this empties the list.** The caller is the
+      `/discounts` **Propose vendor offer** modal, gated `admin`/`ap_manager` to
+      match `_WRITE_ROLES`, which is *narrower* than the page's accept/decline
+      gate, so a CFO reads the page and sees no trigger.
+      **The entry mis-described the endpoint**, and the wrong reading suggested
+      the wrong UI: "bulk" is the **base**, not the batch. It returns one offer
+      whose base is a single vendor's summed open balance, so there was no
+      skip-and-report result to render and the shared bulk-selection toolbar would
+      have been the wrong shape entirely. The base is server-computed and
+      deliberately not previewed ([decisions.md](decisions.md) §140).
+      Three defects on the endpoint were closed in the same change: a malformed
+      `vendor_id` was a 500 rather than a 422; a misspelled `valid_until` was
+      silently dropped, creating an offer the optimizer can never rank while it
+      stands against the vendor's whole open balance; and the vendor lookup was
+      not entity-scoped while the invoice sum beside it was.
 
 ### Surfaced by the round-22 parallel round (2026-09-05)
 
@@ -664,36 +678,49 @@ are both on the canonical `page` / `page_size` contract — `/inspections` also
 returns `gr_number` and takes a `?gr_id=` filter, so the UI no longer fetches
 a 100-row page of receipts purely to label a column.
 
-- [ ] **(b) The two `/organization` follow-ups the SSO agent correctly stopped
-      at are DONE, but a third remains: the void's card-cancel outcome is
-      invisible.** `_cancel_card_for_void` is best-effort and its `card_outcome`
-      lands only on the `payment.voided` audit row, never in the response — so
-      after voiding a card payment an operator cannot tell whether the card was
-      actually closed at the provider, and a failed leg leaves a live,
-      bearer-spendable card with no reachable remedy. This is why round 22
-      declined to ship a standalone card-cancel control
-      ([decisions.md](decisions.md) §96) — the remedy belongs on the void, not
-      beside it. **Durable fix:** surface `card_outcome` on `PaymentResponse`
-      and in the void dialog, with a retry when the provider leg failed.
-      **Trigger:** the next virtual-card slice.
+- [x] **DONE (round 28).** The entry was half stale — `PaymentResponse` had
+      carried `void_card_outcome` since an earlier round. What was true is that
+      **nothing rendered it** (the void handler discarded the response) and no
+      remedy existed. Both are closed: the response now also carries the verdict
+      `void_card_disposition`, and `POST /payments/{id}/void/retry-card-cancel`
+      re-attempts only the card leg, gated on `payment.void` (the permission of
+      the void it completes, not the card router's bare roles), 409ing on anything
+      but an already-`voided` card payment so it can only ever *finish* a
+      reversal. §96's objection was about the state a control is reachable in, and
+      it evaporates once the payment is voided.
+      **A live defect surfaced on the way:** `_cancel_card_for_void` selected the
+      card with an unordered `LIMIT 1` over `payment_id`, which is not unique
+      (cancel-then-reissue leaves the dead row), so Postgres could return the
+      cancelled row and report success while the live, bearer-spendable card
+      stayed open — the precise failure the function exists to prevent. Now
+      ordered live-first and taken `FOR UPDATE`. See
+      [decisions.md](decisions.md) §132, and §128 for the `LIMIT 1` rule.
 
-- [ ] **(c) `nav.ts` hides `/goods-receipts` from an `ap_clerk` whose backend
-      reads are open to all four roles.** The receipts *and* inspections list
-      endpoints are `get_current_user`-gated, but the whole Procurement nav
-      group is restricted to admin/ap_manager/cfo, so a clerk has no link to a
-      page they are allowed to read. Pre-existing and about the group, not about
-      inspections — which is why round 22 left the shared file alone rather than
-      widening it as a side effect. **Durable fix:** a product call on whether
-      clerks see Procurement, then align `nav.ts` with the route gates either
-      way. **Trigger:** a product decision.
+- [x] **DONE (round 28).** The nav is now aligned to the backend **per entry**
+      rather than per group. The entry understated it: the group already gated per
+      child, and `/purchase-orders` excluded the clerk too — both widened, each
+      citing its own route gate; `/budgets` correctly keeps excluding them.
+      **A worse bug turned up in the other direction: the nav was too WIDE.**
+      `nav.ts` ORs `payment.execute`/`payment.void` into the Payments row on a
+      comment claiming every call the page makes would succeed. It would not —
+      `/payments/summary`, `/payments/queue` and `/queue/ids` still gated on
+      `require_roles`, so exactly the split-duty role the clause exists to serve
+      got three 403s on first paint. All three moved to `require_permission`,
+      reproducing the four-system-role matrix exactly. Guarded by
+      `frontend/src/lib/nav.test.ts` and `backend/tests/test_sod_endpoint_wiring.py`.
 
-- [ ] **(c) Refusal sentences from the e-invoice validator are no longer
-      localized.** Deliberate, and a net gain — the deleted client map covered 4
-      codes and 12 field paths out of dozens, so most rows previously rendered a
-      bare rule id with no explanation ([decisions.md](decisions.md) §95). The
-      wrapper copy stays localized. **Durable fix:** a code→`MessageKey` map
-      generated from the backend's own rule set, so the catalogue cannot drift
-      from the validator. **Trigger:** a localization pass on error content.
+- [x] **DONE (round 28).** The load-bearing word in the durable fix was
+      *generated*, and a hand-written map is exactly what §95 threw away — so the
+      deliverable is the **guard**, not the catalogue. `rule_catalog.py` scans the
+      validators' own source for every emittable code (a scan, not a registry: a
+      registry can be added to and not used), `gen_einvoice_rule_messages.py`
+      writes the frontend map, and `--check` runs in CI's backend-lint job.
+      Three guards chain — regenerate-and-diff catches a new code, `satisfies`
+      catches a key `en.ts` lacks, and locale parity catches the other five — and
+      the chain was walked end to end by adding a fake rule and watching each
+      link fire. Refusals render through a shared `EInvoiceIssueList`, with an
+      unknown code degrading to the raw server sentence rather than a blank row.
+      See [decisions.md](decisions.md) §138.
 
 - [ ] **(c) The `/adaptive` and inspections surfaces have no mobile
       counterpart.** Recorded so the docs stop claiming "no UI" generally when
@@ -721,42 +748,73 @@ statements that contradicted the code.
 #### ⚠️ Segregation-of-duties — HELD FOR SECURITY REVIEW
 
 Both are SOC 2 CC6.3 controls. Changing who may approve what is a control-design
-decision, not a bug fix, so they are recorded rather than patched. **Loop in the
-CISO / Security Analyst before acting.**
+decision, not a bug fix, so an item here is recorded rather than patched. **Loop
+in the CISO / Security Analyst before acting.**
 
-- [ ] **(c) One `ap_manager` can complete a vendor bank redirect end to end,
-      defeating the BEC dual control.** Verified chain: `POST /vendors/{id}/portal-users`
-      is `require_roles(ADMIN, AP_MANAGER)` and returns the plaintext
-      `temp_password` for a **caller-supplied** email → logging into that portal
-      and staging a bank change writes `requested_by_vendor_user_id`, leaving
-      `requested_by_user_id` **NULL** → `approve_change_request`
-      (`api/vendors.py`) skips its segregation check entirely when that column
-      is NULL → `ROLE_AP_MANAGER` holds `vendor.manage`,
-      `vendor.bank_change.approve` **and** `payment.execute`. The code comment
-      states the assumption that fails: *"Portal-submitted requests have no AP
-      requester, so this only bites AP-initiated ones"* — true only if AP cannot
-      create portal identities, and it can. The compensating `fraud_flag` is not
-      a second control against the same actor: exception resolution has no
-      segregation check either.
-      **Durable fix:** record the AP actor who provisions or resets a
-      `VendorUser` credential; refuse approval when that actor is the approver;
-      stop returning `temp_password` to a caller-supplied address.
-      **Trigger:** security review. This is the highest-severity open item in
-      this file.
+**Both original entries were closed in round 28** under the repo owner's explicit
+authorisation, recorded on each. One new item opened in their place and is held on
+the same terms.
 
-- [ ] **(c) `POST /api/invoices/import-csv` leaves `uploaded_by_id` NULL, so the
-      importer can self-approve.** `violates_segregation` returns **False** when
-      `uploaded_by_id is None` (`services/approval_chain.py`), and
-      `services/csv_import.py` never sets it. The same actor doing the same
-      thing through `POST /api/invoices` gets a 403 — manual create stamps the
-      field with a comment naming this exact failure. Three places assert the
-      control that is a no-op here, including `backend/docs/csv-import.md` ("gets
-      a real audit trail, segregation check, and approval signature").
-      **Durable fix:** thread the user through and stamp it, plus an
-      import-then-self-approve regression test. (`recurring_invoices` and
-      `intercompany` have the same NULL uploader but no creator column to fix
-      with — a separate, larger question.)
-      **Trigger:** security review, alongside the entry above.
+- [ ] **(c) Exception resolution has no segregation-of-duties check.**
+      `POST /api/exceptions/{id}/resolve` and `/bulk/resolve` gate on roles and
+      nothing else — no route, nor `record_decision`, nor the agent coordinator
+      consults a raiser identity, and `exceptions` has no column to consult. With
+      the bank-redirect entry closed this is no longer load-bearing for that
+      chain (the approval is refused before the `fraud_flag` matters), but it
+      holds for every other payment-blocking exception type: the actor who causes
+      a flag can clear it.
+      **Durable fix:** `exceptions.raised_by_user_id` threaded through
+      `create_exception`, plus a refusal in `record_decision`, NULL permissive —
+      the same shape as the uploader stamp ([decisions.md](decisions.md) §131).
+      **Why held rather than patched:** a small AP team may have nobody else to
+      clear the queue, so this is a control-*design* call, not a bug fix. Also
+      documented in [authentication.md](authentication.md) as an explicit open gap.
+      **Trigger:** security review.
+
+- [x] **DONE (round 28), under the repo owner's explicit authorisation** — which
+      is what satisfies this section's standing "loop in the CISO" gate, and it
+      covers this entry only. Every link of the chain was re-verified and held.
+      **The entry named only the invite route**, and that omission mattered:
+      `POST .../portal-users/{id}/reset-password` is the same hole against a
+      supplier who already exists — same role gate, also returned the plaintext
+      password, and sent no email at all. Both are closed, and closing both is
+      what makes the design sound, because invite and reset are *exhaustively*
+      the only writers of `VendorUser.hashed_password` outside the supplier's own
+      change-password — which is why a NULL provisioner can safely stay
+      permissive.
+      `vendor_users.provisioned_by_user_id` records who minted a credential;
+      `vendor_change_requests.requester_provisioned_by_user_id` **freezes** it at
+      staging rather than joining at approval, because deleting the portal user
+      carries no FK into the change-request table and a join would let the
+      approver delete the identity and walk their own request through. The stamp
+      deliberately survives the supplier's own password change, since that route
+      requires the current password the provisioner holds. `temp_password` left
+      both responses and is emailed only, with a send failure unwinding the
+      transaction — defence in depth, not the fix. Migration `0095`, additive and
+      un-backfilled. `tests/test_vendor_credential_provenance.py` guards the
+      exhaustiveness claim the design rests on, so a future "resend credentials"
+      route fails until it stamps or earns an exemption. See
+      [decisions.md](decisions.md) §130.
+
+- [x] **DONE (round 28), under the repo owner's explicit authorisation.** The
+      fix was **one keyword argument**, not the thread-through the entry
+      described: `import-csv` already had the user and already spent it on the
+      `invoice.imported_csv` audit row; `csv_import`'s `Invoice(...)` constructor
+      simply never passed it. Proven empirically rather than by reading — with the
+      stamp removed the importer's own approve returned 200/`approved`; with it,
+      403.
+      **The entry's parenthetical was wrong.** It said `recurring_invoices` and
+      `intercompany` had "no creator column to fix with"; both already carried an
+      `actor_id` in their signatures, spent on audit rows and nowhere else, and
+      both now stamp. The two portal paths stamp `None` **explicitly with a
+      reason**, which turns an omission into a declared exemption.
+      `violates_segregation` deliberately stays fail-open on NULL — failing closed
+      would make every email-intake, PEPPOL, portal-submitted and sweep-generated
+      invoice permanently unapprovable, an outage across four non-interactive
+      front doors. Instead the branch's **premise** is enforced:
+      `tests/test_invoice_uploader_stamping.py` walks the syntax tree of every
+      `Invoice(...)` under `app/` and requires the kwarg, or a literal `None`
+      declared with a reason. See [decisions.md](decisions.md) §131.
 
 #### Money path — verified, unfixed
 
@@ -929,20 +987,25 @@ useful part:
   rows. It was **permanent**: the webhook refuses an already-terminal payment, so
   a late webhook could never supply them.
 
-- [ ] **(c) Three label maps are still hardcoded English**, out of the thirteen
-      the round-24 entry named. `invoice.ts::STATUS_LABELS` closed in round 26
-      (it became `INVOICE_STATUS_LABEL_KEYS`, the same mechanical swap as the
-      other nine); the remaining three were left on merit, each needing more than
-      a swap: `portalStatus.ts` (the portal phase chips take their **identity**
-      from the English label strings — `Object.entries(LABELS)` groups raw
-      statuses by label, so keying it needs a stable phase id first, which is a
-      redesign), `vendor.ts::SCREENING_CATEGORY_LABELS` (keying it changes
-      `formatScreeningCategories`' return shape, which has a de-underscored
-      fallback), and `positivePay.ts::BANK_FORMAT_LABELS` (it lives in
-      `PositivePayModal`, which is otherwise wholly un-extracted English — that
-      dialog is its own slice).
-      **Durable fix:** each on its own terms, not as one batch.
-      **Trigger:** the next i18n slice, or the `PositivePayModal` extraction.
+- [x] **DONE (round 28).** All three closed, each on its own terms, and two were
+      worse than "hardcoded English". `portalStatus.ts` took the redesign: a phase
+      is now a stable snake_case id with a message key beside it and the
+      status→phase assignment **written out** rather than inferred from matching
+      label strings — under the old shape, translating a label was a *data*
+      change that silently split one chip into four or merged two phases into one
+      ([decisions.md](decisions.md) §137). Membership is pinned byte-for-byte
+      against the backend's own status vocabulary, because no type can catch a
+      status changing chips. `vendor.ts` became `SCREENING_CATEGORY_LABEL_KEYS`
+      over a total `ScreeningCategory` union with a tolerant accessor.
+      `positivePay.ts` took the whole `PositivePayModal` extraction (47 keys)
+      rather than leaving a dialog with two localized strings and fifteen
+      hardcoded ones — and keying it fixed **two surfaces the entry never named**,
+      the list's Format column and the modal's detail pill, both of which printed
+      the raw `fixed_width` one click from a picker reading "Fixed width".
+      66 keys across all six locales, actually translated.
+      **One user-visible change:** the portal deep link is now `?phase=rejected`
+      rather than `?phase=Rejected`, so an old bookmarked link no longer selects
+      that chip. A label-keyed URL could not survive a locale switch.
 
 - [x] **DONE (round 26).** The payment-run status badge no longer renders the raw
       enum. A `RUN_STATUS_LABEL_KEYS` map sits beside the payment one, with
@@ -1045,73 +1108,184 @@ needed one agent's route and another's test file at once, and the workflow
 teardown consolidation, which needed both halves of a class two separate agents
 had closed in parallel.
 
-- [ ] **(c) 242 `networkidle` waits remain across the suite.** Round 27 measured
-      the `organization/` directory at a **13.3% failure rate** (10/75 runs) and
-      took it to 0 across 264 consecutive runs by deleting all 22 of its waits.
-      The failure screenshots proved it is not an app race: the panel was fully
-      rendered at the moment of the 30s timeout. `networkidle` is a
-      no-network-for-500ms heuristic that Playwright itself discourages, and
-      every site in that directory was also strictly redundant, because the next
-      line was already an auto-waiting assertion.
-      **Durable fix:** the same treatment per directory, biggest first —
-      `invoices` 27, `expenses` 19, `vendors`/`portal`/`auth` 17 each,
-      `entities`/`bank-reconciliation` 15 each, `admin` 13, `workflows` 11, then
-      a long tail. **Not a bulk sed:** `fixtures/helpers.ts` holds 3 sites and
-      **two are commented as load-bearing** for Svelte 5 form-hydration timing.
-      Each site needs the "is the next line already auto-waiting?" test applied
-      individually. **Trigger:** the next flake-doctor pass or e2e slice.
+- [x] **DONE (round 28) — 250 sites to 7, and the exception was disproved.**
+      Three agents swept the tree by directory. The entry's count was wrong for
+      the third round running: it said 242, which missed a spec that
+      double-quotes the argument. The real figure was **250**, verified
+      independently before the sweep; 243 are gone.
+      All seven survivors are deliberate and documented in place: two in
+      `credit-memos/load-sequencing.spec.ts`, whose assertion is that **exactly
+      one** request fired — `waitForResponse` proves at least one did, never that
+      a duplicate did not, so a quiet network is the only honest signal there —
+      two documented `beforeEach` guards, and three that are comments explaining
+      why no wait is present.
+      **The `fixtures/helpers.ts` "load-bearing for Svelte 5 form hydration"
+      caveat is RETRACTED.** The app server-renders no form at all: the root
+      layout gates its slot behind a `browser`-guarded `$effect`, effects run
+      during neither SSR nor prerender, and `/login` and `/portal/login` return a
+      body holding only `<div style="display: contents">`, the toast region and
+      comment markers — measured in dev **and** in the built artifact. Ten sites
+      were initially kept on that belief and then removed; all ten were followed
+      by an auto-waiting `.fill()`, so they were redundant on their own terms
+      regardless. A proposed `data-hydrated` app affordance was dropped for the
+      same reason. Nine further sites were **replaced** rather than deleted,
+      and three of those were tests that could not fail — role-gated absence
+      assertions that ran before `GET /api/auth/me` populated the permission
+      store, so `toHaveCount(0)` passed on an unrendered toolbar. See
+      [decisions.md](decisions.md) §133.
 
-- [ ] **(c) `workflow_versions` grows unbounded on the SEEDED default.**
-      `invoice-routing` and `deactivation-snapshot` both PATCH the seeded
-      `Default Workflow`'s steps and PATCH them back, and every PATCH
-      auto-snapshots a version. Measured on `e2e5`: 0 → 5 → 9 across two suite
-      runs; `e2e2` is at 14. A different row class from the definition leak round
-      27 closed — these are child rows of a *seeded* row, invisible to the
-      `/workflows` list and reachable only through that definition's Version
-      History modal, and no spec reads them.
-      **Durable fix:** the two specs delete the `workflow_versions` rows they
-      created for the seeded definition's id during their own run. Deliberately
-      not done inside `deleteWorkflowsWhere`, which is scoped to test-created
-      definitions by name and must never touch a seeded row.
-      **Trigger:** the next workflows slice, or the first spec that reads version
-      history and finds a hundred of them.
+- [x] **DONE (round 28).** `tests-e2e/workflows/seededWorkflowVersions.ts` is a
+      **fourth** teardown owner: the third takes a name prefix specifically so its
+      `is_default = false` seatbelt cannot be dropped, which makes it structurally
+      unable to reach child rows of a *seeded* definition, and widening it would
+      delete the property that makes it safe ([decisions.md](decisions.md) §134).
+      The mark is a DB-clock reading taken before the spec touches anything; only
+      later rows are purged, and the purge then **asserts** the history is back to
+      the mark rather than trusting the filter. The entry's numbers were low —
+      `e2e5` measured 17, not 9 — and the source guard written to stop a
+      recurrence immediately found a **third** offender the entry never named
+      (`admin/delete-safety.spec.ts`), which is the argument for the guard over
+      fixing the two files that were pointed at.
 
-- [ ] **(c) The dashboard's response types are declared inline in the route, so
-      no e2e fixture can be typechecked against them.** `DashboardData` and
-      `ReportingAgingBuckets` live in `frontend/src/routes/+page.svelte` and are
-      not exported. `pnpm check` skips `tests-e2e/` anyway, so both dashboard
-      stubs are hand-maintained shapes that drift silently the moment the API
-      gains a non-optional field. That is exactly how round 26's disclosure gap
-      stayed invisible: the stub omitted `unconverted_count`, and `undefined > 0`
-      is false.
-      **Durable fix:** lift them into `$lib/types/` — `analytics.ts` already holds
-      `DashboardDiscountCapture` — and have the fixtures `satisfies` the type.
-      **Trigger:** the next dashboard slice, or the next fixture that drifts.
+- [x] **DONE (round 28).** `DashboardData` / `ReportingAgingBuckets` /
+      `AgingBuckets` moved to `$lib/types/analytics.ts` and the dashboard
+      fixtures now `satisfies DashboardData`. The entry's mechanism was right,
+      which is unusual for this file: `frontend/tsconfig.json` extends
+      `.svelte-kit/tsconfig.json`, whose generated `include` covers `../src`,
+      `../test` and `../tests`, and TypeScript does not merge includes from an
+      extended config. A `satisfies` in an unchecked tree would have been
+      decoration, so `tsconfig.e2e.json` + `pnpm check:e2e` (root
+      `lint:frontend:e2e`, wired into the Frontend CI job) land with it — proven
+      to fire by adding a required field and watching the check go red.
+      **It found two real drifts on its first run**, which is the argument for
+      it: `DashboardDiscountCapture`'s six money fields were typed `MoneyString`
+      while the backend serialises them as JSON numbers, and the five
+      `AgingBuckets` bands were typed `number`, so the route was running
+      `sum + b.value` and `b.value / agingTotal` as raw arithmetic on currency —
+      invisible to the money-type ratchet precisely because the type was declared
+      inline in the route. See [decisions.md](decisions.md) §136.
 
-- [ ] **(c) `/cfo` withholds its whole KPI row while loading instead of using the
-      new pending affordance.** Round 27 gave `KpiCard` a convention: an absent
-      figure renders an em dash, and *pending* is announced (`aria-busy` plus
-      screen-reader-only text) rather than drawn. `/discounts` and
-      `/bank-reconciliation` adopt it; `/cfo` gates the row behind `{:else if
-      forecast}` so it collapses instead. Both satisfy
-      [decisions.md](decisions.md) §34 — neither shows a figure nobody computed —
-      so this is a consistency question, **not a defect**, and it is recorded
-      rather than fixed for that reason.
-      **Durable fix:** if one convention is wanted, `/cfo`'s row takes the same
-      `pending` treatment. `tests-e2e/a11y/kpi-pending.spec.ts` is already written
-      so adopting it is a one-line swap to `expectRowPending`, and pins the
-      invariant rather than the mechanism in the meantime.
-      **Trigger:** the next design pass on `KpiCard`, or the next `/cfo` slice.
+- [x] **DONE (round 28).** `/cfo` renders its KPI row on every state with the
+      `pending` affordance instead of collapsing behind `{:else if forecast}`,
+      matching `/discounts` and `/bank-reconciliation`; the spec swapped to
+      `expectRowPending`. The consistency sweep caught two more: `/tax` had the
+      same collapse, and `/adaptive` hand-wrote `value="—"`, which renders
+      `data-kpi-state="value"` — the card claiming a figure exists — and is now
+      `value={null}`. The zeroed-forecast case gained a real readiness gate,
+      since the row's presence is no longer a signal that loading finished.
+      Seven panel-scoped rows still collapse; they are a separate entry below.
 
-- [ ] **(b) Leaked `meter_test_*` plan rows in the shared local control plane.**
-      Orgs `pytesta` / `pytesta3` hold live subscriptions on
-      `meter_test_a3927f51` / `meter_test_ee53c2f4`, left by a pytest run that
-      did not clean up after itself. Local dev boxes only — CI builds its control
-      plane fresh.
-      **Durable fix:** delete the rows; if it recurs, the fixture that mints a
-      throwaway plan needs a teardown. **Trigger:** the next time a billing spec
-      behaves oddly on a long-lived local box.
+- [ ] **(b) Delete the leaked `meter_test_*` plan rows on long-lived local boxes.**
+      The durable half landed in round 28 and the entry's mechanism was **stale**:
+      the 41 rows in the shared `feohledger` control plane are historical, left
+      before the harness moved to per-slot control databases (newest row
+      2026-08-06). The live problem was *within-session* pollution, so the fix is
+      a teardown, not another setup purge — six billing files hand-rolled a SETUP
+      purge, which by construction reaps only the previous run and always leaves
+      the last row behind, and one wrote only the subscription half.
+      `_reset_control_billing` now runs on the `realdb` teardown and
+      `RealDB.purge_plans` is the single owner of that child graph
+      ([decisions.md](decisions.md) §135).
+      **What remains** is the one-off cleanup of the historical rows on a
+      developer box; CI builds its control plane fresh and the `feohledger_pytest*`
+      slot databases were checked and are already clean. Children first,
+      `meter_test_*` only, against
+      `postgresql://postgres:postgres@localhost:5432/feohledger`:
+      `DELETE FROM subscriptions WHERE plan_id IN (SELECT id FROM plans WHERE code LIKE 'meter\_test\_%'); DELETE FROM plans WHERE code LIKE 'meter\_test\_%';`
+      **Trigger:** the next time a billing spec behaves oddly on a long-lived
+      local box.
 
+
+### Surfaced by the round-28 batch (2026-09-09)
+
+Ten agents closed thirteen entries. Every one of them returned something its
+entry had not predicted; where that was itself a defect it was fixed in the same
+round rather than recorded. What follows is only what genuinely could not be
+closed in the slice that found it.
+
+- [ ] **(c) A sweep-generated recurring invoice has no recorded creator.**
+      Unlike email intake, PEPPOL and the portal — where no control-plane user
+      exists to record — the template here *does* have an employee author, and
+      `RecurringInvoiceTemplate` has no column to hold them. So such an invoice is
+      exempt from the segregation check exactly as a legacy row is.
+      **Durable fix:** `created_by_user_id` on `recurring_invoice_templates`
+      (tenant migration, stamped by `POST /api/recurring`), with `generate_one`
+      falling back to it. Existing rows stay NULL — there is no honest author to
+      backfill and guessing one manufactures either a refusal or an absolution.
+      **Trigger:** the next migration touching that table.
+
+- [ ] **(c) `POST /api/cards/{id}/cancel` gates on roles where the void it
+      duplicates gates on a permission.** It is `require_roles(ADMIN, AP_MANAGER,
+      CFO)`, so in a duty-split org an `ap_manager` explicitly denied
+      `payment.void` can still close a card through it. It stays unwired in the UI
+      ([decisions.md](decisions.md) §96, §132), so it is not reachable by
+      accident.
+      **Durable fix:** move it onto `require_permission`, which is an SoD-catalogue
+      change with its own `test_sod_endpoint_wiring` pin.
+      **Trigger:** the next virtual-card slice, or a duty-split tenant.
+
+- [ ] **(c) The shared vendor picker is capped at 100 with no search and no
+      truncation notice.** `listVendors()` requests `page_size=100` and renders
+      page 1. **Five** consumers share it (`/catalogs`, `ContractModal`,
+      `RecurringModal`, `VendorStatementReconModal`, `BulkNegotiationModal`), so a
+      tenant past 100 vendors silently cannot select the rest anywhere.
+      **Durable fix:** one shared searchable, server-paged picker for all five.
+      Half-fixing it in one modal leaves four wrong, which is why it was not taken
+      opportunistically. `VendorOption` is also still re-declared locally in three
+      of those modals now that the canonical type lives in `api/vendors.ts`.
+      **Trigger:** the first tenant past 100 vendors, or the next modal that needs
+      one.
+
+- [ ] **(c) Seven panel-scoped KPI rows still collapse while loading.**
+      `/adaptive` ×2, `/admin/access-review`, `/admin/health`, `/billing` ×2,
+      `/expenses` Reports, `/audit` and `ForecastVariancePanel`. Round 28 brought
+      the page-level rows onto the `pending` convention
+      ([decisions.md](decisions.md) §125); these sit in different loading chains.
+      Consistency, not a defect — §34 is satisfied either way.
+      **Durable fix:** the same `pending` treatment per panel.
+      **Trigger:** the next design pass on `KpiCard`.
+
+- [ ] **(c) Two nav rows are admin-only while their reads are open to any
+      authenticated user.** `/workflows` has no redirect guard, so a non-admin who
+      types the URL reaches a dead end rather than a 403; `/organization` ships a
+      non-admin read-only mode that only a typed URL can reach.
+      **Durable fix:** a product call per row — widen the nav, or delete the
+      read-only mode as dead code. (`/admin?tab=roles` is a deliberate keep: role
+      CRUD is a write surface first.)
+      **Trigger:** a product decision on who sees each.
+
+- [ ] **(c) `tsconfig.e2e.json` carries one exclusion, and it is shrink-only.**
+      `tests-e2e/entities/switcher.spec.ts` misses a `Page` annotation and was
+      excluded rather than edited, because another session owned that file during
+      round 28. The new `check:e2e` gate is otherwise whole-tree.
+      **Durable fix:** annotate it and delete the exclusion. Never add an entry —
+      the fix for a type error in that tree is the annotation.
+      **Trigger:** the next touch of that spec.
+
+- [ ] **(c) List joining is not locale-aware.** Translated fragments are joined
+      with a literal `', '` throughout; Japanese wants an ideographic comma. There
+      is no `Intl.ListFormat` usage anywhere in the tree.
+      **Durable fix:** one shared helper covering every `.join(', ')` over
+      translated content. **Trigger:** the next i18n slice.
+
+- [ ] **(c) `/vendors/screening`'s page body is still English.** Round 28 keyed
+      its label *maps*; the route's own copy — the definition labels, the
+      Blocked/Allowed cell, the block/unblock/re-screen buttons, the three history
+      states and the no-permission note — is unextracted.
+      **Durable fix:** the route extraction, as its own slice.
+      **Trigger:** the next i18n slice.
+
+- [ ] **(c) `DiscountOfferCreate` still accepts unknown fields.** Round 28 added
+      `extra="forbid"` to `bulk-negotiate`, where a misspelled `valid_until` had
+      been silently dropped, creating an offer the optimizer can never rank. The
+      sibling create endpoint has the same hazard but **has live callers**, so
+      forbidding extras there is a breaking change needing its own caller audit.
+      Separately, `POST /api/discounts/offers` has no frontend caller either — a
+      genuinely different question, since an offer normally arrives *from* a
+      supplier, so a manual AP-side create may be a deliberate absence.
+      **Durable fix:** the caller audit, then `extra="forbid"`; and a product call
+      on whether AP creates offers by hand.
+      **Trigger:** the next `/discounts` slice.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 
