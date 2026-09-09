@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -153,13 +154,31 @@ def _run_prologue(script: Path, *, times: int = 1, preseed: list[str] | None = N
     we pre-seed — so `import app` can only succeed via the anchor, and it names
     the checkout it came from. Without `-S` the finder would answer and every
     assertion here would pass whether or not the anchor did anything.
+
+    Third-party packages still have to resolve, because a prologue slice runs up
+    to and including the anchor and several scripts import `sqlalchemy` on the
+    way there. They are handed over on `PYTHONPATH` rather than by dropping
+    `-S`: `PYTHONPATH` entries get no `.pth` processing, so the editable finder
+    stays uninstalled and the discriminating property is intact.
+
+    Deriving them from the RUNNING interpreter is what makes this environment-
+    independent. Reading them off `sys.executable`'s own `site` would reintroduce
+    the dependency on how pytest was invoked — the first version passed only when
+    the parent already carried site-packages on `PYTHONPATH`, and failed under a
+    plain venv `pytest`, which is how CI runs it.
     """
     preseed = [str(SCRIPTS_DIR)] if preseed is None else preseed
+    env = dict(os.environ)
+    deps = [p for p in sys.path if p.endswith(("site-packages", "dist-packages"))]
+    env["PYTHONPATH"] = os.pathsep.join(
+        deps + [env["PYTHONPATH"]] if env.get("PYTHONPATH") else deps
+    )
     result = subprocess.run(
         [sys.executable, "-S", "-P", "-c", _DRIVER, str(script), str(times), *preseed],
         capture_output=True,
         text=True,
         timeout=60,
+        env=env,
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
