@@ -4810,3 +4810,473 @@ primitive is narrower than any of them — *free the slot so it can be occupied*
 because one INSERTs and one repoints, so neither could delegate to the other. The
 guard was never missing from `change_plan`; that call site is de-duplication, not
 a fix.
+
+
+## 130. Closing a fail-open dual control without refusing every genuine request
+
+`approve_change_request` enforced the BEC dual control with one comparison —
+`req.requested_by_user_id is not None and req.requested_by_user_id == user.id` —
+above a comment stating the assumption it rested on: *"Portal-submitted requests
+have no AP requester, so this only bites AP-initiated ones."* That assumption is
+false, and the code falsifying it is two routes away.
+`POST /vendors/{id}/portal-users` is `require_roles(ADMIN, AP_MANAGER)`, took the
+supplier's address from the caller, and handed back the plaintext password.
+`ROLE_AP_MANAGER` holds `vendor.manage`, `vendor.bank_change.approve` **and**
+`payment.execute`. One person could invite a portal user at an address they
+controlled, sign in as it, stage a bank redirect (filling
+`requested_by_vendor_user_id`, leaving `requested_by_user_id` NULL), approve their
+own request through the NULL short-circuit, and pay it.
+
+The interesting part is not the hole; it is that the obvious repairs are all wrong.
+
+**Rejected: fail closed on NULL.** Refusing every request whose AP requester is
+unknown closes the hole in one line, and refuses every genuine supplier-submitted
+bank change forever — the *normal* case, and the whole point of the supplier
+portal. A control that fires on 100% of legitimate traffic is not a control; it is
+an outage with a security rationale.
+
+**Rejected: forbid AP from creating portal identities.** Onboarding a supplier is
+a real, required AP task. Removing it moves the problem rather than solving it.
+
+**Rejected: rely on the compensating `fraud_flag`.** It is a signal, not a second
+control against the same actor: exception resolution has no segregation check
+either (recorded in `followups.md`), so the attacker clears their own flag.
+
+**Not defended against, deliberately: two colluding AP actors.** A invites
+(stamp = A), B later resets the password (stamp = B) and hands the credential to
+A, so the request freezes B and A may approve. That needs a second authenticated
+party, which is the boundary every dual-control scheme accepts. The fix closes the
+SINGLE-actor path, which is the one that existed.
+
+**Chosen: record who holds the credential, and refuse that person as approver.**
+`vendor_users.provisioned_by_user_id` names the control-plane `User` who last
+minted a password for a portal identity, stamped by invite AND by
+`POST .../reset-password`. Finding the second route mattered: reset is the same
+attack against a supplier who already exists, and the follow-up entry had not
+named it. Those two are exhaustive — the only writers of
+`VendorUser.hashed_password` outside the supplier's own change-password.
+
+That exhaustiveness is what makes NULL safe to keep permissive. NULL does not mean
+"we don't know"; it means *no AP actor in this system has ever held this
+credential* — a legacy row, or a supplier who has always managed their own
+password — and an AP actor cannot come to hold one without passing through a route
+that stamps the column. The fix refuses precisely the requests where a second pair
+of eyes is provably absent, and touches nothing else.
+
+Three details are load-bearing, each chosen against a simpler alternative:
+
+- **The value is COPIED onto the change request at staging
+  (`requester_provisioned_by_user_id`), not joined at approval time.**
+  `DELETE /vendors/{id}/portal-users/{id}` carries no FK into
+  `vendor_change_requests`, so a join would let the approver delete the portal
+  identity between staging and approving and walk their own request through — the
+  hole reopened by one extra request. This is the frozen-snapshot discipline
+  `WorkflowInstance.steps_config_snapshot` uses, for the same reason: the evidence
+  must not be re-derivable from mutable state the actor controls.
+- **The supplier changing their own password does NOT clear the stamp.**
+  `POST /portal/auth/change-password` requires the *current* password, which the
+  provisioner has. Clearing there would be a one-request bypass of the whole
+  control. The stamp is durable provenance, not a "who knows the password right
+  now" flag. The cost is real and accepted: an AP user who onboarded a supplier is
+  permanently not an independent second party to what that identity submits.
+  `ROLE_ADMIN` holds `vendor.bank_change.approve` by default, so no tenant is left
+  with nobody able to approve.
+- **The plaintext temp password left the response, and delivery became
+  mandatory.** Returning it for a caller-supplied address made "mint a supplier
+  login I control" one frictionless request with no delivery record. It is emailed
+  only now, and a send failure rolls the request back (502) rather than leaving a
+  portal account whose credential nobody received. This is **defence in depth, not
+  the fix** — an AP actor who supplies their own address still receives the email.
+  The approval refusal closes the chain; this removes the silent path.
+
+Migration `0095` is additive, nullable, idempotent, tenant-gated, and does **no
+backfill** — we cannot know who provisioned a pre-existing credential, and guessing
+would either manufacture a refusal or manufacture an absolution.
+
+## 131. A NULL uploader means "no employee made this", and that is enforced elsewhere
+
+`approval_chain.violates_segregation` returns False — no breach — when
+`Invoice.uploaded_by_id` is NULL. Read on its own that is fail-open on a fraud
+control, which is how `services/csv_import` shipped a real hole: the `import-csv`
+route already had the user and already spent it on the `invoice.imported_csv` audit
+row, but the `Invoice(...)` constructor never passed it. An AP manager could import
+a payable at `new` and approve it on the next click, while the same person doing the
+same thing through `POST /api/invoices` got a 403 — from a line whose comment names
+this exact failure.
+
+The obvious durable fix is to flip the NULL branch closed. That was rejected. Four
+ingestion paths legitimately have **no control-plane user to record**: email intake
+and inbound PEPPOL are system ingestion; supplier-portal submit and the portal PO
+flip are driven by a tenant-scoped `VendorUser`, and `uploaded_by_id` names a
+control-plane `User`; the recurring sweep is a timer. Failing closed makes every
+invoice from all four permanently unapprovable — an outage across the platform's
+four non-interactive front doors, traded for a control achievable a better way.
+
+The better way is to make the premise true rather than check it at approval time.
+NULL is sound precisely when no *approver-capable employee* can create a row without
+being recorded, so every employee-facing path stamps the actor: manual create and
+file upload already did; CSV import now does; so do `recurring_invoices.generate_one`
+(`user.id` on the manual `generate-now`, `None` from the sweep) and
+`intercompany.route_intercompany_invoice`, whose mirror payable is now attributed to
+whoever routed it. Both already had an `actor_id` in the signature, spent on the
+audit row and nowhere else — the follow-up entry claiming they had "no creator column
+to fix with" was wrong about two of the three cases it named.
+
+What failed here was not the predicate but that its premise was *assumed*. So the
+premise is enforced by `tests/test_invoice_uploader_stamping.py`: it walks the syntax
+tree of every `Invoice(...)` construction under `app/`, requires the `uploaded_by_id`
+kwarg at each, and requires any site passing a literal `None` to be declared with a
+reason. Omission — the failure mode that shipped, and the one that reads as an
+oversight rather than a policy — is no longer expressible. A first version of the
+guard matched on module path and was blind to the equally normal
+`from app.models import Invoice` re-export spelling; it now matches the imported name
+and cross-checks at the token level, because a guard with a spelling-shaped hole is
+worse than none.
+
+One residual gap is recorded rather than closed: a **sweep-generated** recurring
+invoice does have an employee author — whoever created the template — that we have
+nowhere to put, because `RecurringInvoiceTemplate` carries no creator column.
+
+## 132. A best-effort leg needs a verdict on the response and a remedy on the operation
+
+Voiding a `virtual_card` payment has two best-effort legs — the payment rail and the
+card provider — because a provider outage must not block the accounting void. That
+posture is right, and it created two separate holes.
+
+**A best-effort leg that reports only to the audit log is invisible.** The card leg's
+`card_outcome` reached `PaymentResponse` in an earlier round, but nothing rendered
+it, so a clean 200 and a "Payment voided" toast looked identical whether the card was
+dead at the provider or still live and bearer-spendable behind a payment the ledger
+calls `voided`. The audit row is evidence for an auditor later; it is not a channel
+to the operator now.
+
+**The UI branches on a verdict, not on the outcome vocabulary.** Enumerating tags
+client-side fails in one specific direction: a tag added later falls through to
+whatever the client's `else` is, and the tempting `else` is "fine". So the
+classification lives once, beside the function producing the tags —
+`card_cancel_disposition` → `closed` / `no_card` / `not_closed_final` /
+`not_closed_retryable` — and classifies an **unknown tag as retryable**.
+`card_already_charged` earns its own `not_closed_final` rather than collapsing into a
+neighbour: the card was NOT closed (so it must be shown) and never can be (so
+offering a retry would be a control that cannot work). `None` stays `None` — "we
+never asked" is not "it is shut" (§34).
+
+**The remedy sits on the operation, not beside it.** §96 declined a standalone Cancel
+because `POST /api/cards/{id}/cancel` is reachable on a *live* payment, where it kills
+the card while that payment and its invoice still claim money is in flight. That
+objection is about the *state the control is reachable in*, not about closing cards,
+and it evaporates once the payment is already `voided`. So
+`POST /payments/{id}/void/retry-card-cancel` 409s on anything but an already-`voided`
+`virtual_card` payment: it can only ever **finish** a reversal the books already
+recorded. It gates on `payment.void` — the permission of the void it completes — not
+the card router's bare roles, which would hand an `ap_manager` in a duty-split org the
+half of the reversal the org withheld.
+
+**Idempotency here is a lock and a status check, not a key.**
+`build_card_idempotency_key` exists because a *create* that times out after the
+provider acted is unrecoverable without one. A cancel is not a create: every adapter
+already treats an already-closed card as a confirmed cancel, and
+`cancel_card(provider_card_id)` takes no key. What was missing was on our side — the
+card row is taken `FOR UPDATE` and an already-`cancelled` row short-circuits with no
+provider call and no second `card.cancelled` row. A second retry is a no-op, not an
+error.
+
+**Every attempt is audited, not only the successful ones.** The question an operator
+asks is "did anyone chase this card", and a trail recording only what changed cannot
+answer it. That is the opposite call from `/settlement/accept`, which refuses a
+repeat: an *acceptance* is a decision recorded once; an *attempt against a third
+party* is worth recording every time.
+
+Also fixed in passing: `_cancel_card_for_void` selected the card with an unordered
+`LIMIT 1` over `payment_id`, which is not unique (a cancel-then-reissue leaves the
+dead row behind). Postgres could return the cancelled row and the function would
+report `card_already_cancelled` while the spendable card stayed open — the precise
+failure it exists to prevent. It now orders live-first, then newest. §128's rule
+again: an unordered `LIMIT 1` is dangerous exactly when the candidate set is wider
+than one.
+
+## 133. `networkidle` is banned as a readiness signal, with one exception
+
+`page.waitForLoadState('networkidle')` waits for 500 ms of no network activity.
+Playwright discourages it, and round 27 measured what it costs here: the
+`organization/` e2e directory failed 10 runs in 75 (13.3%) on that call alone, every
+failure a 30 s timeout whose screenshot showed the panel already fully rendered. It
+is not a readiness signal — it never asserts that anything was drawn — and on a page
+that polls, streams, or holds an open connection it may never fire at all. Round 28
+removed 243 of the 250 call sites in the suite.
+
+Rejected: raising the timeout (masks it, and the rule against inflating a Playwright
+timeout exists for precisely this), `waitForTimeout` (a sleep, forbidden by the guard
+rails), and `domcontentloaded` (a weaker heuristic, still not a statement about the
+thing under test).
+
+The replacement is whatever the test actually depends on, and the auto-waiting
+assertion on the next line is almost always already it. That is stronger than it
+sounds: `routes/+layout.svelte` renders **nothing** until its `browser`-guarded
+`$effect` resolves `hasTenant`, and effects run during neither SSR nor prerender, so
+no route's markup exists in the served document. Waiting for any element in the app
+shell therefore transitively proves hydration completed, which is more than a quiet
+network ever proved.
+
+Three shapes need a real substitute rather than a deletion, and one keeps the wait:
+
+1. A bare `.count()` or `page.evaluate()` on the next line has no auto-wait — gate on
+   the element the read depends on.
+2. An **absence** assertion (`toHaveCount(0)`) passes vacuously against an empty
+   document. Order a positive assertion before it, or wait on the request that
+   populates the state being asserted about — a role-gated absence check waits on
+   `GET /api/auth/me`, because that is what populates `auth.hasAnyRole` / `auth.can`.
+   The wait was hiding a test that could not fail; these replacements are strictly
+   stronger than the heuristic they retire.
+3. Asserting that **no further request** was issued is the one honest use:
+   `waitForResponse` proves at least one fired, never that a duplicate did not, so a
+   quiet network is the only signal for "nothing more is coming".
+   `credit-memos/load-sequencing.spec.ts` keeps its two, documented inline.
+
+**There is no hydration exception, and the belief that there was one cost two
+rounds.** `fixtures/helpers.ts` long carried a comment marking its sign-in waits
+load-bearing: Svelte 5 wires `onsubmit` and `bind:value` only at hydration, so a
+`fill()` + submit against server-rendered markup would fire the browser's native GET,
+attempt no auth POST, and fail indistinguishably from a wrong password. Round 28
+initially preserved ten further sites on that basis before checking it. It does not
+hold — `/login` and `/portal/login` render a body containing only
+`<div style="display: contents">`, the toast region and comment markers, no form and
+no inputs, in dev and in the built artifact alike. The markup is created by the client
+runtime, which attaches handlers as it creates the nodes, so there is no window in
+which a field exists un-bound. A `data-hydrated` affordance was designed and then
+dropped for the same reason: it would have added app code to solve a problem the app
+does not have. A comment asserting a hazard is not evidence of one; the fix was to
+fetch the page and look.
+
+## 134. A fourth teardown owner, because the third is defined by what it refuses
+
+§127 gave `workflow_definitions` an owner that deliberately takes a NAME PREFIX rather
+than a predicate, so the `is_default = false` seatbelt belongs to the helper and no
+caller can write the teardown that empties a tenant. That makes it structurally unable
+to reach the rows this leak is made of: `PATCH /api/workflows/{id}` auto-snapshots the
+prior `steps_config` whenever the steps change, and three specs reconfigure the SEEDED
+default and put it back — so the orphaned versions hang off precisely the row the
+seatbelt protects. Measured: `e2e2` at 14, `e2e5` at 17, against a follow-up entry
+that had recorded 9.
+
+Widening `deleteWorkflowsWhere` would delete the property that makes it safe.
+`workflows/seededWorkflowVersions.ts` is a fourth owner instead, and the two partition
+the table rather than overlap: versions on SPEC-CREATED definitions were already the
+third owner's job and stay there.
+
+Its scope comes from §122's bounded-vs-unbounded rule. A blanket "delete this
+definition's versions" would take rows a tenant legitimately carries (a manual save, an
+earlier restore) — found, not created, and so not the spec's to delete. The mark is a
+DB-clock reading taken before the spec touches anything and only later rows are
+removed; the strict `>` fails in the safe direction, leaving a row rather than taking
+one that predates the run.
+
+Two things fell out of building it. The purge asserts the history is back to the size
+the mark recorded, so a version written by a path the timestamp filter misses fails
+loudly rather than quietly resuming the leak — a leak produces no failure at all, which
+is why it ran for months. And the source guard written to stop the next spec
+re-introducing it immediately found a THIRD offender the report had not named
+(`admin/delete-safety.spec.ts`), which is the argument for writing the guard rather than
+fixing the two files that were pointed at.
+
+## 135. A throwaway plan row is the seeding test's to remove, and one owner removes it
+
+`plans` / `subscriptions` live in the slot's control-plane database, which the per-test
+TRUNCATE never reaches and `_rebuild_pytest_schema` clears only once per session. Six
+billing files hand-rolled the same two-statement purge at SETUP — which by construction
+can only reap the PREVIOUS run's rows and always leaves the last one behind — and one
+wrote only the subscription half, so its plans accumulated unchecked for a whole run.
+
+The follow-up entry's mechanism was **stale**: the leaked `meter_test_*` rows in the
+shared `feohledger` database are historical, from before the harness moved to per-slot
+control databases. The live half is within-session pollution, so the fix is a teardown,
+not another setup purge.
+
+**A setup purge is not a teardown, even when it looks like one.** The rows are
+observable within the run (`GET /api/billing/plans` is a catalogue listing), so "cleared
+at the start of the next test that happens to seed one" is not isolation.
+`_reset_control_billing` runs on the fixture's teardown, and its seatbelt is derived from
+`DEFAULT_PLAN_CATALOG` rather than hand-listed.
+
+**Prefix, not predicate — §127 one table over.** `RealDB.purge_plans` owns the
+plan/subscription child graph the way the vendor and workflow helpers own theirs, and
+takes a prefix for the same reason: a free-form WHERE would let one caller write the
+purge that empties the plan catalogue.
+
+## 136. `tests-e2e/` is typechecked, and an API stub declares its contract
+
+`pnpm check` extends `.svelte-kit/tsconfig.json`, whose generated `include` lists
+`../src/**`, `../test/**` and `../tests/**`. `tests-e2e` is none of those, and
+TypeScript does not merge includes from an extended config — so the entire Playwright
+tree sat outside every type program, silently. An e2e spec could carry any type error
+and CI stayed green.
+
+That is not a hygiene problem; it is what made a class of test quietly stop testing.
+Every e2e stub of an API response was a hand-maintained object literal, and the only
+thing that could have compared one against the shape the app reads was a typechecker.
+The dashboard stub omitted `aging_reporting.unconverted_count`; `undefined > 0` is
+false; the partial-conversion disclosure that `unconverted-disclosures.spec.ts` exists
+to exercise could only ever render its no-notice branch. Two files, one omission, a
+green suite.
+
+`tsconfig.e2e.json` + `pnpm check:e2e` fixes the mechanism; a `satisfies` in an
+unchecked tree would have been decoration, so the two land together. A response fixture
+now names the `$lib/types` shape it fakes, which makes a new non-optional field a
+compile error in the fixture instead of a spec that stops exercising its own branch.
+
+Two consequences worth not re-deriving. **`$lib` imports in `tests-e2e/` must be
+`import type`** — `tsc` resolves the alias through the generated `paths`, Playwright's
+esbuild transform does not read that file, and a type import is erased before the
+runtime sees it. And **`tsconfig.json` gains `"types": []`**: `@types/node` is a real
+devDependency now, and without the empty `types` those globals become ambient in `src/`,
+where `process.env` in a component would typecheck and fail only in the browser.
+
+Rejected: adding `tests-e2e` to the main `include`, which would make one tree's errors
+block the other's check and put Node globals in browser code. Also rejected: a narrow
+allow-list of "fixture files only", which would cover the two files in front of us and
+nothing a future spec adds.
+
+The check found two real drifts on its first run, which is the argument for it:
+`DashboardDiscountCapture`'s money was typed `MoneyString` while
+`backend/app/schemas/dashboard.py` serialises those fields as JSON numbers, and the five
+`AgingBuckets` bands were typed `number` — so the dashboard was running `sum + b.value`
+and `b.value / agingTotal` as raw arithmetic on currency, in a file the money-type
+ratchet could not see because the type was declared inline in the route.
+
+## 137. A supplier-portal "phase" is an id, not its label
+
+The portal collapses the 12-value `InvoiceStatus` and the 8-value `PaymentStatus` into a
+handful of vendor-facing phases, because a supplier has no use for `sending_to_erp` vs
+`posted_in_erp`. The first implementation stored only the English label per status and
+*derived* the chip set by grouping statuses whose label string matched.
+
+That made the display text the identity. Translating it is then a data change, not a
+presentation one, with two failure modes and no error in either:
+
+- a phase splits — translate "Processing" and its four statuses no longer share a
+  string, so one chip becomes four and a supplier filtering "Processing" sees a quarter
+  of what they used to;
+- two phases merge — any locale where two labels land on the same string folds their
+  statuses into one chip.
+
+Both are silent: every type still checks and the API still answers, because the chip
+sends whatever status set it ended up with.
+
+**The phase is now a stable snake_case id** with a message key beside it, and the
+status→phase assignment is written out rather than inferred. A catalogue edit in any of
+the six locales cannot move a status between chips.
+
+Three consequences worth keeping:
+
+1. **The wire did not change.** Each chip still sends the raw internal `status=` values
+   behind it. What did move is the URL: `?phase=` carries the id (`?phase=rejected`)
+   rather than the label (`?phase=Rejected`), which is what lets a bookmarked filter
+   survive the supplier switching language — the label-keyed URL could not. Links using
+   the old capitalised form no longer select a chip.
+2. **These accessors return a key ALWAYS**, unlike `runStatusLabelKey()` and its
+   siblings, which return `null` so the caller can render the raw wire value. Here the
+   raw wire value is exactly what must not reach a supplier, so an unclassified status
+   resolves to the neutral "Processing" phase. The asymmetry is deliberate: the
+   tolerant-null pattern is right for an internal console and wrong for the portal.
+3. **The membership is pinned by test, not by type.** Every phase id is assignable to
+   every status, so nothing in the type system notices a status moving chips — which is
+   a change to what the supplier's filter asks the API for. `portalStatus.test.ts`
+   asserts the phase→statuses map byte-for-byte against the status vocabulary enumerated
+   from the backend enums, not from the maps under test, which would agree with
+   themselves.
+
+## 138. The e-invoice message catalogue is scanned, and the guard is the deliverable
+
+§95 deleted a hand-written code→prose map and named its replacement: a map generated
+from the backend's own rule set. The generator is the easy half. The guard is the entry.
+
+**A source scan, not a registry.** The rule ids are literal strings in the second
+positional argument of `_err` / `FieldError`. Promoting them to a constant table the
+validators index would be a wide refactor of code that reads well, and it would not close
+the drift — an author can add a table entry and forget to use it, or use a literal and
+forget the table. Scanning is derived by construction, and it is the mechanism
+`test_exception_type_labels.py` already uses one domain over.
+
+**The families are OVER-generated on purpose.** `vat_category_rule(cat, suffix)` computes
+its id at runtime, so the scan expands each call site over every infix. One family is
+only reached for zero-rate categories, a runtime guard a scan cannot see, so a handful of
+entries are unreachable. An unreachable row costs one line and covers a future widening
+for free; under-generating would leave a real refusal rendering as a bare rule id.
+
+**The generic kinds are not mapped, and that is not an omission.** The 422 folds a code
+into `msg` only when it is a rule id (`is_rule_id`, now public because three places must
+agree on it), and the app's shared `formatApiDetail` keeps only `loc` + `msg`. A client
+therefore cannot identify the generic kinds at all, so a key for one would be dead. They
+are emitted as a separate exported list rather than dropped, so a NEW generic kind arrives
+as a diff on the generated file instead of as an unmapped code nobody notices.
+
+**Three guards, chained.** Regenerate-and-diff in CI's backend lint job catches a new code;
+`satisfies Record<string, MessageKey>` on the generated file catches a key `en.ts` lacks;
+the locale-parity test catches the other five locales. Each catches the step after the one
+before it, and the chain was walked end to end by adding a fake rule: the check exited 1,
+and after regenerating, `pnpm check` rejected the unassignable key.
+
+## 139. The e2e vanity origin is an IP literal, and the server is pinned to match
+
+The vanity half of `tenant/vanity-host.spec.ts` had been unit-only, and the follow-up
+entry named two blockers. There were three.
+
+**The env variable had to reach both run modes, and it must fail loud.** Locally the
+suite boots `pnpm dev`; CI serves a production `vite build`, which bakes
+`$env/dynamic/public` in and never reads `.env.development`. Both now take the value from
+one module, so they cannot disagree. What makes this safe rather than merely tidy is that
+unset FAILS: with no platform domains the legacy rule reads `127.0.0.1` as a 4-label
+platform host with slug `127`, so the assertions fail rather than quietly asserting the
+inverse — which was the entry's stated reason for not writing the spec at all.
+
+**The origin is an IP literal because no hostname could work.** Every hostname the harness
+can reach is `*.localhost` (Chromium maps those to loopback with no `/etc/hosts` entry),
+and `localhost` is exactly what the platform-domain list declares — so no `.localhost`
+name can ever classify as vanity. A `.test` name would need a Chromium host-resolver rule
+*and* a Vite `allowedHosts` entry (measured: a `.test` Host is 403'd). An IP literal needs
+neither.
+
+**Which forced the third piece.** A literal connects only to the address the server BOUND,
+and Vite's default binds the `localhost` NAME — which resolved to `::1` on the machine
+this was built on, despite `/etc/hosts` listing 127.0.0.1 first (glibc's RFC 3484 address
+selection, not file order). So the harness pins `--host 127.0.0.1`. That is *narrower*
+than the default — no LAN interface — and everything using the NAME still connects,
+because Chromium and Node both fall back across families.
+
+**The `/api` proxy is an app affordance, not test scaffolding.** `docs/white-label.md` has
+always stated that a vanity origin must terminate `/api` itself; the dev server did not, so
+a custom domain could not be exercised locally at all and the spec would have asserted
+against a 404 from the static server. It is proxied in dev and preview with
+`changeOrigin: false` — rewriting `Host` to the target would defeat the very lookup the
+proxy exists to make reachable.
+
+What the spec still does not assert is that the backend then resolves a tenant from that
+`Host`: that needs the origin registered in a tenant's `custom_domains`, and it is the
+backend's own coverage. The half that was unreachable — what the SPA sends, and where — is
+now reachable.
+
+## 140. A proposal whose base only the server can total previews nothing
+
+`POST /api/discounts/bulk-negotiate` sums a vendor's open invoices into one offer's
+`base_amount`. The obvious kindness — showing the buyer that total before they commit to a
+percentage of it — requires the client to re-derive it from a second query, and the two can
+disagree: a different entity scope, a status that moved between the reads, a page boundary.
+A discount is then proposed against a figure the page showed and the server did not book.
+
+So the form previews nothing and states the rule instead, and the created offer is the first
+sighting of the number. This is §34 applied to a figure that is *knowable but not yet known*:
+the honest options are to show what the server computed or to show nothing, never a second
+opinion dressed as the first. The rejected alternative was a server-side preview endpoint
+returning the same total — correct, but it doubles the endpoint surface to remove a click.
+
+The entry that sent us here mis-described the endpoint, which is worth recording because the
+wrong reading suggested the wrong UI. "Bulk" is the **base**, not the batch: it returns one
+`DiscountOfferResponse` and creates one vendor-scoped offer, so there is no per-row
+skip-and-report result and the shared bulk-selection toolbar would have been the wrong shape
+entirely. Three defects on the endpoint were closed on the way in: a malformed `vendor_id`
+was a 500 rather than a 422; a misspelled `valid_until` was silently dropped, creating an
+offer the optimizer can never rank while it stands against the vendor's whole open balance
+(`extra="forbid"`); and the vendor lookup was not entity-scoped while the invoice sum beside
+it was, so an offer could be stamped to one entity while pointing at another's supplier, and
+an out-of-entity vendor answered 409 — confirming the id exists — where a missing one
+answered 404.

@@ -13,7 +13,7 @@ Two halves, both exercised here:
     `PaymentResponse`, so the void dialog can say what happened; and
   * `POST /api/payments/{id}/void/retry-card-cancel` re-attempts ONLY the card
     leg of an already-voided payment — the remedy sits ON the void rather than
-    beside it (`docs/decisions.md` §96, §130).
+    beside it (`docs/decisions.md` §96, §132).
 
 These run against a live Postgres so the row locks, the audit trail and the
 `uq_virtual_cards_one_live_per_invoice` slot are the real ones.

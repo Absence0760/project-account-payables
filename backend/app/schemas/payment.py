@@ -141,7 +141,7 @@ class PaymentResponse(BaseModel):
     # outcome strings would mis-read every tag added later as success. A
     # `not_closed_retryable` card is LIVE and bearer-spendable; the remedy is
     # `POST /api/payments/{payment_id}/void/retry-card-cancel`, which re-attempts
-    # ONLY the card leg of that already-voided payment (docs/decisions.md §130).
+    # ONLY the card leg of that already-voided payment (docs/decisions.md §132).
     #
     # All three are `None` on every non-void read — the legs never ran, and
     # "we never asked" is not "it is shut" (docs/decisions.md §34).

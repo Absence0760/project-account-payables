@@ -682,7 +682,7 @@
 			const voided = await voidPayment(voidTarget.id, reason);
 			toast('Payment voided', 'success');
 			// Branch on the SERVER's verdict, never on the raw outcome tag: a tag
-			// this build doesn't know must not read as "closed" (decisions §130).
+			// this build doesn't know must not read as "closed" (decisions §132).
 			const disposition = voided.void_card_disposition ?? null;
 			if (disposition === 'not_closed_retryable' || disposition === 'not_closed_final') {
 				voidCardResult = voided;

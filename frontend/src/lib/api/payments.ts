@@ -90,7 +90,7 @@ export function voidPayment(paymentId: string, reason: string): Promise<Payment>
  * Re-attempt ONLY the card close for an already-voided card payment.
  *
  * The remedy sits on the void rather than beside it (`docs/decisions.md` §96,
- * §130): `POST /api/cards/{id}/cancel` would also close the card, but it is
+ * §132): `POST /api/cards/{id}/cancel` would also close the card, but it is
  * reachable on a LIVE payment, where it kills the card while the payment and
  * its invoice still claim money is in flight. This one 409s on anything but an
  * already-`voided` card payment, so it can only ever finish a reversal.

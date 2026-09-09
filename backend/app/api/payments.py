@@ -1612,7 +1612,7 @@ async def retry_void_card_cancel(
     route the outcome landed on the `payment.voided` audit row and nothing in
     the app could close that card.
 
-    **The remedy sits on the void, not beside it** (docs/decisions.md §96, §130).
+    **The remedy sits on the void, not beside it** (docs/decisions.md §96, §132).
     `POST /api/cards/{id}/cancel` exists and would close the card, but it is
     reachable on a LIVE payment too, where it would kill the card while the
     payment and its invoice still claim money is in flight on a now-dead rail —

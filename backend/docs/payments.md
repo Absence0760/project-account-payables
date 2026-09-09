@@ -689,7 +689,7 @@ provider-first path (`via: payment_void_retry` on the `card.cancelled` row) and:
   what keeps it from becoming a second way to close a card: `POST
   /api/cards/{id}/cancel` is reachable on a LIVE payment, where it would kill
   the card while the payment and its invoice still claim money is in flight
-  (`docs/decisions.md` §96, §130). This one can only ever *finish* a reversal.
+  (`docs/decisions.md` §96, §132). This one can only ever *finish* a reversal.
 - **Gates on `payment.void`** — the permission of the void it completes, not the
   card router's bare `require_roles(ADMIN, AP_MANAGER, CFO)`, so an org that
   split the duties keeps the reversal's other half behind the same gate.

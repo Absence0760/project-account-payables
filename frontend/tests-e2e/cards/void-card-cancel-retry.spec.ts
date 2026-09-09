@@ -18,7 +18,7 @@ import {
  * nothing in the app could close it.
  *
  * The remedy sits ON the void rather than beside it (`docs/decisions.md` §96,
- * §130). `POST /api/cards/{id}/cancel` would also close the card, but it is
+ * §132). `POST /api/cards/{id}/cancel` would also close the card, but it is
  * reachable on a LIVE payment, where it kills the card while the payment and
  * its invoice still claim money is in flight — two controls that both close a
  * card and leave the ledger in different states.
