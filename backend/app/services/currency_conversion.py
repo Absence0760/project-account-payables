@@ -46,6 +46,7 @@ from sqlalchemy import ColumnElement, and_, case, func, not_, or_, select
 from app.config import settings
 from app.models.virtual_card import VirtualCard
 from app.services.fx_adapters import FXAdapter, FXRate
+from app.services.international_payments import configured_home_currency
 
 _MONEY_QUANT = Decimal("0.01")
 _RATE_QUANT = Decimal("0.00000001")
@@ -65,7 +66,15 @@ def resolve_reporting_currency(org_settings: dict | None) -> str:
     s = org_settings or {}
     candidates = [
         s.get("reporting_currency"),
-        (s.get("payments") or {}).get("home_currency"),
+        # Rung 2 goes through `international_payments`, the one owner of this
+        # setting — this module was the fourth site to reach into the settings
+        # JSON for it, and the four readers normalising it four ways is what
+        # let a trailing space route every domestic payment internationally.
+        # `configured_home_currency`, not `resolve_home_currency`: the latter
+        # substitutes the platform default for an unset value and would
+        # short-circuit rungs 3 and 4, which an absent setting must fall
+        # through to. See `tests/test_payment_home_currency.py`.
+        configured_home_currency(s),
         (s.get("invoice_defaults") or {}).get("currency"),
         settings.reporting_currency_default,
     ]

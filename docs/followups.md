@@ -34,8 +34,24 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-08 (round 25) — ten agents in one shared checkout
-with disjoint file ownership, fifteen entries closed, seven opened. **45 → 37.**
+**Last reconciled:** 2026-09-08 (round 26) — five agents, each in its own git
+worktree, fifteen entries closed, ten opened. **45 → 39.**
+
+Three of the fifteen were closed by **disagreeing with the entry**, which is the
+part worth carrying forward. One recorded a two-line fix that would have been a
+regression ([decisions.md](decisions.md) §119). One described work that round 25
+had already done, with the real gap one layer over (§117). One had been marked
+DONE by an earlier PR while half of what it describes was still broken (§120). An
+entry is a lead, not a specification — and a round that only implements its
+entries will ship at least one of those three unchanged.
+
+The round also produced the first evidence for a guard that had never been run:
+§114's target-size spec was landed without execution, and running it showed five
+of six cases bite while the sixth was vacuous (§123). It caught a real shipping
+WCAG failure that §114 itself had caused (§121).
+
+(The previous line read **45 → 37** after round 25. The figure below is counted
+from this file's own checkboxes, which is the source of truth.)
 
 (Issue #321's header said 46. This file's own checkbox count was 45 — the two had
 drifted by one before this round, so the reconciled figure is counted from the
@@ -813,6 +829,16 @@ CISO / Security Analyst before acting.**
       (re-pay after a failure). New non-tautological drift guard compares the
       offered set against BOTH run-builder refusal predicates.
 
+      *Round-26 correction:* this closed the live-payment case, but by
+      special-casing one status rather than sourcing the verdict from the
+      builder's predicate set — so two of the four refusals
+      `create_payment_run_for_invoices` enforces (`fully_credited` and
+      `live_virtual_card`) were still offered and still 409'd the whole batch.
+      `payment_runs.run_refusal_reasons()` is now the one predicate set both the
+      builder and the queue read, and a card claim **pins** the rail rather than
+      blocking the row — see [decisions.md](decisions.md) §120, including why
+      `blocked_total` and `selectable_total` are deliberately not complementary.
+
 #### Performance — measured, unfixed
 
 Numbers from a 200k-invoice / 1M-audit-row scratch database, medians of 5-7 warm
@@ -821,13 +847,29 @@ round-20 lesson about correlated generators was applied).
 
 #### Frontend — verified defects
 
-- [ ] **(c) Three e2e specs leak rows into the shared worker tenant**
-      (`create-manual`, `line-total-reconciliation`, and the vendors ones round 23
-      fixed), which is what surfaced the two intermittent failures above.
-      (`entities/switcher.spec.ts` is a fourth — round 25's own
-      `deactivated-entity.spec.ts` cleans up after itself and can be copied.)
-      **Durable fix:** an `afterEach` deleting by the spec's own slug/number
-      prefix, as the newer specs do. **Trigger:** the next e2e slice.
+- [x] **DONE (round 26).** **Four** specs, not three, and all four leaked
+      **unboundedly** — every identifier carries `Date.now()`, so each run added
+      rows. Measured on `e2e1` beforehand: 41 invoices of which 5 were stranded,
+      32 vendors of which 4 were, and 2 orphan `line_total_mismatch` exceptions;
+      `e2e3` also held 2 stranded entities. `create-manual` (2 invoices a run)
+      and `line-total-reconciliation` (3 invoices plus a **payment-blocking**
+      exception each) now go through `deleteInvoicesWhere`, which owns the child
+      graph and is what removes the exception; `entities/switcher` (2 entities a
+      run, and `/api/entities` has no DELETE, so nothing could ever remove them
+      through the app) and `vendors/consolidation-merge` (2 vendors a run — the
+      merge soft-retires the duplicate and keeps the canonical one *by design*,
+      so even a clean run left both) go through `tenantPsql`. A fifth,
+      `admin/api-keys`, was found while adding the usage e2e: 20 permanently
+      revoked control-plane keys had accumulated. Every predicate is the spec's
+      own marker **prefix**, not the ids that run created, so a run also clears
+      what earlier runs stranded. After: stranded invoices 5 → 0, orphan
+      exceptions 2 → 0, entities 2 → 0, consolidation vendors 4 → 0,
+      control-plane keys 23 → 7 (the remaining 7 belong to the other three e2e
+      orgs, each of which clears its own on its next run).
+      **The vendors that manual invoice entry provisions are deliberately NOT
+      deleted** — see [decisions.md](decisions.md) §122. They are a shared
+      fixture, not a leak, and deleting them failed a foreign key, which is how
+      that was found.
       *The `EntitySwitcher` half of this entry landed in round 25* — the switcher
       lists only active entities, and `get_write_entity_id` now refuses a write
       filed under a deactivated one ([decisions.md](decisions.md) §115).
@@ -856,12 +898,20 @@ survives is below.
 
 #### Guard and tooling remainders
 
-- [ ] **[Low] `ix_positive_pay_files_payment_run_id` is now a redundant prefix**
-      of `uq_positive_pay_run_format`. Unlike the `bank_transactions` duplicate
-      that 0093 dropped, the columns genuinely differ (`(payment_run_id)` vs
-      `(payment_run_id, bank_format)`), so it is a legitimate if marginal
-      narrower index. Recorded so it is not rediscovered as a parity defect.
-      **Trigger:** a read-pattern review of that table.
+- [x] **DONE (round 26).** The read-pattern review this was waiting on was done,
+      measured on a 55 000-row scratch copy rather than reasoned: the composite
+      serves both real call sites **better** than the narrow index did (both
+      columns land in the `Index Cond` instead of filtering `bank_format`), serves
+      a bare `payment_run_id = $1` (`=` is strict, so the partial predicate
+      holds), and serves the FK's own `FOR KEY SHARE` probe. The one read it
+      cannot serve is `payment_run_id IS NULL`, and no such query exists —
+      run-less `ach_authorization` files are reached through `file_type`.
+      Migration `0094` drops it and `PositivePayFile.payment_run_id` loses
+      `index=True` in the same commit ([decisions.md](decisions.md) §104/§109);
+      the parity guard's `EXEMPT` entry carries the reason plus a structural
+      assertion that the composite still **leads** on that column, since the whole
+      argument collapses if it stops. **Trigger if it ever returns:** adding a
+      "list the run-less files" query.
 
 ### Surfaced by the round-25 batch (2026-09-08)
 
@@ -886,90 +936,212 @@ useful part:
   rows. It was **permanent**: the webhook refuses an already-terminal payment, so
   a late webhook could never supply them.
 
-- [ ] **(c) Four label maps are still hardcoded English**, out of the thirteen
-      the round-24 entry named. Twelve were keyed; `invoice.ts::STATUS_LABELS`
-      was left because its call sites were owned by other agents that round, and
-      three more were left on merit, each needing more than a swap:
-      `portalStatus.ts` (the portal phase chips take their **identity** from the
-      English label strings — `Object.entries(LABELS)` groups raw statuses by
-      label, so keying it needs a stable phase id first: a redesign),
-      `vendor.ts::SCREENING_CATEGORY_LABELS` (keying it changes
+- [ ] **(c) Three label maps are still hardcoded English**, out of the thirteen
+      the round-24 entry named. `invoice.ts::STATUS_LABELS` closed in round 26
+      (it became `INVOICE_STATUS_LABEL_KEYS`, the same mechanical swap as the
+      other nine); the remaining three were left on merit, each needing more than
+      a swap: `portalStatus.ts` (the portal phase chips take their **identity**
+      from the English label strings — `Object.entries(LABELS)` groups raw
+      statuses by label, so keying it needs a stable phase id first, which is a
+      redesign), `vendor.ts::SCREENING_CATEGORY_LABELS` (keying it changes
       `formatScreeningCategories`' return shape, which has a de-underscored
       fallback), and `positivePay.ts::BANK_FORMAT_LABELS` (it lives in
       `PositivePayModal`, which is otherwise wholly un-extracted English — that
       dialog is its own slice).
-      **Durable fix:** `invoice.ts` mechanically, as the other twelve; the other
-      three each on their own terms. **Trigger:** the next i18n slice.
+      **Durable fix:** each on its own terms, not as one batch.
+      **Trigger:** the next i18n slice, or the `PositivePayModal` extraction.
 
-- [ ] **(c) The payment-run status badge renders the raw enum.** `RunDetailModal`
-      had two badges rendering raw status strings; the per-payment one was fixed
-      (it now reads `paymentStatusLabelKey`), but the **run** badge above it still
-      shows `PaymentRun.status` verbatim, because that enum has no label map at
-      all and two e2e specs assert the raw text.
-      **Durable fix:** a `RUN_STATUS_LABEL_KEYS` map beside the payment one, and
-      update the two specs in the same commit. **Trigger:** the next `/payments`
-      or i18n slice.
+- [x] **DONE (round 26).** The payment-run status badge no longer renders the raw
+      enum. A `RUN_STATUS_LABEL_KEYS` map sits beside the payment one, with
+      `PaymentRunStatus` as a total union so a status with a tone but no label is
+      a compile error, and the tolerant `runStatusLabelKey()` accessor degrades an
+      unknown wire value to its own raw text. **Both** readers were fixed, not
+      just the one the entry named: `/payments`' Runs table renders the same enum
+      through the same map, one click from the modal, and `daily-journey.spec.ts`
+      asserted the raw text on both. Fixing only the modal would have left a
+      translated pill in the dialog and an untranslated one in the row it was
+      opened from.
 
-- [ ] **(c) `capture_rate_pct` reports `0.00` where its sibling reports "no
-      data".** `DiscountDashboard.capture_rate_pct` returns `0.00` when nothing
-      has been decided yet, while `analytics.DiscountCaptureMetrics.capture_rate_pct`
-      returns `None` + `insufficient_data` for the identical situation — and
-      `0.00` reads as the bad answer rather than the absent one, which is exactly
-      what [decisions.md](decisions.md) §34 exists to prevent. Found while fixing
-      the expiry gate; not fixed because it changes a non-nullable field the
-      frontend reads.
-      **Durable fix:** make it nullable with an `insufficient_data` marker, and
-      thread the empty state through the `/discounts` cards.
-      **Trigger:** the next discounting slice.
+- [x] **DONE (round 26).** `DiscountDashboard.capture_rate_pct` is nullable with
+      an `insufficient_data` marker, matching its `analytics` sibling exactly, and
+      the `/discounts` card renders an em dash rather than `0%` for both the
+      nothing-decided and the still-loading states — `0%` there is precisely the
+      misreading [decisions.md](decisions.md) §34 exists to remove. Writing the
+      test also exposed a pre-existing local-timezone flake in
+      `test_discounts_api.py`, which anchored fixtures on `date.today()` while the
+      API compares against `utc_today()`; fixed at the test clock and the module
+      joined `UTC_TODAY_TEST_MODULES`. CI runs UTC and would never have shown it.
 
-- [ ] **(c) `currency_conversion.resolve_reporting_currency` is the fourth reader
-      of `settings.payments.home_currency`.** Round 25 hoisted one normaliser
-      (`international_payments.resolve_home_currency`) and moved three of the four
-      readers onto it; this one was left because another agent was concurrently
-      rewriting that file and editing it would have captured their uncommitted
-      work. **There is no behavioural divergence today** — that site already
-      strips and upper-cases — and
-      `tests/test_payment_home_currency.py::test_every_reader_of_the_setting_agrees_on_a_padded_value`
-      fails the moment it stops; a second guard holds an explicit two-entry
-      allow-list of modules permitted to read the raw setting.
-      **Durable fix:** two lines — import the helper, use it as the second
-      candidate in that chain. **Trigger:** the next change to
-      `resolve_reporting_currency`.
+- [x] **DONE (round 26).** `currency_conversion.resolve_reporting_currency` no
+      longer reads `settings.payments.home_currency` itself, and
+      `international_payments.py` is now the only file under `app/` that does.
+      **The recorded two-line fix would have been a regression** — see
+      [decisions.md](decisions.md) §119. `resolve_home_currency` can never answer
+      "unset", so dropping it in as rung 2 of a four-rung chain would have made
+      rungs 3 and 4 unreachable and silently switched an org whose only currency
+      signal is `invoice_defaults.currency` to USD. The fix hoists a primitive
+      that *can* abstain, `configured_home_currency(...) -> str | None`.
 
-- [ ] **(c) `api/dashboard.py`'s discount-capture block is unbounded.** It streams
-      every discount-scheduled invoice (`WHERE discount_percent IS NOT NULL`, no
-      limit) into a Python projection. It is deliberately **not** caught by the
-      new fold drift-guard, and correctly so: `compute_discount_capture_rate`
-      needs per-row classification, so it cannot become a `GROUP BY` the way the
-      five vendor-spend folds did. Date-bounded by nothing.
-      **Durable fix:** bound it by period, or push the classification into SQL as
-      a counted CASE. **Trigger:** a slow-dashboard report, or the next analytics
-      slice.
+- [x] **DONE (round 26).** `api/dashboard.py`'s discount-capture block groups in
+      SQL. The entry judged the per-row classification inexpressible as a
+      `GROUP BY`; it is two comparisons, so it groups by a `CASE` and three rows
+      come back, with the bucket vocabulary and the rate staying in Python. The
+      period bound was rejected as a silent redefinition of the figure. One number
+      changed deliberately: the half-cent tie-break moved from half-even to
+      away-from-zero, which aligns the tile with
+      `discount_offers.discount_savings` for the identical quantity. See
+      [decisions.md](decisions.md) §118, including why
+      `AT TIME ZONE 'UTC'` before the date cast is load-bearing.
 
-- [ ] **(c) Two portal auth handlers still write no audit row.**
-      `portal_mfa_challenge` and `portal_request_email_otp` are the only entries
-      left in `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT` that write nothing at all —
-      the other four were removed once the guard's scan learned to recognise
-      `dispatch_auth_audit`. Both issue a challenge rather than change a factor,
-      so the case for auditing them is weaker than for enrollment
-      ([decisions.md](decisions.md) §111), but it has not been *made* either way.
-      **Durable fix:** a decision on whether challenge issuance is auditable,
-      then one `dispatch_audit` per handler if yes. **Trigger:** the next auth
-      slice or SOC 2 evidence pass.
+- [x] **DONE (round 26).** The call on the two portal auth handlers has been made
+      in both directions — see [decisions.md](decisions.md) §116.
+      `portal_mfa_challenge` **verifies** a factor and mints the session (it is
+      the only place an MFA-enrolled supplier's sign-in completes), so it now
+      writes `portal.mfa.verify.success` / `.failure`.
+      `portal_request_email_otp` genuinely is issuance and stays unaudited, with
+      the reason recorded in `_TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT` rather than
+      as "not yet": a row there would be written for exactly the set of supplier
+      addresses that exist **and** are enrolled, rebuilding inside a WORM-shipped
+      trail the oracle its 204-on-every-path exists to prevent.
 
-- [ ] **(c) The `2.5.8` fix could not be reproduced as a red-to-green
-      transition.** The 24×24 target-size change is backed by arithmetic (the
-      spacing exception was satisfied by per-page padding — 7.0 px on
-      `/invoices`, 2.0 px on `/exceptions`, against a 4.0 px cliff) and by a new
-      e2e spec, but the agent that landed it could **not** get axe to report the
-      violation in a replica, before or after. The e2e spec has also never been
-      executed — running Playwright was off-limits that round because ten agents
-      shared one port.
-      **Durable fix:** run `pnpm -C frontend test:e2e:a11y` and confirm the new
-      `a11y/target-size.spec.ts` passes against the real app; if it cannot fail
-      against the pre-fix CSS, say so in the spec so the next reader does not
-      mistake it for a regression guard it is not.
-      **Trigger:** the next a11y or e2e run.
+- [x] **DONE (round 26).** `a11y/target-size.spec.ts` was run, and it **does**
+      bite: restoring the pre-fix `app.css` block byte-for-byte fails five of its
+      six cases with real measurements. The sixth did not, and that was the
+      finding — "a click outside the painted box toggles the row" asserted only
+      `insetX > 0`, which a 1 px opaque border satisfies, so the click landed on
+      the paint and it re-proved that clicking a checkbox toggles it. It now
+      asserts the inset reaches `(24 - 16) / 2`. The run also surfaced a **real,
+      shipping** 2.5.8 failure on `/organization` caused by round 25's own
+      checkbox fix — see [decisions.md](decisions.md) §121 and §123.
+
+### Surfaced by the round-26 batch (2026-09-08)
+
+Five agents closed fifteen entries. As in round 25, every one returned something
+its entry had not predicted, and three entries were **wrong about the work**
+rather than merely incomplete: the `resolve_reporting_currency` "two-line fix"
+would have been a regression (§119), the audit-export connection hold was
+**already closed** by round 25 and the real gap was its control-plane half
+(§117), and the payment-queue entry had been marked done by PR #377 while two of
+the four refusals it describes were still invisible (§120).
+
+- [ ] **(c) `PortalMFAChallengeVerifyRequest.method` is an unconstrained `str`.**
+      Its employee twin pins `^(totp|email)$`, so `POST /portal/auth/mfa/challenge`
+      with `method: "sms"` silently verifies TOTP instead of 422ing, and a client
+      typo is invisible. Harmless to the audit trail — the new row derives its
+      `method` from the branch actually taken, never from the request — but the
+      two surfaces should not disagree about what a factor name is.
+      **Durable fix:** add `pattern="^(totp|email)$"` to that field in
+      `app/schemas/portal.py`, matching `MFAVerifyRequest`. One line, and a
+      tightening rather than a break (the typed frontend client sends only those
+      two values). Left out because `app/schemas/` was outside that agent's file
+      allowlist. **Trigger:** the next portal-auth slice.
+
+- [ ] **(c) A successful supplier sign-in is still unaudited on the
+      password-only path.** The portal writes `portal.login.failure` on rejection
+      and, as of round 26, `portal.mfa.verify.success` once a second factor is
+      enrolled — but `portal_login`'s non-MFA success path writes nothing, so
+      there is no `portal.login.success` at all. An auditor querying successful
+      supplier sign-ins sees only the MFA'd subset, which is a biased sample
+      rather than a gap, and is why this was not half-fixed.
+      **Durable fix:** one `dispatch_auth_audit(action="portal.login.success",
+      details={"ip", "method": "password"})` before `_mint_portal_session`,
+      awaited rather than queued (the account provably exists by then), plus the
+      row in `docs/authentication.md`'s action table. **Trigger:** the next auth
+      slice, or the SOC 2 evidence pass.
+
+- [ ] **(c) The three dashboard chart disclosures have no e2e coverage.**
+      `vendor_spend` / `aging_reporting` / `monthly_trend` each now carry a
+      `role="alert"` unconverted notice, unit-tested, but
+      `tests-e2e/dashboard/discount-capture.spec.ts`'s stub sets
+      `vendor_spend: []`, `monthly_trend: []` and an `aging_reporting` that omits
+      `unconverted_count` — so every notice is exercised only on its no-notice
+      branch. Nothing breaks (`undefined > 0` is false), but the disclosures are
+      unguarded end to end. Not closed because `frontend/tests-e2e/` belonged to
+      another agent that round.
+      **Durable fix:** three stub variants asserting each notice's testid, and
+      complete the stub's `aging_reporting` so the TS interface and the fixture
+      agree — `ReportingAgingBuckets.unconverted_count` is non-optional and the
+      stub is the incomplete half. **Trigger:** the next dashboard or e2e slice.
+
+- [ ] **(c) The `/discounts` money KPIs brief-render `$0` while loading.**
+      `aggMoney(undefined, …)` formats `0`, so Captured / Missed / Projected
+      savings each flash a zero before the response lands. The capture-rate card
+      was moved off that pattern deliberately; the money cards were left, because
+      the zero-while-loading convention is app-wide and changing it on one page
+      would make the five-card row inconsistent. Arguably the same §34 class — a
+      figure nobody has computed yet, displayed as a computed one.
+      **Durable fix:** decide the convention once (a skeleton, or an em dash, for
+      every aggregate KPI pre-response) and apply it across `KpiCard` rather than
+      page by page. **Trigger:** the next design pass on `KpiCard`.
+
+- [ ] **(c) The mobile app still stages payment runs the backend refuses.**
+      `mobile/lib/models/payment_queue.dart`'s `PaymentQueueItem.fromJson`
+      parses none of `blocked` / `blocked_reason` / `required_method`, and
+      `PaymentRunSelection` lets a row be submitted on an arbitrary method — so a
+      mobile user can select a fully-credited or card-claimed invoice and take the
+      whole batch down with the 409 the web queue now prevents. Pre-dates round 26
+      (the fields were only partly shipped before it) and `mobile/` was outside
+      that slice's scope.
+      **Durable fix:** parse the three fields, disable a `blocked` row's
+      selection, and pin `required_method` the way `methodFor()` does on web.
+      **Trigger:** the next mobile payments slice, or any report of a failed run
+      from the app.
+
+- [ ] **(c) `organization/email-intake.spec.ts` is flaky on
+      `waitForLoadState('networkidle')`.** Measured 2–3 failures per 15 runs, at
+      the same rate with and without an unrelated CSS change on that page, so
+      `networkidle` is the cause and not a regression. It is not one site: **273
+      `networkidle` calls across 110 spec files.**
+      **Durable fix:** wait on the real signal each spec already asserts next
+      (the panel's own `data-testid`), starting with the sites that actually fail.
+      **Trigger:** the next flake-doctor pass or e2e slice.
+
+- [ ] **(c) Seeded tenants cannot reach `/api/v1` at all.** `seed.py` lands every
+      org on the `free` plan, whose entitlements are `{}`, so
+      `require_api_entitlement("public_api")` 402s every public-API call for the
+      whole e2e suite and for local dev — confirmed from the backend access log.
+      That makes the public Developer API unexercisable end to end without
+      hand-editing the control plane, which guard rail 7 says it should not be.
+      (The new api-key usage e2e asserts the meter's own counts rather than a
+      200, because the meter fires on successful authentication ahead of the
+      entitlement gate, so the figures are exact regardless.)
+      **Durable fix:** give the seed one tenant on a `public_api`-bearing plan, or
+      a documented `scripts/` toggle. Do **not** do it from a spec — the
+      subscription outlives a crashed test and perturbs the billing specs.
+      **Trigger:** the next public-API or billing slice.
+
+- [ ] **(c) `vendors` has 17 non-cascading FKs and 17 hand-rolled
+      `DELETE FROM vendors` teardowns across 16 spec files** — the exact trap
+      `deleteInvoicesWhere` and `meta/teardown-guard.spec.ts` exist for, one table
+      over. Each hand-rolled site maintains its own partial child list
+      (`import-csv` knows about `sanctions_checks`; most know about nothing).
+      **Durable fix:** a `deleteVendorsWhere(predicate, slug?)` owning the graph,
+      plus extending the teardown guard's regex to `vendors` and migrating all 17
+      call sites. Sized but not started — it touches 16 files, so it wants its own
+      slice. **Trigger:** the first teardown FK failure on a vendor, or the next
+      e2e hygiene slice.
+
+- [ ] **[Low] Workflow definitions leak too.** `e2e2` holds 8
+      `Step Config E2E <ts>` rows plus `Snapshot B <ts>` and `Invoice Processing`;
+      `e2e1` holds `Sim WF <ts>`. All inactive, so harmless to the workflow-shape
+      guard, but they are rows the `/workflows` list pages and the bulk-delete
+      spec page through.
+      **Durable fix:** an `afterEach` per workflow spec, by name prefix.
+      **Trigger:** the next workflows slice.
+
+- [ ] **(c) Running the backend from a worktree silently serves the PRIMARY
+      checkout.** `backend/.venv` is an editable install whose
+      `__editable___backend_0_1_0_finder.py` registers a `MetaPathFinder` mapping
+      `app` → `<primary>/backend/app`. `sys.meta_path` beats `sys.path`, so
+      `PYTHONPATH` cannot override it: a worktree reusing that venv runs the
+      primary checkout's backend and every e2e assertion measures the wrong tree.
+      This is the same trap the `worktree pytest venv` note records for pytest,
+      and it applies to `python main.py` too. Worked around in round 26 with a
+      scratch `sitecustomize.py` stripping `__editable__*` finders from
+      `sys.meta_path`.
+      **Durable fix:** document it in `tests-e2e/README.md` § Running from a
+      worktree, and ideally ship the `sitecustomize.py` shim as a checked-in
+      helper so it is not re-derived. **Trigger:** the next worktree e2e run.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 

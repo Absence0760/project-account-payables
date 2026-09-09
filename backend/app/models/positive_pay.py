@@ -78,8 +78,22 @@ class PositivePayFile(Base, EntityMixin, TimestampMixin):
 
     # The payment run this check-issue file was generated for. NULL for an
     # ``ach_authorization`` file (which is org-wide, not run-scoped).
+    #
+    # Deliberately NOT `index=True`. `uq_positive_pay_run_format` above leads on
+    # this column, and a B-tree's leading column is independently searchable, so
+    # the composite serves every read a `(payment_run_id)` index could — the two
+    # real call sites (the check-issue idempotency lookup and its
+    # post-`IntegrityError` re-read) qualify on `bank_format` too, so it serves
+    # them BETTER, matching both columns instead of filtering the second. The
+    # separate narrow index migration 0048 built was therefore pure write
+    # overhead; migration 0094 drops it, and `EXEMPT` in
+    # `tests/test_migration_model_index_parity.py` records why 0048's CREATE has
+    # no model declaration. The one read the partial composite cannot serve is
+    # `payment_run_id IS NULL` (its predicate excludes those rows) — no such
+    # query exists; the run-less `ach_authorization` files are reached through
+    # `file_type`. Adding one is the trigger to revisit this.
     payment_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("payment_runs.id"), index=True
+        UUID(as_uuid=True), ForeignKey("payment_runs.id")
     )
 
     # 'check_issue' | 'ach_authorization'.

@@ -413,8 +413,11 @@ portal nav.
   dashboard, RBAC, tenant isolation), the effective-status reads (a lapsed
   offer renders `expired`, filters as `missed`, counts as missed rather than
   open, and `capture_rate_pct` reports 10 % on 1 captured of 10 — never
-  100 %), the SQL-vs-Python drift guard on `effective_status_sql`, and
-  `unrankable[]` on `POST /optimize`.
+  100 %), the "nothing decided yet" state (`null` + `insufficient_data`, never
+  `0.00`), the SQL-vs-Python drift guard on `effective_status_sql`, and
+  `unrankable[]` on `POST /optimize`. Its fixtures anchor on `utc_today()`, not
+  the local date — the boundary cases here compare against the endpoint's own
+  UTC "today" (see `backend/CLAUDE.md` § Date-sensitive tests).
 - `test_portal_discount_offers.py` — supplier-portal list + accept/decline
   (real-DB): vendor scoping (own vendor + own invoices, never another vendor),
   per-tier savings, accept flips status without creating a `Payment`/`PaymentRun`,
@@ -504,7 +507,21 @@ short. `capture_rate_pct` is computed over the same reporting-currency
 population as the counts beside it, so every field in the response describes
 one set.
 
-Two conventions worth knowing before reading the response:
+Three conventions worth knowing before reading the response:
+
+- **`capture_rate_pct` is `null`, never `0.00`, when nothing has been decided
+  yet** — with `insufficient_data: true` alongside it. The rate is a ratio over
+  the DECIDED population (captured plus missed); a tenant whose offers are all
+  still inside their window has decided nothing, and `0.00` reported that as "we
+  captured none of the ones we could have" — the opposite fact, and the one that
+  reads as a failing programme. Its sibling on `GET /api/dashboard`
+  (`analytics.DiscountCaptureMetrics`) has always answered `None` here; the two
+  now agree exactly. See `docs/decisions.md` §34. Because the denominator is the
+  currency-filtered population, a tenant whose decided offers are ALL foreign
+  also gets `null` — `excluded_captured_count` / `excluded_missed_count` say
+  why, and `0.00` there would be the worst reading of all (their real capture
+  rate may be 100 %). The `/discounts` KPI renders `—` plus a one-line reason,
+  the same treatment the CFO cash-conversion-cycle and fraud-rate cards use.
 
 - **`open_offer_count` is deliberately whole-set** while the three money figures
   are reporting-currency-only. It answers "how much is on the table to work

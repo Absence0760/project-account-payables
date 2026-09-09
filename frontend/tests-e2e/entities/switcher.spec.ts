@@ -1,4 +1,8 @@
-import { API_BASE, expect, test } from '../fixtures/helpers';
+import { API_BASE, expect, tenantPsql, test } from '../fixtures/helpers';
+
+/** Both tests provision a second entity to make the switcher appear; these are
+ *  the slug prefixes they use, and what `afterEach` cleans up. */
+const SLUG_PREFIXES = ['e2e-sub', 'e2e-esc'];
 
 /**
  * Multi-entity (Phase 2) sidebar entity switcher.
@@ -11,6 +15,19 @@ import { API_BASE, expect, test } from '../fixtures/helpers';
  * Selection persists in tenant-scoped localStorage, but each test loads from
  * the worker's storageState snapshot (which carries no selection), so this
  * doesn't leak into other specs.
+ *
+ * The ENTITY ROWS did leak, though, and unboundedly: the slug carries a
+ * timestamp so reruns never collide, and `/api/entities` has no DELETE, so two
+ * subsidiaries accumulated in the shared `e2e<N>` tenant on every run. That is
+ * not cosmetic — the switcher renders only above one entity, `/admin/entities`
+ * pages the list, and `GET /analytics/by-entity` reports one row per entity, so
+ * a later spec sees a tenant shaped by however many times this file has run.
+ * `afterEach` removes them by slug prefix, the pattern
+ * `entities/deactivated-entity.spec.ts` established. Nothing is filed under
+ * these entities (both tests only read the dashboard, and the first returns to
+ * the consolidated view before it ends), so the rows delete cleanly — and if a
+ * future test does file something under one, the FK refuses and the teardown
+ * fails loudly rather than half-cleaning.
  */
 
 const API = API_BASE;
@@ -38,11 +55,16 @@ async function createEntity(page, name: string, slug: string): Promise<string> {
 }
 
 test.describe('sidebar entity switcher', () => {
+	test.afterEach(() => {
+		const where = SLUG_PREFIXES.map((p) => `slug LIKE '${p}-%'`).join(' OR ');
+		tenantPsql(`DELETE FROM entities WHERE ${where}`);
+	});
+
 	test('appears with >1 entity and scopes requests by selection', async ({ page }) => {
 		// Unique slug per run so reruns don't collide on the slug constraint.
 		const suffix = `${Date.now().toString(36)}`;
 		const name = `E2E Sub ${suffix}`;
-		const slug = `e2e-sub-${suffix}`;
+		const slug = `${SLUG_PREFIXES[0]}-${suffix}`;
 
 		await page.goto('/');
 		await page.waitForLoadState('networkidle');
@@ -133,7 +155,7 @@ test.describe('sidebar entity switcher', () => {
 		// The menu only renders with >1 entity, so provision a second one first.
 		const suffix = `${Date.now().toString(36)}`;
 		const name = `E2E Esc ${suffix}`;
-		const slug = `e2e-esc-${suffix}`;
+		const slug = `${SLUG_PREFIXES[1]}-${suffix}`;
 
 		await page.goto('/');
 		await page.waitForLoadState('networkidle');

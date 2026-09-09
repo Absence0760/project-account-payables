@@ -151,7 +151,7 @@ test.describe('/payments execute', () => {
 
 			const modal = page.locator('div.modal[role="dialog"][aria-label="Payment run"]');
 			await expect(modal).toBeVisible();
-			await expect(modal.locator('.status-badge')).toHaveText('draft');
+			await expect(modal.locator('.status-badge')).toHaveText('Draft');
 
 			// Execute.
 			const executed = page.waitForResponse(
@@ -169,8 +169,8 @@ test.describe('/payments execute', () => {
 			expect(execBody.status).toBe('completed');
 			expect(execBody.payments_completed).toBeGreaterThan(0);
 
-			// Modal reloads; the status badge now reads "completed".
-			await expect(modal.locator('.status-badge')).toHaveText('completed', {
+			// Modal reloads; the status badge now reads "Completed".
+			await expect(modal.locator('.status-badge')).toHaveText('Completed', {
 				timeout: 5_000
 			});
 
@@ -219,7 +219,7 @@ test.describe('/payments execute', () => {
 
 			const modal = page.locator('div.modal[role="dialog"][aria-label="Payment run"]');
 			await expect(modal).toBeVisible();
-			await expect(modal.locator('.status-badge')).toHaveText('draft');
+			await expect(modal.locator('.status-badge')).toHaveText('Draft');
 
 			// ONE click: arms only.
 			await modal.getByRole('button', { name: /^Execute/ }).click();

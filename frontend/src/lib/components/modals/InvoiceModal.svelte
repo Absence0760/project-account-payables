@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import type { Invoice, AuditSummary } from '$lib/types/invoice';
-	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
+	import { INVOICE_STATUSES, INVOICE_STATUS_LABEL_KEYS } from '$lib/types/invoice';
 	import { formatMoney, isNegativeAmount, isPositiveAmount } from '$lib/utils/money';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -1750,14 +1750,14 @@
 								<span>{m('invoices.modal.field.status')}</span>
 								<select bind:value={status}>
 									{#each INVOICE_STATUSES as s}
-										<option value={s}>{STATUS_LABELS[s]}</option>
+										<option value={s}>{m(INVOICE_STATUS_LABEL_KEYS[s])}</option>
 									{/each}
 								</select>
 							</label>
 						{:else}
 							<label>
 								<span>{m('invoices.modal.field.status')}</span>
-								<input type="text" value={STATUS_LABELS[status]} disabled />
+								<input type="text" value={m(INVOICE_STATUS_LABEL_KEYS[status])} disabled />
 							</label>
 						{/if}
 						<label>

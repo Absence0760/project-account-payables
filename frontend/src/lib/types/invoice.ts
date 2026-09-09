@@ -1,3 +1,4 @@
+import type { MessageKey } from '$lib/i18n/messages';
 import type { MoneyAmount } from '$lib/utils/money';
 
 export type InvoiceStatus =
@@ -29,20 +30,48 @@ export const INVOICE_STATUSES: InvoiceStatus[] = [
 	'failed'
 ];
 
-export const STATUS_LABELS: Record<InvoiceStatus, string> = {
-	new: 'New',
-	pending: 'Extracting',
-	ready_for_review: 'Ready for Review',
-	approved: 'Approved',
-	rejected: 'Rejected',
-	sending_to_erp: 'Sending to ERP',
-	sent_to_erp: 'Sent to ERP',
-	posted_in_erp: 'Posted in ERP',
-	payment_scheduled: 'Payment Scheduled',
-	paid: 'Paid',
-	done: 'Done',
-	failed: 'Failed'
+/**
+ * The i18n key carrying each status label — never the English string itself.
+ *
+ * Every surface that renders an invoice status is inside the i18n extraction
+ * slice — the `/invoices` filter chips and bulk-status picker, the dashboard
+ * pipeline chart, `StatusBadge` (which the assistant's tool tables reuse),
+ * `InvoiceModal`'s status field and `AdvancedSearchModal`'s status chips — so
+ * a hardcoded English map here put a translated chip row directly beside an
+ * untranslated `Ready for Review` badge. This was the LAST of the thirteen
+ * label maps round 24 named; it was left behind only because its call sites
+ * were owned by other agents that round.
+ *
+ * Keyed the same way `payment.ts::PAYMENT_STATUS_LABEL_KEYS` is;
+ * `Record<InvoiceStatus, MessageKey>` makes a new status a compile error
+ * rather than a blank badge, and `invoiceStatus.test.ts` proves every key
+ * exists in the catalogue.
+ */
+export const INVOICE_STATUS_LABEL_KEYS: Record<InvoiceStatus, MessageKey> = {
+	new: 'invoices.status.new',
+	pending: 'invoices.status.pending',
+	ready_for_review: 'invoices.status.readyForReview',
+	approved: 'invoices.status.approved',
+	rejected: 'invoices.status.rejected',
+	sending_to_erp: 'invoices.status.sendingToErp',
+	sent_to_erp: 'invoices.status.sentToErp',
+	posted_in_erp: 'invoices.status.postedInErp',
+	payment_scheduled: 'invoices.status.paymentScheduled',
+	paid: 'invoices.status.paid',
+	done: 'invoices.status.done',
+	failed: 'invoices.status.failed'
 };
+
+/**
+ * The message key for a status, or `null` for one this frontend doesn't know
+ * (the caller renders the raw value — visible and searchable — rather than a
+ * blank badge). `Invoice.status` is typed against the union, but a status the
+ * backend adds first still reaches a badge as a bare string — the assistant's
+ * tool results carry exactly that, an unvalidated status off the wire.
+ */
+export function invoiceStatusLabelKey(status: string): MessageKey | null {
+	return INVOICE_STATUS_LABEL_KEYS[status as InvoiceStatus] ?? null;
+}
 
 /** Statuses managed by the system — users should not select or bulk-act on these. */
 export const SYSTEM_MANAGED_STATUSES: Set<InvoiceStatus> = new Set([

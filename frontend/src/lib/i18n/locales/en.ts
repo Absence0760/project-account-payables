@@ -138,6 +138,12 @@ export const en = {
 	'dashboard.kpi.rebatesEarned': 'Rebates Earned',
 	'dashboard.reporting.unconverted':
 		'Some totals above exclude rows with no locked exchange rate into {currency} — treat them as a floor, not an exact figure.',
+	'dashboard.vendorSpend.unconverted':
+		'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value — so these vendors are not all ranked in the same currency. Affected: {vendors}. Book the missing rate before acting on the order.',
+	'dashboard.aging.unconverted':
+		'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value — the bands below mix currencies by that much.',
+	'dashboard.trend.unconverted':
+		'Partial: {n, plural, one {# invoice} other {# invoices}} with no exchange rate into {currency}, counted at face value. Affected months: {months}. Compare the other bars against those with that in mind.',
 	'dashboard.kpi.rebatesExcluded':
 		'{n, plural, one {# rebate} other {# rebates}} in another currency excluded — this figure is {currency} only.',
 	'dashboard.chart.pipeline': 'Invoice Pipeline',
@@ -220,7 +226,23 @@ export const en = {
 	'invoices.col.dueDate': 'Due Date',
 	'invoices.col.status': 'Status',
 	'invoices.col.assignedTo': 'Assigned To',
+	// Invoice status labels — the /invoices chips + bulk picker, the dashboard
+	// pipeline, StatusBadge, InvoiceModal and AdvancedSearchModal
+	// ($lib/types/invoice.ts::INVOICE_STATUS_LABEL_KEYS)
+	'invoices.status.new': 'New',
+	'invoices.status.pending': 'Extracting',
+	'invoices.status.readyForReview': 'Ready for Review',
+	'invoices.status.approved': 'Approved',
+	'invoices.status.rejected': 'Rejected',
+	'invoices.status.sendingToErp': 'Sending to ERP',
+	'invoices.status.sentToErp': 'Sent to ERP',
+	'invoices.status.postedInErp': 'Posted in ERP',
+	'invoices.status.paymentScheduled': 'Payment Scheduled',
+	'invoices.status.paid': 'Paid',
+	'invoices.status.done': 'Done',
+	'invoices.status.failed': 'Failed',
 	'invoices.selectAllAria': 'Select all invoices on this page',
+	'invoices.systemManagedTitle': 'Cannot select — {status} is system-managed',
 	'invoices.empty': 'No invoices match your filters.',
 	'invoices.empty.errored': 'Could not load invoices. Try again.',
 	'invoices.empty.fresh': 'No invoices yet. Upload one, create one manually, or import a CSV to load your open AP.',
@@ -269,6 +291,8 @@ export const en = {
 	'payments.queue.blocked.fraudFlag': 'Fraud flag — unresolved',
 	'payments.queue.blocked.lineTotalMismatch': 'Line totals don’t match — unresolved',
 	'payments.queue.blocked.paymentReconciliation': 'Earlier payment unreconciled — may still be in flight',
+	'payments.queue.blocked.fullyCredited': 'Fully covered by credit memos — nothing to pay',
+	'payments.queue.blocked.liveVirtualCard': 'A live virtual card claims this invoice — pay it by card',
 	'payments.queue.blocked.generic': 'Unresolved exception blocks payment',
 	'payments.queue.discountSave': 'Save {amount}',
 	'payments.queue.discountBy': '{percent}% by {date}',
@@ -4148,6 +4172,7 @@ export const en = {
 	'discounts.error.dashboard': 'Failed to load dashboard',
 	'discounts.error.offers': 'Failed to load discount offers',
 	'discounts.kpi.captureRate': 'Capture rate',
+	'discounts.kpi.captureRateUnknown': 'No offer has been captured or missed yet',
 	'discounts.kpi.captured': 'Captured ({n})',
 	'discounts.kpi.missed': 'Missed ({n})',
 	'discounts.kpi.openOffers': 'Open offers',
@@ -4881,6 +4906,15 @@ export const en = {
 	'paymentRuns.runDetail.pendingCfoStrong': 'Pending CFO approval.',
 	'paymentRuns.runDetail.title': 'Payment Run',
 	'paymentRuns.runDetail.total': 'Total',
+	// Payment-RUN status labels — the /payments Runs table + RunDetailModal's
+	// header pill ($lib/types/payment.ts::RUN_STATUS_LABEL_KEYS)
+	'paymentRuns.status.draft': 'Draft',
+	'paymentRuns.status.executing': 'Executing',
+	'paymentRuns.status.submitted': 'Submitted',
+	'paymentRuns.status.completed': 'Completed',
+	'paymentRuns.status.partial': 'Partial',
+	'paymentRuns.status.failed': 'Failed',
+	'paymentRuns.status.cancelled': 'Cancelled',
 	'vendors.modal.allowed': 'Allowed',
 	'vendors.modal.appliedFields': 'Applied {count, plural, one {# field} other {# fields}} to the vendor',
 	'vendors.modal.apply': 'Apply',

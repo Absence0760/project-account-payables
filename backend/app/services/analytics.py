@@ -349,6 +349,85 @@ def compute_discount_capture(invoice_rows: list) -> DiscountCaptureMetrics:
     )
 
 
+#: The three buckets ``compute_discount_capture`` sorts an eligible invoice
+#: into. Exhaustive and mutually exclusive: captured (paid inside the discount
+#: window), missed (the window closed unused), pending (still capturable — no
+#: deadline, or one that has not passed). Named here because the SQL ``CASE``
+#: in ``api/dashboard`` emits these exact strings and
+#: ``discount_capture_from_grouped_rows`` reads them back.
+DISCOUNT_CAPTURE_BUCKETS = ("captured", "missed", "pending")
+
+
+def discount_capture_from_grouped_rows(groups: list[dict]) -> DiscountCaptureMetrics:
+    """Same result as `compute_discount_capture`, from rows the DB has already
+    classified and aggregated — so the caller doesn't stream every
+    discount-scheduled invoice into Python to bucket it a row at a time.
+
+    Each group dict is one bucket's rollup::
+
+        {"bucket": "captured"|"missed"|"pending", "count": int,
+         "amount": Decimal, "reporting_amount": Decimal,
+         "unconverted_count": int}
+
+    The three per-row facts the row-at-a-time fold derives — the discount
+    amount, the same amount in the reporting currency, and whether that
+    conversion fell back to face value — are computed by the query, and the
+    bucket is the SQL statement of the same two comparisons
+    (`paid_at <= discount_date`; `discount_date < today`). What stays here is
+    everything that is NOT per-row: the three-bucket vocabulary, the
+    `captured / (captured + missed)` rate, and the `insufficient_data` state
+    that keeps an undecided population from reporting 0 %.
+
+    Money arrives already rounded to cents per row and summed by Postgres, so
+    quantizing here is a no-op that keeps the return type honest — the same
+    argument `currency_conversion.rollup_from_grouped_rows` makes.
+
+    An unrecognised bucket raises rather than being dropped: the query's CASE
+    is exhaustive, so a key outside the vocabulary means the caller and this
+    function have drifted, and silently discarding it would understate every
+    figure in the tile.
+    """
+    totals: dict[str, dict] = {
+        b: {"count": 0, "amount": Decimal("0"), "reporting_amount": Decimal("0")}
+        for b in DISCOUNT_CAPTURE_BUCKETS
+    }
+    unconverted = 0
+    for g in groups:
+        bucket = g["bucket"]
+        if bucket not in totals:
+            raise ValueError(
+                f"unknown discount-capture bucket {bucket!r}; "
+                f"expected one of {DISCOUNT_CAPTURE_BUCKETS}"
+            )
+        totals[bucket]["count"] += int(g["count"] or 0)
+        totals[bucket]["amount"] += Decimal(str(g["amount"] or 0))
+        totals[bucket]["reporting_amount"] += Decimal(str(g["reporting_amount"] or 0))
+        unconverted += int(g["unconverted_count"] or 0)
+
+    captured, missed, pending = (totals[b] for b in DISCOUNT_CAPTURE_BUCKETS)
+    decided = captured["count"] + missed["count"]
+    rate = (
+        (Decimal(captured["count"]) / Decimal(decided) * Decimal("100")).quantize(Decimal("0.1"))
+        if decided > 0
+        else None
+    )
+    return DiscountCaptureMetrics(
+        eligible_count=captured["count"] + missed["count"] + pending["count"],
+        captured_count=captured["count"],
+        missed_count=missed["count"],
+        pending_count=pending["count"],
+        captured_amount=captured["amount"].quantize(Decimal("0.01")),
+        missed_amount=missed["amount"].quantize(Decimal("0.01")),
+        pending_amount=pending["amount"].quantize(Decimal("0.01")),
+        captured_amount_reporting=captured["reporting_amount"].quantize(Decimal("0.01")),
+        missed_amount_reporting=missed["reporting_amount"].quantize(Decimal("0.01")),
+        pending_amount_reporting=pending["reporting_amount"].quantize(Decimal("0.01")),
+        unconverted_count=unconverted,
+        capture_rate_pct=rate,
+        insufficient_data=decided == 0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Touchless (straight-through-processing) rate
 # ---------------------------------------------------------------------------

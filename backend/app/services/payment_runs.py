@@ -426,16 +426,53 @@ async def card_claimed_invoice_ids(
     return await live_card_invoice_ids(db, candidates)
 
 
+async def applied_credit_totals(
+    db: AsyncSession, invoice_ids: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, Decimal]:
+    """Sum of the credit memos already APPLIED against each of ``invoice_ids``.
+
+    One grouped query for the whole batch. The single-invoice form below
+    delegates here so "what counts as applied credit" has exactly one
+    definition — the run builder needs this for a page of invoices at a time
+    and the payment queue for a page of ROWS, and neither should be issuing a
+    query per invoice to find out.
+
+    Invoices with no applied memo are absent from the mapping (callers default
+    to zero) rather than carrying a 0 row, so the result reflects what the
+    database actually holds.
+    """
+    ids = list(invoice_ids)
+    if not ids:
+        return {}
+    rows = await db.execute(
+        select(
+            CreditMemo.invoice_id,
+            func.coalesce(func.sum(CreditMemo.amount), Decimal("0")),
+        )
+        .where(CreditMemo.invoice_id.in_(ids), CreditMemo.status == "applied")
+        .group_by(CreditMemo.invoice_id)
+    )
+    return {invoice_id: total for invoice_id, total in rows.all() if invoice_id is not None}
+
+
 async def applied_credit_total(db: AsyncSession, invoice_id: uuid.UUID) -> Decimal:
     """Sum of the credit memos already APPLIED against an invoice."""
-    return (
-        await db.execute(
-            select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
-                CreditMemo.invoice_id == invoice_id,
-                CreditMemo.status == "applied",
-            )
-        )
-    ).scalar_one()
+    return (await applied_credit_totals(db, [invoice_id])).get(invoice_id, Decimal("0"))
+
+
+async def net_payable_amounts(
+    db: AsyncSession, invoices: Iterable[Invoice]
+) -> dict[uuid.UUID, Decimal]:
+    """What a payment against each invoice should actually move — batched.
+
+    See :func:`net_payable_amount` for the rule; this is the same arithmetic
+    over one grouped credit-memo query instead of one query per invoice.
+    """
+    rows = list(invoices)
+    credits = await applied_credit_totals(db, [inv.id for inv in rows])
+    return {
+        inv.id: (inv.amount or Decimal("0")) - credits.get(inv.id, Decimal("0")) for inv in rows
+    }
 
 
 async def net_payable_amount(db: AsyncSession, invoice: Invoice) -> Decimal:
@@ -453,7 +490,7 @@ async def net_payable_amount(db: AsyncSession, invoice: Invoice) -> Decimal:
     would exceed the invoice's remaining creditable balance) is what guarantees
     this can never go negative.
     """
-    return (invoice.amount or Decimal("0")) - await applied_credit_total(db, invoice.id)
+    return (await net_payable_amounts(db, [invoice]))[invoice.id]
 
 
 @dataclass(frozen=True)
@@ -489,32 +526,164 @@ async def _savepoint(db: AsyncSession):
         yield
 
 
-async def _live_payment_invoice_numbers(
-    db: AsyncSession, invoice_ids: list[uuid.UUID]
-) -> list[str]:
-    """Invoice numbers among ``invoice_ids`` that already hold a LIVE payment.
+async def live_payment_invoices(
+    db: AsyncSession, invoice_ids: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, str | None]:
+    """Which of ``invoice_ids`` already hold a LIVE payment → invoice number.
 
     "Live" is the same definition the ``uq_payments_one_live_per_invoice``
     partial index uses — anything not in
-    ``api/payments.LIVE_PAYMENT_TERMINAL_STATUSES`` — so this names exactly the
-    rows that caused the insert to be rejected. Invoice NUMBER, not vendor or
-    amount: it is the identifier the operator selected the row by, and it
-    carries no PII.
+    ``api/payments.LIVE_PAYMENT_TERMINAL_STATUSES``. Stated ONCE here: the id
+    set is what :func:`run_refusal_reasons` needs and the numbers are what the
+    409 message needs, and a second spelling of the predicate is exactly how the
+    two come to disagree about which rows the index will reject.
+
+    Invoice NUMBER, not vendor or amount: it is the identifier the operator
+    selected the row by, and it carries no PII.
     """
     from app.api.payments import LIVE_PAYMENT_TERMINAL_STATUSES
 
-    if not invoice_ids:
-        return []
+    ids = list(invoice_ids)
+    if not ids:
+        return {}
     rows = await db.execute(
-        select(Invoice.invoice_number)
+        select(Invoice.id, Invoice.invoice_number)
         .join(Payment, Payment.invoice_id == Invoice.id)
         .where(
-            Invoice.id.in_(invoice_ids),
+            Invoice.id.in_(ids),
             Payment.status.notin_(LIVE_PAYMENT_TERMINAL_STATUSES),
         )
         .distinct()
     )
-    return sorted(n for n in rows.scalars().all() if n)
+    return dict(rows.all())
+
+
+async def _live_payment_invoice_numbers(
+    db: AsyncSession, invoice_ids: list[uuid.UUID]
+) -> list[str]:
+    """Invoice numbers among ``invoice_ids`` that already hold a LIVE payment."""
+    return sorted(n for n in (await live_payment_invoices(db, invoice_ids)).values() if n)
+
+
+#: Stable, PII-free reason codes for the refusals that are not themselves an
+#: exception type. The members of ``api/payments.PAYMENT_BLOCKING_EXCEPTION_TYPES``
+#: (``duplicate`` / ``fraud_flag`` / …) are already their own codes and are
+#: returned verbatim.
+#:
+#: These travel to an operator through a JSON body, so they are a fixed
+#: vocabulary — never a row's description, which can carry vendor, bank or
+#: amount detail.
+REFUSAL_LIVE_VIRTUAL_CARD = "live_virtual_card"
+REFUSAL_FULLY_CREDITED = "fully_credited"
+REFUSAL_LIVE_PAYMENT = "live_payment"
+
+#: The single rail a card-claimed invoice CAN still be paid on, derived from
+#: ``CARD_CONVERGING_METHODS`` rather than restated, so the two cannot drift.
+#: ``None`` if a second converging rail is ever added — the refusal then reads
+#: as unconditional to any surface that renders it, which is the fail-closed
+#: direction (a queue offering "pay it on one of these two rails" it hasn't
+#: learned to render would be the alternative).
+CARD_CLAIM_ONLY_METHOD: str | None = (
+    next(iter(CARD_CONVERGING_METHODS)) if len(CARD_CONVERGING_METHODS) == 1 else None
+)
+
+
+@dataclass(frozen=True)
+class RunRefusal:
+    """Why :func:`create_payment_run_for_invoices` would refuse one invoice.
+
+    ``reason`` is a stable, PII-free code. ``only_method`` is non-``None`` when
+    the refusal is RAIL-CONDITIONAL: the invoice is payable, just not on the
+    rail asked for — today only the live-virtual-card claim, which every rail
+    but ``virtual_card`` is refused for because that one converges onto the
+    existing card instead of opening a second outflow.
+    """
+
+    reason: str
+    only_method: str | None = None
+
+
+#: The order refusals are reported in — both the precedence
+#: :func:`run_refusal_reasons` resolves a single invoice's reason with, and the
+#: order the builder groups its 409s in. Declared so the queue's
+#: ``blocked_reason`` names the refusal the operator would ACTUALLY hit first,
+#: rather than whichever predicate happened to run first.
+#:
+#: Blocking exception types come first (they are the human-sign-off gate),
+#: then the card claim, then a fully-credited invoice, then the live-payment
+#: backstop.
+_REFUSAL_ORDER: tuple[str, ...] = (
+    REFUSAL_LIVE_VIRTUAL_CARD,
+    REFUSAL_FULLY_CREDITED,
+    REFUSAL_LIVE_PAYMENT,
+)
+
+
+async def run_refusal_reasons(
+    db: AsyncSession,
+    invoices: Iterable[Invoice],
+    *,
+    methods: dict[uuid.UUID, str | None] | None = None,
+    net_amounts: dict[uuid.UUID, Decimal] | None = None,
+) -> dict[uuid.UUID, RunRefusal]:
+    """The single answer to *"would a payment run refuse this invoice, and why"*.
+
+    Every per-invoice refusal :func:`create_payment_run_for_invoices` enforces
+    lives here, and BOTH surfaces read it: the builder (which turns the answer
+    into its 409s) and ``GET /api/payments/queue`` (which turns it into the
+    row's ``blocked`` / ``blocked_reason`` / ``required_method``). That is the
+    point — the queue used to derive blocked-ness from ONE of the builder's
+    predicates, so every other refusal was a row the queue happily offered and
+    the builder then hard-409'd, taking a whole select-all batch down with no
+    way to bisect it. A refusal added here now reaches the queue for free.
+
+    Not covered here, deliberately, because they are not per-invoice questions
+    the queue can render on a row:
+
+    * ``PAYABLE_INVOICE_STATUSES`` — the queue's own base filter already IS this
+      predicate, so a non-payable invoice is never a queue row to begin with;
+    * the single-currency-per-run rule and the CFO threshold, which are
+      properties of the SELECTION, not of any one invoice.
+
+    ``methods`` maps invoice id → the rail that invoice would be paid on, and is
+    what makes the rail-conditional card refusal exact for the builder. Omit it
+    (the queue does) and every rail reads as non-converging — fail-closed, the
+    same reading :func:`card_claimed_invoice_ids` gives a ``None`` method — and
+    the refusal comes back carrying ``only_method`` so the caller can say
+    *"payable, by card"* rather than *"not payable"*.
+
+    ``net_amounts`` lets a caller that has already computed them (the builder
+    needs them for the run total either way) avoid a second credit-memo query.
+    """
+    rows = list(invoices)
+    if not rows:
+        return {}
+    ids = [inv.id for inv in rows]
+    method_by_id = methods or {}
+
+    exception_types = await blocking_exception_types(db, ids)
+    # Method-aware: goes through the same helper the builder's own card gate
+    # used, so `CARD_CONVERGING_METHODS` stays the one owner of "may this rail
+    # converge onto an existing card".
+    card_refused = await card_claimed_invoice_ids(
+        db, ((inv.id, method_by_id.get(inv.id)) for inv in rows)
+    )
+    if net_amounts is None:
+        net_amounts = await net_payable_amounts(db, rows)
+    live_payments = await live_payment_invoices(db, ids)
+
+    out: dict[uuid.UUID, RunRefusal] = {}
+    for inv in rows:
+        exception_type = exception_types.get(inv.id)
+        if exception_type is not None:
+            out[inv.id] = RunRefusal(exception_type)
+        elif inv.id in card_refused:
+            out[inv.id] = RunRefusal(REFUSAL_LIVE_VIRTUAL_CARD, only_method=CARD_CLAIM_ONLY_METHOD)
+        elif net_amounts.get(inv.id, Decimal("0")) <= 0:
+            out[inv.id] = RunRefusal(REFUSAL_FULLY_CREDITED)
+        elif inv.id in live_payments:
+            out[inv.id] = RunRefusal(REFUSAL_LIVE_PAYMENT)
+    return out
 
 
 async def _existing_run_for_plan(db: AsyncSession, plan_id: str) -> PaymentRunCreationResult | None:
@@ -531,6 +700,84 @@ async def _existing_run_for_plan(db: AsyncSession, plan_id: str) -> PaymentRunCr
         total_amount=existing.total_amount or Decimal("0"),
         payment_count=count,
         created=False,
+    )
+
+
+#: The 409 each non-exception refusal raises. Keyed by the same code the queue
+#: renders, so a reason gains its operator-facing message here and its label in
+#: the frontend catalogue, and nowhere else.
+_REFUSAL_MESSAGES: dict[str, str] = {
+    REFUSAL_LIVE_VIRTUAL_CARD: (
+        "Invoice(s) already have a live virtual card issued against them — "
+        "pay them by card, or cancel the card first: {numbers}"
+    ),
+    REFUSAL_FULLY_CREDITED: (
+        "Invoice(s) fully covered by applied credit memos — nothing to pay: {numbers}"
+    ),
+    REFUSAL_LIVE_PAYMENT: (
+        "Invoice(s) already have a live payment scheduled — remove them from "
+        "the run, or void the existing payment first: {numbers}"
+    ),
+}
+
+
+def _invoice_label(invoice: Invoice) -> str:
+    """The identifier an operator selected a row by. PII-free — never the
+    vendor, never the amount."""
+    return invoice.invoice_number or f"invoice {invoice.id}"
+
+
+def _raise_refusal(
+    refusals: dict[uuid.UUID, RunRefusal], invoices: dict[uuid.UUID, Invoice]
+) -> None:
+    """Turn :func:`run_refusal_reasons`' verdict into the 409 the operator sees.
+
+    One group per reason, reported in the order the builder used to run its
+    separate checks in (blocking exceptions, then the card claim, then a
+    fully-credited invoice, then the live-payment backstop) — so replacing four
+    hand-written gates with one shared predicate set did not change which
+    message a run gets.
+
+    The final rung is fail-CLOSED: a reason code with no message here still
+    refuses the run rather than falling through and staging it. A refusal the
+    messages forgot must not become a payment.
+    """
+    from app.api.payments import PAYMENT_BLOCKING_EXCEPTION_TYPES
+
+    # All blocking exception types are ONE group: a batch holding a duplicate
+    # and a fraud flag names both in a single message, as it always did. The
+    # TYPE is a fixed PII-free vocabulary; the description (which can carry
+    # vendor / bank / amount detail) is never included.
+    exception_rows = sorted(
+        f"{_invoice_label(invoices[invoice_id])} ({refusal.reason})"
+        for invoice_id, refusal in refusals.items()
+        if refusal.reason in PAYMENT_BLOCKING_EXCEPTION_TYPES
+    )
+    if exception_rows:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice(s) have an unresolved payment-blocking exception and "
+                f"can't be paid until it's cleared: {', '.join(exception_rows)}"
+            ),
+        )
+    for reason in _REFUSAL_ORDER:
+        numbers = sorted(
+            _invoice_label(invoices[invoice_id])
+            for invoice_id, refusal in refusals.items()
+            if refusal.reason == reason
+        )
+        if numbers:
+            raise HTTPException(
+                status_code=409,
+                detail=_REFUSAL_MESSAGES[reason].format(numbers=", ".join(numbers)),
+            )
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Invoice(s) can't be paid right now: "
+            + ", ".join(sorted(_invoice_label(invoices[i]) for i in refusals))
+        ),
     )
 
 
@@ -635,53 +882,31 @@ async def create_payment_run_for_invoices(
             detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
         )
 
-    # Name the type that ACTUALLY blocked each invoice rather than reciting a
-    # hardcoded list of causes. The list said "duplicate/fraud/line-total" while
-    # `PAYMENT_BLOCKING_EXCEPTION_TYPES` had since grown `payment_reconciliation`
-    # — so an invoice held back because a payment may still be in flight at the
-    # rail was refused with a message naming three exceptions it doesn't carry,
-    # sending the operator to clear something that isn't there. Deriving the
-    # reason from the same map the queue's `blocked_reason` uses retires the
-    # whole drift class, not just this instance. The exception TYPE is a fixed
-    # PII-free vocabulary; the description (which can carry vendor / bank /
-    # amount detail) is never included — see `blocking_exception_types`.
-    blocked = await blocking_exception_types(db, invoice_ids)
-    if blocked:
-        blocked_numbers = sorted(
-            f"{inv.invoice_number} ({blocked[iid]})"
-            for iid, inv in invoices.items()
-            if iid in blocked
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Invoice(s) have an unresolved payment-blocking exception and "
-                f"can't be paid until it's cleared: {', '.join(blocked_numbers)}"
-            ),
-        )
+    # Net any applied credit memos off what actually gets paid. Computed BEFORE
+    # the refusal gate so the "nothing left to pay" verdict and the figure the
+    # run will actually move come from one credit-memo read, not two.
+    net_amounts = await net_payable_amounts(db, invoices.values())
 
-    # A live virtual card is already paying this invoice. Refused for every
-    # rail EXCEPT `virtual_card`, which converges on the existing card rather
-    # than opening a second outflow (see `CARD_CONVERGING_METHODS`).
-    card_claimed = await card_claimed_invoice_ids(
-        db, ((item.invoice_id, item.method) for item in items)
-    )
-    if card_claimed:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Invoice(s) already have a live virtual card issued against them — "
-                "pay them by card, or cancel the card first: "
-                + ", ".join(
-                    sorted(
-                        inv.invoice_number for iid, inv in invoices.items() if iid in card_claimed
-                    )
-                )
-            ),
-        )
-
-    # Net any applied credit memos off what actually gets paid.
+    # Every per-invoice refusal, from the one predicate set the payment queue
+    # also reads (`run_refusal_reasons`): the blocking-exception gate, the
+    # live-virtual-card claim, a fully-credited invoice, and the live-payment
+    # backstop. These were four hand-written gates here and ONE of them on the
+    # queue, which is how the queue came to offer — and count as "ready to pay"
+    # — rows this function then hard-409'd, killing a whole select-all batch
+    # with no way to bisect it. Adding a refusal now reaches both surfaces.
     #
+    # `methods` is what makes the card gate exact: `virtual_card` converges onto
+    # the existing card rather than opening a second outflow, so it is the one
+    # rail a card-claimed invoice is still payable on.
+    refusals = await run_refusal_reasons(
+        db,
+        invoices.values(),
+        methods={item.invoice_id: item.method for item in items},
+        net_amounts=net_amounts,
+    )
+    if refusals:
+        _raise_refusal(refusals, invoices)
+
     # Two totals, deliberately: `total` is what the run PAYS, in the one
     # currency its invoices share (`PaymentRun.total_amount`), and
     # `reporting_total` is the same money expressed in the org's REPORTING
@@ -689,14 +914,12 @@ async def create_payment_run_for_invoices(
     # They are equal for a domestic run and differ for a foreign one — which is
     # exactly the case the gate used to get wrong.
     reporting_currency = resolve_reporting_currency(org.settings)
-    net_amounts: dict[uuid.UUID, Decimal] = {}
     total = Decimal("0")
     reporting_total = Decimal("0")
     reporting_unconverted = False
     for item in items:
         inv = invoices[item.invoice_id]
-        net_amount = await net_payable_amount(db, inv)
-        net_amounts[item.invoice_id] = net_amount
+        net_amount = net_amounts[item.invoice_id]
         total += net_amount
         # No FX call: the rate was locked onto the invoice row when it was last
         # saved (`currency_conversion.materialize_reporting_amount`). A row we
@@ -713,25 +936,10 @@ async def create_payment_run_for_invoices(
         reporting_total += reported
         reporting_unconverted = reporting_unconverted or unconverted
 
-    # An invoice fully covered by applied credit memos has nothing to pay. The
-    # standalone `POST /api/payments` already refuses this; staging it into a
-    # run instead booked a $0 payment, which a real rail rejects as `failed` —
-    # leaving the invoice stuck in the payable queue with no exit that
-    # recognises "there is nothing to move" (and, on `virtual_card`, minting a
-    # $0 card at the provider first). Both money paths refuse identically.
-    fully_credited = [
-        invoices[item.invoice_id].invoice_number
-        for item in items
-        if net_amounts[item.invoice_id] <= 0
-    ]
-    if fully_credited:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Invoice(s) fully covered by applied credit memos — nothing to pay: "
-                f"{', '.join(sorted(fully_credited))}"
-            ),
-        )
+    # (The "fully covered by applied credit memos" refusal — a $0 payment a real
+    # rail rejects as `failed`, leaving the invoice stuck in the payable queue —
+    # is now one of `run_refusal_reasons`' verdicts above, so the queue reports
+    # it too instead of offering the row.)
 
     # CFO sign-off threshold. Compared against the REPORTING-currency figure,
     # not the run's own-currency total — the threshold is a bare number in the

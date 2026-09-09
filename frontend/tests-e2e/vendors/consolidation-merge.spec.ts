@@ -1,4 +1,15 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
+
+/** Every vendor this file creates is named `<NAME_PREFIX><timestamp> …`, which
+ *  is what `afterEach` cleans up. */
+const NAME_PREFIX = 'Qznx';
 
 /**
  * /vendors — "Merge into canonical" consolidation UI.
@@ -53,12 +64,32 @@ test.describe('/vendors consolidation merge (admin)', () => {
 		});
 	});
 
+	/**
+	 * The merge soft-RETIRES the duplicate (`status=inactive`) rather than
+	 * deleting it, and the canonical survives by design — so a passing run left
+	 * two vendors behind, every run, in a tenant shared with every other spec.
+	 * The name carries a timestamp so nothing ever collided and nothing ever
+	 * stopped accumulating: `/vendors` counts them in its status chips, pages
+	 * one row further, and the consolidation clusterer itself has more rows to
+	 * consider on the next run.
+	 *
+	 * `sanctions_checks` first — screening runs on vendor create, and that FK
+	 * does not cascade. The predicate is the shared prefix rather than this
+	 * run's token, so a run also clears what earlier runs stranded.
+	 */
+	test.afterEach(() => {
+		tenantPsql(
+			`DELETE FROM sanctions_checks WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE '${NAME_PREFIX}%')`
+		);
+		tenantPsql(`DELETE FROM vendors WHERE name LIKE '${NAME_PREFIX}%'`);
+	});
+
 	test('seed a duplicate pair, merge into canonical, list refreshes', async ({ page }) => {
 		// A run-unique name token so this run's cluster is exactly our two
 		// vendors — robust against vendors any prior run left behind (the tenant
 		// is shared across runs; the unique token keeps clusters from bleeding
 		// together by name similarity).
-		const token = `Qznx${Date.now().toString(36)}`;
+		const token = `${NAME_PREFIX}${Date.now().toString(36)}`;
 		const taxId = uniqueTaxId();
 		const canonName = `${token} Holdings Co`;
 		const dupeName = `${token} Holdings Company`;

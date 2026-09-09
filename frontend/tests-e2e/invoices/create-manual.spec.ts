@@ -1,4 +1,18 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteInvoicesWhere,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
+
+/** Every invoice number this file creates starts here — the prefix `afterEach`
+ *  cleans up. */
+const INVOICE_MARKER = 'E2E-MANUAL-';
+/** The vendor names typed into the modal. NOT deleted in teardown — see the
+ *  note on the describe block. */
+const VENDOR_NAMES = ['E2E Manual Vendor', 'E2E File Vendor'];
 
 interface OrgResponse {
 	settings: Record<string, unknown> & {
@@ -35,6 +49,34 @@ async function patchOrg(
  */
 
 test.describe('/invoices — Create Invoice modal', () => {
+	/**
+	 * The worker's `e2e<N>` tenant is shared with every other spec in the run
+	 * AND with every previous run, so a spec that creates rows and leaves them
+	 * is not merely untidy — it changes what the next spec counts and pages
+	 * through. This file used to leave two invoices per run: the numbers carry
+	 * `Date.now()`, so they never collide and never stopped accumulating.
+	 *
+	 * `deleteInvoicesWhere` owns their 16-FK child graph. The predicate is the
+	 * prefix rather than the ids created here, so a run also clears whatever
+	 * earlier runs stranded.
+	 *
+	 * **The vendors are deliberately NOT deleted.** Manual entry provisions one
+	 * as a side effect — an unmatched name goes through
+	 * `vendor_matching.match_and_link_vendor`, which creates an `unverified`
+	 * vendor stamped `source=manual` so the invoice carries a provable payee —
+	 * but that row is not this file's to remove. The matcher's third leg is a
+	 * normalized-name Jaccard, so it LINKS other specs' invoices to it too:
+	 * `invoices/file-management.spec.ts` types "E2E File Mgmt Vendor" and lands
+	 * on the "E2E File Vendor" row this file caused to exist. Deleting it here
+	 * failed the FK on that spec's invoice — loudly, which is how this was
+	 * found. Unlike the invoices, the vendor is also BOUNDED: one row per
+	 * distinct name, re-matched rather than re-created on every later run, so
+	 * it is a shared fixture rather than a leak.
+	 */
+	test.afterEach(() => {
+		deleteInvoicesWhere(`invoice_number LIKE '${INVOICE_MARKER}%'`);
+	});
+
 	test('admin sees the toolbar button; required fields gate submit', async ({ page }) => {
 		await page.goto('/invoices');
 
@@ -48,9 +90,12 @@ test.describe('/invoices — Create Invoice modal', () => {
 		const submitBtn = modal.getByRole('button', { name: 'Create' });
 		await expect(submitBtn).toBeDisabled();
 
-		await modal.locator('label', { hasText: 'Vendor' }).locator('input').fill('E2E Manual Vendor');
+		await modal.locator('label', { hasText: 'Vendor' }).locator('input').fill(VENDOR_NAMES[0]);
 		await expect(submitBtn).toBeDisabled();
-		await modal.locator('label', { hasText: 'Invoice #' }).locator('input').fill('E2E-MANUAL-1');
+		await modal
+			.locator('label', { hasText: 'Invoice #' })
+			.locator('input')
+			.fill(`${INVOICE_MARKER}1`);
 		await expect(submitBtn).toBeDisabled();
 		await modal.locator('label', { hasText: 'Amount' }).locator('input').fill('42.50');
 		await expect(submitBtn).toBeEnabled();
@@ -61,13 +106,13 @@ test.describe('/invoices — Create Invoice modal', () => {
 
 	test('creating without a file lands the invoice at New in the list', async ({ page }) => {
 		await page.goto('/invoices');
-		const uniqueNumber = `E2E-MANUAL-${Date.now()}`;
+		const uniqueNumber = `${INVOICE_MARKER}${Date.now()}`;
 
 		await page.getByRole('button', { name: 'Create Invoice' }).click();
 		const modal = page.locator('div.modal[role="dialog"][aria-label="Create Invoice"]');
 		await expect(modal).toBeVisible();
 
-		await modal.locator('label', { hasText: 'Vendor' }).locator('input').fill('E2E Manual Vendor');
+		await modal.locator('label', { hasText: 'Vendor' }).locator('input').fill(VENDOR_NAMES[0]);
 		await modal.locator('label', { hasText: 'Invoice #' }).locator('input').fill(uniqueNumber);
 		await modal.locator('label', { hasText: 'Amount' }).locator('input').fill('42.50');
 		await modal.getByRole('button', { name: 'Create' }).click();
@@ -83,13 +128,13 @@ test.describe('/invoices — Create Invoice modal', () => {
 		page
 	}) => {
 		await page.goto('/invoices');
-		const uniqueNumber = `E2E-MANUAL-FILE-${Date.now()}`;
+		const uniqueNumber = `${INVOICE_MARKER}FILE-${Date.now()}`;
 
 		await page.getByRole('button', { name: 'Create Invoice' }).click();
 		const modal = page.locator('div.modal[role="dialog"][aria-label="Create Invoice"]');
 		await expect(modal).toBeVisible();
 
-		await modal.locator('label', { hasText: 'Vendor' }).locator('input').fill('E2E File Vendor');
+		await modal.locator('label', { hasText: 'Vendor' }).locator('input').fill(VENDOR_NAMES[1]);
 		await modal.locator('label', { hasText: 'Invoice #' }).locator('input').fill(uniqueNumber);
 		await modal.locator('label', { hasText: 'Amount' }).locator('input').fill('99.00');
 		await modal

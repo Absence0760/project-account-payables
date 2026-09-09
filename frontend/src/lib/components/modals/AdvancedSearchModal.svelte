@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
+	import { INVOICE_STATUSES, INVOICE_STATUS_LABEL_KEYS } from '$lib/types/invoice';
 	import type { AdvancedSearchFilters, InvoiceStatus } from '$lib/types/invoice';
 	import { m } from '$lib/i18n/store.svelte';
 
@@ -107,7 +107,7 @@
 						class:selected={statuses.includes(s)}
 						onclick={() => toggleStatus(s)}
 					>
-						{STATUS_LABELS[s]}
+						{m(INVOICE_STATUS_LABEL_KEYS[s])}
 					</button>
 				{/each}
 			</div>

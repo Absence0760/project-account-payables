@@ -487,17 +487,42 @@ async def portal_mfa_challenge(
         window_seconds=MFA_FAILURE_WINDOW_SECONDS,
     )
 
-    if body.method == "email":
+    # Both outcomes below are audited, mirroring the employee twin
+    # (`api/auth.verify_mfa`, which writes `auth.mfa.verify.failure` /
+    # `.success`). This is the ONLY place an MFA-enrolled supplier's sign-in
+    # completes — `/login` hands back a challenge instead of a token — so
+    # without these rows, turning a second factor ON for a supplier account
+    # took that account's sign-in OFF the trail entirely:
+    # `portal.login.failure` covers the password stage, and the second-factor
+    # stage recorded nothing at all. The per-account failure budget is a Redis
+    # rolling window, so it is not evidence either. A portal account can stage
+    # a vendor bank change, which makes a guessing campaign against its second
+    # factor exactly what an auditor is looking for.
+    ip = resolve_client_ip(request) or "unknown"
+    # The factor the rows name is derived from the branch actually taken, never
+    # echoed from `body.method`. `PortalMFAChallengeVerifyRequest.method` is an
+    # unconstrained `str` (its employee twin pins `^(totp|email)$`), so anything
+    # other than "email" falls through to TOTP — restating the caller's string
+    # would put unbounded request-controlled text into an append-only,
+    # WORM-shipped trail AND label the row with a factor that was not the one
+    # verified. Deriving it makes the branch and the label the same fact.
+    factor = "email" if body.method == "email" else "totp"
+
+    async def _audit_verify_failure() -> None:
+        await record_auth_failure(
+            "portal_mfa", mfa_identity, window_seconds=MFA_FAILURE_WINDOW_SECONDS
+        )
+        await _audit_portal_mfa_event(
+            vu, action="portal.mfa.verify.failure", details={"method": factor, "ip": ip}
+        )
+
+    if factor == "email":
         if not await mfa.verify_vendor_email_otp(vu.id, body.code):
-            await record_auth_failure(
-                "portal_mfa", mfa_identity, window_seconds=MFA_FAILURE_WINDOW_SECONDS
-            )
+            await _audit_verify_failure()
             raise HTTPException(status_code=401, detail="Invalid or expired code")
     else:
         if not await mfa.verify_totp(vu.mfa_secret, body.code):
-            await record_auth_failure(
-                "portal_mfa", mfa_identity, window_seconds=MFA_FAILURE_WINDOW_SECONDS
-            )
+            await _audit_verify_failure()
             raise HTTPException(status_code=401, detail="Invalid code")
 
     await clear_auth_failures("portal_mfa", mfa_identity)
@@ -506,7 +531,17 @@ async def portal_mfa_challenge(
     # it can't be replayed to mint a second session (issue #162).
     await mfa.consume_challenge_token(claims.jti)
 
-    return await _mint_portal_session(vu, request, method="mfa")
+    # Mint FIRST, audit second — the same order `api/auth.verify_mfa` uses, and
+    # the same principle as §111's "the row is written after the commit".
+    # `_mint_portal_session` registers the session in Redis and does not swallow
+    # its own failures, while `dispatch_auth_audit` does; auditing first would
+    # let a Redis blip leave a permanent, immutable row asserting a completed
+    # sign-in for a request that 500'd and handed back no token.
+    session = await _mint_portal_session(vu, request, method="mfa")
+    await _audit_portal_mfa_event(
+        vu, action="portal.mfa.verify.success", details={"method": factor, "ip": ip}
+    )
+    return session
 
 
 # Mirrors `api/auth.STEP_UP_RATE_LIMIT_PER_MINUTE` — a credential-management
@@ -522,7 +557,9 @@ async def _audit_portal_mfa_event(vu: VendorUser, *, action: str, details: dict)
     Every portal MFA row goes through here so the shape matches its employee
     twin (`api/auth._audit_mfa_event`): the subject is the vendor user
     (`actor_id` and `entity_id` both `vu.id`) and `details` carries fixed
-    literals only — never the TOTP secret, never a submitted password or code.
+    literals plus, on the sign-in rows, the client IP already recorded on
+    `portal.login.failure` — never the TOTP secret, never a submitted password
+    or code.
     Skipped for a legacy row with no `organization_id` (the audit dispatcher
     resolves the tenant DB from it); `dispatch_auth_audit` swallows its own
     failures, so this never breaks the request either way.

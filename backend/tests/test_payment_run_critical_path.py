@@ -112,19 +112,21 @@ def _create_run_db(
     blocking_invoice_ids: list | None = None,
     credit_totals: dict | None = None,
     card_claimed_invoice_ids: list | None = None,
+    live_payment_invoice_ids: list | None = None,
 ):
     """Build an AsyncSession mock for `create_payment_run`.
 
     The handler issues, IN THIS ORDER: (1) `select(Invoice).where(Invoice.id
-    .in_(...))` → `.scalars().all()`, (2) the unresolved payment-blocking
-    exception gate → `.all()` of `(invoice_id, exception_type)` rows, (3) the
-    live-virtual-card claim gate → `.scalars().all()` of invoice ids, then
-    (4) one already-applied-credit-memo SUM query per item in `body.items`
-    (in the same order — every test here builds `body.items` from this
-    same `invoices` list) → `.scalar_one()`. It then `db.add(run)`,
+    .in_(...))` → `.scalars().all()`, (2) `net_payable_amounts` → ONE grouped
+    already-applied-credit-memo SUM over every invoice → `.all()` of
+    `(invoice_id, total)`, then `run_refusal_reasons`' own three:
+    (3) the unresolved payment-blocking exception gate → `.all()` of
+    `(invoice_id, exception_type)` rows, (4) the live-virtual-card claim gate
+    → `.scalars().all()` of invoice ids, (5) the live-payment backstop →
+    `.all()` of `(invoice_id, invoice_number)`. It then `db.add(run)`,
     `db.flush()`, `db.add(payment)` per item, and `db.commit()`. We
     capture every added object so a test can inspect the created run +
-    payment rows. Finally, AFTER the commit, (5) `_run_currencies` reads the
+    payment rows. Finally, AFTER the commit, (6) `_run_currencies` reads the
     one currency the run's invoices share → `.all()` of `(run_id, code)` — the
     handler names it on the response instead of stamping a `$` on the total.
 
@@ -133,13 +135,19 @@ def _create_run_db(
     which is the point. Mirror the real order here rather than making the
     handler defensive.
 
-    `blocking_invoice_ids` seeds the second SELECT so a test can simulate
-    an invoice sitting under an open duplicate/fraud exception.
-    `card_claimed_invoice_ids` seeds the third, for an invoice already holding
-    a live virtual card (`POST /api/cards/generate` mints one with no Payment
-    row behind it). `credit_totals` (keyed by invoice id) seeds the per-invoice
-    credit SUM; an invoice not present defaults to no applied credit (0), which
-    preserves every existing test's un-netted totals.
+    (2)-(5) used to be four separate hand-written gates in the handler, with
+    one credit SUM per item; they are now the single `run_refusal_reasons`
+    predicate set the payment queue also reads, over one grouped credit query.
+
+    `blocking_invoice_ids` seeds (3) so a test can simulate an invoice sitting
+    under an open duplicate/fraud exception. `card_claimed_invoice_ids` seeds
+    (4), for an invoice already holding a live virtual card
+    (`POST /api/cards/generate` mints one with no Payment row behind it).
+    `live_payment_invoice_ids` seeds (5) — the pre-check that now names those
+    invoices before the insert instead of leaving it to the
+    `uq_payments_one_live_per_invoice` IntegrityError. `credit_totals` (keyed by
+    invoice id) seeds (2); an invoice not present defaults to no applied credit,
+    which preserves every existing test's un-netted totals.
     """
     sel = MagicMock()
     scalars = MagicMock()
@@ -163,12 +171,25 @@ def _create_run_db(
     card_scalars.all = MagicMock(return_value=list(card_claimed_invoice_ids or []))
     card_sel.scalars = MagicMock(return_value=card_scalars)
 
+    # The live-payment backstop: `.all()` of `(invoice_id, invoice_number)`,
+    # which `live_payment_invoices` turns into a dict.
+    by_id = {inv.id: inv for inv in invoices}
+    live_sel = MagicMock()
+    live_sel.all = MagicMock(
+        return_value=[
+            (inv_id, getattr(by_id.get(inv_id), "invoice_number", None))
+            for inv_id in (live_payment_invoice_ids or [])
+        ]
+    )
+
+    # One grouped credit-memo SUM for the whole batch, not one per invoice.
     credit_totals = credit_totals or {}
-    credit_results = []
-    for inv in invoices:
-        credit_sel = MagicMock()
-        credit_sel.scalar_one = MagicMock(return_value=credit_totals.get(inv.id, Decimal("0")))
-        credit_results.append(credit_sel)
+    credit_sel = MagicMock()
+    credit_sel.all = MagicMock(
+        return_value=[
+            (inv.id, credit_totals[inv.id]) for inv in invoices if inv.id in credit_totals
+        ]
+    )
 
     db = AsyncMock()
 
@@ -189,7 +210,9 @@ def _create_run_db(
         )
     )
 
-    db.execute = AsyncMock(side_effect=[sel, block_sel, card_sel, *credit_results, currency_sel])
+    db.execute = AsyncMock(
+        side_effect=[sel, credit_sel, block_sel, card_sel, live_sel, currency_sel]
+    )
     db.commit = AsyncMock()
     db.flush = AsyncMock()
     db.added = []

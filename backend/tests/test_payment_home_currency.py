@@ -44,6 +44,7 @@ from app.services.currency_conversion import resolve_reporting_currency
 from app.services.fx_adapters.mock_adapter import MockFXAdapter
 from app.services.international_payments import (
     DEFAULT_HOME_CURRENCY,
+    configured_home_currency,
     normalize_currency_code,
     prepare_international_payment,
     resolve_home_currency,
@@ -123,6 +124,58 @@ def test_resolve_home_currency_never_returns_blank(settings):
 @pytest.mark.parametrize("raw", [None, "", "   ", 3, {"a": 1}])
 def test_normalize_currency_code_returns_none_for_anything_unusable(raw):
     assert normalize_currency_code(raw) is None
+
+
+@pytest.mark.parametrize(
+    "org_settings",
+    [
+        None,
+        {},
+        {"payments": None},
+        {"payments": {}},
+        {"payments": {"home_currency": "   "}},
+        ["not", "a", "dict"],
+        {"payments": "USD"},
+    ],
+)
+def test_configured_home_currency_says_none_rather_than_guessing(org_settings):
+    """The distinction `resolve_home_currency` cannot make.
+
+    "The tenant has not set one" and "the tenant set USD" are different
+    answers. The payment path has to pick something, so `resolve_home_currency`
+    collapses them; the reporting-currency chain must not, because this setting
+    is only its SECOND rung.
+    """
+    assert configured_home_currency(org_settings) is None
+
+
+@pytest.mark.parametrize("raw,expected", [("USD", "USD"), (PADDED, "USD"), (" eur ", "EUR")])
+def test_configured_home_currency_normalises_what_is_set(raw, expected):
+    assert configured_home_currency({"payments": {"home_currency": raw}}) == expected
+
+
+def test_an_unset_home_currency_still_falls_through_the_reporting_chain():
+    """The regression the obvious de-duplication would have introduced.
+
+    Substituting `resolve_home_currency` for the inline read makes rung 2
+    ALWAYS answer (with the platform default), so rungs 3 and 4 become
+    unreachable and an org whose only currency signal is
+    `invoice_defaults.currency` would silently start rolling up in USD.
+    """
+    assert resolve_reporting_currency({"invoice_defaults": {"currency": "gbp"}}) == "GBP"
+    assert (
+        resolve_reporting_currency(
+            {"payments": {"home_currency": "  "}, "invoice_defaults": {"currency": "eur"}}
+        )
+        == "EUR"
+    )
+    # ...and rung 1 still outranks a set home currency.
+    assert (
+        resolve_reporting_currency(
+            {"reporting_currency": "chf", "payments": {"home_currency": "USD"}}
+        )
+        == "CHF"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +280,12 @@ def test_reading_the_setting_out_of_the_json_has_a_declared_set_of_readers():
         if re.search(r"""\.get\(\s*["']home_currency["']""", path.read_text())
     }
     assert readers == {
-        # The owner.
+        # The owner, and now the only one. `currency_conversion` was the second
+        # entry here: it reads the setting for a different question ("what do
+        # we ROLL UP in?"), normalised identically, and was left reaching into
+        # the JSON itself only because it needs to distinguish "unset" from
+        # "USD" — which `configured_home_currency` now expresses for it.
         "services/international_payments.py",
-        # The reporting-currency resolution chain reads it as its second rung,
-        # for a different question ("what do we ROLL UP in?"), and normalises
-        # identically — pinned by the agreement test above.
-        "services/currency_conversion.py",
     }, f"undeclared reader(s) of settings.payments.home_currency: {sorted(readers)}"
 
 

@@ -427,11 +427,26 @@ contract — the spool makes the export no longer *depend* on that for its sessi
 database, so a future FastAPI bump that reordered it fails loudly there rather
 than silently handing the generator a closed session.
 
+**Both connections are released, by two different mechanisms.** The tenant
+session is closed explicitly (`_spooled_response`). The *control-plane* session
+— the one the batched actor-name lookup uses — is never closed by this route at
+all; it is released because `database.commit_before_response` ends its read
+transaction on the exit stack FastAPI unwinds *before* sending (decisions §20).
+That indirection is load-bearing and invisible at the call site: a control read
+added after the spool, or a FastAPI bump that reordered that stack, would hold
+one of the CONTROL pool's connections for the client's bandwidth — and unlike
+the tenant pool, that one is shared by every tenant on the process. The
+`format=pdf` dialect has the same obligation for a different reason: it cannot
+stream, so it materialises the entries, but it closes the tenant session
+*before* `render_audit_report_pdf` runs rather than holding a connection across
+a ReportLab layout that touches no database.
+
 That file guards both halves of the streaming contract — that it is chunked, and
 that it returns every row. `tests/test_audit_export_connection.py` guards the
-spool: no tenant connection checked out at any body chunk (asserted on the
-engine's own pool checkout/checkin events), bytes identical to the module's
-independent materialising renderer, and the temp file closed on both exits.
+spool: neither the tenant nor the control connection checked out at any body
+chunk, on all three dialects (asserted on the engines' own pool
+checkout/checkin events), bytes identical to the module's independent
+materialising renderer, and the temp file closed on both exits.
 
 ## DB-level immutability (SOX) and the `shipped_at` carve-out
 

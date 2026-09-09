@@ -115,6 +115,12 @@ UTC_TODAY_TEST_MODULES = (
     "test_analytics_aging_reconciliation.py",
     # `api/dashboard` upcoming-payment overdue inequality.
     "test_dashboard_aggregations.py",
+    # `discount_offers.effective_status_sql` is evaluated against
+    # `api/discounts`' own `utc_today()`, so the boundary fixtures here — an
+    # offer whose `valid_until` IS today and is therefore still open — were
+    # already failing locally after 20:00 EDT, hours before anyone would have
+    # called it a timezone bug.
+    "test_discounts_api.py",
 )
 
 

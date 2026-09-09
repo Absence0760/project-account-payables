@@ -393,6 +393,14 @@ money goes** until an AP admin explicitly approves it.
   another tenant's supplier. Full contract + the accepted DoS trade-off:
   [`docs/authentication.md`](../../docs/authentication.md) §
   Brute-force protection.
+- **An accepted sign-in is on the record too, once MFA is on:** with a second
+  factor enrolled `/login` returns a challenge instead of a token, so the
+  sign-in completes at `/mfa/challenge` — which writes
+  `portal.mfa.verify.success` / `.failure` (`{method, ip}`, PII-free). Without
+  those, enabling MFA would have removed the account's sign-in from the trail.
+  Issuing an email backup code (`/mfa/challenge/email`) has no row of its own by
+  design — see `docs/authentication.md` § The supplier portal's second-factor
+  stage is on the trail.
 - **A rejected sign-in is on the record:** `portal.login.failure` lands in
   the tenant's `audit_log`, identifying the account by `entity_id` and
   carrying `{ip, reason}` only — a supplier contact's address is

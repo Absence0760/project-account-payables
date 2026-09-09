@@ -306,6 +306,16 @@ bug is absent — measure the ordering instead.
 
 ## ~~Workflow-mutating e2e specs can strand a tenant on a disabled workflow definition~~ — RESOLVED 2026-08-08
 
+**Still live, 2026-09-08 (round 26).** Observed again in a local full-suite run:
+`feoh_e2e3` ended with `Default Workflow is_active=f` and a leftover active
+`replacement-<ts>`, taking roughly twenty later specs in that worker down with
+it. `globalSetup` **passed at start**, so the guard catches a strand inherited
+from a previous run, not one created mid-run. Repairing the tenant and re-running
+the failures serially turned every one of them green, which is how the cascade
+was distinguished from real regressions. The residual risk the try/finally
+pattern cannot close is therefore still open, and a per-worker teardown assertion
+(not just a setup one) is what would close it.
+
 **Audit:** every spec that mutates a workflow definition's `is_active`, step
 `enabled` flags, or `is_default` — `tests-e2e/workflows/*.spec.ts`,
 `tests-e2e/workflow-builder.spec.ts`, and the two files that touch the live
@@ -489,3 +499,43 @@ after all.
 **Not masked:** no timeout was raised, no retry added, and neither case is
 skipped. They fail loudly on a fully-seeded local tenant, which is the correct
 behaviour for a test whose premise is not yet understood.
+
+---
+
+## Local e2e tenant databases drift behind `alembic head`, and the suite blames the app
+
+**Diagnosed 2026-09-08 (round 26). Local only — CI is unaffected.**
+
+A local full-suite run reported 37 failures. Repairing an unrelated stranded
+workflow (above) and re-running serially cleared ten; the rest were not code.
+`alembic_version` on `feoh_e2e1` read `0086` against a repo head of `0093`, and
+`POST /api/expenses` was returning a **500**:
+
+```
+asyncpg.exceptions.UndefinedColumnError: column "payment_method_before_match"
+of relation "expenses" does not exist
+```
+
+That column is added by migration `0089`. It accounts for the whole `expenses/*`
+cluster, and most likely for `tax/box-allocation` and `notifications/chip-counts`
+too (their psql setup also errored on a `virtual_cards` INSERT during the
+parallel run), though those two were not individually root-caused.
+
+**Nothing surfaces this.** The backend boots fine — SQLAlchemy does not check the
+live schema at import. `globalSetup` only validates workflow shape. And the specs
+report ordinary assertion failures (`expected 201, received 500`) that read
+exactly like application bugs, which is the expensive part: the failure points at
+the feature rather than at the database.
+
+**Workaround:** run `pnpm migrate:all` after pulling anything that adds a
+migration.
+
+**A pre-run guard would be worth more than this note.** `globalSetup` already
+opens the control plane, so comparing each tenant's `alembic_version` against the
+newest file in `backend/alembic/versions/` and failing fast with both numbers
+would turn a confusing afternoon into one line. Recorded rather than built
+because `globalSetup` is shared by every worker and the change wants its own
+review.
+
+CI is unaffected: each shard creates a fresh database and migrates it, so the
+drift cannot exist there.

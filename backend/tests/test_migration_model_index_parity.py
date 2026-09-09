@@ -70,20 +70,25 @@ from sqlalchemy import text
 from app.models.base import Base
 
 VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
-_MIGRATION_PATH = VERSIONS_DIR / "0093_migration_only_indexes.py"
 
 TENANT = "a"
 
 
-def _migration_module():
-    """Import 0093 for its declarations (it never touches ``op`` at import)."""
-    spec = importlib.util.spec_from_file_location("_mig_0093", _MIGRATION_PATH)
+def _load_revision(filename: str):
+    """Import one revision for its declarations.
+
+    Safe because the revisions this file reads never touch ``op`` at import —
+    they only build the statement lists their ``upgrade()`` runs, which is
+    exactly what these tests assert against.
+    """
+    path = VERSIONS_DIR / filename
+    spec = importlib.util.spec_from_file_location(f"_mig_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-MIGRATION = _migration_module()
+MIGRATION = _load_revision("0093_migration_only_indexes.py")
 #: The 18 indexes 0093 ENSURES exist (their own revisions still own them).
 ENSURED: list[tuple[str, str, str]] = MIGRATION._ENSURED
 UNIQUE_NAMES: frozenset[str] = MIGRATION._UNIQUE_INDEX_NAMES
@@ -107,6 +112,18 @@ EXEMPT: dict[str, str] = {
         "unique index serves every read the non-unique one could, so declaring "
         "this on the model would build a second, redundant index on a hot "
         "table. Migration 0093 drops it instead (downgrade recreates it)."
+    ),
+    "ix_positive_pay_files_payment_run_id": (
+        "A redundant prefix, not a missing index. Migration 0048 built it as "
+        "(payment_run_id); uq_positive_pay_run_format — also 0048's, UNIQUE, "
+        "model-declared and the only concurrency backstop under the check-issue "
+        "read-then-insert — leads on the same column as (payment_run_id, "
+        "bank_format) WHERE payment_run_id IS NOT NULL. A B-tree's leading "
+        "column is independently searchable, and both real call sites qualify "
+        "on bank_format too, so the composite serves them with both columns in "
+        "the Index Cond rather than filtering the second. Declaring this on the "
+        "model would rebuild pure write overhead on every freshly-provisioned "
+        "tenant. Migration 0094 drops it (downgrade recreates it)."
     ),
     "ix_vendor_change_requests_org_id": (
         "A second name for an index the model already declares. Migration 0022 "
@@ -302,6 +319,44 @@ def test_the_superseded_bank_index_is_covered_by_its_unique_twin():
     assert any(
         statement == "DROP INDEX IF EXISTS ix_bank_transactions_matched_payment"
         for _table, statement in MIGRATION._UPGRADE
+    )
+
+
+def test_the_redundant_positive_pay_index_is_a_prefix_of_its_model_declared_twin():
+    """``ix_positive_pay_files_payment_run_id``'s exemption claims
+    ``uq_positive_pay_run_format`` covers it because the composite LEADS on the
+    same column. Checked structurally, not taken on trust — the whole argument
+    collapses if that column ever stops being first.
+
+    Also pins the drop: migration 0094 must actually remove it, or a migrated
+    tenant keeps paying for both while a ``create_all`` one has neither.
+    """
+    twin = next(
+        index
+        for index in Base.metadata.tables["positive_pay_files"].indexes
+        if index.name == "uq_positive_pay_run_format"
+    )
+    columns = [column.name for column in twin.columns]
+    assert columns[0] == "payment_run_id", columns
+    assert columns == ["payment_run_id", "bank_format"]
+    assert twin.unique
+    # Partial. The predicate is what makes the prefix argument hold for every
+    # `payment_run_id = $1` lookup (`=` is strict, so a matching row is
+    # non-NULL) and what makes it FAIL for `payment_run_id IS NULL` — the read
+    # the exemption records as not existing.
+    assert str(twin.dialect_options["postgresql"]["where"]) == "payment_run_id IS NOT NULL"
+
+    redundant = MIGRATION_INDEXES["ix_positive_pay_files_payment_run_id"]
+    assert redundant.body.replace(" ", "") == "positive_pay_files(payment_run_id)"
+    assert not redundant.unique
+
+    drop_revision = _load_revision("0094_drop_redundant_positive_pay_index.py")
+    assert drop_revision.down_revision == MIGRATION.revision
+    assert drop_revision._INDEX == "ix_positive_pay_files_payment_run_id"
+    # Reversible, and the downgrade restores 0048's spelling exactly.
+    assert drop_revision._RECREATE == (
+        "CREATE INDEX IF NOT EXISTS ix_positive_pay_files_payment_run_id "
+        "ON positive_pay_files (payment_run_id)"
     )
 
 

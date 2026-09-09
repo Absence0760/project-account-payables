@@ -36,6 +36,11 @@ Every org has one reporting currency. It is resolved by
 1. `Organization.settings.reporting_currency` — the explicit setting.
 2. `Organization.settings.payments.home_currency` — legacy field the payment
    path already reads (so existing orgs keep working with no settings change).
+   Read via `international_payments.configured_home_currency`, the one owner of
+   that setting, which answers `None` for an unset value so this rung falls
+   through to 3 and 4 rather than short-circuiting them with the platform
+   default. See `international-payments.md` § The org's home currency has ONE
+   normaliser.
 3. `Organization.settings.invoice_defaults.currency`.
 4. `FEOH_REPORTING_CURRENCY_DEFAULT` (config default `USD`) — platform last resort.
 

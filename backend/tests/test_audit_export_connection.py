@@ -84,15 +84,16 @@ def _range_qs(start: datetime, *, fmt: str | None = None) -> str:
     return qs if fmt is None else f"{qs}&format={fmt}"
 
 
-class _TenantSessionProbe:
-    """Watches the ONE tenant session an export request is given.
+class _SessionProbe:
+    """Counts real pool checkouts against the engine a request's session uses.
 
-    Wraps the `realdb` client's own `get_tenant_db` override rather than
-    replacing it, so the request still runs the real provider (including the
-    `get_tenant` org-claim cross-check) and the real commit-before-response
-    semantics. The pool listeners go on the engine that session is bound to,
-    before it has issued its first query — so `live_connections` counts real
-    checkouts against a real Postgres, not anything this test simulates.
+    Subclasses supply `install()`, which wraps the `realdb` client's own
+    dependency override rather than replacing it — so the request still runs
+    the real provider (including `get_tenant`'s org-claim cross-check) and the
+    real commit-before-response semantics. The pool listeners go on the engine
+    the first session is bound to, before it has issued a query, so
+    `live_connections` counts real checkouts against a real Postgres rather
+    than anything this test simulates.
     """
 
     def __init__(self) -> None:
@@ -103,6 +104,31 @@ class _TenantSessionProbe:
     @property
     def live_connections(self) -> int:
         return self._checkouts - self._checkins
+
+    def sample(self) -> tuple[int, bool]:
+        """(connections still checked out, first session still in a transaction)."""
+        return self.live_connections, bool(self.sessions and self.sessions[0].in_transaction())
+
+    def _record(self, session) -> None:
+        if not self.sessions:
+            self._watch(session)
+        self.sessions.append(session)
+
+    def _watch(self, session) -> None:
+        bind = session.bind
+        engine = getattr(bind, "sync_engine", bind)
+        event.listen(engine, "checkout", self._on_checkout)
+        event.listen(engine, "checkin", self._on_checkin)
+
+    def _on_checkout(self, *_a, **_k) -> None:
+        self._checkouts += 1
+
+    def _on_checkin(self, *_a, **_k) -> None:
+        self._checkins += 1
+
+
+class _TenantSessionProbe(_SessionProbe):
+    """Watches the ONE tenant session an export request is given."""
 
     def install(self) -> None:
         from app.main import app
@@ -123,9 +149,7 @@ class _TenantSessionProbe:
             agen = inner(request, tenant)
             try:
                 async for session in agen:
-                    if not probe.sessions:
-                        probe._watch(session)
-                    probe.sessions.append(session)
+                    probe._record(session)
                     yield session
             finally:
                 # Deterministic teardown of the wrapped provider: leaving it to
@@ -135,17 +159,37 @@ class _TenantSessionProbe:
 
         app.dependency_overrides[get_tenant_db] = _recording
 
-    def _watch(self, session) -> None:
-        bind = session.bind
-        engine = getattr(bind, "sync_engine", bind)
-        event.listen(engine, "checkout", self._on_checkout)
-        event.listen(engine, "checkin", self._on_checkin)
 
-    def _on_checkout(self, *_a, **_k) -> None:
-        self._checkouts += 1
+class _ControlSessionProbe(_SessionProbe):
+    """Watches the ONE control-plane session an export request is given.
 
-    def _on_checkin(self, *_a, **_k) -> None:
-        self._checkins += 1
+    The tenant half is released explicitly (`_spooled_response` closes it); the
+    control half is released only because `commit_before_response` ends its
+    read transaction on the exit stack FastAPI unwinds BEFORE sending. That is
+    a load-bearing indirection nothing here pinned: an actor lookup left open
+    across the body, or a control read added after the spool, would hold one of
+    the CONTROL pool's connections for the client's bandwidth — and that pool
+    is shared by every tenant on the process, not just this one.
+    """
+
+    def install(self) -> None:
+        from app.database import get_control_db
+        from app.main import app
+
+        inner = app.dependency_overrides[get_control_db]
+        probe = self
+
+        # Signature restated, not borrowed, for the reason given above.
+        async def _recording(request: Request):
+            agen = inner(request)
+            try:
+                async for session in agen:
+                    probe._record(session)
+                    yield session
+            finally:
+                await agen.aclose()
+
+        app.dependency_overrides[get_control_db] = _recording
 
 
 async def _drive_asgi(client, path: str):
@@ -209,6 +253,22 @@ _SAMPLER: list = []
 # ---------------------------------------------------------------------------
 
 
+def _assert_released(which: str, fmt: str, samples: list[tuple[int, bool]]) -> None:
+    """Every body chunk was sent with `which`'s connection back in its pool."""
+    live_at_first_byte, in_transaction_at_first_byte = samples[0]
+    assert live_at_first_byte == 0, (
+        f"{live_at_first_byte} {which} connection(s) were still checked out when "
+        f"the first {fmt} body chunk was sent — the export is holding a pooled "
+        "connection for the client's bandwidth"
+    )
+    assert not in_transaction_at_first_byte, (
+        f"the {which} session was still inside its read transaction while the "
+        "body was being transmitted"
+    )
+    # And it stays released for every later chunk, not just the first.
+    assert {live for live, _ in samples} == {0}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fmt", ["json", "csv"])
 async def test_export_releases_the_tenant_connection_before_the_body_is_sent(realdb, fmt):
@@ -223,10 +283,12 @@ async def test_export_releases_the_tenant_connection_before_the_body_is_sent(rea
         realdb.sessionmaker(TENANT), info.org_id, SEEDED_ROWS, entity_type="spool_probe"
     )
 
-    probe = _TenantSessionProbe()
+    tenant = _TenantSessionProbe()
+    control = _ControlSessionProbe()
     async with realdb.client(key=TENANT, role="admin") as client:
-        probe.install()
-        _SAMPLER[:] = [lambda: (probe.live_connections, probe.sessions[0].in_transaction())]
+        tenant.install()
+        control.install()
+        _SAMPLER[:] = [lambda: (tenant.sample(), control.sample())]
         try:
             response_start, chunks, samples = await _drive_asgi(
                 client, f"/api/audit/export?{_range_qs(start, fmt=fmt)}"
@@ -236,20 +298,54 @@ async def test_export_releases_the_tenant_connection_before_the_body_is_sent(rea
 
     assert response_start["status"] == 200
     assert len(chunks) > 1, "the export was not chunked — the sample is meaningless"
-    assert probe.sessions, "the export never took a tenant session"
+    assert tenant.sessions, "the export never took a tenant session"
+    assert control.sessions, "the export never took a control session"
 
-    live_at_first_byte, in_transaction_at_first_byte = samples[0]
-    assert live_at_first_byte == 0, (
-        f"{live_at_first_byte} tenant connection(s) were still checked out when the "
-        f"first {fmt} body chunk was sent — the export is holding a pooled "
-        "connection for the client's bandwidth"
-    )
-    assert not in_transaction_at_first_byte, (
-        "the tenant session was still inside its read transaction while the body "
-        "was being transmitted"
-    )
-    # And it stays released for every later chunk, not just the first.
-    assert {live for live, _ in samples} == {0}
+    _assert_released("tenant", fmt, [t for t, _ in samples])
+    # The control half is released by a DIFFERENT mechanism and is the one a
+    # refactor is likely to lose — see `_ControlSessionProbe`.
+    _assert_released("control", fmt, [c for _, c in samples])
+
+
+@pytest.mark.asyncio
+async def test_pdf_export_releases_both_connections_before_it_renders(realdb):
+    """The one dialect that cannot stream still must not render inside the hold.
+
+    A PDF is laid out as a whole document, so `format=pdf` materialises the
+    entries — but it reads them through the same cursor and then CLOSES the
+    tenant session before `render_audit_report_pdf` runs. That ordering is easy
+    to lose: moving the render one line earlier would hold a tenant connection
+    across a multi-second ReportLab layout that touches no database at all.
+    (`tests/test_pdf_render_offloaded.py` owns the other half — that the layout
+    is off the event loop.)
+
+    Fewer rows than the streaming cases on purpose: the property under test is
+    the ordering, not the size, and a thousand-row table is pure layout cost.
+    """
+    info = realdb.info(TENANT)
+    start = await _seed(realdb.sessionmaker(TENANT), info.org_id, 40, entity_type="spool_probe")
+
+    tenant = _TenantSessionProbe()
+    control = _ControlSessionProbe()
+    async with realdb.client(key=TENANT, role="admin") as client:
+        tenant.install()
+        control.install()
+        _SAMPLER[:] = [lambda: (tenant.sample(), control.sample())]
+        try:
+            response_start, chunks, samples = await _drive_asgi(
+                client, f"/api/audit/export?{_range_qs(start, fmt='pdf')}"
+            )
+        finally:
+            _SAMPLER.clear()
+
+    assert response_start["status"] == 200
+    assert chunks and chunks[0].startswith(b"%PDF"), "not a PDF body"
+    assert tenant.sessions, "the export never took a tenant session"
+
+    _assert_released("tenant", "pdf", [t for t, _ in samples])
+    # The control session is legitimately used AFTER the tenant one is closed
+    # (the org row for branding), so only the release-before-send half applies.
+    _assert_released("control", "pdf", [c for _, c in samples])
 
 
 # ---------------------------------------------------------------------------

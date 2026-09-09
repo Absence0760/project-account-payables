@@ -1,4 +1,37 @@
-import { expect, test } from '../fixtures/helpers';
+import { deleteInvoicesWhere, expect, test } from '../fixtures/helpers';
+
+/** Every invoice this file creates carries this prefix — what `afterEach`
+ *  cleans up. */
+const INVOICE_MARKER = 'E2E-LTR-';
+/** The vendor name typed into the create modal. NOT deleted in teardown — see
+ *  the note below. */
+const VENDOR_NAME = 'E2E LTR Vendor';
+
+/**
+ * Leave the shared worker tenant as we found it.
+ *
+ * Each test here creates an invoice whose number carries `Date.now()`, so
+ * nothing ever collides and nothing ever stops accumulating — and the first two
+ * deliberately provoke a `line_total_mismatch`, which is a **payment-blocking**
+ * exception type. Left behind, that is not just a stray row: the invoice sits
+ * in `/exceptions` for every later spec that counts the queue, and `/invoices`
+ * pages one row further.
+ *
+ * `deleteInvoicesWhere` owns the 16-FK child graph, which is what removes the
+ * line items and the exception along with the invoice. The predicate is the
+ * prefix rather than the ids created here, so a run also clears what earlier
+ * runs stranded.
+ *
+ * The vendor manual entry provisioned behind them is deliberately left alone:
+ * `vendor_matching` re-matches it by name on every later run rather than
+ * creating another, so it is a bounded shared fixture, not a leak — and it can
+ * be linked to OTHER specs' invoices by the matcher's normalized-name leg, so
+ * it is not this file's row to delete. See the same note in
+ * `invoices/create-manual.spec.ts`, where removing it failed an FK.
+ */
+test.afterEach(() => {
+	deleteInvoicesWhere(`invoice_number LIKE '${INVOICE_MARKER}%'`);
+});
 
 /**
  * Line-item ↔ header reconciliation, surfaced inline in the invoice modal.
@@ -23,14 +56,14 @@ async function createAndOpenInvoice(
 	page: import('@playwright/test').Page,
 	amount: string
 ): Promise<string> {
-	const invoiceNumber = `E2E-LTR-${Date.now()}`;
+	const invoiceNumber = `${INVOICE_MARKER}${Date.now()}`;
 
 	await page.goto('/invoices');
 	await page.getByRole('button', { name: 'Create Invoice' }).click();
 
 	const createModal = page.locator('div.modal[role="dialog"][aria-label="Create Invoice"]');
 	await expect(createModal).toBeVisible();
-	await createModal.locator('label', { hasText: 'Vendor' }).locator('input').fill('E2E LTR Vendor');
+	await createModal.locator('label', { hasText: 'Vendor' }).locator('input').fill(VENDOR_NAME);
 	await createModal.locator('label', { hasText: 'Invoice #' }).locator('input').fill(invoiceNumber);
 	await createModal.locator('label', { hasText: 'Amount' }).locator('input').fill(amount);
 	await createModal.getByRole('button', { name: 'Create' }).click();

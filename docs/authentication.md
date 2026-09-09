@@ -240,12 +240,54 @@ Action names:
 | Passkey registered (`/mfa/passkey/register/verify`) | `auth.mfa.passkey.registered` — PII-free, records `{factor: "passkey", credential, name, rp_id}`. `credential` is the API-visible passkey id (`webauthn_credentials.id`), never the authenticator's credential handle or its public key |
 | Passkey removed (`DELETE /mfa/passkey/{id}`) | `auth.mfa.passkey.removed` — same shape, so the removal row joins to the registration row on `credential` |
 | Failed supplier-portal password login | `portal.login.failure` — records `{ip, reason}` (`bad_password` \| `no_password` \| `inactive`) and identifies the account by `entity_id`, never by address (a supplier contact's email is third-party PII we don't restate on every guess). Queued off the response path, like its employee twin |
+| Supplier-portal second factor verified / rejected (`/portal/auth/mfa/challenge`) | `portal.mfa.verify.success` · `portal.mfa.verify.failure` — PII-free, records `{method, ip}` where `method` is `totp` \| `email`. The portal twin of `auth.mfa.verify.*`; see [the note below](#the-supplier-portals-second-factor-stage-is-on-the-trail-issuing-a-backup-code-is-not) for why issuing an email backup code has no row of its own |
 | Successful SSO login | `auth.sso.login.success` |
 | Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
 | Successful SAML login | `auth.saml.login.success` |
 | Failed SAML login (assertion invalid / issuer / unsolicited / replay / domain blocked) | `auth.saml.login.failure` |
 
 Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`. (The supplier-portal twin, `portal.login.failure`, deliberately omits the address — see the action table above.)
+
+#### The supplier portal's second-factor stage is on the trail; issuing a backup code is not
+
+`/portal/auth/login` audits rejections only. Once a supplier enrols a second
+factor it stops minting the token altogether and hands back a challenge, so the
+sign-in *completes* at `/portal/auth/mfa/challenge` — which meant that turning
+MFA on for a supplier account took that account's sign-in off the trail
+entirely, in exchange for a stronger credential. That handler now writes
+`portal.mfa.verify.success` / `.failure`, matching its employee twin
+(`api/auth.verify_mfa`), which has audited both outcomes since it was built. The
+per-account failure budget that throttles guessing there is a Redis rolling
+window — a brake, not evidence — and a portal account can stage a vendor
+bank-detail change, so a campaign against its second factor is exactly what an
+auditor is looking for.
+
+**`POST /portal/auth/mfa/challenge/email` is deliberately NOT audited**, and
+that is a decision rather than a gap:
+
+* The auditable event is the backup code being **redeemed**, and the row above
+  records it with `method: "email"` — so a code that was issued and never used
+  is already visible as an absence, and a row at issue time would only ever
+  duplicate a delivery the per-IP and per-account send caps already bound.
+* It answers `204` on **every** path so it cannot be used to discover which
+  supplier addresses exist and are enrolled. A row would be written for exactly
+  that set, rebuilding the oracle inside a trail that is also shipped to a WORM
+  store.
+* Its employee twin (`POST /api/auth/mfa/challenge/email`) is unaudited on the
+  same terms. Auditing only the supplier surface would be a knowingly
+  asymmetric control.
+
+The `method` on both rows is derived from the branch the handler actually took,
+never echoed from the request. `PortalMFAChallengeVerifyRequest.method` is an
+unconstrained `str` (its employee twin pins `^(totp|email)$`), so anything other
+than `"email"` falls through to TOTP — restating it would put unbounded
+caller-controlled text into an append-only, WORM-shipped trail and label the row
+with a factor nobody used.
+
+Pinned by `tests/test_portal_mfa.py`, and by the reason string on the one
+remaining `portal_auth` entry in `tests/test_audit_append_only.py`'s exemption
+dict — the dict whose sibling `_OPEN_AUDIT_HOLES` exists precisely to keep
+"we decided not to" from being filed as "we have not done this yet".
 
 #### The failure row is written off the response path
 

@@ -104,7 +104,13 @@ const BASELINE: Record<string, number> = {
 	// The two deliberate keeps from the round-13 tranche: `.discount-chip` is two
 	// stacked lines, `.blocked-chip` wraps a localised sentence where `nowrap`
 	// would break 320px reflow. Both took the palette tokens.
-	'routes/payments/+page.svelte': 2,
+	// `.pinned-chip` is the third, and it is `.blocked-chip`'s sibling by
+	// construction: same shape, same wrapped localised sentence, accent tone
+	// instead of danger because that row is PAYABLE (a live virtual card pins
+	// its rail, it does not refuse the invoice) — so it must not read as a
+	// refusal next to the rows that are one. `Badge`'s `nowrap` would break the
+	// same 320px reflow, and it takes the same palette pair.
+	'routes/payments/+page.svelte': 3,
 	// `.approver-chip` wraps its own remove button and renders a person's name;
 	// `.chip-remove:hover` is a hover STEP that has to read stronger than the
 	// chip it sits inside, so a tone token would make it invisible.

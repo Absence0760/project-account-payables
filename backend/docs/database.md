@@ -385,6 +385,21 @@ and partial predicate, not just the same name.
 `tests/test_list_and_audit_indexes.py` remains the per-index guard for 0092's own
 16 list/audit indexes (including that each actually serves its caller's query).
 
+**The same rule runs in the other direction.** An index that is genuinely
+redundant has to be dropped from the model AND the database in one commit, or
+every freshly-provisioned tenant keeps re-creating what the migration just
+removed — the mirror image of the class above. Migration **0094** is the worked
+example: `ix_positive_pay_files_payment_run_id` is a `(payment_run_id)` B-tree
+whose only column is the LEADING column of the partial UNIQUE
+`uq_positive_pay_run_format (payment_run_id, bank_format)`, so the composite
+serves every read it could — measured, not assumed (see
+`docs/positive-pay.md` § Indexes for the plans, and for the one read a partial
+index cannot serve). The drop ships with the removal of `index=True` from
+`PositivePayFile.payment_run_id`, and the parity guard's `EXEMPT` entry records
+why 0048's `CREATE` now has no model declaration — plus a structural assertion
+that the composite still LEADS on that column, since the whole argument
+collapses if it ever stops.
+
 ## Seeding
 
 Seed the control plane and both demo tenants:

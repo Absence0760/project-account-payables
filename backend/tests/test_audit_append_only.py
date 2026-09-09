@@ -266,19 +266,30 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "rebuilds the derived `invoices.meta.audit_summary` cache FROM the audit trail; "
         "no business field changes"
     ),
-    # -- supplier-portal auth: writes NO audit row of any kind. Each of these
-    #    touches only the calling vendor user's own account or an ephemeral
-    #    Redis credential. (`portal_login`, `portal_change_password`,
-    #    `portal_mfa_verify` and `portal_mfa_disable` used to be listed here
-    #    too, on the strength of auditing via `dispatch_auth_audit` /
-    #    `queue_auth_audit`. Those now count as auditing — see `_AUDIT_WRITERS`
-    #    — so they need no exemption and the sweep covers them directly.)
-    ("app.api.portal_auth", "portal_mfa_challenge"): (
-        "trades the login-issued challenge token for an access token; writes no "
-        "tenant row (the failure budget is Redis) — auth trail, not business trail"
-    ),
+    # -- supplier-portal auth. `portal_login`, `portal_change_password`,
+    #    `portal_mfa_verify` and `portal_mfa_disable` were listed here on the
+    #    strength of auditing via `dispatch_auth_audit` / `queue_auth_audit`,
+    #    which the scan did not recognise; it does now (`_AUDIT_WRITERS`), so
+    #    they need no exemption. `portal_mfa_challenge` left for the other
+    #    reason — it genuinely did not audit, and now does
+    #    (`portal.mfa.verify.success` / `.failure`), because with a second
+    #    factor enrolled it is where the supplier's sign-in actually completes.
     ("app.api.portal_auth", "portal_request_email_otp"): (
-        "mints a single-use email OTP into Redis; writes no tenant row"
+        # This is a real decision, not a to-do. The consequential event is the
+        # code being USED, and `/mfa/challenge` now records that on both
+        # outcomes with the `method` — so an issued-but-never-redeemed code is
+        # already visible as an absence, and a row here would only ever
+        # duplicate a delivery that the per-account and per-IP send caps
+        # already bound. It is also a 204-on-every-path anti-enumeration
+        # endpoint: a row would be written for exactly the addresses that
+        # exist AND are enrolled, rebuilding inside the audit trail the
+        # account oracle the uniform 204 exists to withhold. Its employee twin
+        # (`api/auth.request_email_otp`) is unaudited for the same reasons, and
+        # a stricter control on the supplier surface than on the employee one
+        # would be knowingly asymmetric.
+        "mints a single-use email OTP into Redis and mails it; the auditable "
+        "event is the code being redeemed, which `/mfa/challenge` records "
+        "(`portal.mfa.verify.success` / `.failure`, carrying `method`)"
     ),
     ("app.api.portal_auth", "portal_update_me"): (
         "the calling vendor user's own email-locale preference, not tenant business state"

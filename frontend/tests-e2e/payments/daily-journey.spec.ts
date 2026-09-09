@@ -139,12 +139,15 @@ test.describe('/payments pay-run daily journey (Runs tab)', () => {
 			await page.locator('.tab', { hasText: 'Runs' }).click();
 			await runsLoaded;
 
-			// 2. The draft run is listed; its row badge reads "draft".
+			// 2. The draft run is listed; its row badge reads "Draft" — the
+			//    LABEL behind `RUN_STATUS_LABEL_KEYS.draft`, not the raw enum.
+			//    Both run badges are keyed now; the English catalogue value is
+			//    what renders in the default locale.
 			const runRow = page
 				.locator('table tbody tr', { hasText: shortId })
 				.first();
 			await expect(runRow).toBeVisible();
-			await expect(runRow.locator('.badge')).toHaveText('draft');
+			await expect(runRow.locator('.badge')).toHaveText('Draft');
 
 			// 3. Open the run detail from the row (RowLink → modal). The
 			//    modal loads the run via GET /runs/{id}; wait on it.
@@ -161,7 +164,7 @@ test.describe('/payments pay-run daily journey (Runs tab)', () => {
 
 			const modal = page.locator('div.modal[role="dialog"][aria-label="Payment run"]');
 			await expect(modal).toBeVisible();
-			await expect(modal.locator('.status-badge')).toHaveText('draft');
+			await expect(modal.locator('.status-badge')).toHaveText('Draft');
 
 			// 4. Execute. Two clicks: the first ARMS (the label changes to
 			//    "Confirm execute · <amount>" — a real DOM signal, never a
@@ -185,8 +188,8 @@ test.describe('/payments pay-run daily journey (Runs tab)', () => {
 			expect(execBody.status).toBe('completed');
 			expect(execBody.payments_completed).toBeGreaterThan(0);
 
-			// 5. The modal reloads and the status badge now reads "completed".
-			await expect(modal.locator('.status-badge')).toHaveText('completed', {
+			// 5. The modal reloads and the status badge now reads "Completed".
+			await expect(modal.locator('.status-badge')).toHaveText('Completed', {
 				timeout: 5_000
 			});
 
