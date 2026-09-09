@@ -2,8 +2,20 @@ import { expect, test } from '../fixtures/helpers';
 import { expectNoA11yViolations } from './axe-helper';
 
 /**
- * Accessibility regression guard for **row-select checkboxes** (WCAG 2.2 AA,
- * SC 2.5.8 Target Size (Minimum)).
+ * Accessibility regression guard for WCAG 2.2 AA, SC 2.5.8 Target Size
+ * (Minimum) — **row-select checkboxes** (the design-system control) and the
+ * **branding colour field** (a page-level control that lost the criterion to a
+ * CSS specificity tie).
+ *
+ * **This guard is verified red-to-green, not asserted to be one.** The round
+ * that landed the checkbox fix could not run Playwright, so it shipped this
+ * file unexecuted; it has since been run against the pre-fix `app.css`
+ * (`width/height: 16px`, a 1px opaque border, `margin: 0`, `outline: none` on
+ * focus) and **five of the six checkbox cases fail** there — target 16 vs the
+ * 24 floor (×3), the painted/margin box measuring 14 rather than 16, and
+ * `outline-style: none`. Do not weaken an assertion here without re-running
+ * that experiment: the value of this file is entirely in the failures it
+ * produces, and the sixth case used to produce none (see its own comment).
  *
  * The criterion asks for a 24×24 CSS-px target, OR — through its *spacing*
  * exception — an undersized target whose 24px-diameter circle reaches no other
@@ -40,6 +52,9 @@ import { expectNoA11yViolations } from './axe-helper';
 const MIN_TARGET = 24;
 /** What the control is *painted* at — unchanged by the hit-area fix. */
 const PAINTED = 16;
+/** How far the hit box has to extend past the paint on each side to reach the
+ *  floor from the painted size: (24 − 16) / 2. */
+const HIT_INSET = (MIN_TARGET - PAINTED) / 2;
 
 /**
  * Force the first invoice row into a selectable status so its checkbox is
@@ -168,8 +183,14 @@ test.describe('accessibility — target size on row checkboxes (WCAG 2.2 AA, 2.5
 		page
 	}) => {
 		// Measuring the rect only proves what axe will read. This proves the
-		// browser hit-tests it too — click 4px left of the painted control, which
+		// browser hit-tests it too — click 2px left of the painted control, which
 		// is inside the 24×24 target and outside the 16×16 paint.
+		//
+		// The inset is asserted against HIT_INSET, not merely `> 0`. This was the
+		// ONE case that still passed against the pre-fix CSS, and it passed
+		// vacuously: a 1px opaque border also satisfies `insetX > 0`, and the
+		// resulting click at x + 0.5 lands on the painted box, so it only ever
+		// re-proved that clicking a checkbox toggles it.
 		await makeFirstRowSelectable(page);
 		await page.goto('/invoices');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
@@ -180,8 +201,12 @@ test.describe('accessibility — target size on row checkboxes (WCAG 2.2 AA, 2.5
 
 		const m = await boxes(checkbox);
 		const insetX = m.painted.x - m.target.x;
-		expect(insetX).toBeGreaterThan(0);
-		await page.mouse.click(m.target.x + insetX / 2, m.target.y + m.target.height / 2);
+		expect(insetX).toBeGreaterThanOrEqual(HIT_INSET);
+
+		const clickX = m.target.x + insetX / 2;
+		// The point is outside the paint — otherwise this asserts nothing new.
+		expect(clickX).toBeLessThan(m.painted.x);
+		await page.mouse.click(clickX, m.target.y + m.target.height / 2);
 
 		await expect(checkbox).toBeChecked();
 	});
@@ -238,5 +263,50 @@ test.describe('accessibility — target size on row checkboxes (WCAG 2.2 AA, 2.5
 			expect(size.width).toBeGreaterThanOrEqual(MIN_TARGET);
 			expect(size.height).toBeGreaterThanOrEqual(MIN_TARGET);
 		}
+	});
+});
+
+test.describe('accessibility — target size on the branding colour field (WCAG 2.2 AA, 2.5.8)', () => {
+	/**
+	 * `/organization`'s Branding panel pairs a native colour swatch with a hex
+	 * text field. Both are page-level controls, so neither is covered by the
+	 * design-system checkbox rule above — and the panel is where SC 2.5.8 was
+	 * actually being failed on a shipping page.
+	 *
+	 * The cause was a specificity TIE, not a size mistake. The page's text-entry
+	 * recipe (`width: 100%`) went from 0-0-1 to 0-2-1 when it gained
+	 * `:not([type='checkbox']):not([type='radio'])`, which ties
+	 * `.color-field input[type='color']` (`width: 40px`) and sits later in the
+	 * file, so the swatch grew to the full 478px column and squeezed the hex
+	 * field beside it to **22px** — under the floor, and unusable well before
+	 * that. `axe.spec.ts`'s `/organization` scan catches it as a `target-size`
+	 * violation; this names the geometry, so the next failure says *what* broke
+	 * rather than only *that* something did.
+	 */
+	test('the swatch keeps its own width and the hex field clears the 24px floor', async ({
+		page
+	}) => {
+		await page.goto('/organization');
+
+		const field = page.locator('#org-branding .color-field').first();
+		await expect(field).toBeVisible();
+		const swatch = field.locator('input[type="color"]');
+		const hex = field.locator('input[type="text"]');
+
+		const fieldBox = (await field.boundingBox())!;
+		const swatchBox = (await swatch.boundingBox())!;
+		const hexBox = (await hex.boundingBox())!;
+
+		// Both controls meet the floor outright.
+		expect(swatchBox.width).toBeGreaterThanOrEqual(MIN_TARGET);
+		expect(swatchBox.height).toBeGreaterThanOrEqual(MIN_TARGET);
+		expect(hexBox.width).toBeGreaterThanOrEqual(MIN_TARGET);
+		expect(hexBox.height).toBeGreaterThanOrEqual(MIN_TARGET);
+
+		// The regression signature, asserted as a proportion rather than a pixel
+		// count so a column-width change doesn't make this brittle: the swatch is
+		// a fixed-size chip and the hex field takes the rest of the row.
+		expect(swatchBox.width).toBeLessThan(fieldBox.width / 2);
+		expect(hexBox.width).toBeGreaterThan(fieldBox.width / 2);
 	});
 });
