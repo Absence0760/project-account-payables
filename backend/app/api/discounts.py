@@ -883,11 +883,24 @@ async def dashboard(
         reporting_currency=reporting_currency,
     )
 
+    # Captured / (captured + missed) — the DECIDED population. An org whose
+    # offers are all still open has decided nothing, and reporting `0.00` for
+    # that said "we captured none of the ones we could have" when the truth is
+    # "none has come due yet" — the opposite fact, and the one that reads as a
+    # failing programme. `None` + `insufficient_data`, exactly as the sibling
+    # rollup `analytics.DiscountCaptureMetrics` reports the same situation
+    # (`docs/decisions.md` §34).
+    #
+    # Note the denominator is the currency-FILTERED population: both counts
+    # exclude offers denominated in another currency (`excluded_*_count` say
+    # how many). A rate is a ratio of counts, not of money, so it does not need
+    # them converted — but it is a rate over the offers this response describes,
+    # not over every offer the tenant holds.
     total = (captured_count or 0) + missed_count
     capture_rate = (
         (Decimal(captured_count) / Decimal(total) * 100).quantize(Decimal("0.01"))
         if total
-        else Decimal("0.00")
+        else None
     )
 
     return DiscountDashboard(
@@ -896,6 +909,7 @@ async def dashboard(
         missed_count=missed_count,
         missed_amount=missed_amount,
         capture_rate_pct=capture_rate,
+        insufficient_data=capture_rate is None,
         open_offer_count=len(open_offers),
         projected_savings=result.total_savings_selected,
         currency=reporting_currency,

@@ -401,6 +401,36 @@ async def test_capture_rate_is_derived_from_the_filtered_population(realdb):
     assert body["missed_count"] == 1
     assert body["excluded_captured_count"] == 4
     assert body["excluded_missed_count"] == 0
+    assert body["insufficient_data"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_wholly_foreign_decided_population_reports_no_rate(realdb):
+    """Where the two disclosures meet.
+
+    Every decided offer is denominated in something other than the reporting
+    currency, so the population this response describes is empty — even though
+    the tenant has decided plenty. The rate is `null` with `insufficient_data`,
+    and `excluded_captured_count` / `excluded_missed_count` say why; a `0.00`
+    here would be the worst reading of all, since the tenant's real capture
+    rate is 100%.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_reporting_currency(realdb, org_id, "USD")
+    for _ in range(3):
+        await _add_offer(
+            mk, org_id, status=OFFER_STATUS_CAPTURED, currency="EUR", captured_amount="50.00"
+        )
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/discounts/dashboard")).json()
+
+    assert body["captured_count"] == 0
+    assert body["missed_count"] == 0
+    assert body["excluded_captured_count"] == 3
+    assert body["capture_rate_pct"] is None
+    assert body["insufficient_data"] is True
 
 
 @pytest.mark.asyncio

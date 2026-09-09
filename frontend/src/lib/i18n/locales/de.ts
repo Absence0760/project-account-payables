@@ -4031,6 +4031,7 @@ export const messages = {
 	'discounts.error.dashboard': 'Dashboard konnte nicht geladen werden',
 	'discounts.error.offers': 'Skonto-Angebote konnten nicht geladen werden',
 	'discounts.kpi.captureRate': 'Erfassungsrate',
+	'discounts.kpi.captureRateUnknown': 'Bisher wurde kein Angebot genutzt oder verpasst',
 	'discounts.kpi.captured': 'Erfasst ({n})',
 	'discounts.kpi.missed': 'Verpasst ({n})',
 	'discounts.kpi.openOffers': 'Offene Angebote',

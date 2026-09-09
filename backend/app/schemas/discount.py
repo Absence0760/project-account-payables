@@ -278,13 +278,25 @@ class BulkNegotiationRequest(BaseModel):
 
 
 class DiscountDashboard(BaseModel):
-    """Captured / missed / projected-savings rollup for the discounts dashboard."""
+    """Captured / missed / projected-savings rollup for the discounts dashboard.
+
+    `capture_rate_pct` is `null` — with `insufficient_data` true — when nothing
+    has been decided yet, exactly as its sibling
+    `analytics.DiscountCaptureMetrics` reports the identical situation. "No
+    offer has been captured or missed yet" and "we captured none of the ones we
+    could have" are opposite facts, and `0.00` reads as the bad one
+    (`docs/decisions.md` §34).
+    """
 
     captured_count: int
     captured_amount: MoneyAmount
     missed_count: int
     missed_amount: MoneyAmount
-    capture_rate_pct: PercentNumber
+    capture_rate_pct: OptionalPercentNumber = None
+    #: Nothing has been decided — `captured_count + missed_count == 0` — so
+    #: there is no rate to report. Set whenever `capture_rate_pct` is null, and
+    #: only then; the two are one fact and a client should branch on either.
+    insufficient_data: bool = False
     open_offer_count: int
     projected_savings: MoneyAmount  # net benefit of accepting all worthwhile open offers
     currency: str

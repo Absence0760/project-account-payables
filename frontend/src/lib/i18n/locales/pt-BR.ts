@@ -4060,6 +4060,7 @@ export const messages = {
 	'discounts.error.dashboard': 'Falha ao carregar o painel',
 	'discounts.error.offers': 'Falha ao carregar as ofertas de desconto',
 	'discounts.kpi.captureRate': 'Taxa de captura',
+	'discounts.kpi.captureRateUnknown': 'Nenhuma oferta foi aproveitada ou perdida ainda',
 	'discounts.kpi.captured': 'Capturado ({n})',
 	'discounts.kpi.missed': 'Perdido ({n})',
 	'discounts.kpi.openOffers': 'Ofertas abertas',

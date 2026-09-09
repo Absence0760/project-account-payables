@@ -4057,6 +4057,7 @@ export const messages = {
 	'discounts.error.dashboard': 'No se pudo cargar el panel',
 	'discounts.error.offers': 'No se pudieron cargar las ofertas de descuento',
 	'discounts.kpi.captureRate': 'Tasa de captura',
+	'discounts.kpi.captureRateUnknown': 'Aún no se ha aprovechado ni perdido ninguna oferta',
 	'discounts.kpi.captured': 'Capturado ({n})',
 	'discounts.kpi.missed': 'Perdido ({n})',
 	'discounts.kpi.openOffers': 'Ofertas abiertas',

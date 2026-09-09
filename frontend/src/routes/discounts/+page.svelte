@@ -331,9 +331,20 @@
 				label={m('discounts.kpi.missed', { n: dashboard?.missed_count ?? 0 })}
 				highlight="red"
 			/>
+			<!-- `—`, never `0%`, until an offer has actually been captured or
+			     missed. A capture rate is a ratio over the DECIDED population,
+			     and a tenant whose offers are all still open has decided
+			     nothing — `0%` reported that as "we captured none of them", the
+			     opposite fact and the one that reads as a failing programme.
+			     Same "—" + reason treatment the CFO cash-conversion-cycle and
+			     fraud-rate cards already use, and the same empty state the
+			     sibling figure on `/` shows (`docs/decisions.md` §34). -->
 			<KpiCard
-				value={`${(dashboard?.capture_rate_pct ?? 0).toFixed(0)}%`}
+				value={dashboard?.insufficient_data
+					? '—'
+					: `${(dashboard?.capture_rate_pct ?? 0).toFixed(0)}%`}
 				label={m('discounts.kpi.captureRate')}
+				sub={dashboard?.insufficient_data ? m('discounts.kpi.captureRateUnknown') : null}
 			/>
 			<KpiCard
 				value={aggMoney(dashboard?.projected_savings, dashboard?.currency)}

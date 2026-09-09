@@ -4148,6 +4148,7 @@ export const en = {
 	'discounts.error.dashboard': 'Failed to load dashboard',
 	'discounts.error.offers': 'Failed to load discount offers',
 	'discounts.kpi.captureRate': 'Capture rate',
+	'discounts.kpi.captureRateUnknown': 'No offer has been captured or missed yet',
 	'discounts.kpi.captured': 'Captured ({n})',
 	'discounts.kpi.missed': 'Missed ({n})',
 	'discounts.kpi.openOffers': 'Open offers',

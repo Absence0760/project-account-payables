@@ -4032,6 +4032,7 @@ export const messages = {
 	'discounts.error.dashboard': 'Échec du chargement du tableau de bord',
 	'discounts.error.offers': 'Échec du chargement des offres d\'escompte',
 	'discounts.kpi.captureRate': 'Taux de capture',
+	'discounts.kpi.captureRateUnknown': 'Aucune offre n’a encore été obtenue ni manquée',
 	'discounts.kpi.captured': 'Capturé ({n})',
 	'discounts.kpi.missed': 'Manqué ({n})',
 	'discounts.kpi.openOffers': 'Offres ouvertes',

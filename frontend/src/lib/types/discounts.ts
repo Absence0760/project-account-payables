@@ -87,7 +87,14 @@ export interface DiscountDashboard {
 	captured_amount: MoneyAmount;
 	missed_count: number;
 	missed_amount: MoneyAmount;
-	capture_rate_pct: number;
+	/** Captured / (captured + missed). `null` — with `insufficient_data` true —
+	 *  when nothing has been decided yet: "no discount window has closed" and
+	 *  "we captured none of the ones that did" are opposite facts, and `0`
+	 *  reads as the second. Matches `DiscountCaptureMetrics` on `/dashboard`. */
+	capture_rate_pct: number | null;
+	/** `capture_rate_pct` is null because the decided population is empty. Set
+	 *  whenever it is null, and only then — branch on either. */
+	insufficient_data: boolean;
 	open_offer_count: number;
 	projected_savings: MoneyAmount;
 	currency: string;

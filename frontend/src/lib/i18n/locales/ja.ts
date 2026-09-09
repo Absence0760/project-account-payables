@@ -4017,6 +4017,7 @@ export const messages = {
 	'discounts.error.dashboard': 'ダッシュボードを読み込めませんでした',
 	'discounts.error.offers': '割引の提示を読み込めませんでした',
 	'discounts.kpi.captureRate': '確定率',
+	'discounts.kpi.captureRateUnknown': 'まだ獲得または逸失した提案はありません',
 	'discounts.kpi.captured': '確定済み（{n}）',
 	'discounts.kpi.missed': '見送り（{n}）',
 	'discounts.kpi.openOffers': '未処理の提示',

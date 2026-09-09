@@ -9,7 +9,7 @@ tenants — plus RBAC, tenant isolation, audit rows, and exact ``Numeric`` money
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -25,8 +25,15 @@ from app.models.entity import Entity
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
+from app.utils.dates import utc_today
 
-_FUTURE = (date.today() + timedelta(days=40)).isoformat()
+# `utc_today()`, never `date.today()`. `effective_status_sql` is evaluated against
+# the endpoint's own `utc_today()`, so a fixture anchored on the LOCAL date makes
+# the boundary cases below ("valid_until is today, so the offer is still open")
+# wrong for every hour of the day where the two calendars disagree — several
+# hours daily west of UTC, the whole working day in Asia-Pacific. CI runs UTC and
+# never sees it. See backend/CLAUDE.md § Date-sensitive tests.
+_FUTURE = (utc_today() + timedelta(days=40)).isoformat()
 
 
 async def _default_entity_id(s):
@@ -57,7 +64,7 @@ async def _add_invoice(
             vendor_id=uuid.UUID(vendor_id) if vendor_id else None,
             amount=Decimal(amount),
             currency="USD",
-            due_date=date.today() + timedelta(days=30),
+            due_date=utc_today() + timedelta(days=30),
             status=status,
         )
         s.add(inv)
@@ -88,7 +95,7 @@ async def _add_offer_row(mk, org_id, *, status, valid_until=None, base="1000.00"
             tiers=_tiers(),
             base_amount=Decimal(base),
             currency="USD",
-            valid_from=date.today() - timedelta(days=60),
+            valid_from=utc_today() - timedelta(days=60),
             valid_until=valid_until,
             captured_amount=Decimal(captured) if captured is not None else None,
         )
@@ -193,8 +200,8 @@ async def test_accept_refuses_a_tier_whose_window_has_closed(realdb):
                 tiers=_tiers(),
                 base_amount=Decimal("1000.00"),
                 currency="USD",
-                valid_from=date.today() - timedelta(days=20),
-                valid_until=date.today() + timedelta(days=10),
+                valid_from=utc_today() - timedelta(days=20),
+                valid_until=utc_today() + timedelta(days=10),
             )
         )
         await s.commit()
@@ -636,7 +643,7 @@ async def test_dashboard_capture_rate_counts_lapsed_offers_as_missed(realdb):
     """
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = utc_today() - timedelta(days=1)
 
     await _add_offer_row(mk, org_id, status=OFFER_STATUS_CAPTURED, captured="30.00")
     for _ in range(9):
@@ -662,7 +669,7 @@ async def test_dashboard_capture_rate_ignores_offers_still_in_window(realdb):
 
     await _add_offer_row(mk, org_id, status=OFFER_STATUS_CAPTURED, captured="30.00")
     # Today is the last day of the window — `valid_until < today` is false.
-    await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today())
+    await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=utc_today())
     # No `valid_until` at all: nothing has elapsed.
     await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=None)
 
@@ -673,6 +680,50 @@ async def test_dashboard_capture_rate_ignores_offers_still_in_window(realdb):
     assert body["missed_count"] == 0
     assert body["open_offer_count"] == 2
     assert Decimal(str(body["capture_rate_pct"])) == Decimal("100.00")
+    # Something WAS decided, so the rate is a real measurement.
+    assert body["insufficient_data"] is False
+
+
+async def test_dashboard_reports_no_capture_rate_before_anything_is_decided(realdb):
+    """`null` + `insufficient_data`, never `0.00`.
+
+    A capture rate is a ratio over the DECIDED population — captured plus
+    missed. A tenant whose offers are all still inside their window has decided
+    nothing, and the endpoint used to report `0.00` for that: "we captured none
+    of the ones we could have", which is the opposite fact and the one that
+    reads as a failing programme. The sibling rollup
+    (`analytics.DiscountCaptureMetrics`, on `GET /api/dashboard`) has always
+    answered `None` here; the two agree now. See `docs/decisions.md` §34.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=utc_today())
+    await _add_offer_row(mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=None)
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/discounts/dashboard")).json()
+
+    assert body["captured_count"] == 0
+    assert body["missed_count"] == 0
+    assert body["open_offer_count"] == 2
+    # The key must be PRESENT and null — a dropped key reads as "the server is
+    # older than my client", not "there is nothing to report".
+    assert "capture_rate_pct" in body
+    assert body["capture_rate_pct"] is None
+    assert body["insufficient_data"] is True
+
+
+async def test_dashboard_reports_no_capture_rate_with_no_offers_at_all(realdb):
+    """The emptiest case — a tenant that has never been offered a discount. The
+    old `0.00` was at its most misleading exactly here."""
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/discounts/dashboard")).json()
+
+    assert body["captured_count"] == 0
+    assert body["missed_count"] == 0
+    assert body["capture_rate_pct"] is None
+    assert body["insufficient_data"] is True
 
 
 async def test_offer_list_reports_and_filters_on_the_effective_status(realdb):
@@ -681,10 +732,10 @@ async def test_offer_list_reports_and_filters_on_the_effective_status(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
     lapsed_id = await _add_offer_row(
-        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today() - timedelta(days=1)
+        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=utc_today() - timedelta(days=1)
     )
     live_id = await _add_offer_row(
-        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today() + timedelta(days=30)
+        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=utc_today() + timedelta(days=30)
     )
 
     async with realdb.client(key="a", role="ap_manager") as c:
@@ -722,7 +773,7 @@ async def test_effective_status_sql_matches_the_python_rule(realdb):
 
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
-    today = date.today()
+    today = utc_today()
 
     for status, valid_until in (
         (OFFER_STATUS_OFFERED, today - timedelta(days=1)),  # lapsed
@@ -814,7 +865,7 @@ async def test_ap_decline_refuses_a_lapsed_offer(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
     offer_id = await _add_offer_row(
-        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=date.today() - timedelta(days=1)
+        mk, org_id, status=OFFER_STATUS_OFFERED, valid_until=utc_today() - timedelta(days=1)
     )
 
     async with realdb.client(key="a", role="ap_manager") as c:
