@@ -380,7 +380,25 @@ Consequences worth knowing:
   database is long-lived across separate pytest invocations of the same slot,
   even though it's no longer shared with any other slot.
 
-The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
+The harness resets tenant tables plus `Organization.settings` / `parent_org_id`,
+and — **on teardown, not setup** — the control-plane billing rows: every
+`Subscription` its own orgs hold, and every `Plan` that is not one of
+`DEFAULT_PLAN_CATALOG`'s tiers (`_reset_control_billing`). Those two tables live
+in the slot's control-plane database, which the per-test TRUNCATE never reaches
+and `_rebuild_pytest_schema` clears only once per session, so a throwaway plan
+stayed visible to every later test in the run — and `GET /api/billing/plans` is
+a catalogue listing, so that is observable rather than inert. Six billing files
+hand-rolled the same purge at *setup*, which by construction can only reap the
+previous run's rows and always leaves the last one behind; one of them
+(`test_public_api_keys`) wrote only the subscription half, so its `meter_test_*`
+plans accumulated unchecked. **Seed a throwaway plan through
+`RealDB.purge_plans(prefix, org_ids=…)`** — the single owner of that child graph
+(the control-plane counterpart of `deleteVendorsWhere` / `deleteWorkflowsWhere`,
+`docs/decisions.md` §127). Like those it takes a **prefix, not a predicate**, and
+its seatbelt is derived from `DEFAULT_PLAN_CATALOG` so a free-form WHERE can't
+empty the catalogue every entitlement lookup reads. Guarded by
+`tests/test_realdb_harness.py`.
+
 It does **not** delete extra control-plane `users` rows a test creates — those
 accumulate, so a test must not assume a fixed user count for a test org.
 
