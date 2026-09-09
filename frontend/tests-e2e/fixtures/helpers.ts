@@ -233,7 +233,10 @@ async function _ensureAdminStorageState(
 	try {
 		const page = await context.newPage();
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
+		// No `waitForLoadState('networkidle')` here — see `signIn` below for why
+		// `.fill()`'s own auto-wait IS the hydration gate this once needed. The
+		// two sign-in paths must stay identical on this point; a wait restored to
+		// one and not the other is worse than either choice.
 		await page.locator('input[type="email"]').fill(creds.email);
 		await page.locator('input[type="password"]').fill(creds.password);
 		await page.locator('form button[type="submit"]').click();
@@ -327,21 +330,6 @@ export function escapeRegExp(input: string): string {
 }
 
 /**
- * Drive the email-password sign-in form on the seeded `acme` tenant.
- * The frontend's tenant resolution requires hitting an `<slug>.localhost`
- * URL, so the playwright.config.ts baseURL is the `acme` tenant origin.
- *
- * Returns once the submit click has fired. Callers assert the
- * destination URL.
- *
- * Why `waitForLoadState('networkidle')`: Svelte 5 binds the form's
- * `onsubmit` only after hydration. A click before that fires the
- * native GET submit, which navigates to /login?email=…&password=…
- * (visually identical to "still on /login" but with no auth POST
- * attempted). Waiting for networkidle covers Vite HMR + the dynamic
- * imports for `auth.svelte.ts` and `api.ts`.
- */
-/**
  * Record a cookie-consent choice before the first paint.
  *
  * The GDPR consent banner is `position: fixed`, bottom-centre, `z-index:
@@ -374,6 +362,41 @@ export async function acceptConsent(page: Page) {
 	});
 }
 
+/**
+ * Drive the email-password sign-in form on the current worker's tenant.
+ * The frontend's tenant resolution requires hitting an `<slug>.localhost`
+ * URL, so the playwright.config.ts baseURL is a tenant origin.
+ *
+ * Returns once the submit click has fired. Callers assert the
+ * destination URL (or use `signInAndWait`, which does).
+ *
+ * **Why there is no `waitForLoadState('networkidle')` after the `goto`.**
+ * This JSDoc used to carry one, and to justify it: Svelte 5 binds the form's
+ * `onsubmit` only after hydration, so a click before that would fire the
+ * native GET submit and navigate to /login?email=…&password=… — visually
+ * identical to "still on /login" but with no auth POST attempted. That hazard
+ * needs a form to exist in the pre-hydration document, and in this app one
+ * never does. `routes/+layout.svelte` holds `hasTenant` as a tri-state that
+ * starts `undefined` and is only assigned inside a `browser`-guarded
+ * `$effect`; effects do not run during SSR or prerender, so the layout renders
+ * its empty branch and `<slot/>` — the whole login page — is never emitted.
+ * `pnpm build` shows it directly: the entire `build/` tree is one
+ * `index.html` whose body is an empty `<div style="display: contents">`, with
+ * no `<form>` and no `<input>` anywhere in the file, and `vite preview` (what
+ * CI serves) hands that same fallback to every path including /login.
+ *
+ * So the email input cannot exist until hydration has run the layout effect
+ * and rendered the login component — which creates the `<form onsubmit=…>` and
+ * its inputs in one pass, with the handler attached at element creation
+ * (`submit` is not in Svelte 5's delegated-event set, so there is no window
+ * where the element exists unbound). `.fill()` auto-waits for that element,
+ * which makes it a strictly stronger hydration gate than a quiet network ever
+ * was: `networkidle` only ever claimed no request had been made for 500ms,
+ * never that anything had rendered.
+ *
+ * Do not restore the wait here without restoring it in
+ * `_ensureAdminStorageState` too — the two sign-in paths must agree.
+ */
 export async function signIn(
 	page: Page,
 	creds?: { email: string; password: string }
@@ -398,7 +421,6 @@ export async function signIn(
 		}
 	});
 	await page.goto('/login');
-	await page.waitForLoadState('networkidle');
 
 	await page.locator('input[type="email"]').fill(resolved.email);
 	await page.locator('input[type="password"]').fill(resolved.password);
