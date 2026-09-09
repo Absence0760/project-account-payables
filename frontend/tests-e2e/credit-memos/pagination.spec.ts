@@ -52,7 +52,12 @@ test.describe('/credit-memos pagination', () => {
 		expect(created).toHaveLength(22);
 
 		await page.goto('/credit-memos');
-		await page.waitForLoadState('networkidle');
+
+		// `.count()` is a one-shot read with no auto-wait of its own, so gate on
+		// the first row actually being rendered. That is the signal — the page
+		// renders a whole response at once, so row 1 being visible means the
+		// page-1 rows are all in the DOM.
+		await expect(page.locator('table tbody tr').first()).toBeVisible();
 
 		// First page loads 20 of the 22 freshly-created memos. Existing
 		// seed memos (if any) may also be in the list; the contract we

@@ -101,7 +101,6 @@ test.describe('/signup — form', () => {
 	test('submitting a valid form shows the "check your email" state', async ({ page }) => {
 		const slug = `e2eform${Date.now().toString().slice(-9)}`;
 		await page.goto('/signup');
-		await page.waitForLoadState('networkidle');
 
 		await fillForm(page, {
 			company: 'Form E2E Co',
@@ -123,7 +122,6 @@ test.describe('/signup — form', () => {
 
 	test('a taken slug blocks submission with an inline reason', async ({ page }) => {
 		await page.goto('/signup');
-		await page.waitForLoadState('networkidle');
 		await page.getByPlaceholder('acme').fill('acme'); // seeded tenant
 		await expect(page.locator('small.hint.bad')).toBeVisible({ timeout: 5_000 });
 		await expect(
@@ -134,7 +132,6 @@ test.describe('/signup — form', () => {
 	test('the email field enforces a valid address before submit', async ({ page }) => {
 		const slug = `e2email${Date.now().toString().slice(-9)}`;
 		await page.goto('/signup');
-		await page.waitForLoadState('networkidle');
 		await fillForm(page, {
 			company: 'Bad Email Co',
 			slug,
@@ -195,7 +192,6 @@ test.describe('signup happy path (UI + Mailpit)', () => {
 
 		// 1. Fill + submit the signup form through the UI.
 		await page.goto('/signup');
-		await page.waitForLoadState('networkidle');
 		await page.getByLabel('Company name').fill('Happy Path Co');
 		await page.getByPlaceholder('acme').fill(slug);
 		await page.getByLabel('Your name').fill('Happy Admin');
@@ -224,7 +220,6 @@ test.describe('signup happy path (UI + Mailpit)', () => {
 
 		// 4. Sign in at the new tenant with the temp password.
 		await page.goto(`${tenantBase(slug)}/login`);
-		await page.waitForLoadState('networkidle');
 		await page.locator('input[type="email"]').fill(email);
 		await page.locator('input[type="password"]').fill(tempPassword);
 		await page.locator('form button[type="submit"]').click();

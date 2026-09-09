@@ -8,7 +8,6 @@ import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers
 test.describe('/exceptions status filter', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/exceptions');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('Open chip is the default and shows only open rows', async ({ page }) => {

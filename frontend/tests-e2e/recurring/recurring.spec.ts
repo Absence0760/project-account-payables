@@ -71,7 +71,6 @@ function deleteTemplate(id: string): void {
 test.describe('/recurring (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/recurring');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the recurring surface — header, KPIs, filters, table', async ({ page }) => {
@@ -116,7 +115,6 @@ test.describe('/recurring (admin)', () => {
 			expect(created.status).toBe('active');
 
 			await page.goto(`/recurring?search=${encodeURIComponent(name)}`);
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(name)).toBeVisible();
 		} finally {
 			if (id) deleteTemplate(id);
@@ -187,7 +185,6 @@ test.describe('/recurring (admin)', () => {
 
 			// Open the detail modal from the list (clickable row / RowLink).
 			await page.goto(`/recurring?search=${encodeURIComponent(name)}`);
-			await page.waitForLoadState('networkidle');
 			await page.getByRole('button', { name: `Open template ${name}` }).click();
 			const dialog = page.getByRole('dialog', { name: 'Recurring template detail' });
 			await expect(dialog).toBeVisible();
@@ -261,7 +258,6 @@ test.describe('/recurring (clerk — read-only)', () => {
 		await signInAndWait(page, tenantClerk);
 
 		await page.goto('/recurring');
-		await page.waitForLoadState('networkidle');
 
 		// Read is allowed for all four roles, so the page renders.
 		await expect(page.getByRole('heading', { name: 'Recurring' })).toBeVisible();

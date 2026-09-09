@@ -43,7 +43,6 @@ test.describe('URL-filter routes mount without a reactive effect loop', () => {
 			// Admin sees every one of these routes.
 			await signInAndWait(page);
 			await page.goto(route);
-			await page.waitForLoadState('networkidle');
 			// PageHeader's <h1> being visible means the route mounted and its
 			// filter $effect ran — any loop would already have thrown by now.
 			await expect(page.locator('h1').first()).toBeVisible();

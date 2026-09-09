@@ -11,7 +11,6 @@ import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers
 test.describe('/purchase-orders', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/purchase-orders');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the seeded POs', async ({ page }) => {
@@ -22,6 +21,10 @@ test.describe('/purchase-orders', () => {
 	});
 
 	test('search input filters the visible PO list', async ({ page }) => {
+		// `.count()` is a one-shot read with no auto-wait of its own, and it is
+		// the first thing this test does after the beforeEach navigation — so
+		// gate on the first row being rendered rather than on a quiet network.
+		await expect(page.locator('table tbody tr').first()).toBeVisible();
 		const before = await page.locator('table tbody tr').count();
 		// Pick the first row's PO number, search for a substring.
 		const firstPoNumber = await page.locator('table tbody tr td.mono').first().textContent();

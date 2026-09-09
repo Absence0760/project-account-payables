@@ -62,7 +62,6 @@ const TERM = 'ZZ-URLTEST-QUERY';
 for (const c of CASES) {
 	test(`${c.name}: search + status filter survive a reload`, async ({ page }) => {
 		await page.goto(c.route);
-		await page.waitForLoadState('networkidle');
 		if (c.before) await c.before(page);
 
 		await page.locator('.filter-chip', { hasText: c.statusChip }).first().click();
