@@ -60,6 +60,41 @@ Deep-dive docs live in `backend/docs/`:
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
 
+## Stack
+
+- **FastAPI** on **Python 3.12+**, async throughout
+- **SQLAlchemy 2** async with asyncpg driver
+- **Alembic** for migrations (supports per-tenant execution)
+- **PostgreSQL 16**, **Redis 7**, **MinIO** (S3-compatible)
+- **Pydantic v2** for request/response schemas
+- **ruff** for lint/format (line-length 100, rules: E, F, I, UP)
+
+## First-time setup (from `backend/`)
+
+```bash
+docker compose up -d                            # start Postgres, Redis, MinIO
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"                         # install with dev deps
+python scripts/seed.py                          # seed 2 demo tenants
+python main.py                                  # dev server on :8000
+```
+
+## Commands (from `backend/`)
+
+```bash
+docker compose up -d          # Postgres, Redis, MinIO (core)
+docker compose --profile idp up -d keycloak   # opt-in local OIDC IdP (pnpm idp:up); see docs/docker.md
+python main.py                # dev server :8000 (auto-reload via uvicorn)
+pytest                        # run tests
+ruff check . && ruff format . # lint + format
+
+# Migrations
+alembic revision --autogenerate -m "description"
+alembic upgrade head                                # control plane
+FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head      # single tenant
+python scripts/migrate_all_tenants.py               # all tenants
+```
+
 ## Running backend tooling from a git worktree
 
 `backend/.venv` does not carry into a worktree, and reusing the primary venv can
@@ -99,41 +134,6 @@ cd <worktree>/backend && PYTHONPATH=<primary>/backend/.venv/lib/python3.14/site-
 all — a bad `sys.path` becomes a loud `ModuleNotFoundError` rather than a silent
 wrong tree. See `docs/decisions.md` §124 and `frontend/tests-e2e/README.md`
 § Running from a worktree.
-
-## Stack
-
-- **FastAPI** on **Python 3.12+**, async throughout
-- **SQLAlchemy 2** async with asyncpg driver
-- **Alembic** for migrations (supports per-tenant execution)
-- **PostgreSQL 16**, **Redis 7**, **MinIO** (S3-compatible)
-- **Pydantic v2** for request/response schemas
-- **ruff** for lint/format (line-length 100, rules: E, F, I, UP)
-
-## First-time setup (from `backend/`)
-
-```bash
-docker compose up -d                            # start Postgres, Redis, MinIO
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"                         # install with dev deps
-python scripts/seed.py                          # seed 2 demo tenants
-python main.py                                  # dev server on :8000
-```
-
-## Commands (from `backend/`)
-
-```bash
-docker compose up -d          # Postgres, Redis, MinIO (core)
-docker compose --profile idp up -d keycloak   # opt-in local OIDC IdP (pnpm idp:up); see docs/docker.md
-python main.py                # dev server :8000 (auto-reload via uvicorn)
-pytest                        # run tests
-ruff check . && ruff format . # lint + format
-
-# Migrations
-alembic revision --autogenerate -m "description"
-alembic upgrade head                                # control plane
-FEOH_MIGRATE_TENANT=feoh_acme alembic upgrade head      # single tenant
-python scripts/migrate_all_tenants.py               # all tenants
-```
 
 ## Dependency lock (CI hash-pinning)
 
