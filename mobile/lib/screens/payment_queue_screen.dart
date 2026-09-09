@@ -333,7 +333,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
                   // picker — offering four options where the backend accepts
                   // one is offering a choice that doesn't exist.
                   if (_canManage && selectable && pinnedMethod != null)
-                    _pinnedMethodChip(item, pinnedMethod)
+                    _pinnedMethodChip(pinnedMethod)
                   else if (_canManage && selectable && selected)
                     _methodDropdown(item),
                 ],
@@ -356,13 +356,13 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   /// The rail a pinned row will be paid on. Read-only by design: it is the one
-  /// rail `POST /api/payments/runs` accepts for this invoice.
-  Widget _pinnedMethodChip(PaymentQueueItem item, PaymentMethod method) {
+  /// rail `POST /api/payments/runs` accepts for this invoice. The row's own
+  /// merged announcement already speaks it (see [_verdictAnnounce]), so the
+  /// chip is excluded from the semantics tree rather than repeating itself.
+  Widget _pinnedMethodChip(PaymentMethod method) {
     final l = AppLocalizations.of(context);
     final label = l.payQueuePinnedMethod(_methodLabel(l, method));
-    return Semantics(
-      label: label,
-      excludeSemantics: true,
+    return ExcludeSemantics(
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
