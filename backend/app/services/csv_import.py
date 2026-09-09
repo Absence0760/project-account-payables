@@ -92,7 +92,10 @@ _INVOICE_COLUMNS = {
 # `failed` — are blocked because reaching them by-passes the workflow engine,
 # so `dispatch_audit`, `check_segregation`, and the approval signature never run.
 # Open AP that still needs paying must be imported as `new` and go through the
-# normal approval controls.
+# normal approval controls. Those controls only bind because every imported row
+# carries `uploaded_by_id` (the AP user who ran the import): segregation of
+# duties is keyed on that column, so a row that landed without it was exempt
+# from the very gate this status allowlist exists to force it through.
 _IMPORTABLE_INVOICE_STATUSES = frozenset({"new", "done", "paid", "rejected"})
 
 # ---------------------------------------------------------------------------
@@ -400,10 +403,12 @@ async def import_invoices_csv(
     ``day_first`` resolves ambiguous ``invoice_date`` / ``due_date`` cells
     (see ``app.utils.dates.resolve_day_first_preference``).
 
-    ``actor_id`` is the AP user who ran the import; it lands on the
-    ``invoice.imported_csv`` audit row written for each invoice created, and on
-    the ``vendor.imported_csv`` row for each vendor stub auto-created along the
-    way."""
+    ``actor_id`` is the AP user who ran the import. It lands on the
+    ``invoice.imported_csv`` audit row written for each invoice created, on the
+    ``vendor.imported_csv`` row for each vendor stub auto-created along the way,
+    and — because an invoice imported at ``new`` still has to be approved — on
+    ``Invoice.uploaded_by_id``, which is what segregation of duties is keyed on
+    (``services/approval_chain.violates_segregation``)."""
     result = ImportResult()
     try:
         rows = _read_rows(csv_text)
@@ -487,6 +492,13 @@ async def import_invoices_csv(
         invoice = Invoice(
             organization_id=organization_id,
             entity_id=entity_id,
+            # Same authorship tracking the manual-create and upload paths get
+            # (`api/invoices.py`, `api/workflow.py`) — an import is not exempt
+            # from segregation of duties. Without it,
+            # `approval_chain.violates_segregation` reads the row as a
+            # NULL-uploader "no employee creator" invoice and the importer can
+            # approve the payable they just imported at `new`.
+            uploaded_by_id=actor_id,
             invoice_number=invoice_number,
             vendor_name=vendor.name,
             vendor_id=vendor.id,

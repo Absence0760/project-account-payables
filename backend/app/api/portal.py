@@ -568,6 +568,12 @@ async def submit_invoice(
         # The supplier portal has no entity selector — a vendor's invoice lands
         # under the same entity as the vendor (multi-entity Phase 2).
         entity_id=vendor.entity_id,
+        # No employee creator: the actor is a tenant-scoped `VendorUser`, and
+        # `uploaded_by_id` names a control-plane `User`. Stated explicitly so
+        # `approval_chain.violates_segregation`'s NULL branch stays a declared
+        # "nobody who could approve this made it", not an omission — a supplier
+        # holds no employee JWT and can never reach an approval endpoint.
+        uploaded_by_id=None,
     )
     db.add(invoice)
     await db.flush()
@@ -1068,6 +1074,9 @@ async def flip_purchase_order(
         # Inherit the PO's entity so the flipped invoice stays in the same
         # subsidiary as the order it came from (multi-entity Phase 2).
         entity_id=po.entity_id,
+        # No employee creator — the flip is driven by a `VendorUser`. Same
+        # reasoning as `submit_invoice` above.
+        uploaded_by_id=None,
     )
     db.add(invoice)
     try:

@@ -43,7 +43,29 @@ def violates_segregation(
 
     Returns False (no breach) when:
     - require_segregation is explicitly set to False in the approval config
-    - uploaded_by_id is NULL (pre-existing invoices)
+    - uploaded_by_id is NULL — the invoice has **no employee creator**
+
+    That second branch reads fail-open, and is only sound because of an
+    invariant enforced elsewhere: every path under ``app/`` that constructs an
+    ``Invoice`` on behalf of a signed-in employee stamps ``uploaded_by_id``
+    with that user (manual create, file upload, CSV import, the inter-company
+    mirror). The paths that leave it NULL have no control-plane user to record
+    at all — email intake and inbound PEPPOL (system ingestion), the recurring
+    sweep (no human ran it), and supplier-portal submit / PO flip (the actor is
+    a tenant-scoped ``VendorUser``, who holds no employee JWT and can never
+    reach an approval endpoint). So NULL provably means "not created by anyone
+    who could approve it", and self-approval is impossible by construction
+    rather than by this check.
+
+    Failing CLOSED on NULL instead was considered and rejected: it would make
+    every email-intake, PEPPOL, portal-submitted and recurring invoice
+    permanently unapprovable — an outage across four ingestion channels, not a
+    control. The real defect was that the invariant was assumed rather than
+    enforced (``services/csv_import`` quietly violated it and let an importer
+    approve what they had just imported), so the fix is the enforcement:
+    ``tests/test_invoice_uploader_stamping.py`` fails if a new ``Invoice(...)``
+    site neither stamps the column nor is declared to have no employee actor.
+    See ``docs/decisions.md``.
 
     The pure predicate is shared by ``check_segregation`` (which raises) and by
     the amount-floor auto-approve path (which degrades to human review rather

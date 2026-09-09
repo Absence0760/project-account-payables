@@ -395,6 +395,12 @@ async def generate_one(
     reaper sweeps; a recurring invoice is already coded and needs only
     approval). Advances the template's scheduling cursor.
 
+    ``actor_id`` is the person who caused this generation — ``user.id`` from the
+    manual ``POST /{id}/generate-now``, ``None`` from the background sweep. It
+    lands on the audit row AND on ``Invoice.uploaded_by_id``, which is what
+    ``approval_chain.violates_segregation`` keys on, so the AP manager who
+    triggered a generation cannot also approve what it produced.
+
     Idempotent: a concurrent / retried call for an already-generated period
     hits the partial unique index, the INSERT raises ``IntegrityError`` inside
     a savepoint, and we return the already-existing invoice (no duplicate, no
@@ -443,6 +449,19 @@ async def generate_one(
         status=InvoiceStatus.ready_for_review,
         recurring_template_id=template.id,
         recurring_period_key=period_key,
+        # Whoever caused this payable to exist, when that is a person: `user.id`
+        # from `POST /{id}/generate-now`, NULL from the background sweep (no
+        # human ran it). Segregation of duties keys on this column, so without
+        # it the AP manager who clicked generate-now could also approve the
+        # invoice it produced.
+        #
+        # The sweep's NULL is a real, narrower gap: the template's AUTHOR is an
+        # employee, we just have nowhere to record who —
+        # `RecurringInvoiceTemplate` has no creator column, and adding one is a
+        # migration + backfill (tracked as a follow-up). Until then a
+        # sweep-generated invoice is exempt from segregation, exactly as a
+        # pre-`uploaded_by_id` legacy row is.
+        uploaded_by_id=actor_id,
     )
     try:
         # Savepoint so a unique-violation rolls back ONLY this generation — the
