@@ -717,6 +717,46 @@ a silent default. `frontend/src/lib/types/workflow.test.ts` is the drift guard
 on the default; `frontend/tests-e2e/workflows/segregation-default.spec.ts`
 covers the persisted value and the toggle round-trip.
 
+#### The other way SoD can be silently off: a NULL uploader
+
+The flag is one of two ways `violates_segregation` returns False. The other is
+`Invoice.uploaded_by_id IS NULL`, which the check reads as **"no employee
+created this row"** and therefore nobody who could self-approve.
+
+That is fail-open, and it holds only because of an invariant enforced outside
+the function: every path under `app/` that creates an invoice on behalf of a
+signed-in employee stamps the column —
+
+| Path | Uploader recorded |
+|---|---|
+| `POST /api/invoices` (manual entry) | the caller |
+| `POST /api/workflow/upload` (file upload) | the caller |
+| `POST /api/invoices/import-csv` (CSV import) | the caller |
+| `POST /api/recurring/{id}/generate-now` | the caller |
+| `POST /api/invoices/{id}/route-intercompany` (the mirror payable) | the routing actor |
+| email intake, inbound PEPPOL | NULL — system ingestion, no human |
+| supplier-portal submit, portal PO flip | NULL — the actor is a tenant-scoped `VendorUser`, who holds no employee JWT and can never reach an approval endpoint |
+| the recurring-invoice background sweep | NULL — nobody ran it |
+
+The CSV importer was the hole: the route had the user and the audit row used
+it, but the `Invoice(...)` constructor never passed it, so the importer could
+approve what they had just imported while the same person doing the same thing
+through `POST /api/invoices` got a 403.
+
+Making the NULL case fail CLOSED was considered and rejected — it would render
+every email-intake, PEPPOL, portal-submitted and sweep-generated invoice
+permanently unapprovable, an outage across four ingestion channels rather than
+a control. `backend/tests/test_invoice_uploader_stamping.py` enforces the
+invariant instead: a new construction site must pass `uploaded_by_id`
+explicitly, and passing a literal `None` must be declared with the reason there
+is no employee actor. See `docs/decisions.md`.
+
+One residual gap is known and narrower: a **sweep-generated** recurring invoice
+has an employee author (whoever created the template) that we have nowhere to
+record — `RecurringInvoiceTemplate` carries no creator column. Until one is
+added, such an invoice is exempt from segregation exactly as a legacy
+pre-`uploaded_by_id` row is.
+
 ### Approve and reject are not always the same role set
 
 Where a decision splits into an "approve" and a "reject" half, the two may
@@ -1500,6 +1540,6 @@ broken by renaming the real one.
 
 ### Not in this pass
 
-- **Segregation of duties (SoD)** — users currently can approve invoices they themselves created. The classic AP SoD invariant ("approver != creator") is a sensible follow-up but not part of basic RBAC. Tracked in the roadmap.
+- **Segregation of duties (SoD)** — *Done.* The classic AP invariant ("approver ≠ creator") ships as `services/approval_chain.check_segregation`, enforced in `services/review.approve_invoice` and default-ON (`require_segregation: true`). It keys on `Invoice.uploaded_by_id`, so its correctness depends on every employee-facing creation path recording the creator — see § Segregation of duties on a workflow's approval step above, and its "NULL uploader" subsection for what NULL means and which paths legitimately produce it.
 - **Per-org custom roles with teeth** — *Done.* Custom roles now grant access via the granular permission layer (`roles.permissions` + `require_permission`) — see § Granular permissions / segregation of duties above. A custom role granted, say, only `invoice.approve` can approve invoices but is 403'd on payment execution. Permission CRUD itself stays admin-only on purpose.
 - **Audit log of denied requests** — denials are logged via Python `logging.warning` for now, not persisted to the `audit_log` table. If oncall wants to query historical denials, surface them via centralized log shipping (planned under SOC 2 readiness).

@@ -88,6 +88,34 @@ ERP-send states, …) would drop a fabricated, payable invoice into the queue
 with no audit row and no second approver — so those statuses are rejected per
 row (issue #174). Never try to import open AP as `approved`; import it as `new`.
 
+## The importer is recorded as the uploader
+
+Every invoice the importer creates carries `Invoice.uploaded_by_id` — the AP
+user who ran the import — exactly as a hand-keyed invoice
+(`POST /api/invoices`) and a file upload (`POST /api/workflow/upload`) do.
+
+That column is what segregation of duties is keyed on:
+`services/approval_chain.violates_segregation` compares it to the approver and
+returns **False — no breach — when it is NULL**, because a NULL uploader means
+"no employee created this row" (system ingestion, a supplier, a sweep). The
+importer never set it, so an imported invoice read as one of those, and the AP
+manager who imported a payable at `new` could turn round and approve it — while
+the same person doing the same thing through `POST /api/invoices` got a 403.
+The status allowlist above forces open AP through approval; the stamp is what
+makes that approval an actual second pair of eyes.
+
+Consequences worth knowing:
+
+- **A single-operator tenant now needs the escape hatch it always had.** Set
+  `require_segregation: false` on the approval step config — the same explicit
+  opt-out every other creation path already required.
+- **The stamp lands on every row of a batch**, not just the first, so a long
+  import cannot smuggle an unattributed, self-approvable payable in behind an
+  attributed one.
+- It is independent of the `invoice.imported_csv` audit row, which records the
+  same actor for a different purpose (who did it, for the auditor) —
+  `uploaded_by_id` is the value a *control* reads at approval time.
+
 ## Import provenance — `meta["imported"]`
 
 Every invoice row the importer creates is stamped, on the existing

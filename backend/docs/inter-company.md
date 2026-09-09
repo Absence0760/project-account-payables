@@ -65,7 +65,11 @@ freshly provisioned tenants (`create_all`, not Alembic) get it as well.
    `counterparty_entity_id` points back at the origin's entity;
    `intercompany_mirror_id` is set on both rows. Status `new` — it enters the
    normal workflow via `workflow_engine.create_workflow_instance`, NOT past the
-   state machine.
+   state machine. `uploaded_by_id` is stamped with `actor_id` — the person who
+   routed the charge CREATED this payable, so segregation of duties treats them
+   as its uploader (`approval_chain.violates_segregation` reads a NULL there as
+   "no employee created this row"). Without the stamp, the one person who caused
+   a live liability to appear under another entity could also sign it off.
 4. **Audit** — a PII-free `invoice.intercompany_routed` row on **both** invoices
    (ids + entity ids only) via `dispatch_audit`.
 

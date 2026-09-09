@@ -105,6 +105,12 @@ async def test_route_creates_linked_mirror_under_counterparty(realdb):
     assert mirror.intercompany_mirror_id == origin_id
     assert mirror.counterparty_entity_id == origin_entity
     assert origin.intercompany_mirror_id == mirror_id
+    # The routing actor CREATED this payable, so they are its uploader for
+    # segregation of duties. Without the stamp the mirror is a NULL-uploader row
+    # (`approval_chain.violates_segregation` reads NULL as "no employee
+    # creator") and the one person who caused a live liability under another
+    # entity could also sign it off.
+    assert mirror.uploaded_by_id == info.users["ap_manager"]
 
 
 # ---------------------------------------------------------------------------
