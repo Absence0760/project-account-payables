@@ -75,6 +75,21 @@ a second live row, mirroring `uq_subscription_one_live_per_org`); returns
 skip-silently pattern `tenant_provisioning._provision_into` already uses for
 its admin-role lookup.
 
+**Having no live subscription is not the same as the `(org, plan)` slot being
+free.** `uq_subscription_org_plan` is `UNIQUE (organization_id, plan_id)` with
+**no status filter** — it bounds the TOTAL rows per plan, while
+`uq_subscription_one_live_per_org` bounds the LIVE count — so a CANCELED row
+keeps occupying its slot forever, and any writer putting an org back onto that
+plan must free it first or take an `IntegrityError`.
+`clear_stale_canceled_subscription` is the single owner of that rule; all three
+writers call it — `ensure_subscription` before its INSERT (an org the dunning
+sweep canceled could not otherwise resubscribe to the same plan),
+`plan_change.change_plan` and `seed.py::ensure_public_api_entitled` before
+repointing an existing row's `plan_id`. Deleting the canceled row is
+deliberate: it is convenience history of a plan the org is re-adopting, the
+live row is the source of truth, and the durable record of a plan change is
+the append-only `billing.plan_changed` audit row, not this table.
+
 Wired at every tenant's creation: `tenant_provisioning._provision_into` (CLI
 `create_tenant.py` + self-service signup's `/complete`, and the partner
 new-child-tenant provisioning path — all three route through
@@ -796,6 +811,14 @@ prorates (the bug where every change returned `0.00`), and a stale window rolls
 forward before the proration is computed. The `change_plan` audit row uses the
 `_audit_engine_on_loop` fixture (same loop-binding workaround as the webhook
 suite).
+
+`backend/tests/test_plan_catalog.py` — the catalog's own idempotency, plus
+the `(org, plan)` slot rule: an org resubscribes to the plan it was canceled
+on, the same call raises `IntegrityError` naming `uq_subscription_org_plan`
+once `clear_stale_canceled_subscription` is monkeypatched away (the repro
+that proves the guard is what avoids the collision, not luck), and the guard
+frees only its own target — never a canceled row on another plan, never a
+LIVE row.
 
 `backend/tests/test_seed_billing_baseline.py` — which plan `scripts/seed.py`
 lands each tenant on: the cross-module claim that `ACME_PLAN_CODE` names a
