@@ -688,7 +688,9 @@ async def bulk_negotiate(
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
-    vendor_id = uuid.UUID(body.vendor_id)
+    # Already a `UUID` — the schema parses it, so a malformed id is a 422 here
+    # rather than the 500 an unguarded `uuid.UUID(str)` used to raise.
+    vendor_id = body.vendor_id
     vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
     if vendor is None:
         raise HTTPException(status_code=404, detail="Vendor not found")

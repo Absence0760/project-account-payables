@@ -12,6 +12,7 @@ from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
@@ -269,9 +270,30 @@ class OptimizerResponse(BaseModel):
 
 
 class BulkNegotiationRequest(BaseModel):
-    """Propose a single early-pay discount across a vendor's open invoices."""
+    """Propose a single early-pay discount across a vendor's open invoices.
 
-    vendor_id: str
+    "Bulk" is about the BASE, not the batch: this creates exactly ONE
+    vendor-scoped offer whose `base_amount` is the summed open balance of that
+    one vendor's invoices. It is not a multi-vendor operation and has no
+    per-row skip-and-report result.
+
+    `extra="forbid"` for the same reason `OptimizerRequest` carries it, and the
+    key that matters here is `valid_until`. Dropped in silence, a misspelled one
+    creates an offer with no end date — which has no net due date, so the
+    optimizer cannot rank it at all and carries it on `unrankable` with a null
+    APR (§ An unknown horizon is `null`, not `0`). A standing, unrankable
+    discount against a vendor's entire open balance is not what a typo should
+    buy.
+
+    `vendor_id` is a real `UUID` rather than a bare `str`. The router parsed it
+    with an unguarded `uuid.UUID(...)`, so a malformed id raised `ValueError`
+    and surfaced as a 500 — a bad request deserves the 422 the type now
+    produces, before any query runs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    vendor_id: UUID
     tiers: list[DiscountTier] = Field(..., min_length=1)
     valid_until: date | None = None
     notes: str | None = Field(default=None, max_length=500)
