@@ -51,6 +51,19 @@ String _blockedReasonLabel(AppLocalizations l, String? code) => switch (code) {
       _ => l.payQueueBlockedGeneric,
     };
 
+/// The sentence for a row's refusal verdict, or `null` when there is nothing
+/// to say. The ONE derivation — the chip and the screen-reader announcement
+/// both read it, so they can never disagree about whether a row has a reason.
+///
+/// Non-null when the backend sent a code (it sends one for a PINNED row too,
+/// which is how the UI can say why the rail is fixed) OR when we refuse the
+/// row ourselves — an unnameable pin has to explain itself even though the
+/// server sent no code for it.
+String? _verdictReason(AppLocalizations l, PaymentQueueItem item) =>
+    item.blockedReason != null || !item.isSelectable
+        ? _blockedReasonLabel(l, item.blockedReason)
+        : null;
+
 /// The refusal verdict, as the tail of a queue row's single merged
 /// announcement. Empty when a run would neither refuse nor constrain the row.
 ///
@@ -58,9 +71,7 @@ String _blockedReasonLabel(AppLocalizations l, String? code) => switch (code) {
 /// them once rendered the literal string "null" for a rail pinned with no
 /// accompanying reason code.
 String _verdictAnnounce(AppLocalizations l, PaymentQueueItem item) {
-  final reason = item.blockedReason != null || !item.isSelectable
-      ? _blockedReasonLabel(l, item.blockedReason)
-      : null;
+  final reason = _verdictReason(l, item);
   if (!item.isSelectable) return ', ${l.payQueueBlockedAnnounce(reason!)}';
   final pinned = item.requiredMethod;
   final parts = <String>[
@@ -248,14 +259,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     // can't name, so we can't honour the pin and must not offer the row.
     final selectable = item.isSelectable;
     final pinnedMethod = item.requiredMethod;
-    // Derived whenever there is anything to say: the backend sends a reason
-    // for a PINNED row too (that is how the UI can say why the rail is fixed
-    // rather than silently removing the operator's choice), and a row we
-    // refuse ourselves — an unnameable pin — has to explain itself even
-    // though the server sent no code for it.
-    final reason = item.blockedReason != null || !selectable
-        ? _blockedReasonLabel(l, item.blockedReason)
-        : null;
+    final reason = _verdictReason(l, item);
     final dueText = item.dueDate != null
         ? l.payQueueDue(_dateFormat.format(item.dueDate!))
         : l.payQueueNoDueDate;
