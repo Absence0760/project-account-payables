@@ -75,6 +75,13 @@ const JUDGED_NOT_MONEY: Record<string, Record<string, string>> = {
 	'lib/types/accessReview.ts': {
 		'AccessReviewResponse.total': 'users reviewed — a head count, not money'
 	},
+	'lib/types/analytics.ts': {
+		// The dashboard's invoice ROW COUNT — `total_invoices` is money-shaped by
+		// name only (`total_`). The money figure it sits beside is
+		// `total_amount`, typed `MoneyAmount`, and so are the five
+		// `AgingBuckets` bands.
+		'DashboardData.total_invoices': 'invoice row count of the whole tenant, not money'
+	},
 	'lib/types/assistant.ts': {
 		'ConversationListResponse.total': 'conversation row count',
 		// `schemas/assistant.py::UsageResponse` types both `int`, beside

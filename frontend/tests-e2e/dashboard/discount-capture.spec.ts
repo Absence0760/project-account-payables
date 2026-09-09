@@ -1,4 +1,9 @@
+import type { Page } from '@playwright/test';
+
+import type { DashboardDiscountCapture } from '$lib/types/analytics';
+
 import { expect, test } from '../fixtures/helpers';
+import { dashboardResponse } from './fixture';
 
 /**
  * Dashboard — early-payment discount capture.
@@ -13,77 +18,45 @@ import { expect, test } from '../fixtures/helpers';
  *
  * The dashboard response is stubbed so both states are actually on screen —
  * a seeded tenant reliably produces neither.
+ *
+ * The payload itself lives in `./fixture.ts`, typed `satisfies DashboardData`.
+ * The copy this spec used to hand-maintain omitted `aging_reporting`'s
+ * `unconverted_count` and nothing noticed, because `pnpm check` does not
+ * typecheck `tests-e2e/`; `pnpm check:e2e` does. See that module's header.
  */
 
-const AGING = { current: 0, days_30: 0, days_60: 0, days_90: 0, days_90_plus: 0 };
-// `aging_reporting` is `ReportingAgingBuckets` — the five bands PLUS a
-// non-optional `unconverted_count`. The bare `aging` is `AgingBuckets` and
-// deliberately carries none (it is a face-value cross-currency sum in its
-// entirety), so the two are NOT the same shape and this fixture must not
-// serve one object for both. Omitting the count left the page's
-// `unconverted_count > 0` guard reading `undefined`, which is falsy — so the
-// aging disclosure could only ever be exercised on its no-notice branch from
-// here. Both branches live in `unconverted-disclosures.spec.ts`.
-const AGING_REPORTING = { ...AGING, unconverted_count: 0 };
-
-function dashboard(discount: Record<string, unknown>) {
-	return {
-		total_invoices: 4,
-		total_amount: 1000,
-		reporting: {
-			reporting_currency: 'USD',
-			total_amount: 1000,
-			total_count: 4,
-			unconverted_count: 0
-		},
-		total_paid: 0,
-		total_pending: 1000,
-		total_paid_reporting: 0,
-		total_pending_reporting: 1000,
-		total_paid_unconverted_count: 0,
-		total_pending_unconverted_count: 0,
-		total_rebates: 0,
-		excluded_rebate_count: 0,
-		open_exceptions: 0,
-		touchless_rate: 0,
-		stale_approvals: 0,
-		pipeline: { new: 4 },
-		vendor_spend: [],
-		aging: AGING,
-		aging_reporting: AGING_REPORTING,
-		monthly_trend: [],
-		upcoming_payments: [],
-		upcoming_total_amount: 0,
-		upcoming_total_amount_reporting: 0,
-		upcoming_unconverted_count: 0,
-		processing_time: {},
-		approval_bottleneck: [],
-		discount_capture: {
-			eligible_count: 3,
-			captured_count: 1,
-			missed_count: 1,
-			pending_count: 1,
-			captured_amount: 100,
-			missed_amount: 50,
-			pending_amount: 25,
-			reporting_currency: 'USD',
-			captured_amount_reporting: 100,
-			missed_amount_reporting: 50,
-			pending_amount_reporting: 25,
-			unconverted_count: 0,
-			capture_rate_pct: 50,
-			insufficient_data: false,
-			...discount
-		}
-	};
-}
-
-async function stubDashboard(page: import('@playwright/test').Page, discount: Record<string, unknown>) {
+/**
+ * Both chart series are left EMPTY on purpose: this spec owns the discount
+ * card, and `unconverted-disclosures.spec.ts` owns the three chart notices.
+ * Every other count in the fixture is zero, so neither those notices nor the
+ * KPI-row rollup banner can fire and be mistaken for this card's own.
+ */
+async function stubDashboard(page: Page, discount: Partial<DashboardDiscountCapture>) {
 	await page.route('**/api/dashboard*', (route) =>
 		route.fulfill({
 			status: 200,
 			contentType: 'application/json',
-			body: JSON.stringify(dashboard(discount))
+			body: JSON.stringify(
+				dashboardResponse({
+					vendorSpend: [],
+					monthlyTrend: [],
+					discount: {
+						eligible_count: 3,
+						captured_count: 1,
+						missed_count: 1,
+						pending_count: 1,
+						captured_amount: 100,
+						missed_amount: 50,
+						pending_amount: 25,
+						captured_amount_reporting: 100,
+						missed_amount_reporting: 50,
+						pending_amount_reporting: 25,
+						capture_rate_pct: 50,
+						insufficient_data: false,
+						...discount
+					}
+				})
+			)
 		})
 	);
 }

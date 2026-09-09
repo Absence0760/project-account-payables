@@ -2,13 +2,24 @@
 // (backend/app/api/analytics.py). Hand-maintained — the project has no
 // codegen, mirroring src/lib/types/invoice.ts.
 //
-// Money is `MoneyString` — an EXACT decimal string, never a JSON number — so
-// no currency figure round-trips through a binary float. Render it with
-// `<Money>` / `formatMoney`; the only sanctioned way to get a number out of
-// one is `parseMoneyForLayout` (chart geometry + ordering only). A day count,
-// a percentage and a row count are genuinely numbers and stay `number`.
+// Money on the `/api/analytics/*` endpoints is `MoneyString` — an EXACT
+// decimal string, never a JSON number — so no currency figure round-trips
+// through a binary float.
+//
+// The `GET /api/dashboard` block at the bottom of this file is the exception,
+// and the difference is the WIRE, not a preference: those schemas annotate
+// their amounts `backend/app/schemas/money.py::MoneyAmount`, which serialises
+// `Decimal` to a JSON *number*. Typing those `MoneyString` would be a
+// different lie, so they are `MoneyAmount` (`string | number | null`) — honest
+// about both shapes, and still enough to make raw arithmetic a type error.
+// See `frontend/CLAUDE.md` § Money formatting.
+//
+// Either way: render with `<Money>` / `formatMoney`; the only sanctioned way
+// to get a number out of one is `parseMoneyForLayout` (chart geometry +
+// ordering only). A day count, a percentage and a row count are genuinely
+// numbers and stay `number`.
 
-import type { MoneyString } from '$lib/utils/money';
+import type { MoneyAmount, MoneyString } from '$lib/utils/money';
 
 export type CashflowGranularity = 'day' | 'week' | 'month';
 
@@ -318,14 +329,14 @@ export interface DashboardDiscountCapture {
 	/** Windows still OPEN — capturable, never counted as a miss. */
 	pending_count: number;
 	/** Per-row face value; mixes currencies. Render the `_reporting` twin. */
-	captured_amount: MoneyString;
-	missed_amount: MoneyString;
-	pending_amount: MoneyString;
+	captured_amount: MoneyAmount;
+	missed_amount: MoneyAmount;
+	pending_amount: MoneyAmount;
 	/** The currency the three `_reporting` figures below are denominated in. */
 	reporting_currency: string;
-	captured_amount_reporting: MoneyString;
-	missed_amount_reporting: MoneyString;
-	pending_amount_reporting: MoneyString;
+	captured_amount_reporting: MoneyAmount;
+	missed_amount_reporting: MoneyAmount;
+	pending_amount_reporting: MoneyAmount;
 	/**
 	 * A COUNT, not money: eligible rows with no usable rate lock, contributing
 	 * FACE value to the three `_reporting` figures rather than being dropped.
@@ -341,6 +352,117 @@ export interface DashboardDiscountCapture {
 	 */
 	capture_rate_pct: number | null;
 	insufficient_data: boolean;
+}
+
+// The tenant dashboard — `GET /api/dashboard`.
+//
+// These three lived inside `routes/+page.svelte` as un-exported local
+// interfaces, so the ONLY thing that ever compared a payload against them was
+// the route itself. Every e2e stub of this endpoint was a hand-maintained
+// literal that drifted the moment the API gained a non-optional field, and one
+// did: the stub omitted `unconverted_count`, `undefined > 0` is false, and the
+// partial-conversion disclosure could only ever render its no-notice branch.
+// Exported here so the fixtures can `satisfies DashboardData` — which bites
+// because `tsconfig.e2e.json` typechecks the Playwright tree that `pnpm check`
+// skips.
+//
+// Money on this endpoint is `MoneyAmount`, not `MoneyString`: it serialises
+// through `backend/app/schemas/money.py::MoneyAmount`, which deliberately
+// writes a JSON *number*. See `frontend/CLAUDE.md` § Money formatting for why
+// the two spellings both exist and why neither is a free choice.
+
+export interface AgingBuckets {
+	current: MoneyAmount;
+	days_30: MoneyAmount;
+	days_60: MoneyAmount;
+	days_90: MoneyAmount;
+	days_90_plus: MoneyAmount;
+}
+
+export interface ReportingAgingBuckets extends AgingBuckets {
+	/**
+	 * Invoices summed into these five bands at FACE value because no locked
+	 * rate bridged them into the reporting currency. ONE count for the band
+	 * set, not five — the actionable fact is the same either way. The bare
+	 * `aging` deliberately carries none: it is a face-value cross-currency sum
+	 * in its entirety, so a count would understate it.
+	 */
+	unconverted_count: number;
+}
+
+export interface DashboardData {
+	total_invoices: number;
+	total_amount: MoneyAmount;
+	/**
+	 * Currency-aware rollup of the whole invoice book into ONE reporting
+	 * currency — `total_amount` above sums raw `Invoice.amount` across
+	 * currencies and is kept only for API back-compat; every KPI below renders
+	 * from this instead.
+	 */
+	reporting: {
+		reporting_currency: string;
+		total_amount: MoneyAmount;
+		total_count: number;
+		unconverted_count: number;
+	};
+	total_paid: MoneyAmount;
+	total_pending: MoneyAmount;
+	/** Reporting-currency counterparts of `total_paid` / `total_pending`. */
+	total_paid_reporting: MoneyAmount;
+	total_pending_reporting: MoneyAmount;
+	total_paid_unconverted_count: number;
+	total_pending_unconverted_count: number;
+	total_rebates: MoneyAmount;
+	/**
+	 * Rebates left out of `total_rebates` for being denominated in another
+	 * currency — a DIFFERENT fact from the unconverted counts above, which are
+	 * rows whose reporting figure could not be established at all.
+	 */
+	excluded_rebate_count?: number;
+	touchless_rate: number;
+	stale_approvals: number;
+	open_exceptions: number;
+	pipeline: Record<string, number>;
+	vendor_spend: Array<{
+		vendor: string;
+		amount: MoneyAmount;
+		/**
+		 * This vendor's invoices that entered `amount` at face value for want
+		 * of a rate lock. Per vendor, and it matters here beyond the number:
+		 * the tile RANKS vendors against each other, and an unconverted total
+		 * is not comparable to a converted one.
+		 */
+		unconverted_count: number;
+	}>;
+	aging: AgingBuckets;
+	/** Reporting-currency counterpart of `aging`. */
+	aging_reporting: ReportingAgingBuckets;
+	monthly_trend: Array<{
+		month: string;
+		count: number;
+		amount: MoneyAmount;
+		reporting_amount: MoneyAmount;
+		/**
+		 * Per MONTH, not per series: a trend is read bar against bar, so which
+		 * step in the line is part-converted is the useful fact.
+		 */
+		unconverted_count: number;
+	}>;
+	upcoming_payments: Array<{
+		id: string;
+		invoice_number: string;
+		vendor_name: string;
+		amount: MoneyAmount;
+		due_date: string | null;
+		is_overdue: boolean;
+	}>;
+	/**
+	 * Early-payment discount capture — a three-way captured / missed / PENDING
+	 * fold with its own reporting currency and its own `unconverted_count`.
+	 * See {@link DashboardDiscountCapture} for why the pending bucket and the
+	 * `null` capture rate are not cosmetic.
+	 */
+	discount_capture: DashboardDiscountCapture;
 }
 
 // Forecast vs actual — `POST /api/analytics/forecast_variance`.

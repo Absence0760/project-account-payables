@@ -669,6 +669,17 @@ exactly as before.
     redirect guards) mirrors whatever `require_roles` the page's READ
     endpoint uses by default** — only the specific sensitive ACTION checks
     move to `auth.can(perm)`. The vendor pages above follow that default.
+  - **A nav `roles` gate is per ENTRY, read off that route's own backend
+    gate — never one list copied across a group.** A group's children
+    routinely disagree: in Procurement, `GET /api/purchase-orders` and
+    `GET /api/goods-receipts` (and `GET /api/inspections`, behind the same
+    page's second tab) are `get_current_user` — auth-gated, role-open —
+    while every `/api/budgets` read is
+    `require_roles(ADMIN, AP_MANAGER, CFO)`. Those five rows shared one
+    admin/ap_manager/cfo list, so an `ap_clerk` was hidden from two pages
+    whose own code says a clerk reads them (`goods-receipts/+page.svelte`:
+    "a clerk sees every inspection and no button"). `src/lib/nav.test.ts`
+    now pins the exact link set each system role sees in that group.
   - **Exception: a permission-gated control is unreachable if the nav row
     that leads to it is still role-only.** `NavLink`/`NavChild` take an
     optional `permissions?: string[]`, OR'd with `roles` in
@@ -676,12 +687,23 @@ exactly as before.
     optional `can: PermissionCheck` alongside the existing `has: RoleCheck`);
     `Sidebar.svelte` and `SectionTabs.svelte` pass `auth.can`. Two nav
     entries need this: **Payments** — a custom role holding ONLY
-    `payment.execute` (no `admin`/`ap_manager`/`cfo`) could call every
-    backend endpoint the `/payments` page needs (the supporting reads
-    are `require_permission(PERM_PAYMENT_EXECUTE[, PERM_PAYMENT_VOID])`,
-    exactly matching the prior `require_roles(ADMIN, AP_MANAGER, CFO)`
-    footprint) but the sidebar row stayed hidden without this — carries
-    `permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]`. **Users** — 
+    `payment.execute` (no `admin`/`ap_manager`/`cfo`) can call every backend
+    endpoint the `/payments` page needs, so the sidebar row carries
+    `permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]`.
+    **That claim used to be false, and the nav row was the worse half of the
+    bug**: widening a nav entry means checking what the PAGE loads on mount,
+    not just the endpoint the row is named after. `/payments`' mount effect
+    fires `GET /api/payments/summary`, `/api/payments/queue` and — on the
+    default tab — `/api/payments/queue/ids` unconditionally, and all three
+    were still `require_roles(ADMIN, AP_MANAGER, CFO)` while their siblings
+    migrated, so the row led a permission-only holder to three 403s on first
+    paint. All three now gate on
+    `require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)` like the
+    `GET /api/payments` reads beside them, which reproduces the prior role
+    footprint exactly (`ap_clerk` holds neither permission and is still
+    refused). `backend/tests/test_sod_endpoint_wiring.py` pins all three, and
+    its `test_every_permission_gated_route_is_pinned` makes forgetting one a
+    failure rather than a silent gap. **Users** — 
     `GET /api/admin/users` migrated to `require_permission(user.manage)`,
     so a custom role holding only that permission needs the tab too —
     carries `permissions: [PERM_USER_MANAGE]`; the sibling Roles tab

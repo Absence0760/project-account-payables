@@ -1,0 +1,49 @@
+{
+	// Typecheck for the Playwright tree (`tests-e2e/`), which `pnpm check` does
+	// NOT cover: `tsconfig.json` extends `.svelte-kit/tsconfig.json`, whose
+	// generated `include` lists `../src/**`, `../test/**` and `../tests/**` —
+	// and `tests-e2e` is none of those. TypeScript does not merge includes from
+	// an extended config, so the omission is silent.
+	//
+	// What that cost: every e2e stub of an API response was a hand-maintained
+	// object literal that nothing compared against the type the app reads. The
+	// dashboard stub omitted `unconverted_count`, `undefined > 0` is false, and
+	// the partial-conversion disclosure it was meant to exercise could only ever
+	// render its no-notice branch. A `satisfies` in an unchecked tree buys
+	// nothing, so the fixtures and this config land together.
+	//
+	// Run via `pnpm check:e2e` (frontend) / `pnpm lint:frontend:e2e` (root).
+	// It is a TYPE check only — it starts no server and runs no test.
+	"extends": "./.svelte-kit/tsconfig.json",
+	"compilerOptions": {
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"noEmit": true,
+		"moduleResolution": "bundler",
+		// The Playwright tree genuinely runs in Node — `process.env`, `Buffer`,
+		// `node:crypto`, `node:child_process`. `src/` deliberately does not get
+		// these (see `tsconfig.json`), so they are named here rather than left
+		// to the automatic `@types/*` sweep.
+		"types": ["node"]
+	},
+	"include": ["./tests-e2e/**/*.ts"],
+	// SHRINK-ONLY. Every entry is a file that does not typecheck today and the
+	// fix is a one-line annotation, not a design question — they are listed
+	// rather than fixed only because another concurrent session owns the file.
+	// Never add a file here to get a red check green: fix the annotation.
+	//
+	//  - entities/switcher.spec.ts — `createEntity(page, …)` has no `Page`
+	//    annotation, so `page.evaluate`'s argument destructure infers `any`
+	//    (TS7006/TS7031 ×4). Identical to the fix already applied to
+	//    `cfo/by-entity.spec.ts`: `import type { Page } from '@playwright/test'`
+	//    and annotate the parameter.
+	//
+	// `exclude` only drops ROOT files — a file another spec imports is still
+	// checked — so this list can only ever hold leaf specs. `fixtures/helpers.ts`
+	// is imported by every spec and is why `@types/node` is a real devDependency
+	// rather than something this config could have excluded its way around.
+	"exclude": ["./tests-e2e/entities/switcher.spec.ts"]
+}
