@@ -51,13 +51,26 @@ which is how the wrong corridor got picked — degrading to
 to it, `prepare_international_payment` normalises both sides of its comparison
 through `normalize_currency_code`, and `api/payments` calls it directly.
 `currency_conversion.resolve_reporting_currency` reads the same field as the
-second rung of a different question ("what do we roll UP in?") and is pinned to
-produce the identical answer by a test.
+second rung of a different question ("what do we roll UP in?"), and now reads it
+**through this module too** — so `international_payments.py` is the only file in
+`app/` that reaches into the settings JSON for `home_currency` at all.
+
+It cannot call `resolve_home_currency`, though, because that function's whole
+job is to never answer "unset": it substitutes `DEFAULT_HOME_CURRENCY`. As rung
+2 of a four-rung chain that would always answer, making rungs 3 and 4
+unreachable — an org whose only currency signal is `invoice_defaults.currency`
+would silently start rolling up in USD. `configured_home_currency(org_settings)`
+is the primitive underneath both: the setting normalised, or `None` when the
+tenant has not usably set one. `resolve_home_currency` is now literally
+`configured_home_currency(...) or DEFAULT_HOME_CURRENCY`.
 
 **Tests:** `tests/test_payment_home_currency.py` — the normaliser's table, the
-padded-value regression at `prepare_international_payment` and end-to-end
-through `_execute_single_payment`, an agreement test across all three readers,
-and a source-scan guard listing the declared readers of the raw setting.
+`configured_home_currency` unset-vs-USD distinction, the padded-value regression
+at `prepare_international_payment` and end-to-end through
+`_execute_single_payment`, an agreement test across all three readers, a
+fall-through test pinning that an unset home currency still reaches rungs 3 and
+4, and a source-scan guard listing the declared readers of the raw setting (now
+one).
 
 ## Corridor selection
 

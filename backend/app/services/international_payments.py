@@ -78,6 +78,28 @@ def normalize_currency_code(value: str | None) -> str | None:
     return trimmed or None
 
 
+def configured_home_currency(org_settings: dict | None) -> str | None:
+    """The home-currency SETTING as written, normalised — or ``None``.
+
+    ``None`` means the tenant has not usably set one (absent, blank, or the
+    surrounding JSON is not the shape it should be), which is a *different*
+    answer from "their home currency is USD". `resolve_home_currency` collapses
+    the two because the payment path has to pick something; the
+    reporting-currency chain in `currency_conversion` must not, because
+    `settings.payments.home_currency` is only its SECOND rung and an absent
+    value has to fall through to the next one rather than short-circuit it.
+
+    This is the only place in `app/` that reads the raw setting out of the
+    settings JSON — see `tests/test_payment_home_currency.py`.
+    """
+    if not isinstance(org_settings, dict):
+        return None
+    payments = org_settings.get("payments")
+    if not isinstance(payments, dict):
+        return None
+    return normalize_currency_code(payments.get("home_currency"))
+
+
 def resolve_home_currency(org_settings: dict | None) -> str:
     """The org's HOME currency — ``settings.payments.home_currency``.
 
@@ -101,12 +123,7 @@ def resolve_home_currency(org_settings: dict | None) -> str:
     degrades to ``DEFAULT_HOME_CURRENCY`` rather than producing a code that
     compares equal to nothing.
     """
-    if not isinstance(org_settings, dict):
-        return DEFAULT_HOME_CURRENCY
-    payments = org_settings.get("payments")
-    if not isinstance(payments, dict):
-        return DEFAULT_HOME_CURRENCY
-    return normalize_currency_code(payments.get("home_currency")) or DEFAULT_HOME_CURRENCY
+    return configured_home_currency(org_settings) or DEFAULT_HOME_CURRENCY
 
 
 def _quantize_money(value: Decimal) -> Decimal:
