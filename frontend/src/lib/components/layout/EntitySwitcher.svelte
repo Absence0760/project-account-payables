@@ -8,8 +8,10 @@
 	let triggerBtn = $state<HTMLButtonElement | null>(null);
 
 	// Default entity first, then the rest alphabetically (matches the backend
-	// list order); "All entities" is rendered as a fixed first option.
-	let entities = $derived(entityStore.entities);
+	// list order); "All entities" is rendered as a fixed first option. Only
+	// SELECTABLE entities (active, plus the current selection) are offered — a
+	// deactivated entity must not be pickable, or new rows land under it.
+	let entities = $derived(entityStore.selectableEntities);
 	let selectedId = $derived(entityStore.selectedId);
 	// The store's `selectedLabel` falls back to an English literal, so the label
 	// is derived here instead: `m()` is reactive to a locale switch and the store
