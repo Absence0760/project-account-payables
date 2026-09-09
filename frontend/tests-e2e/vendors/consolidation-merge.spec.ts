@@ -1,9 +1,9 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteVendorsWhere,
 	expect,
 	signInAndWait,
-	tenantPsql,
 	test
 } from '../fixtures/helpers';
 
@@ -73,15 +73,13 @@ test.describe('/vendors consolidation merge (admin)', () => {
 	 * one row further, and the consolidation clusterer itself has more rows to
 	 * consider on the next run.
 	 *
-	 * `sanctions_checks` first — screening runs on vendor create, and that FK
-	 * does not cascade. The predicate is the shared prefix rather than this
-	 * run's token, so a run also clears what earlier runs stranded.
+	 * The predicate is the shared prefix rather than this run's token, so a run
+	 * also clears what earlier runs stranded. `deleteVendorsWhere` owns the
+	 * child graph — screening runs on vendor create, and that FK does not
+	 * cascade.
 	 */
 	test.afterEach(() => {
-		tenantPsql(
-			`DELETE FROM sanctions_checks WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE '${NAME_PREFIX}%')`
-		);
-		tenantPsql(`DELETE FROM vendors WHERE name LIKE '${NAME_PREFIX}%'`);
+		deleteVendorsWhere(`name LIKE '${NAME_PREFIX}%'`);
 	});
 
 	test('seed a duplicate pair, merge into canonical, list refreshes', async ({ page }) => {

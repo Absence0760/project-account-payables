@@ -1,6 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
+	deleteVendorsWhere,
 	expect,
 	tenantHeaders,
 	tenantPsql,
@@ -113,9 +114,7 @@ function cleanupVendor(vendorId: string): void {
 	// audit_log is append-only (immutable trigger) and PII-free — deliberately
 	// left in place. Everything FK'd to the vendor goes first.
 	try {
-		tenantPsql(`DELETE FROM vendor_change_requests WHERE vendor_id='${vendorId}'`, SLUG);
-		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id='${vendorId}'`, SLUG);
-		tenantPsql(`DELETE FROM vendors WHERE id='${vendorId}'`, SLUG);
+		deleteVendorsWhere(`id='${vendorId}'`, SLUG);
 	} catch {
 		/* best-effort */
 	}

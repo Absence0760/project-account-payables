@@ -2,6 +2,7 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	deleteInvoicesWhere,
+	deleteVendorsWhere,
 	expect,
 	signInAndWait,
 	tenantPsql,
@@ -97,18 +98,18 @@ function cleanup(stamp: string, entityId: string, vendorName: string): void {
 	} catch {
 		/* best-effort */
 	}
-	// `POST /api/invoices` auto-creates an unverified vendor from the name.
-	for (const stmt of [
-		`DELETE FROM vendor_extraction_priors WHERE vendor_id IN (SELECT id FROM vendors WHERE name='${vendorName}')`,
-		`DELETE FROM sanctions_checks WHERE vendor_id IN (SELECT id FROM vendors WHERE name='${vendorName}')`,
-		`DELETE FROM vendors WHERE name='${vendorName}'`,
-		`DELETE FROM entities WHERE id='${entityId}'`,
-	]) {
-		try {
-			tenantPsql(stmt);
-		} catch {
-			/* best-effort */
-		}
+	// `POST /api/invoices` auto-creates an unverified vendor from the name;
+	// `deleteVendorsWhere` owns whatever the app hung off it. The entity
+	// goes last — `vendors.entity_id` FK-references it.
+	try {
+		deleteVendorsWhere(`name='${vendorName}'`);
+	} catch {
+		/* best-effort */
+	}
+	try {
+		tenantPsql(`DELETE FROM entities WHERE id='${entityId}'`);
+	} catch {
+		/* best-effort */
 	}
 }
 
