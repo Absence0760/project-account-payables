@@ -214,6 +214,27 @@ async def test_import_invoices_happy_path():
 
 
 @pytest.mark.asyncio
+async def test_import_invoices_stamps_the_importer_as_uploader():
+    """`uploaded_by_id` is the segregation-of-duties key
+    (`approval_chain.violates_segregation`), and it must land on EVERY row of a
+    batch — not just the first — so a long import cannot smuggle an
+    unattributed, self-approvable payable in behind an attributed one."""
+    from app.models.invoice import Invoice
+
+    actor_id = uuid.uuid4()
+    csv_text = (
+        "invoice_number,vendor_name,amount,status\nINV-U1,Acme,100.00,new\nINV-U2,Acme,200.00,new\n"
+    )
+    db = _StubSession()
+
+    await import_invoices_csv(db, uuid.uuid4(), csv_text, actor_id=actor_id)
+
+    invoices = [o for o in db.added if isinstance(o, Invoice)]
+    assert len(invoices) == 2
+    assert [inv.uploaded_by_id for inv in invoices] == [actor_id, actor_id]
+
+
+@pytest.mark.asyncio
 async def test_import_invoices_bad_amount_is_row_error():
     csv_text = "invoice_number,vendor_name,amount\nINV-001,Acme,not-a-number\nINV-002,Acme,100.00\n"
     db = _StubSession()
@@ -520,6 +541,68 @@ async def test_import_invoices_endpoint_accepts_normal_upload(realdb):
         resp = await c.post("/api/invoices/import-csv", files=file)
     assert resp.status_code == 200, resp.text
     assert resp.json()["imported"] == 1
+
+
+async def test_import_invoices_endpoint_stamps_uploaded_by_id(realdb):
+    """An imported invoice must carry the same authorship a hand-keyed one gets
+    (`api/invoices.py::create_invoice`). `approval_chain.violates_segregation`
+    keys on this column and treats NULL as "no employee creator", so a row that
+    landed without it was silently exempt from segregation of duties."""
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice
+
+    actor_id = realdb.info("a").users["ap_manager"]
+    csv_bytes = (
+        b"invoice_number,vendor_name,amount,status\nIMP-SOD-1,SoD Import Vendor,750.00,new\n"
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/invoices/import-csv",
+            files={"file": ("invoices.csv", csv_bytes, "text/csv")},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["imported"] == 1
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (
+            await s.execute(select(Invoice).where(Invoice.invoice_number == "IMP-SOD-1"))
+        ).scalar_one()
+        assert inv.uploaded_by_id == actor_id
+
+
+async def test_import_then_self_approve_is_blocked_by_segregation(realdb):
+    """End-to-end proof at the API: the AP manager who imported a payable cannot
+    also approve it. Open AP is imported at `new` precisely so it goes through
+    the approval controls — and those controls only bind because the import
+    records who ran it. Mirrors
+    `test_invoice_manual_entry.py::test_manual_create_then_self_approve_is_blocked_by_segregation`.
+    """
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice
+
+    csv_bytes = (
+        b"invoice_number,vendor_name,amount,status\nIMP-SOD-2,SoD Import Vendor 2,900.00,new\n"
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        imported = await c.post(
+            "/api/invoices/import-csv",
+            files={"file": ("invoices.csv", csv_bytes, "text/csv")},
+        )
+        assert imported.status_code == 200, imported.text
+        assert imported.json()["imported"] == 1
+
+        mk = realdb.sessionmaker("a")
+        async with mk() as s:
+            invoice_id = (
+                await s.execute(select(Invoice.id).where(Invoice.invoice_number == "IMP-SOD-2"))
+            ).scalar_one()
+
+        resp = await c.post(f"/api/invoices/{invoice_id}/approve", json={})
+    assert resp.status_code == 403, resp.text
+    assert "segregation" in resp.json()["detail"].lower()
 
 
 async def test_import_invoices_endpoint_rejects_oversized_file(realdb):

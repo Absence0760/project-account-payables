@@ -410,6 +410,12 @@ async def test_generate_now_creates_precoded_review_invoice(realdb):
         assert inv.recurring_period_key == payload["period_key"]
         assert inv.amount == Decimal("1234.56")  # exact Numeric, not float
         assert inv.gl_account == "7100"  # pre-coded from template
+        # The person who clicked generate-now caused this payable to enter the
+        # approval queue, so they are its uploader for segregation of duties —
+        # `approval_chain.violates_segregation` reads a NULL here as "no
+        # employee creator" and would let them approve their own generation.
+        # (The background sweep still passes None: nobody ran it.)
+        assert inv.uploaded_by_id == realdb.info("a").users["ap_manager"]
         # invoice.created audit row written
         created = (
             await s.execute(
@@ -684,6 +690,11 @@ async def test_sweep_generated_counts_only_genuine_new_invoices(realdb):
             .all()
         )
         assert len(rows) == 2
+        # Nobody ran the sweep, so there is no employee creator to record — the
+        # counterpart to generate-now's stamped `uploaded_by_id`. This is a real
+        # (narrower) segregation gap: the template's AUTHOR is an employee, but
+        # `RecurringInvoiceTemplate` has no creator column to attribute it to.
+        assert all(inv.uploaded_by_id is None for inv in rows)
 
 
 async def test_sweep_reports_zero_when_period_already_generated(realdb):
