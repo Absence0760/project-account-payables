@@ -18,7 +18,6 @@ test.describe('/vendors — Import CSV', () => {
 
 	test('imports a CSV, reports the row-level result, and the new vendor appears in the list', async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 
 		await page.getByRole('button', { name: 'Import CSV' }).click();
 		const modal = page.getByRole('dialog', { name: 'Import CSV' });
@@ -61,7 +60,6 @@ test.describe('/vendors — Import CSV', () => {
 
 	test('a hard failure (non-CSV upload) surfaces as an error toast, not a silent no-op', async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 		await page.getByRole('button', { name: 'Import CSV' }).click();
 		const modal = page.getByRole('dialog', { name: 'Import CSV' });
 
