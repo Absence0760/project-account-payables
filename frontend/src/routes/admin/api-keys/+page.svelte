@@ -294,6 +294,21 @@
 <!-- Per-key usage view -->
 <Modal open={usageKey !== null} ariaLabel={m('admin.apiKeys.usage.aria')} width="md" onclose={() => (usageKey = null)}>
 	{#if usageKey}
+		<!--
+			Both ids, deliberately: `data-key-id` is the key the admin CLICKED
+			(and whose name the heading shows), `data-usage-for` is the key the
+			RESPONSE claims. `usageSequence` is what keeps them equal — open one
+			key's usage, close it, open another, and the first response must not
+			land under the second's name — but a sequencer alone leaves that
+			invariant unassertable, since heading and figures come from different
+			sources and a mismatch looks like ordinary data. Same pairing as
+			`/audit`'s verify-drill and `/experiments`' results readout.
+		-->
+		<div
+			data-testid="api-key-usage"
+			data-key-id={usageKey.id}
+			data-usage-for={usage?.api_key_id ?? ''}
+		>
 		<h2>{m('admin.apiKeys.usage.heading', { name: usageKey.name })}</h2>
 		{#if usageLoading}
 			<p class="state" data-testid="usage-loading">{m('admin.apiKeys.usage.loading')}</p>
@@ -338,6 +353,7 @@
 				</DataTable>
 			{/if}
 		{/if}
+		</div>
 		<div class="modal-footer">
 			<button type="button" class="btn-cancel" onclick={() => (usageKey = null)}>{m('admin.apiKeys.usage.close')}</button>
 		</div>
