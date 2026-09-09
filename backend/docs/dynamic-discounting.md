@@ -243,7 +243,7 @@ down, and must report an unavailable probe.
 | `POST /offers/{id}/decline` | admin, ap_manager, **cfo** | decline |
 | `GET /invoices/{id}/roi` | all four | annualized ROI of paying the invoice early (open offer's best tier, else the static `PaymentSchedule` term) |
 | `POST /optimize` | all four | rank open offers by ROI and select within an optional `{cash_budget}`. Offers with no resolvable net due date come back on `unrankable[]` with a `null` APR and `roi.horizon_known: false` — never a fabricated `0.00` (§ An unknown horizon is `null`, not `0`) |
-| `POST /bulk-negotiate` | admin, ap_manager | one vendor-scoped offer across the vendor's open invoices |
+| `POST /bulk-negotiate` | admin, ap_manager | one vendor-scoped offer across the vendor's open invoices. **Not a multi-vendor batch** — "bulk" is the BASE, and there is no per-row skip-and-report result. `409` when the vendor has nothing open to discount, `404` for an unknown vendor, `422` for a malformed `vendor_id` or an unknown key (§ Proposing a vendor-wide offer) |
 | `GET /dashboard` | all four | captured / missed / capture-rate / open-offers / projected-savings rollup |
 
 Every mutation writes an audit row (`discount_offer.created` / `.accepted` /
@@ -251,6 +251,56 @@ Every mutation writes an audit row (`discount_offer.created` / `.accepted` /
 entity-scoped; lifecycle guards return `409`. Percent / ROI fields serialize as
 JSON **numbers** (matching the frontend `number`-typed contract) while staying
 `Decimal` in Python.
+
+## Proposing a vendor-wide offer
+
+`POST /bulk-negotiate` shipped fully built with **no caller anywhere in the
+app** — the last member of the round-21 caller-less group. Its caller is now
+the `/discounts` page: a **Propose vendor offer** header action opening
+`frontend/src/lib/components/modals/BulkNegotiationModal.svelte`.
+
+Wiring it followed the shape `docs/decisions.md` §42 set for the corridor-quote
+optimizer — reach the largest slice that decides nothing nobody has decided.
+Here that is the whole endpoint, because proposing decides nothing: the offer
+lands at `offered`, accepting it is a separate decision under the wider
+`_ACCEPT_ROLES` gate, and the CFO-gated payment run still has to fund it. No
+policy question was answered by omission.
+
+Three properties are load-bearing on both sides:
+
+- **The base is server-computed and must not be previewed.** `base_amount` is
+  the summed open balance of that one vendor's invoices in the caller's entity
+  (`_OPEN_FOR_DISCOUNT`: `approved` → `payment_scheduled`). Re-deriving it in
+  the client from a second query would give the page a figure that can quietly
+  disagree with the one booked — the same reason an invoice header is never
+  recomputed from its line items. The form states the rule in words; the
+  created offer is the first and only sighting of the number
+  (`docs/decisions.md` §34).
+- **The gate is narrower than the page's.** `_WRITE_ROLES` is admin /
+  ap_manager. A CFO may accept or decline an offer a supplier put on the table
+  but may not put one TO a supplier, so the trigger is hidden for both CFO and
+  clerk and the endpoint 403s them.
+- **The request model refuses what it cannot read.** `BulkNegotiationRequest`
+  now carries `extra="forbid"` and types `vendor_id` as a real `UUID`. A
+  misspelled `valid_until` used to be dropped in silence, creating an offer
+  with no end date — which has no net due date, so the optimizer cannot rank it
+  and it stands against the vendor's whole open balance indefinitely. And a
+  malformed `vendor_id` reached an unguarded `uuid.UUID(...)` and surfaced as a
+  500 instead of a 422.
+
+The tier `percent` travels as an **exact decimal string**, never a JSON number:
+`json.loads` decodes the body before any validator runs, so a JSON number is
+already a float by the time pydantic sees it, and this percent is applied to a
+base spanning a whole vendor relationship. `frontend/src/lib/types/discounts.ts`
+(`normalizeTierDays` / `normalizeTierPercent`) validates shape and the server's
+own `0 < percent < 100` bounds client-side so a doomed tier is refused with a
+sentence rather than a raw 422 — the text sent is the text typed.
+
+Coverage: `backend/tests/test_discounts_api.py` (happy path, the 409/404/422
+refusals, and the admin+ap_manager gate) and
+`frontend/tests-e2e/discounts/bulk-negotiate.spec.ts` (the armed two-click
+confirm, the rendered base amount, the persistent 409, the role gate on both
+the button and the endpoint).
 
 ## Capture — from `accepted` to `captured`
 
