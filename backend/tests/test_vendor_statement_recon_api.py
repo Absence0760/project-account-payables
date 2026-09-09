@@ -409,7 +409,7 @@ async def test_list_filters_by_vendor_and_status(realdb):
 
 async def test_summary_is_whole_set_status_counts_and_open_discrepancies(realdb):
     """`GET /api/vendor-statements/summary` counts the whole matching set by
-    status and sums the per-run discrepancy counts across it — the figures the
+    status and counts the still-actionable LINES across it — the figures the
     page derived from the loaded page (`openCount`, `totalDiscrepancies`). It
     honours the same vendor_id / status filters as the list."""
     mk = realdb.sessionmaker("a")
@@ -1042,3 +1042,102 @@ async def test_pdf_posted_as_octet_stream_is_still_routed_to_extraction(realdb):
         )
     assert resp.status_code == 201, resp.text
     assert resp.json()["source_format"] == "pdf"
+
+
+async def test_open_discrepancies_falls_as_lines_are_resolved(realdb):
+    """The KPI has to be able to go DOWN.
+
+    It used to sum the run's import-time counter columns
+    (`amount_mismatch_count` + `missing_our_side_count` +
+    `missing_their_side_count`), which the classifier writes once and nothing
+    ever writes again — `resolve_line` updates the line and the run's `status`,
+    not those columns. So a clerk could clear every discrepancy, watch the run
+    flip to `resolved`, and still be told the same number were open. A work
+    queue whose headline cannot decrease is not a work queue.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Recon Falling KPI")
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="RF-1", amount="1000.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        run = (
+            await c.post(
+                "/api/vendor-statements",
+                json={
+                    "vendor_id": vendor_id,
+                    "statement_date": _TODAY.isoformat(),
+                    "lines": [
+                        # 1100 vs our 1000 -> amount_mismatch (actionable)
+                        _line("RF-1", "1100.00"),
+                        # no such invoice on our side -> missing_on_our_side (actionable)
+                        _line("RF-GHOST", "250.00"),
+                    ],
+                },
+            )
+        ).json()
+
+        before = (await c.get(f"/api/vendor-statements/summary?vendor_id={vendor_id}")).json()
+        assert before["open_discrepancies"] == 2
+        assert before["by_status"] == {"open": 1}
+
+        # Resolve one; the headline must drop by exactly one.
+        actionable = [
+            ln
+            for ln in run["lines"]
+            if ln["classification"] in ("amount_mismatch", "missing_on_our_side")
+        ]
+        assert len(actionable) == 2
+        await c.post(
+            f"/api/vendor-statements/{run['id']}/lines/{actionable[0]['id']}/resolve",
+            json={"resolution_status": "resolved"},
+        )
+        mid = (await c.get(f"/api/vendor-statements/summary?vendor_id={vendor_id}")).json()
+        assert mid["open_discrepancies"] == 1
+        assert mid["by_status"] == {"open": 1}
+
+        # `ignored` closes a line too — the run resolves, so the KPI must reach 0
+        # or "0 open discrepancies" and "every run resolved" would disagree.
+        await c.post(
+            f"/api/vendor-statements/{run['id']}/lines/{actionable[1]['id']}/resolve",
+            json={"resolution_status": "ignored"},
+        )
+        after = (await c.get(f"/api/vendor-statements/summary?vendor_id={vendor_id}")).json()
+        assert after["open_discrepancies"] == 0
+        assert after["by_status"] == {"resolved": 1}
+
+
+async def test_open_discrepancies_excludes_missing_on_their_side(realdb):
+    """`missing_on_their_side` is not an open discrepancy.
+
+    Those are OUR open invoices the supplier's statement omitted. They are not
+    in `_ACTIONABLE_CLASSES`, so they never stop a run reaching `resolved` — but
+    the old counter-column sum included `missing_their_side_count`, which is how
+    a run could report `resolved` while the headline above it still claimed open
+    discrepancies.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="Recon Their Side Only")
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="TS-1", amount="700.00")
+    await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="TS-2", amount="800.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        run = (
+            await c.post(
+                "/api/vendor-statements",
+                json={
+                    "vendor_id": vendor_id,
+                    "statement_date": _TODAY.isoformat(),
+                    # Statement lists only TS-1; TS-2 is missing_on_their_side.
+                    "lines": [_line("TS-1", "700.00")],
+                },
+            )
+        ).json()
+
+        assert any(ln["classification"] == "missing_on_their_side" for ln in run["lines"])
+        assert run["status"] == "resolved"
+
+        summary = (await c.get(f"/api/vendor-statements/summary?vendor_id={vendor_id}")).json()
+        assert summary["by_status"] == {"resolved": 1}
+        assert summary["open_discrepancies"] == 0

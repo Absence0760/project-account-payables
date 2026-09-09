@@ -307,7 +307,7 @@ is entity-scoped.
 | `POST /vendor-statements` | Create a run from a pasted/normalised list of lines (`source_format = manual`) |
 | `POST /vendor-statements/upload` | Create a run from an uploaded statement **CSV or PDF** (`multipart/form-data`: `file` + `vendor_id` + `statement_date` + optional `statement_reference` / `currency`). A PDF routes through the extraction pipeline (`source_format = pdf`), anything else through the CSV parser (`source_format = csv`); 422 on a structurally-bad CSV or an unreadable statement, 413 over the size cap |
 | `GET /vendor-statements` | List runs (filters: `vendor_id`, `status`, `search`; paginated `page` / `page_size`). Omits lines. `search` ILIKEs the supplier name + statement reference — the two free-text columns the row renders. The page used to filter the LOADED rows in the browser, so a run matching on page 2 read as "nothing matched" while the footer's "Showing all N" (the server's whole-set total) sat above a client-narrowed table |
-| `GET /vendor-statements/summary` | Whole-set KPI rollup — `by_status` counts + `open_discrepancies` (SUM of `amount_mismatch + missing_our_side + missing_their_side` across the filtered set). Shares `_recon_list_filters` (`vendor_id` / `status` / `search`) with the list so the page's `openCount` / `totalDiscrepancies` KPIs can't describe only the loaded page. Declared **before** `/{recon_id}` so the literal path wins |
+| `GET /vendor-statements/summary` | Whole-set KPI rollup — `by_status` counts + `open_discrepancies` (COUNT of still-actionable **lines** across the filtered set: classification in `_ACTIONABLE_CLASSES` AND `resolution_status = 'unresolved'`, the same predicate `_recompute_run_status` uses — see § open_discrepancies counts lines). Shares `_recon_list_filters` (`vendor_id` / `status` / `search`) with the list so the page's `openCount` / `totalDiscrepancies` KPIs can't describe only the loaded page. Declared **before** `/{recon_id}` so the literal path wins |
 | `GET /vendor-statements/close-readiness` | Period-close gate (see below). Declared **before** `/{recon_id}` so the literal path wins |
 | `GET /vendor-statements/{recon_id}` | Detail — the run + all its lines (with each matched invoice's number, fetched in one query, no N+1) |
 | `GET /vendor-statements/{recon_id}/file` | Download the archived supplier document this run was built from. Read roles; entity-scoped run lookup **and** an org-prefix check on the stored key; the same opaque 404 for an unknown run and a run with no document |
@@ -707,3 +707,28 @@ org), like the rest of `seed_extras`.
   already the durable work item that feeds intake; this is the convenience leg.
 </content>
 </invoke>
+
+## `open_discrepancies` counts lines, not import-time counters
+
+The KPI is a COUNT of `vendor_statement_recon_lines` rows that are still
+actionable — `classification IN _ACTIONABLE_CLASSES` (`amount_mismatch`,
+`missing_on_our_side`) and `resolution_status = 'unresolved'` — over the same
+filtered run set the list uses.
+
+It was a SUM of the run's `amount_mismatch_count + missing_our_side_count +
+missing_their_side_count` columns, and that was wrong in two independent ways:
+
+- **It could not go down.** Those columns are written once by the classifier at
+  import and never again; `resolve_line` updates the line and the run's
+  `status`, nothing else. So a clerk could clear every discrepancy on every run,
+  watch each run flip to `resolved`, and be shown the same headline. A work
+  queue whose number is monotonically non-decreasing is not a work queue.
+- **It counted a class the rest of the module excludes.**
+  `missing_their_side_count` is OUR open invoices the supplier's statement
+  omitted. `_ACTIONABLE_CLASSES` deliberately leaves them out — they never block
+  a run from reaching `resolved` — so a run could report `resolved` while the
+  headline above it still claimed open discrepancies.
+
+Sharing the predicate with `_recompute_run_status` is the point: "0 open
+discrepancies" and "every run resolved" are now the same statement rather than
+two figures that happened to be computed from different definitions.

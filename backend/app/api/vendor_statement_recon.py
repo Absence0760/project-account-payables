@@ -677,17 +677,30 @@ async def reconciliation_summary(
     ).all()
     by_status = {str(s): int(n) for s, n in status_rows}
 
+    # Counted from the LINES, not from the run's import-time counter columns.
+    #
+    # Those columns record what the classifier found when the statement was
+    # imported and are never written again — `resolve_line` updates the line and
+    # the run's `status`, nothing else — so a KPI summing them was monotonically
+    # non-decreasing: a clerk could clear every discrepancy on every run, watch
+    # each run flip to `resolved`, and still be told the same number of
+    # discrepancies were open. A figure that cannot go down is not a work queue.
+    #
+    # It also summed `missing_their_side_count`, a class `_ACTIONABLE_CLASSES`
+    # deliberately excludes — those are OUR open invoices the supplier's
+    # statement omitted, which never block the run from reaching `resolved`. So
+    # the headline over-counted against a definition the rest of the module does
+    # not use. Same predicate as `_recompute_run_status` now, which is what makes
+    # "0 open discrepancies" and "every run resolved" the same statement.
+    line = VendorStatementReconLine
     discrepancies = (
         await db.execute(
-            select(
-                func.coalesce(
-                    func.sum(
-                        base.c.amount_mismatch_count
-                        + base.c.missing_our_side_count
-                        + base.c.missing_their_side_count
-                    ),
-                    0,
-                )
+            select(func.count())
+            .select_from(line)
+            .join(base, base.c.id == line.reconciliation_id)
+            .where(
+                line.classification.in_(_ACTIONABLE_CLASSES),
+                line.resolution_status == RESOLUTION_UNRESOLVED,
             )
         )
     ).scalar() or 0

@@ -128,9 +128,22 @@ class ReconciliationSummaryResponse(BaseModel):
     filtered the LOADED page and ``totalDiscrepancies`` reduced the per-run
     discrepancy counts over it — both contradicting the whole-set ``total``.
 
-    ``open_discrepancies`` sums ``amount_mismatch + missing_our_side +
-    missing_their_side`` across the filtered set — the exact figure the page's
-    ``discrepancyCount`` reduce produced, just whole-set."""
+    ``open_discrepancies`` counts the reconciliation LINES across the filtered
+    set that are still actionable: classification in ``_ACTIONABLE_CLASSES``
+    (``amount_mismatch`` / ``missing_on_our_side``) AND
+    ``resolution_status == "unresolved"``.
+
+    It is deliberately not the sum of the runs' import-time counter columns,
+    which is what it used to be. Those columns are written once by the
+    classifier and never again — ``resolve_line`` updates the line and the run's
+    ``status``, nothing else — so the KPI was monotonically non-decreasing: clear
+    every discrepancy on every run, watch each run go ``resolved``, and the
+    headline still reported the original count. It also folded in
+    ``missing_their_side``, a class ``_ACTIONABLE_CLASSES`` excludes (our open
+    invoices the supplier omitted never block a run from resolving), so it
+    over-counted against a definition the rest of the module does not use.
+    Sharing the predicate with ``_recompute_run_status`` is what makes "0 open
+    discrepancies" and "every run resolved" the same statement."""
 
     total: int
     by_status: dict[str, int]
