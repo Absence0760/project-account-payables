@@ -24,10 +24,57 @@ Frontend-specific guidance. See root `CLAUDE.md` for project-wide context.
 pnpm dev              # dev server on :7777
 pnpm build            # production build (adapter-static)
 pnpm preview          # preview build on :8888
-pnpm check            # typecheck
+pnpm check            # typecheck (src/ only — see check:e2e below)
+pnpm check:e2e        # typecheck tests-e2e/ (tsconfig.e2e.json)
 pnpm test:unit        # vitest unit tests (i18n parity, pure helpers, the
                       # stylesheet colour-token/contrast guard)
 ```
+
+### `pnpm check` does not cover `tests-e2e/` — `pnpm check:e2e` does
+
+`tsconfig.json` extends `.svelte-kit/tsconfig.json`, whose generated `include`
+lists `../src/**`, `../test/**` and `../tests/**`. `tests-e2e` is none of those,
+and TypeScript does not merge includes from an extended config, so the omission
+is **silent**: an e2e spec can carry any type error at all and `pnpm check`
+stays green.
+
+What that cost: every e2e stub of an API response was a hand-maintained object
+literal that nothing compared against the type the app reads. The dashboard stub
+omitted `aging_reporting.unconverted_count`, `undefined > 0` is false, and the
+partial-conversion disclosure the spec existed to exercise could only ever
+render its no-notice branch — in two files, with no signal.
+
+`tsconfig.e2e.json` puts that tree in a real program (`pnpm check:e2e`, wired
+into the **Frontend** CI job beside the typecheck, and into root `pnpm lint` as
+`lint:frontend:e2e`). Two things follow:
+
+- **A response fixture declares its contract.** `tests-e2e/dashboard/fixture.ts`
+  is the worked example: one shared payload builder ending in
+  `satisfies DashboardData`, so a new non-optional field on the app type is a
+  compile error in the fixture rather than a spec that quietly stops exercising
+  its own branch. Build a new stub this way whenever the shape it fakes has a
+  `$lib/types` counterpart. It found two real drifts on the way in — the
+  dashboard's `discount_capture` money was typed `MoneyString` while the wire
+  sends JSON numbers, and the five `AgingBuckets` bands were typed `number` and
+  were being summed and divided as raw currency in the route.
+- **`$lib` imports under `tests-e2e/` must be `import type`.** `tsc` resolves the
+  alias through `.svelte-kit/tsconfig.json`'s `paths`; Playwright's own esbuild
+  transform does not read that file, so a VALUE import from `$lib` typechecks
+  and then fails to resolve when Playwright loads the spec. Types are erased
+  before the runtime sees them, which is why the contract costs nothing at test
+  time.
+
+`@types/node` is a devDependency for this config alone — the Playwright tree
+genuinely runs in Node (`process.env`, `Buffer`, `node:crypto`), and
+`fixtures/helpers.ts` is imported by every spec, so there was no excluding its
+way around. `tsconfig.json` therefore sets `"types": []`, which turns OFF the
+automatic `@types/*` sweep and keeps Node globals out of `src/`: without it,
+`process.env` in a component would typecheck and only fail in the browser.
+`tsconfig.e2e.json` names `"types": ["node"]` explicitly instead.
+
+`tsconfig.e2e.json`'s `exclude` list is **shrink-only** — every entry is a file
+whose fix is a one-line annotation, listed rather than fixed because another
+session owned it. Never add a file there to turn a red check green.
 
 ## The lockfile: pnpm is pinned, and `pnpm.overrides` is fragile
 

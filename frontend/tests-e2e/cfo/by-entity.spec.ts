@@ -1,3 +1,5 @@
+import type { Page } from '@playwright/test';
+
 import { API_BASE, expect, test } from '../fixtures/helpers';
 
 /**
@@ -15,7 +17,7 @@ import { API_BASE, expect, test } from '../fixtures/helpers';
 
 const API = API_BASE;
 
-async function createEntity(page, name: string, slug: string): Promise<string> {
+async function createEntity(page: Page, name: string, slug: string): Promise<string> {
 	return page.evaluate(
 		async ({ api, name, slug }) => {
 			const token = localStorage.getItem('auth_token');

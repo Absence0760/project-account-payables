@@ -43,7 +43,7 @@ pnpm dev:full                 # services:up (core + every opt-in profile), then 
 pnpm dev:backend              # python main.py (loads backend/.env.development, then .env override)
 pnpm dev:frontend             # vite dev on :7777
 pnpm dev:mobile               # flutter run (needs a device/emulator — not part of `pnpm dev`)
-pnpm lint                     # ruff + svelte-check + flutter analyze
+pnpm lint                     # ruff + svelte-check + tsc over tests-e2e/ + flutter analyze
 pnpm test                     # pytest + Playwright + flutter test
 pnpm migrate:all              # alembic upgrade head + migrate_all_tenants.py
 
@@ -51,7 +51,8 @@ pnpm migrate:all              # alembic upgrade head + migrate_all_tenants.py
 pnpm i                       # install
 pnpm dev                     # dev server on :7777
 pnpm build                   # production build
-pnpm check                   # typecheck
+pnpm check                   # typecheck (src/ only)
+pnpm check:e2e               # typecheck tests-e2e/ (svelte-check skips it — frontend/tsconfig.e2e.json)
 
 # Backend (from backend/)
 docker compose up -d          # start Postgres, Redis, MinIO

@@ -9,7 +9,19 @@
 		"skipLibCheck": true,
 		"sourceMap": true,
 		"strict": true,
-		"moduleResolution": "bundler"
+		"moduleResolution": "bundler",
+		// `src/` is browser code — adapter-static, no SSR, no Node runtime. An
+		// empty `types` turns OFF the automatic inclusion of every `@types/*`
+		// package in the tree, which is what `@types/node` (a devDependency,
+		// added for `tsconfig.e2e.json`) would otherwise ride in on: with it
+		// ambient here, `process.env` / `Buffer` / `require` typecheck in a
+		// component and only fail in the browser at runtime. This preserves the
+		// exact behaviour that held before `@types/node` existed in the tree —
+		// there were no `@types/*` packages then, so nothing was auto-included.
+		// vitest is unaffected: `src/**/*.test.ts` import `describe`/`it`/
+		// `expect` from `'vitest'` explicitly rather than relying on globals.
+		// Node types for the Playwright tree come from `tsconfig.e2e.json`.
+		"types": []
 	}
 	// Path aliases are handled by https://kit.svelte.dev/docs/configuration#alias
 	// except $lib which is handled by https://kit.svelte.dev/docs/configuration#files

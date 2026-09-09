@@ -285,6 +285,18 @@ jobs:
           PUBLIC_API_URL: http://localhost:8000
         run: pnpm check
 
+      # svelte-check covers src/ only — tsconfig.json extends
+      # .svelte-kit/tsconfig.json, whose generated include lists ../src/**,
+      # ../test/** and ../tests/**, and tests-e2e is none of those. So every
+      # e2e stub of an API response was a hand-maintained literal nothing
+      # compared against the type the app reads, and one had silently drifted
+      # (the dashboard stub omitted unconverted_count, undefined > 0 is false,
+      # and the disclosure that spec existed to exercise could only render its
+      # no-notice branch). This is a TYPE check: no server, no browser, no
+      # test run — it belongs beside the typecheck, not in the e2e shards.
+      - name: Typecheck e2e specs
+        run: pnpm check:e2e
+
       - name: Build
         env:
           PUBLIC_API_URL: http://localhost:8000
