@@ -243,7 +243,7 @@ down, and must report an unavailable probe.
 | `POST /offers/{id}/decline` | admin, ap_manager, **cfo** | decline |
 | `GET /invoices/{id}/roi` | all four | annualized ROI of paying the invoice early (open offer's best tier, else the static `PaymentSchedule` term) |
 | `POST /optimize` | all four | rank open offers by ROI and select within an optional `{cash_budget}`. Offers with no resolvable net due date come back on `unrankable[]` with a `null` APR and `roi.horizon_known: false` — never a fabricated `0.00` (§ An unknown horizon is `null`, not `0`) |
-| `POST /bulk-negotiate` | admin, ap_manager | one vendor-scoped offer across the vendor's open invoices. **Not a multi-vendor batch** — "bulk" is the BASE, and there is no per-row skip-and-report result. `409` when the vendor has nothing open to discount, `404` for an unknown vendor, `422` for a malformed `vendor_id` or an unknown key (§ Proposing a vendor-wide offer) |
+| `POST /bulk-negotiate` | admin, ap_manager | one vendor-scoped offer across the vendor's open invoices. **Not a multi-vendor batch** — "bulk" is the BASE, and there is no per-row skip-and-report result. `409` when the vendor has nothing open to discount, `404` for an unknown **or out-of-entity** vendor, `422` for a malformed `vendor_id` or an unknown key (§ Proposing a vendor-wide offer) |
 | `GET /dashboard` | all four | captured / missed / capture-rate / open-offers / projected-savings rollup |
 
 Every mutation writes an audit row (`discount_offer.created` / `.accepted` /
@@ -280,6 +280,16 @@ Three properties are load-bearing on both sides:
   ap_manager. A CFO may accept or decline an offer a supplier put on the table
   but may not put one TO a supplier, so the trigger is hidden for both CFO and
   clerk and the endpoint 403s them.
+- **Both halves are entity-scoped, not just the sum.** The open-invoice total
+  always was; the vendor lookup beside it was not, so an offer stamped entity A
+  could point at entity B's supplier — the disagreement `create_offer` already
+  guards against on its own invoice lookup. It also equalised the refusals: an
+  out-of-entity vendor used to answer `409` ("no open invoices"), which confirms
+  the id exists somewhere in the tenant, where a missing one answered `404`.
+  Both are `404` now, so the response cannot enumerate another entity's
+  vendors. The vendor filter passes `include_shared=True` because a NULL
+  `Vendor.entity_id` is an *unstamped* row (pre-multi-entity), not a deliberate
+  "shared" marker — the same reading `services/vendor_matching` takes.
 - **The request model refuses what it cannot read.** `BulkNegotiationRequest`
   now carries `extra="forbid"` and types `vendor_id` as a real `UUID`. A
   misspelled `valid_until` used to be dropped in silence, creating an offer
