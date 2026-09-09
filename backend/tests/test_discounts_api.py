@@ -581,6 +581,68 @@ async def test_bulk_negotiate_refuses_a_vendor_with_no_open_invoices(realdb):
     assert "no open invoices" in resp.json()["detail"]
 
 
+async def test_bulk_negotiate_refuses_a_vendor_from_another_entity(realdb):
+    """A vendor outside the caller's write entity is an opaque 404.
+
+    The open-invoice sum has always been entity-scoped; the vendor lookup was
+    not, so the two halves could disagree — an offer stamped entity A pointing
+    at entity B's supplier. And the refusals differed in a way that leaked:
+    an out-of-entity vendor answered 409 ("no open invoices"), which confirms
+    the id exists somewhere in the tenant, while a missing one answered 404.
+
+    The vendor here has an open invoice **in its own entity**, so under the old
+    behaviour this request reached the 409 rather than being refused outright.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with mk() as s:
+        sub = Entity(
+            organization_id=org_id,
+            name="EU Subsidiary",
+            slug=f"eu-{uuid.uuid4().hex[:6]}",
+            is_default=False,
+        )
+        s.add(sub)
+        await s.flush()
+        sub_id = sub.id
+        vendor = Vendor(organization_id=org_id, name="Subsidiary Supply Co", entity_id=sub_id)
+        s.add(vendor)
+        await s.flush()
+        vendor_id = vendor.id
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                entity_id=sub_id,
+                invoice_number=f"SUB-{uuid.uuid4().hex[:8]}",
+                vendor_name="Subsidiary Supply Co",
+                vendor_id=vendor_id,
+                amount=Decimal("4000.00"),
+                currency="USD",
+                due_date=utc_today() + timedelta(days=30),
+                status=InvoiceStatus.approved,
+            )
+        )
+        await s.commit()
+
+    payload = {"vendor_id": str(vendor_id), "tiers": [{"days": 7, "percent": "2.00"}]}
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # No `X-Entity-ID` → the write scope is the tenant's DEFAULT entity.
+        cross = await c.post("/api/discounts/bulk-negotiate", json=payload)
+        # With the subsidiary selected, the very same request succeeds — the
+        # refusal is about scope, not about the vendor being unusable.
+        own = await c.post(
+            "/api/discounts/bulk-negotiate",
+            json=payload,
+            headers={"X-Entity-ID": str(sub_id)},
+        )
+
+    assert cross.status_code == 404, cross.text
+    assert own.status_code == 201, own.text
+    assert own.json()["base_amount"] == 4000.0
+
+
 async def test_bulk_negotiate_404s_an_unknown_vendor(realdb):
     mk = realdb.sessionmaker("a")
     async with realdb.client(key="a", role="ap_manager") as c:

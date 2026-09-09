@@ -693,7 +693,30 @@ async def bulk_negotiate(
     # Already a `UUID` — the schema parses it, so a malformed id is a 422 here
     # rather than the 500 an unguarded `uuid.UUID(str)` used to raise.
     vendor_id = body.vendor_id
-    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    # Scope the vendor to the caller's write entity, exactly as `create_offer`
+    # scopes its invoice lookup. The open-invoice sum below is already
+    # entity-scoped, so without this the two halves disagreed: the vendor could
+    # be another subsidiary's while the balance was the caller's, producing an
+    # offer stamped entity A that points at entity B's supplier. It also closed
+    # the gap between the two refusals — an out-of-entity vendor answered 409
+    # ("no open invoices"), which confirms the id exists somewhere in the
+    # tenant, where a missing one answers 404. Both are 404 now, so the
+    # response cannot enumerate another entity's vendors.
+    #
+    # `include_shared=True` because a NULL `Vendor.entity_id` is an *unstamped*
+    # row (pre-multi-entity, or created from an entity-less invoice), not a
+    # deliberate "shared" marker — the same reading `services/vendor_matching`
+    # takes, and excluding it would strand every legacy supplier.
+    vendor = (
+        await db.execute(
+            apply_entity_scope(
+                select(Vendor).where(Vendor.id == vendor_id),
+                Vendor,
+                entity_id,
+                include_shared=True,
+            )
+        )
+    ).scalar_one_or_none()
     if vendor is None:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
