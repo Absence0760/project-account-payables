@@ -147,11 +147,6 @@ test.describe('/portal supplier chat — the vendor surface gets no roster', () 
 
 		await acceptConsent(page);
 		await page.goto('/portal/login');
-		// LOAD-BEARING, do not delete: Svelte 5 binds the form's `onsubmit` only
-		// after hydration, so a fill+submit before that fires the native GET and
-		// silently never attempts an auth POST. Same rationale (and the same fix)
-		// as `fixtures/helpers.ts::signIn` — see the comment there.
-		await page.waitForLoadState('networkidle');
 		await page.locator('input[type="email"]').fill('supplier@portal.test');
 		await page.locator('input[type="password"]').fill('demo');
 		await page.locator('button[type="submit"]').click();

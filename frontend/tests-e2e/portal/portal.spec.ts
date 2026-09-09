@@ -56,11 +56,6 @@ async function portalSignInRaw(
 ) {
   await acceptConsent(page);
   await page.goto("/portal/login");
-  // LOAD-BEARING, do not delete: Svelte 5 binds the form's `onsubmit` only
-  // after hydration, so a fill+submit before that fires the native GET and
-  // silently never attempts an auth POST. Same rationale (and the same fix)
-  // as `fixtures/helpers.ts::signIn` — see the comment there.
-  await page.waitForLoadState("networkidle");
   await page.locator('input[type="email"]').fill(email);
   await page.locator('input[type="password"]').fill(password);
   await page.locator('button[type="submit"]').click();
@@ -468,12 +463,6 @@ test.describe("/portal/change-password", () => {
     await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
 
     await page.goto("/portal/change-password");
-    // LOAD-BEARING, do not delete: the change-password form is `<form
-    // onsubmit={handleSubmit}>` with `bind:value` fields, both wired only at
-    // hydration. Filling and submitting before that fires the native GET, so
-    // the client-side mismatch guard under test never runs. Same class as the
-    // portal-login wait above and `fixtures/helpers.ts::signIn`.
-    await page.waitForLoadState("networkidle");
 
     const fields = page.locator('input[type="password"]');
     await fields.nth(0).fill(PORTAL_PASSWORD);
