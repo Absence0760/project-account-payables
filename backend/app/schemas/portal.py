@@ -102,11 +102,26 @@ class PortalMFADisableRequest(BaseModel):
 class PortalMFAChallengeVerifyRequest(BaseModel):
     """Trade the login-issued challenge token + a valid code for a real vendor
     access token. `method` selects the factor: `totp` (the enrolled
-    authenticator, default) or `email` (the on-demand email-OTP backup)."""
+    authenticator, default) or `email` (the on-demand email-OTP backup).
+
+    `method` is pinned to the same `^(totp|email)$` pattern as its employee
+    twin (`schemas/auth.MFAVerifyRequest`). Unconstrained, an unrecognised
+    factor name — `sms`, or a client typo — fell through the route's
+    `"email" if ... else "totp"` branch and silently verified TOTP, so the two
+    surfaces disagreed about what a factor name even is and a caller asking for
+    a factor this app has never had got a success instead of a 422.
+
+    The one deliberate divergence from the twin is that `method` stays
+    OPTIONAL here (the twin requires it): the default predates the email-OTP
+    backup, so making it required would break any client still sending only
+    `{challenge_token, code}`. The pattern is a pure tightening — the typed
+    frontend client (`stores/portalAuth.svelte.ts::completeMfa`) only ever
+    sends `'totp' | 'email'`.
+    """
 
     challenge_token: str = Field(..., min_length=1)
     code: str = Field(..., min_length=6, max_length=8)
-    method: str = Field(default="totp")
+    method: str = Field(default="totp", pattern="^(totp|email)$")
 
 
 class PortalMFAEmailChallengeRequest(BaseModel):
