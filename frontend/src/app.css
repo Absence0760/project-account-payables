@@ -158,6 +158,38 @@ html, body {
 }
 
 /* ===================================================================
+   Visually hidden (screen-reader-only text)
+   -------------------------------------------------------------------
+   Announced, never drawn: the accessible name of an icon-only control,
+   a column header that reads as blank, or the state of a card whose
+   visible content is a placeholder glyph.
+
+   NOT `display: none` / the `hidden` attribute / `visibility: hidden`,
+   each of which removes the text from the accessibility tree along
+   with the pixels — the opposite of what this is for. The clip recipe
+   leaves it in the tree at 1x1px.
+
+   `position: absolute` means it needs a positioned ancestor, or it
+   anchors to whatever is positioned further up. Give the element that
+   owns it `position: relative` (KpiCard's `.kpi` does).
+
+   Global because it had started duplicating: KpiCard and VendorModal
+   each carried a private copy of the same nine declarations, which is
+   how one of them eventually drifts. One recipe, every consumer.
+   =================================================================== */
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* ===================================================================
    Global focus indicator (WCAG 2.4.7 Focus Visible)
    -------------------------------------------------------------------
    Every interactive element gets a visible accent ring on keyboard

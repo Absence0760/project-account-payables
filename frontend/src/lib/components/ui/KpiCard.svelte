@@ -62,7 +62,7 @@
 	     its own load. -->
 	<span class="kpi-value" aria-hidden={figure === 'pending' ? 'true' : undefined}>{shown}</span>
 	{#if figure === 'pending'}
-		<span class="kpi-loading">{m('common.loading')}</span>
+		<span class="visually-hidden">{m('common.loading')}</span>
 	{/if}
 	<span class="kpi-label">{label}</span>
 	{#if sub}
@@ -72,23 +72,10 @@
 
 <style>
 	/* `.kpi` itself is styled globally in app.css; this only anchors the
-	   absolutely-positioned loading text below so it can't escape the card. */
+	   `.visually-hidden` loading text (which is `position: absolute`) so it
+	   can't escape the card. The recipe itself is the shared one in app.css —
+	   this component used to carry a private copy of it. */
 	.kpi {
 		position: relative;
-	}
-
-	/* Announced, never drawn — the house visually-hidden recipe (same as
-	   VendorModal's). Not `display: none` / `hidden`, which would remove it
-	   from the accessibility tree along with the pixels. */
-	.kpi-loading {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
 	}
 </style>
