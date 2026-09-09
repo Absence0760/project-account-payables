@@ -89,7 +89,6 @@ async function loadWithAllocation(
 		await route.fulfill({ response: resp, json: body });
 	});
 	await page.goto('/tax');
-	await page.waitForLoadState('networkidle');
 }
 
 test.describe('/tax — 1099 box allocation (admin)', () => {

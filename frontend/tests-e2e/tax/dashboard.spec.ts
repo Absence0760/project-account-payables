@@ -20,7 +20,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/tax (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/tax');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the 1099 surface — KPIs, year selector, filters, table', async ({ page }) => {
@@ -79,7 +78,6 @@ test.describe('/tax (admin)', () => {
 		});
 
 		await page.goto('/tax');
-		await page.waitForLoadState('networkidle');
 
 		// The Total-Reportable KPI (4th card) and every per-vendor YTD cell now
 		// render in EUR (€) from the report's currency — a hardcoded USD fallback
@@ -120,7 +118,6 @@ test.describe('/tax (admin)', () => {
 				await route.fulfill({ response: resp, json: body });
 			});
 			await page.goto('/tax');
-			await page.waitForLoadState('networkidle');
 		}
 
 		test('the reportable KPI carries the excluded-card amount as a secondary line', async ({

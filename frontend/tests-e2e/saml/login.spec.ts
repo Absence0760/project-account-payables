@@ -42,14 +42,12 @@ test.describe('SAML login via Keycloak', () => {
 
 	test('the login page renders the SSO button when SAML is configured', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('button.sso-btn')).toBeVisible();
 		await expect(page.locator('button.sso-btn')).toContainText('Sign in with');
 	});
 
 	test('full SAML handshake signs the user in and lands on the dashboard', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 
 		// Click → window.location to backend /auth/saml/login → 302 to Keycloak.
 		await page.locator('button.sso-btn').click();
@@ -73,7 +71,6 @@ test.describe('SAML login via Keycloak', () => {
 
 	test('the JWT is never exposed in the callback URL', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 		await page.locator('button.sso-btn').click();
 		await page.waitForURL(/\/realms\/feohledger\/protocol\/saml/, { timeout: 15_000 });
 		await page.locator('#username').fill('demo@acme.com');

@@ -16,7 +16,6 @@ import { expect, signInAndWait, test } from '../fixtures/helpers';
 test.describe('/cfo CFO-metrics section (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/cfo');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders KPI cards and the accruals + concentration subsections', async ({ page }) => {

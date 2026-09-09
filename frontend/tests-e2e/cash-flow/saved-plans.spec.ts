@@ -17,7 +17,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/cash-flow saved plans', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/cash-flow');
-		await page.waitForLoadState('networkidle');
 		await expect(page.getByRole('heading', { name: 'Cash-Flow Copilot' })).toBeVisible();
 	});
 

@@ -66,7 +66,6 @@ test.describe('no-code workflow builder management', () => {
 
 	test('toolbar exposes template + import entry points', async ({ page }) => {
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
 		await expect(page.getByRole('button', { name: 'New from template' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Import' })).toBeVisible();
 	});
@@ -76,7 +75,6 @@ test.describe('no-code workflow builder management', () => {
 	}) => {
 		const name = `${MARKER}Template WF ${Date.now()}`;
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
 
 		await page.getByRole('button', { name: 'New from template' }).click();
 		const dialog = page.getByRole('dialog', { name: 'Template library' });
@@ -180,7 +178,6 @@ test.describe('no-code workflow builder management', () => {
 
 			// Open the version history modal from the list row.
 			await page.goto('/workflows');
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: name });
 			await expect(row).toBeVisible();
 			await row.getByRole('button', { name: 'Versions' }).click();
@@ -207,7 +204,6 @@ test.describe('no-code workflow builder management', () => {
 
 		try {
 			await page.goto('/workflows');
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: name });
 			await row.getByRole('button', { name: 'Simulate' }).click();
 
@@ -258,7 +254,6 @@ test.describe('no-code workflow builder management', () => {
 
 			// Import via the UI: open the modal, paste JSON, set a name, import.
 			await page.goto('/workflows');
-			await page.waitForLoadState('networkidle');
 			await page.getByRole('button', { name: 'Import' }).click();
 			const dialog = page.getByRole('dialog', { name: 'Import workflow' });
 			await expect(dialog).toBeVisible();
@@ -280,7 +275,6 @@ test.describe('no-code workflow builder management', () => {
 
 	test('import surfaces validation errors for malformed JSON', async ({ page }) => {
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
 		await page.getByRole('button', { name: 'Import' }).click();
 		const dialog = page.getByRole('dialog', { name: 'Import workflow' });
 		await expect(dialog).toBeVisible();

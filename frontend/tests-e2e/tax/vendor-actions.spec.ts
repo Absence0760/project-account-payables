@@ -90,7 +90,6 @@ test.describe('/tax — vendor tax workflow (admin/ap_manager)', () => {
 
 	test('uploads a W-9, verifies a TIN, and downloads the 1099 PDF from the vendor tax modal', async ({ page }) => {
 		await page.goto('/tax');
-		await page.waitForLoadState('networkidle');
 
 		await expect(page.getByRole('cell', { name: vendorName })).toBeVisible({ timeout: 15_000 });
 
@@ -142,7 +141,6 @@ test.describe('/tax — vendor tax workflow (admin/ap_manager)', () => {
 
 	test('files 1099s via the arm-then-confirm flow and shows the result', async ({ page }) => {
 		await page.goto('/tax');
-		await page.waitForLoadState('networkidle');
 		await expect(page.getByRole('cell', { name: vendorName })).toBeVisible({ timeout: 15_000 });
 
 		const fileButton = page.getByRole('button', { name: 'File 1099s' });

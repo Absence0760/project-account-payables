@@ -46,7 +46,6 @@ function resetExceptionToOpen(id: string): void {
 test.describe('/exceptions resolve actions', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/exceptions');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('Resolve button opens the resolve modal with three action choices', async ({ page }) => {

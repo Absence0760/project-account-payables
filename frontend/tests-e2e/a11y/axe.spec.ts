@@ -152,14 +152,12 @@ test.describe('accessibility — unauthenticated surfaces (WCAG 2.2 AA)', () => 
 
 	test('AP login page (/login) has no axe violations', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('input[type="email"]')).toBeVisible();
 		await expectNoA11yViolations(page);
 	});
 
 	test('supplier portal login (/portal/login) has no axe violations', async ({ page }) => {
 		await page.goto('/portal/login');
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('input[type="email"]')).toBeVisible();
 		await expectNoA11yViolations(page);
 	});

@@ -18,7 +18,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/assistant', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/assistant');
-		await page.waitForLoadState('networkidle');
 		await expect(page.getByRole('heading', { name: 'AI Assistant' })).toBeVisible();
 	});
 
