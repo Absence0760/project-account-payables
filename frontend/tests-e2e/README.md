@@ -31,6 +31,8 @@ different Postgres databases.
 | 2            | `e2e3`      | `http://e2e3.localhost:7777` |
 | 3            | `e2e4`      | `http://e2e4.localhost:7777` |
 
+(The `7777` there is the default; see "The port is one env var" below.)
+
 If a local flake suggests within-worker spec interference, run
 serially: `PLAYWRIGHT_WORKERS=1 pnpm test:e2e`. That matches
 the CI-shard behaviour.
@@ -346,6 +348,9 @@ Reach for these instead of duplicating boilerplate per spec:
   the suite if a spec issues its own `DELETE FROM invoices`.
 - `API_BASE`, `ACME_BASE`, `TECHFLOW_BASE`, `NO_TENANT_BASE` — the
   same origins everyone was redeclaring inline.
+- `tenantOrigin(slug)`, `APP_ROOT_URL`, `tenantRootUrl(slug)`,
+  `tenantUrlPrefix(slug)`, `WEB_PORT` — re-exported from
+  `fixtures/origins.ts`; see "The port is one env var" below.
 
 ## Subdomain trick
 
@@ -353,9 +358,43 @@ The frontend resolves the tenant from the subdomain
 (`<slug>.localhost:7777` → `<slug>`). Chromium auto-resolves
 `*.localhost` to 127.0.0.1 per RFC 6761, so no `/etc/hosts` edits
 needed. To exercise the no-tenant marketing landing, override
-`baseURL` to `http://localhost:7777` via
-`test.use({ baseURL: 'http://localhost:7777' })` in the spec (or
-import `NO_TENANT_BASE` and use that).
+`baseURL` via `test.use({ baseURL: NO_TENANT_ORIGIN })` in the spec
+(or import `NO_TENANT_BASE`, its long-standing alias).
+
+## The port is one env var — `FEOH_E2E_WEB_PORT`
+
+`fixtures/origins.ts` is the only place `7777` is written down. Every
+origin, and every "did the redirect land on the app root" assertion,
+derives from it:
+
+| Export | Use |
+| --- | --- |
+| `WEB_PORT` | the port itself (default `7777`) |
+| `tenantOrigin(slug)` | `http://<slug>.localhost:<port>` |
+| `NO_TENANT_ORIGIN` | the no-subdomain marketing origin |
+| `APP_ROOT_URL` | "signed in, landed on the app root", any tenant |
+| `tenantRootUrl(slug)` / `tenantUrlPrefix(slug)` | the same, pinned to one tenant |
+
+They are re-exported from `fixtures/helpers.ts`, so a spec keeps its
+single import.
+
+This matters for **worktrees**. A concurrent session runs in its own
+git worktree (root `CLAUDE.md` § Running concurrent sessions), and a
+worktree isolates files, not ports — so two sessions both want `:7777`
+and the second loses. Point the second one at its own stack:
+
+```bash
+FEOH_E2E_WEB_PORT=7778 PUBLIC_API_URL=http://localhost:8001 pnpm test:e2e
+```
+
+Playwright starts vite on that port itself, so nothing else needs
+changing. `pnpm dev` stays pinned to 7777 — that is the port the docs
+tell a human to open — which is why the `webServer` block invokes vite
+directly rather than shelling out to it.
+
+`fixtures/origins.test.ts` (vitest, not Playwright) is the ratchet: it
+fails if any spec or fixture writes the port, or an
+`http://${slug}.localhost` origin, out by hand again.
 
 ## Storage-state (future)
 

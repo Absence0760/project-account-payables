@@ -1,6 +1,12 @@
 import { execFileSync } from 'node:child_process';
 
-import { currentTenantSlug, expect, signInAndWait, test } from '../fixtures/helpers';
+import {
+	APP_ROOT_URL,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /billing — Platform Billing & Metering (read/display surface).
@@ -570,7 +576,7 @@ test.describe('/billing (clerk — not authorized)', () => {
 
 		await page.goto('/billing');
 		// admin/cfo only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Billing' })).toHaveCount(0);
 
 		// The clerk also can't reach the Subscription tab (it's admin/cfo-only,

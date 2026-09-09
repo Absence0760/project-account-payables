@@ -4,6 +4,7 @@ import {
 	expect,
 	signInAndWait,
 	signOut,
+	tenantOrigin,
 	test
 } from '../fixtures/helpers';
 
@@ -65,8 +66,8 @@ test.describe('logout security', () => {
 		// shape of a stolen-and-replayed token). Logging out in one
 		// must lock out the other on its next request.
 		const slug = currentTenantSlug();
-		const ctxA = await browser.newContext({ baseURL: `http://${slug}.localhost:7777` });
-		const ctxB = await browser.newContext({ baseURL: `http://${slug}.localhost:7777` });
+		const ctxA = await browser.newContext({ baseURL: tenantOrigin(slug) });
+		const ctxB = await browser.newContext({ baseURL: tenantOrigin(slug) });
 		try {
 			const pageA = await ctxA.newPage();
 			await signInAndWait(pageA, tenantAdmin);

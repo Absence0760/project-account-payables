@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { expect, tenantUrlPrefix, test } from '../fixtures/helpers';
 
 import {
 	ACME_ADMIN,
@@ -70,7 +70,7 @@ test.describe('tenant isolation — UI', () => {
 		// rejects → api.ts redirects → end state: anon on acme /login.
 		await page.goto(`${ACME_BASE}/invoices`);
 		await page.waitForURL(/\/login/, { timeout: 10_000 });
-		expect(page.url()).toMatch(/^http:\/\/acme\.localhost:7777\//);
+		expect(page.url()).toMatch(tenantUrlPrefix('acme'));
 	});
 
 	test('reverse direction: acme JWT cannot reach techflow data', async ({ page }) => {
@@ -81,7 +81,7 @@ test.describe('tenant isolation — UI', () => {
 
 		await page.goto(`${TECHFLOW_BASE}/invoices`);
 		await page.waitForURL(/\/login/, { timeout: 10_000 });
-		expect(page.url()).toMatch(/^http:\/\/techflow\.localhost:7777\//);
+		expect(page.url()).toMatch(tenantUrlPrefix('techflow'));
 	});
 });
 

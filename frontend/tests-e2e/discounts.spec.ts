@@ -1,4 +1,11 @@
-import { API_BASE, deleteInvoicesWhere, expect, tenantPsql, test } from './fixtures/helpers';
+import {
+	API_BASE,
+	APP_ROOT_URL,
+	deleteInvoicesWhere,
+	expect,
+	tenantPsql,
+	test
+} from './fixtures/helpers';
 
 /**
  * /discounts — Dynamic Discounting & Early-Payment Optimization dashboard.
@@ -163,7 +170,7 @@ test.describe('/discounts (clerk — read-only)', () => {
 			await page.locator('input[type="email"]').fill(tenantClerk.email);
 			await page.locator('input[type="password"]').fill(tenantClerk.password);
 			await page.locator('form button[type="submit"]').click();
-			await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+			await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 
 			await page.goto('/discounts');
 			// The page stays put — the clerk is not bounced to the tenant root.

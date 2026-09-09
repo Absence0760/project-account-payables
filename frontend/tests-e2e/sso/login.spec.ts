@@ -1,4 +1,4 @@
-import { ACME_BASE, expect, test } from '../fixtures/helpers';
+import { ACME_BASE, expect, tenantRootUrl, test } from '../fixtures/helpers';
 import { SERVICES, skipUnlessReachable } from '../fixtures/services';
 
 /**
@@ -62,7 +62,7 @@ test.describe('SSO login via Keycloak', () => {
 
 		// Keycloak redirects to our callback, which POSTs code+state and, on
 		// success, navigates to the tenant root (dashboard).
-		await page.waitForURL(/^http:\/\/acme\.localhost:7777\/?$/, { timeout: 20_000 });
+		await page.waitForURL(tenantRootUrl('acme'), { timeout: 20_000 });
 
 		// We're authenticated: a JWT is in localStorage and the app shell renders.
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));

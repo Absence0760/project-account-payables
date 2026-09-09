@@ -582,6 +582,17 @@ Worktree notes:
   concurrent runs no longer truncate and disconnect each other (backend
   `CLAUDE.md` § Test databases). Sharing the DB with a *running dev backend* is
   still unsafe — see `docs/known-issues.md`.
+- A worktree isolates files, **not ports**, either. Two sessions both want
+  `:7777` for the frontend and `:8000` for the backend, and the second loses.
+  Both halves are env vars, so give the second session its own stack rather
+  than borrowing the first's:
+  ```bash
+  FEOH_E2E_WEB_PORT=7778 PUBLIC_API_URL=http://localhost:8001 pnpm test:e2e
+  ```
+  Playwright starts vite on that port itself. `frontend/tests-e2e/fixtures/origins.ts`
+  is the only place the port is written down (`fixtures/origins.test.ts` is the
+  guard); `pnpm dev` stays pinned to 7777, since that is the port the docs tell
+  a human to open. See `frontend/tests-e2e/README.md` § The port is one env var.
 - **All work must end up on `main`.** A worktree commits on its own branch, and
   git won't let a worktree check out `main`, so that work only reaches `main`
   via an explicit merge from the **primary checkout**. Before retiring a

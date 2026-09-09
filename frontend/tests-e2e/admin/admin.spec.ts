@@ -1,4 +1,4 @@
-import { expect, signInAndWait, test } from '../fixtures/helpers';
+import { APP_ROOT_URL, expect, signInAndWait, test } from '../fixtures/helpers';
 
 /**
  * /admin — admin-only user management. Seed creates 4 users per tenant
@@ -71,7 +71,7 @@ test.describe('/admin (clerk — not authorized)', () => {
 		// /admin/partner, /admin/webhooks). Regression: the panels used to
 		// mount unconditionally and their unguarded fetch threw an uncaught
 		// exception on the guaranteed 403 instead of redirecting cleanly.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Users & Roles' })).toHaveCount(0);
 		expect(pageErrors).toEqual([]);
 	});

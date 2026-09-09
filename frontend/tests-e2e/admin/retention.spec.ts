@@ -1,4 +1,11 @@
-import { API_BASE, currentTenantSlug, expect, signInAndWait, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	APP_ROOT_URL,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /admin/retention — SOX records-management retention policy (admin only).
@@ -94,7 +101,7 @@ test.describe('/admin/retention (clerk — not authorized)', () => {
 		await signInAndWait(page, tenantClerk);
 
 		await page.goto('/admin/retention');
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Retention Policy' })).toHaveCount(0);
 
 		const headers = await apiHeaders(page);

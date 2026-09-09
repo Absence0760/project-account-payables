@@ -4,6 +4,7 @@ import {
 	expect,
 	signInAndWait,
 	tenantHeaders,
+	tenantOrigin,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -304,7 +305,7 @@ test.describe('Sync from QMS reports what it did', () => {
 	test.beforeAll(async ({ browser, tenantSlug }) => {
 		// Capture whatever `settings.qms` holds so afterAll restores it — the QMS
 		// config is org-wide and must not leak into sibling specs.
-		const ctx = await browser.newContext({ baseURL: `http://${tenantSlug}.localhost:7777` });
+		const ctx = await browser.newContext({ baseURL: tenantOrigin(tenantSlug) });
 		const p = await ctx.newPage();
 		await signInAndWait(p);
 		const resp = await p.request.get(`${API_BASE}/api/organization`, {
@@ -316,7 +317,7 @@ test.describe('Sync from QMS reports what it did', () => {
 
 	test.afterAll(async ({ browser, tenantSlug }) => {
 		deleteInspectionsLike(SYNC_PREFIX);
-		const ctx = await browser.newContext({ baseURL: `http://${tenantSlug}.localhost:7777` });
+		const ctx = await browser.newContext({ baseURL: tenantOrigin(tenantSlug) });
 		const p = await ctx.newPage();
 		await signInAndWait(p);
 		await patchOrgSettings(p, { qms: originalQms });

@@ -20,7 +20,14 @@ export default defineConfig({
 	},
 	test: {
 		environment: 'node',
-		include: ['src/**/*.{test,spec}.ts'],
+		// `tests-e2e/**/*.test.ts` is deliberately narrower than the `src` entry:
+		// the e2e directory's `*.spec.ts` files are Playwright's and must never
+		// be collected here. The one file it picks up is
+		// `tests-e2e/fixtures/origins.test.ts`, the static guard keeping the web
+		// port out of the specs — a source scan, so it belongs in the fast unit
+		// job rather than costing a browser worker. Playwright ignores it in
+		// turn via `testIgnore: ['**/fixtures/**']`.
+		include: ['src/**/*.{test,spec}.ts', 'tests-e2e/**/*.test.ts'],
 		// Vitest's default (`css: false`) short-circuits every CSS module to an
 		// empty string — including one imported `?raw`. The token-pairing guard
 		// (`lib/a11y/tokenPairing.test.ts`) reads `app.css` as text to extract

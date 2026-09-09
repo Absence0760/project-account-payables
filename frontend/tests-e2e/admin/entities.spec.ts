@@ -1,5 +1,6 @@
 import {
 	API_BASE,
+	APP_ROOT_URL,
 	authedTenantHeaders,
 	currentTenantSlug,
 	expect,
@@ -243,7 +244,7 @@ test.describe('/admin/entities (clerk — not authorized)', () => {
 
 		await page.goto('/admin/entities');
 		// admin-only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Entities' })).toHaveCount(0);
 
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));

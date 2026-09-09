@@ -1,4 +1,4 @@
-import { expect, signIn, test } from '../fixtures/helpers';
+import { APP_ROOT_URL, expect, NO_TENANT_ORIGIN, signIn, test } from '../fixtures/helpers';
 
 // Start unauthenticated — this spec tests the login UI itself.
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -40,14 +40,14 @@ test.describe('/login', () => {
 		// Successful login calls `goto('/')`. The exact landing chrome
 		// is the dashboard for an authenticated tenant user — assert on
 		// the URL transition, not on dashboard internals (those evolve).
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 	});
 });
 
 test.describe('/ (no-tenant landing)', () => {
 	// Override the tenant subdomain in the baseURL — the marketing
 	// landing only renders when the request has no tenant slug.
-	test.use({ baseURL: 'http://localhost:7777' });
+	test.use({ baseURL: NO_TENANT_ORIGIN });
 
 	test('shows the marketing landing, not the login form', async ({ page }) => {
 		await page.goto('/');

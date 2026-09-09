@@ -1,5 +1,6 @@
 import {
 	API_BASE,
+	APP_ROOT_URL,
 	currentTenantSlug,
 	expect,
 	signInAndWait,
@@ -85,7 +86,7 @@ test.describe('/admin/partner (clerk — not authorized)', () => {
 
 		await page.goto('/admin/partner');
 		// admin-only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Partner Admin' })).toHaveCount(0);
 
 		// The API itself 403s a non-admin.

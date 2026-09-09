@@ -1,4 +1,11 @@
-import { API_BASE, currentTenantSlug, expect, signInAndWait, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	APP_ROOT_URL,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /admin/privacy — GDPR/CCPA DSAR export + right-to-erasure (admin only).
@@ -151,7 +158,7 @@ test.describe('/admin/privacy (clerk — not authorized)', () => {
 		await signInAndWait(page, tenantClerk);
 
 		await page.goto('/admin/privacy');
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Privacy & DSAR' })).toHaveCount(0);
 
 		const headers = await apiHeaders(page);

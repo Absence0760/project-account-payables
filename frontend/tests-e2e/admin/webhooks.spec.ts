@@ -1,5 +1,6 @@
 import {
 	API_BASE,
+	APP_ROOT_URL,
 	authedTenantHeaders,
 	currentTenantSlug,
 	expect,
@@ -421,7 +422,7 @@ test.describe('/admin/webhooks (clerk — not authorized)', () => {
 
 		await page.goto('/admin/webhooks');
 		// admin-only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(APP_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Webhooks', exact: true })).toHaveCount(0);
 
 		// The API itself 403s a non-admin.

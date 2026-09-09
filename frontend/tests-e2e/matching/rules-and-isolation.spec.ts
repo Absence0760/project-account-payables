@@ -6,6 +6,7 @@ import {
 	expect,
 	signInAndWait,
 	tenantHeaders,
+	tenantOrigin,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -28,7 +29,7 @@ test.describe('matching_rules tolerance precedence (vendor > commodity > org)', 
 	let vendorId: string;
 
 	test.beforeAll(async ({ browser, tenantSlug }) => {
-		const ctx = await browser.newContext({ baseURL: `http://${tenantSlug}.localhost:7777` });
+		const ctx = await browser.newContext({ baseURL: tenantOrigin(tenantSlug) });
 		const page = await ctx.newPage();
 		await signInAndWait(page);
 		const headers = tenantHeaders(await authToken(page));
@@ -42,7 +43,7 @@ test.describe('matching_rules tolerance precedence (vendor > commodity > org)', 
 
 	test.afterAll(async ({ browser, tenantSlug }) => {
 		cleanup(created);
-		const ctx = await browser.newContext({ baseURL: `http://${tenantSlug}.localhost:7777` });
+		const ctx = await browser.newContext({ baseURL: tenantOrigin(tenantSlug) });
 		const page = await ctx.newPage();
 		await signInAndWait(page);
 		const headers = { ...tenantHeaders(await authToken(page)), 'Content-Type': 'application/json' };

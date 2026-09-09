@@ -1,6 +1,13 @@
 import type { Page } from '@playwright/test';
 
-import { API_BASE, expect, NO_TENANT_BASE, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	APP_ROOT_URL,
+	expect,
+	NO_TENANT_BASE,
+	tenantOrigin,
+	test
+} from '../fixtures/helpers';
 import { SERVICES, skipUnlessReachable } from '../fixtures/services';
 
 /**
@@ -223,7 +230,7 @@ test.describe('signup happy path (UI + Mailpit)', () => {
 		const tempPassword = pwMatch![1];
 
 		// 4. Sign in at the new tenant with the temp password.
-		await page.goto(`http://${slug}.localhost:7777/login`);
+		await page.goto(`${tenantOrigin(slug)}/login`);
 		await page.waitForLoadState('networkidle');
 		await page.locator('input[type="email"]').fill(email);
 		await page.locator('input[type="password"]').fill(tempPassword);
@@ -240,6 +247,6 @@ test.describe('signup happy path (UI + Mailpit)', () => {
 		await page.locator('form button[type="submit"]').click();
 
 		// Lands on the authenticated dashboard (no longer on change-password/login).
-		await expect(page).toHaveURL(/:7777\/?$/, { timeout: 15_000 });
+		await expect(page).toHaveURL(APP_ROOT_URL, { timeout: 15_000 });
 	});
 });

@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+import { NO_TENANT_ORIGIN, tenantOrigin, WEB_PORT } from './fixtures/origins';
+
 /**
  * Playwright e2e config for the frontend.
  *
@@ -7,6 +9,17 @@ import { defineConfig, devices } from '@playwright/test';
  * (`<slug>.localhost:7777`). Chromium resolves `*.localhost` to
  * 127.0.0.1 by default per RFC 6761, so no /etc/hosts changes are
  * needed.
+ *
+ * The port is `FEOH_E2E_WEB_PORT` (default 7777) and comes from
+ * `fixtures/origins.ts`, which every spec derives its URLs from too — so a
+ * second concurrent session in its own git worktree can run the suite
+ * against its own server instead of borrowing the first one's:
+ *
+ *   FEOH_E2E_WEB_PORT=7778 PUBLIC_API_URL=http://localhost:8001 pnpm test:e2e
+ *
+ * `pnpm dev` in `package.json` stays pinned to 7777 — that is the port the
+ * docs tell a human to open — so the webServer below invokes vite directly
+ * with the port this run actually wants.
  *
  * Parallelism + isolation model:
  *
@@ -99,10 +112,11 @@ export default defineConfig({
 	// transforms during page navigation. Locally we keep `pnpm dev`
 	// so an interactive run picks up source edits.
 	webServer: {
-		command: process.env.FEOH_E2E_USE_PREVIEW === 'true'
-			? 'pnpm exec vite preview --port 7777'
-			: 'pnpm dev',
-		url: 'http://localhost:7777',
+		command:
+			process.env.FEOH_E2E_USE_PREVIEW === 'true'
+				? `pnpm exec vite preview --port ${WEB_PORT}`
+				: `pnpm exec vite dev --port ${WEB_PORT}`,
+		url: NO_TENANT_ORIGIN,
 		reuseExistingServer: !process.env.CI,
 		timeout: 60_000,
 		stdout: 'ignore',
@@ -115,11 +129,11 @@ export default defineConfig({
 	use: {
 		// Fallback baseURL. The per-worker `baseURL` fixture in
 		// `fixtures/helpers.ts` routes each worker to its own
-		// `http://e2e<N>.localhost:7777`, so this value mostly ends up
+		// `http://e2e<N>.localhost:<port>`, so this value mostly ends up
 		// in cross-tenant specs that pin via `test.use({ baseURL: … })`
 		// (e.g. `auth/tenant-isolation.spec.ts`) and in any direct
 		// `@playwright/test` import path.
-		baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://acme.localhost:7777',
+		baseURL: process.env.PLAYWRIGHT_BASE_URL ?? tenantOrigin('acme'),
 		trace: 'on-first-retry',
 		screenshot: 'only-on-failure',
 		video: 'retain-on-failure',
