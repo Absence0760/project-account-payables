@@ -421,11 +421,20 @@ Three properties are deliberate and easy to get wrong:
   so someone else approves. Admin holds `vendor.bank_change.approve` by default,
   so no tenant can be left with nobody able to approve.
 
-Regression coverage: `tests/test_vendor_bank_change_provisioner_sod.py` drives
-the whole chain (provision → sign in with the emailed credential → stage →
-refused), the negative case (a different approver succeeds), the untouched case
-(a self-managed supplier still approves normally), the delete-the-evidence
-attempt, and the reset-password takeover of a legacy identity.
+Regression coverage is two files, because the fix has two failure modes:
+
+- `tests/test_vendor_bank_change_provisioner_sod.py` drives the whole chain
+  (provision → sign in with the emailed credential → stage → refused), the
+  negative case (a different approver succeeds), the untouched case (a
+  self-managed supplier still approves normally), the delete-the-evidence
+  attempt, and the reset-password takeover of a legacy identity.
+- `tests/test_vendor_credential_provenance.py` guards the **exhaustiveness
+  claim** the NULL-permissive reading rests on. Invite and reset being the only
+  two ways an AP actor learns a supplier's password is a property of the whole
+  `app/` tree, so a third route — "resend credentials", "impersonate supplier" —
+  would reopen the hole silently with every other test green. It AST-scans for a
+  `VendorUser(...)` construction or a `.hashed_password =` write that neither
+  stamps the column nor carries a reasoned exemption.
 
 ## Security invariants
 
