@@ -7,6 +7,7 @@
 	import {
 		paymentMethodLabelKey,
 		paymentStatusLabelKey,
+		runStatusLabelKey,
 		PAYMENT_STATUS_TONES,
 		runStatusTone
 	} from '$lib/types/payment';
@@ -253,6 +254,14 @@
 		const key = paymentStatusLabelKey(status);
 		return key ? m(key) : status;
 	}
+
+	// Same rule for the RUN status in the header. It had no label map at all,
+	// so this pill printed the raw enum (`executing`, `partial`) directly above
+	// a table whose own status column round 24 had already keyed.
+	function runLabel(status: string): string {
+		const key = runStatusLabelKey(status);
+		return key ? m(key) : status;
+	}
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
@@ -266,7 +275,7 @@
 					<!-- `status-badge` is the e2e hook (tests-e2e/payments read it by
 					     class and assert on textContent); the tone comes from the
 					     shared map, never from a rule on the variant. -->
-					<Badge tone={runStatusTone(run.status)} variant="status-badge {run.status}">{run.status}</Badge>
+					<Badge tone={runStatusTone(run.status)} variant="status-badge {run.status}">{runLabel(run.status)}</Badge>
 				{/if}
 			</div>
 			<button class="close-btn" onclick={onclose} aria-label={m('paymentRuns.runDetail.close')}>&times;</button>

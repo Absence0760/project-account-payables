@@ -4906,6 +4906,15 @@ export const en = {
 	'paymentRuns.runDetail.pendingCfoStrong': 'Pending CFO approval.',
 	'paymentRuns.runDetail.title': 'Payment Run',
 	'paymentRuns.runDetail.total': 'Total',
+	// Payment-RUN status labels — the /payments Runs table + RunDetailModal's
+	// header pill ($lib/types/payment.ts::RUN_STATUS_LABEL_KEYS)
+	'paymentRuns.status.draft': 'Draft',
+	'paymentRuns.status.executing': 'Executing',
+	'paymentRuns.status.submitted': 'Submitted',
+	'paymentRuns.status.completed': 'Completed',
+	'paymentRuns.status.partial': 'Partial',
+	'paymentRuns.status.failed': 'Failed',
+	'paymentRuns.status.cancelled': 'Cancelled',
 	'vendors.modal.allowed': 'Allowed',
 	'vendors.modal.appliedFields': 'Applied {count, plural, one {# field} other {# fields}} to the vendor',
 	'vendors.modal.apply': 'Apply',

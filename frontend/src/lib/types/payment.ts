@@ -102,23 +102,56 @@ export const PAYMENT_STATUS_TONES: Record<PaymentStatus, BadgeTone> = {
 };
 
 /**
+ * The statuses a payment RUN can report — `services/payment_runs`' three CLAIM
+ * states (`draft` / `executing` / `cancelled`, passed through untouched) plus
+ * the four `PaymentRunRollup.run_status` derives from the run's own payments
+ * (`submitted` / `completed` / `partial` / `failed`). Mirrors
+ * `backend/app/services/payment_runs.py`; decisions.md §41.
+ *
+ * `PaymentRun.status` stays a bare `string` on the wire — the value is derived
+ * on read, so a future rollup rung reaches the UI before this union does. The
+ * union exists to make the two maps below TOTAL over what the backend can
+ * report today: `partial` and `executing` had no tone rule at all and rendered
+ * untinted, and neither had a label.
+ */
+export type PaymentRunStatus =
+	| 'draft'
+	| 'executing'
+	| 'submitted'
+	| 'completed'
+	| 'partial'
+	| 'failed'
+	| 'cancelled';
+
+export const PAYMENT_RUN_STATUSES: PaymentRunStatus[] = [
+	'draft',
+	'executing',
+	'submitted',
+	'completed',
+	'partial',
+	'failed',
+	'cancelled'
+];
+
+/**
  * Badge tone per payment-RUN status — `services/payment_runs`' three claim
  * states (`draft` / `executing` / `cancelled`) plus the four its rollup
  * derives (decisions.md §41).
  *
- * `PaymentRun.status` is a bare string (the backend derives it on read), so
- * this can't be a total record and an unknown value falls back to the flat
- * `neutral` chip rather than to nothing — use {@link runStatusTone}.
- * `partial` and `executing` had no rule at all on either surface and rendered
- * untinted — `partial` especially, which is the one run status meaning "some
- * of this money failed".
+ * Total over {@link PaymentRunStatus}, so every status the backend can report
+ * today is tinted. `PaymentRun.status` is still a bare string on the wire (the
+ * backend derives it on read), so read it through {@link runStatusTone}, which
+ * falls an unknown value back to the flat `neutral` chip rather than to
+ * nothing. `partial` and `executing` had no rule at all on either surface and
+ * rendered untinted — `partial` especially, which is the one run status
+ * meaning "some of this money failed".
  *
  * `draft` is `neutral`, not amber: `RunDetailModal` tinted it `warning` while
  * `/payments` rendered it flat, for the same run, one click apart. Flat wins —
  * a draft run is money that has not been attempted yet, which is the absence
  * of a signal rather than a weak one.
  */
-export const RUN_STATUS_TONES: Record<string, BadgeTone> = {
+export const RUN_STATUS_TONES: Record<PaymentRunStatus, BadgeTone> = {
 	draft: 'neutral',
 	executing: 'accent',
 	submitted: 'accent',
@@ -129,7 +162,42 @@ export const RUN_STATUS_TONES: Record<string, BadgeTone> = {
 };
 
 export function runStatusTone(status: string): BadgeTone {
-	return RUN_STATUS_TONES[status] ?? 'neutral';
+	return RUN_STATUS_TONES[status as PaymentRunStatus] ?? 'neutral';
+}
+
+/**
+ * The i18n key carrying each run status' label — never the English string
+ * itself.
+ *
+ * `PaymentRun.status` had no label map at all, so both surfaces that badge it
+ * — the `/payments` Runs table and `RunDetailModal`'s header — printed the RAW
+ * enum, one cell away from a per-payment badge that round 24 had keyed. A
+ * German user read `executing` in Latin script inside an otherwise translated
+ * dialog.
+ *
+ * Keyed off the same union as {@link RUN_STATUS_TONES}, so a status with a
+ * tone but no label (a coloured pill showing a raw value) is a compile error;
+ * `paymentStatus.test.ts` proves every key exists in the catalogue.
+ */
+export const RUN_STATUS_LABEL_KEYS: Record<PaymentRunStatus, MessageKey> = {
+	draft: 'paymentRuns.status.draft',
+	executing: 'paymentRuns.status.executing',
+	submitted: 'paymentRuns.status.submitted',
+	completed: 'paymentRuns.status.completed',
+	partial: 'paymentRuns.status.partial',
+	failed: 'paymentRuns.status.failed',
+	cancelled: 'paymentRuns.status.cancelled'
+};
+
+/**
+ * The message key for a run status, or `null` for one this frontend doesn't
+ * know (the caller renders the raw value — visible and searchable — rather
+ * than a blank badge). `PaymentRun.status` is a bare string on the wire: the
+ * backend DERIVES it on read, so a rollup rung this build has never seen
+ * arrives as ordinary text.
+ */
+export function runStatusLabelKey(status: string): MessageKey | null {
+	return RUN_STATUS_LABEL_KEYS[status as PaymentRunStatus] ?? null;
 }
 
 // UK domestic bank rails (bacs / faster_payments / chaps). A same-currency

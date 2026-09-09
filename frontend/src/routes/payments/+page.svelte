@@ -5,6 +5,7 @@
 		paymentStatusLabelKey,
 		paymentMethodLabelKey,
 		PAYMENT_STATUS_TONES,
+		runStatusLabelKey,
 		runStatusTone
 	} from '$lib/types/payment';
 	import { paymentStore } from '$lib/stores/payments.svelte';
@@ -1647,6 +1648,15 @@
 		return key ? m(key) : s;
 	};
 
+	// Same rule for the RUN status in the Runs table. It had no label map at
+	// all, so the pill printed the raw enum (`executing`, `partial`) in a table
+	// whose every other cell is translated — and the RunDetailModal one click
+	// away did the same.
+	const runLabel = (s: string) => {
+		const key = runStatusLabelKey(s);
+		return key ? m(key) : s;
+	};
+
 	let historyChips = $derived([
 		{ key: 'all', label: m('common.all'), count: paymentCountsTotal || paymentStore.all.length },
 		...PAYMENT_STATUSES.map((s) => ({
@@ -2177,7 +2187,7 @@
 								{run.id.slice(0, 8)}
 							</RowLink>
 						</td>
-						<td><Badge tone={runStatusTone(run.status)} variant={run.status}>{run.status}</Badge></td>
+						<td><Badge tone={runStatusTone(run.status)} variant={run.status}>{runLabel(run.status)}</Badge></td>
 						<td class="right mono">
 							{run.total_amount ? formatRowMoney(run.total_amount, run.currency) : '—'}
 						</td>
