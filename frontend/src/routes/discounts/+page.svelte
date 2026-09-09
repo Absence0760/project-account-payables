@@ -94,6 +94,15 @@
 	let loadingMore = $state(false);
 	let error = $state<string | null>(null);
 
+	// The KPI row's own load state, separate from `loading` (which tracks the
+	// OFFERS list — a different request that resolves on its own schedule).
+	// Only ever cleared, never re-raised: a refresh after accept/decline keeps
+	// the figures already on screen rather than blanking a row the reader is
+	// looking at, and a dashboard whose request FAILED is unavailable, not
+	// pending — the error banner below says why, and a card that went on
+	// claiming to load would never settle.
+	let dashboardPending = $state(true);
+
 	let hasMore = $derived(offers.length < total);
 
 	// Aggregate (tenant-wide) money is labelled with the currency the RESPONSE
@@ -102,13 +111,19 @@
 	// the totals are sums across offers that carry their own currencies, and the
 	// page already renders that same field in the guard text two lines away; a
 	// tenant whose reporting currency had moved read one figure under two codes.
-	// `orgCurrency` remains the fallback for the pre-load render, where every
-	// figure is still 0.
+	// `orgCurrency` is the fallback only for a response that omits the field.
+	//
+	// The absent amount is NOT coerced to 0. `n ?? 0` used to make every money
+	// KPI render a formatted zero for the whole load window — a figure nobody
+	// had computed, shown as a computed one (`docs/decisions.md` §34), and the
+	// most actionable wrong answer available ("we captured nothing"). Every
+	// caller now holds a landed response, and `formatMoney` falls back to the
+	// same em dash `KpiCard` shows if one ever doesn't.
 	function aggMoney(
 		n: MoneyAmount,
 		currency: string | null | undefined
 	): string {
-		return formatMoney(n ?? 0, { currency: currency || orgCurrency.currency, whole: true });
+		return formatMoney(n, { currency: currency || orgCurrency.currency, whole: true });
 	}
 
 	/** Friendly relative "in 3 days" / "5 days ago" for a deadline. */
@@ -159,10 +174,12 @@
 			const data = await getDiscountDashboard();
 			if (!dashboardSequence.canCommit(token)) return;
 			dashboard = data;
+			dashboardPending = false;
 		} catch (e) {
 			// The KPI row is best-effort — a failure here shouldn't blank the table.
 			if (!dashboardSequence.isCurrentRequest(token)) return;
 			dashboard = null;
+			dashboardPending = false;
 			if (!error) error = e instanceof Error ? e.message : m('discounts.error.dashboard');
 		}
 	}
@@ -319,17 +336,43 @@
 	{:else if !canRead}
 		<p class="loading">{m('discounts.redirecting')}</p>
 	{:else}
-		<!-- KPI row -->
+		<!-- KPI row.
+
+		     Every card passes `null` rather than a figure until the dashboard
+		     response lands, so all five render the shared "no figure" dash
+		     (`$lib/utils/kpiValue`) instead of a formatted zero. Round 26 moved
+		     the capture-rate card off the zero-while-loading pattern on its own,
+		     leaving the row saying two contradictory things at once; this is
+		     that decision applied to the whole row and pushed down into
+		     `KpiCard`, so the choice is made once and every page inherits it
+		     (`docs/decisions.md` §34 — a figure nobody computed must not be
+		     displayed as a computed one).
+
+		     `pending` is what separates "still arriving" from "did not arrive":
+		     it draws nothing extra, it only makes the card announce itself as
+		     busy so the dash is never read out as a value.
+
+		     The two counted labels drop their parenthetical while the figure is
+		     missing — "Captured (0)" is the same unearned zero as the amount
+		     above it. The count-free wording is the status/chip label for the
+		     same word, translated in all six locales, so this needs no key of
+		     its own and cannot fall out of sync with the KPI it sits under. -->
 		<div class="kpi-row">
 			<KpiCard
-				value={aggMoney(dashboard?.captured_amount, dashboard?.currency)}
-				label={m('discounts.kpi.captured', { n: dashboard?.captured_count ?? 0 })}
+				value={dashboard ? aggMoney(dashboard.captured_amount, dashboard.currency) : null}
+				label={dashboard
+					? m('discounts.kpi.captured', { n: dashboard.captured_count })
+					: m('discounts.status.captured')}
 				highlight="green"
+				pending={dashboardPending}
 			/>
 			<KpiCard
-				value={aggMoney(dashboard?.missed_amount, dashboard?.currency)}
-				label={m('discounts.kpi.missed', { n: dashboard?.missed_count ?? 0 })}
+				value={dashboard ? aggMoney(dashboard.missed_amount, dashboard.currency) : null}
+				label={dashboard
+					? m('discounts.kpi.missed', { n: dashboard.missed_count })
+					: m('discounts.chip.missed')}
 				highlight="red"
+				pending={dashboardPending}
 			/>
 			<!-- `—`, never `0%`, until an offer has actually been captured or
 			     missed. A capture rate is a ratio over the DECIDED population,
@@ -340,26 +383,30 @@
 			     fraud-rate cards already use, and the same empty state the
 			     sibling figure on `/` shows (`docs/decisions.md` §34).
 
-			     `—` also covers the load window, where `dashboard` is still
-			     null: the money KPIs beside this one brief-render `$0` by the
-			     page's existing convention, but `0%` is the exact misreading
-			     this card exists to remove, so an unknown rate renders as
-			     unknown. The reason line is withheld there — "no offer has been
-			     captured or missed yet" is a claim we cannot make before the
-			     response lands. -->
+			     The dash is no longer written here: `null` means "no figure" and
+			     `KpiCard` owns the glyph, so this card and the four beside it
+			     cannot drift apart. The reason line is still withheld during the
+			     load window — "no offer has been captured or missed yet" is a
+			     claim we cannot make before the response lands. -->
 			<KpiCard
 				value={dashboard && !dashboard.insufficient_data
 					? `${(dashboard.capture_rate_pct ?? 0).toFixed(0)}%`
-					: '—'}
+					: null}
 				label={m('discounts.kpi.captureRate')}
 				sub={dashboard?.insufficient_data ? m('discounts.kpi.captureRateUnknown') : null}
+				pending={dashboardPending}
 			/>
 			<KpiCard
-				value={aggMoney(dashboard?.projected_savings, dashboard?.currency)}
+				value={dashboard ? aggMoney(dashboard.projected_savings, dashboard.currency) : null}
 				label={m('discounts.kpi.projectedSavings')}
 				highlight="green"
+				pending={dashboardPending}
 			/>
-			<KpiCard value={dashboard?.open_offer_count ?? 0} label={m('discounts.kpi.openOffers')} />
+			<KpiCard
+				value={dashboard?.open_offer_count ?? null}
+				label={m('discounts.kpi.openOffers')}
+				pending={dashboardPending}
+			/>
 		</div>
 
 		<!-- The dashboard half of the currency guard. `projected_savings` sums
