@@ -3,6 +3,7 @@ import {
 	authedTenantHeaders,
 	currentTenantSlug,
 	deleteInvoicesWhere,
+	deleteWorkflowsWhere,
 	expect,
 	tenantHeaders,
 	tenantPsql,
@@ -28,32 +29,14 @@ interface WorkflowResponse {
  * wedged behind an un-deleted `SNAP-y-<ts>` invoice.
  *
  * Invoices go through `deleteInvoicesWhere`, the owner of the 16-FK child
- * graph (which includes `workflow_instances`), so this only has to clear what
- * hangs off the DEFINITION: `workflow_versions`, `workflow_experiments`, and
- * any instance not reached by the invoice sweep (itself referenced by
- * `workflow_steps`). None of those FKs cascade, so the children go first.
- * `is_default = false` keeps a marker typo away from the seeded default that
- * `fixtures/globalSetup.ts` asserts the whole suite against — and the seeded
- * default is restored by the `finally`, which is the half a name sweep cannot
- * do for it.
+ * graph (which includes `workflow_instances`); definitions go through
+ * `deleteWorkflowsWhere`, the owner of what hangs off the DEFINITION and of
+ * the `is_default = false` seatbelt that keeps a marker typo away from the
+ * seeded default. The seeded default is restored by the `finally`, which is
+ * the half a name sweep cannot do for it.
  */
 const MARKER = 'WF Snapshot E2E ';
 const INVOICE_MARKER = 'SNAP-';
-
-function purgeWorkflows(): void {
-	deleteInvoicesWhere(`invoice_number LIKE '${INVOICE_MARKER}%'`);
-	const doomed =
-		`SELECT id FROM workflow_definitions ` +
-		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
-	tenantPsql(
-		`DELETE FROM workflow_steps WHERE instance_id IN ` +
-			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
-	);
-	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
-}
 
 async function listWorkflows(page: import('@playwright/test').Page) {
 	const resp = await page.request.get(`${API_BASE}/api/workflows`, {
@@ -174,7 +157,10 @@ function hardDeleteInvoice(id: string): void {
  */
 
 test.describe('workflow deactivation snapshot semantics', () => {
-	test.afterEach(() => purgeWorkflows());
+	test.afterEach(() => {
+		deleteInvoicesWhere(`invoice_number LIKE '${INVOICE_MARKER}%'`);
+		deleteWorkflowsWhere(MARKER);
+	});
 
 	test('deactivated workflow keeps routing its in-flight invoices; new invoices use the now-active one', async ({
 		page

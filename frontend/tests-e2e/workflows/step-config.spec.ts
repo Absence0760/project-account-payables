@@ -1,4 +1,10 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Every workflow definition this spec creates is named `${MARKER}…`, so
@@ -11,28 +17,13 @@ import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixt
  * tenant is still carrying eight `Step Config E2E <ts>` rows from exactly
  * that.
  *
- * `workflow_definitions` is FK-referenced by `workflow_versions`,
- * `workflow_instances` (itself referenced by `workflow_steps`) and
- * `workflow_experiments`, none of them cascading, so the children go first or
- * the delete raises. `is_default = false` is the seatbelt: a marker typo can
- * then still never reach the seeded default the whole suite is asserted
- * against by `fixtures/globalSetup.ts`.
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children go first or the delete raises — and the
+ * `is_default = false` seatbelt: a marker typo can then still never reach the
+ * seeded default the whole suite is asserted against by
+ * `fixtures/globalSetup.ts`.
  */
 const MARKER = 'Step Config E2E ';
-
-function purgeWorkflows(): void {
-	const doomed =
-		`SELECT id FROM workflow_definitions ` +
-		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
-	tenantPsql(
-		`DELETE FROM workflow_steps WHERE instance_id IN ` +
-			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
-	);
-	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
-}
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	// Use the UI's create flow so we land on the detail page with the
@@ -73,7 +64,7 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/workflows/[id] step config', () => {
-	test.afterEach(() => purgeWorkflows());
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
 
 	test('renaming a step persists through PATCH and reload', async ({ page }) => {
 		const id = await createWorkflow(page);

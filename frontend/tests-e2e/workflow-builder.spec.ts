@@ -1,4 +1,10 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from './fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteWorkflowsWhere,
+	expect,
+	test
+} from './fixtures/helpers';
 
 /**
  * No-Code Workflow Builder — management UI e2e.
@@ -37,27 +43,11 @@ import type { Page } from '@playwright/test';
  * DELETE 409s on an active definition or one with instances), which the
  * name-based API delete silently cannot.
  *
- * `workflow_definitions` is FK-referenced by `workflow_versions`,
- * `workflow_instances` (itself referenced by `workflow_steps`) and
- * `workflow_experiments`, none of them cascading, so the children go first.
- * `is_default = false` keeps a marker typo away from the seeded default that
- * `fixtures/globalSetup.ts` asserts the whole suite against.
+ * `deleteWorkflowsWhere` owns the walk below the definition — its three
+ * non-cascading children — and the `is_default = false` seatbelt that keeps a
+ * marker typo away from the seeded default.
  */
 const MARKER = 'WF Builder E2E ';
-
-function purgeWorkflows(): void {
-	const doomed =
-		`SELECT id FROM workflow_definitions ` +
-		`WHERE name LIKE '${MARKER}%' AND is_default = false`;
-	tenantPsql(
-		`DELETE FROM workflow_steps WHERE instance_id IN ` +
-			`(SELECT id FROM workflow_instances WHERE definition_id IN (${doomed}))`
-	);
-	tenantPsql(`DELETE FROM workflow_instances WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_versions WHERE definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_experiments WHERE workflow_definition_id IN (${doomed})`);
-	tenantPsql(`DELETE FROM workflow_definitions WHERE id IN (${doomed})`);
-}
 
 async function deleteWorkflowByName(page: Page, name: string) {
 	const resp = await page.request.get(`${API_BASE}/api/workflows?page_size=100`, {
@@ -72,7 +62,7 @@ async function deleteWorkflowByName(page: Page, name: string) {
 }
 
 test.describe('no-code workflow builder management', () => {
-	test.afterEach(() => purgeWorkflows());
+	test.afterEach(() => deleteWorkflowsWhere(MARKER));
 
 	test('toolbar exposes template + import entry points', async ({ page }) => {
 		await page.goto('/workflows');
