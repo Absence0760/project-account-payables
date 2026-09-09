@@ -294,50 +294,64 @@
 <!-- Per-key usage view -->
 <Modal open={usageKey !== null} ariaLabel={m('admin.apiKeys.usage.aria')} width="md" onclose={() => (usageKey = null)}>
 	{#if usageKey}
-		<h2>{m('admin.apiKeys.usage.heading', { name: usageKey.name })}</h2>
-		{#if usageLoading}
-			<p class="state" data-testid="usage-loading">{m('admin.apiKeys.usage.loading')}</p>
-		{:else if usageError}
-			<div class="state error" role="alert">
-				<p>{usageError}</p>
-				<button type="button" class="btn-cancel" onclick={() => openUsage(usageKey!)}>{m('admin.apiKeys.retry')}</button>
-			</div>
-		{:else if usage}
-			<div class="usage-totals" data-testid="usage-totals">
-				<div class="usage-stat">
-					<span class="usage-num">{usage.total_requests.toLocaleString()}</span>
-					<span class="usage-lbl">{m('admin.apiKeys.usage.totalRequests')}</span>
+		<!--
+			Both ids: `data-key-id` is the key the admin CLICKED (whose name the
+			heading shows), `data-usage-for` is the key the RESPONSE claims.
+			`usageSequence` is what keeps them equal, but a sequencer alone leaves
+			that unassertable — heading and figures come from different sources, so
+			one key's totals under another's name look like ordinary data. Same
+			pairing as `/audit`'s verify-drill and `/experiments`' results readout.
+		-->
+		<div
+			data-testid="api-key-usage"
+			data-key-id={usageKey.id}
+			data-usage-for={usage?.api_key_id ?? ''}
+		>
+			<h2>{m('admin.apiKeys.usage.heading', { name: usageKey.name })}</h2>
+			{#if usageLoading}
+				<p class="state" data-testid="usage-loading">{m('admin.apiKeys.usage.loading')}</p>
+			{:else if usageError}
+				<div class="state error" role="alert">
+					<p>{usageError}</p>
+					<button type="button" class="btn-cancel" onclick={() => openUsage(usageKey!)}>{m('admin.apiKeys.retry')}</button>
 				</div>
-				<div class="usage-stat">
-					<span class="usage-num">{usage.window_requests.toLocaleString()}</span>
-					<span class="usage-lbl">{m('admin.apiKeys.usage.windowDays', { days: usage.window_days })}</span>
+			{:else if usage}
+				<div class="usage-totals" data-testid="usage-totals">
+					<div class="usage-stat">
+						<span class="usage-num">{usage.total_requests.toLocaleString()}</span>
+						<span class="usage-lbl">{m('admin.apiKeys.usage.totalRequests')}</span>
+					</div>
+					<div class="usage-stat">
+						<span class="usage-num">{usage.window_requests.toLocaleString()}</span>
+						<span class="usage-lbl">{m('admin.apiKeys.usage.windowDays', { days: usage.window_days })}</span>
+					</div>
+					<div class="usage-stat">
+						<span class="usage-num">{formatDate(usage.last_used_at)}</span>
+						<span class="usage-lbl">{m('admin.apiKeys.usage.lastUsed')}</span>
+					</div>
 				</div>
-				<div class="usage-stat">
-					<span class="usage-num">{formatDate(usage.last_used_at)}</span>
-					<span class="usage-lbl">{m('admin.apiKeys.usage.lastUsed')}</span>
-				</div>
-			</div>
 
-			<h3 class="usage-heading">{m('admin.apiKeys.usage.recentActivity')}</h3>
-			{#if usage.daily.length === 0}
-				<p class="state">{m('admin.apiKeys.usage.noRequests')}</p>
-			{:else}
-				<DataTable
-					columns={[{ label: m('admin.apiKeys.usage.col.date') }, { label: m('admin.apiKeys.usage.col.requests'), class: 'num-col' }]}
-					isEmpty={usageDays.length === 0}
-					empty={m('admin.apiKeys.usage.noRequests')}
-				>
-					{#snippet body()}
-						{#each usageDays as day (day.usage_date)}
-							<tr>
-								<td>{formatDate(day.usage_date)}</td>
-								<td class="num-col">{day.request_count.toLocaleString()}</td>
-							</tr>
-						{/each}
-					{/snippet}
-				</DataTable>
+				<h3 class="usage-heading">{m('admin.apiKeys.usage.recentActivity')}</h3>
+				{#if usage.daily.length === 0}
+					<p class="state">{m('admin.apiKeys.usage.noRequests')}</p>
+				{:else}
+					<DataTable
+						columns={[{ label: m('admin.apiKeys.usage.col.date') }, { label: m('admin.apiKeys.usage.col.requests'), class: 'num-col' }]}
+						isEmpty={usageDays.length === 0}
+						empty={m('admin.apiKeys.usage.noRequests')}
+					>
+						{#snippet body()}
+							{#each usageDays as day (day.usage_date)}
+								<tr>
+									<td>{formatDate(day.usage_date)}</td>
+									<td class="num-col">{day.request_count.toLocaleString()}</td>
+								</tr>
+							{/each}
+						{/snippet}
+					</DataTable>
+				{/if}
 			{/if}
-		{/if}
+		</div>
 		<div class="modal-footer">
 			<button type="button" class="btn-cancel" onclick={() => (usageKey = null)}>{m('admin.apiKeys.usage.close')}</button>
 		</div>
