@@ -24,6 +24,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import DiscountTierBar from '$lib/components/ui/DiscountTierBar.svelte';
 	import Badge from '$lib/components/ui/Badge.svelte';
+	import BulkNegotiationModal from '$lib/components/modals/BulkNegotiationModal.svelte';
 	import {
 		getDiscountDashboard,
 		listDiscountOffers,
@@ -31,6 +32,7 @@
 		declineDiscountOffer,
 		optimizeDiscounts
 	} from '$lib/api/discounts';
+	import { listVendors, type VendorOption } from '$lib/api/vendors';
 	import { DISCOUNT_STATUS_TONES } from '$lib/types/discounts';
 	import type {
 		DiscountDashboard,
@@ -58,6 +60,12 @@
 	const userLoaded = $derived(auth.user !== null);
 	const canRead = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk', 'cfo'));
 	const canDecide = $derived(auth.isManager || auth.isCfo);
+	// PROPOSE (`_WRITE_ROLES`) = admin / ap_manager — narrower than `canDecide`.
+	// A CFO may accept or decline an offer a supplier put on the table, but
+	// putting one TO a supplier is an AP operation, so `POST /bulk-negotiate`
+	// 403s them. Showing the trigger to a CFO would be the same dead end this
+	// page already removed for clerks, one role over.
+	const canNegotiate = $derived(auth.isManager);
 
 	$effect(() => {
 		if (userLoaded && !canRead) goto('/');
@@ -319,6 +327,40 @@
 			optimizing = false;
 		}
 	}
+
+	// --- Vendor-wide negotiation (`POST /api/discounts/bulk-negotiate`) ---
+	let showNegotiate = $state(false);
+	let vendors = $state<VendorOption[]>([]);
+	let vendorsLoading = $state(false);
+	let vendorsLoaded = $state(false);
+
+	/** Vendors are fetched on FIRST open, not on page load: every reader of this
+	 *  page pays for the KPI + offers requests, and only an admin/ap_manager who
+	 *  actually opens the proposal form needs the vendor list. */
+	async function ensureVendors() {
+		if (vendorsLoaded || vendorsLoading) return;
+		vendorsLoading = true;
+		try {
+			vendors = await listVendors();
+			vendorsLoaded = true;
+		} finally {
+			vendorsLoading = false;
+		}
+	}
+
+	function openNegotiate() {
+		showNegotiate = true;
+		void ensureVendors();
+	}
+
+	/** A proposal landed. Re-read both surfaces from the server rather than
+	 *  splicing the row in locally: the new offer is `offered`, which the
+	 *  current status filter may or may not include, and its `base_amount` is
+	 *  server-computed — the list and the KPI row should agree with it, not with
+	 *  a client-side guess at where it belongs. */
+	async function onNegotiated() {
+		await Promise.all([loadOffers(), loadDashboard()]);
+	}
 </script>
 
 <svelte:window
@@ -331,6 +373,17 @@
 />
 
 <PageHeader title={m('discounts.title')}>
+	{#snippet actions()}
+		<!-- Gated on `_WRITE_ROLES` (admin / ap_manager), the roles the backend
+		     actually allows to propose. A clerk and a CFO both read this page;
+		     neither may create a vendor-wide offer. -->
+		{#if userLoaded && canRead && canNegotiate}
+			<button class="btn-primary" type="button" onclick={openNegotiate}>
+				{m('discounts.bulk.open')}
+			</button>
+		{/if}
+	{/snippet}
+
 	{#if !userLoaded}
 		<p class="loading">{m('common.loading')}</p>
 	{:else if !canRead}
@@ -723,6 +776,18 @@
 		</form>
 	{/if}
 </Modal>
+
+<!-- Vendor-wide negotiation. Mounted only while open so the form starts clean
+     on every proposal — a stale vendor + tier set carried over from a previous
+     one is the wrong default for an offer against a different supplier. -->
+{#if showNegotiate}
+	<BulkNegotiationModal
+		{vendors}
+		{vendorsLoading}
+		onclose={() => (showNegotiate = false)}
+		oncreated={onNegotiated}
+	/>
+{/if}
 
 <style>
 	.loading,
