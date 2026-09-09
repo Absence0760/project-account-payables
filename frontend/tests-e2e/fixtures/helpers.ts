@@ -816,13 +816,40 @@ export function deleteWorkflowsWhere(namePrefix: string, slug?: string): void {
  * exhausted. This is NOT a retry or a wait-longer — every step waits on a real
  * signal (the row count growing), and a genuinely absent row still fails the
  * caller's assertion, with the whole list loaded.
+ *
+ * **The row count must exclude the placeholder.** `ui/DataTable.svelte` renders
+ * loading, errored and genuinely-empty as the SAME one-cell
+ * `<tr><td class="empty">` row, distinguished only by its message text — so a
+ * bare `tbody tr` count is satisfied while no real row exists. That is a
+ * false-negative generator, not a slow test: the opening poll passed against
+ * the loading placeholder, the loop then read a Load-more control that had not
+ * rendered yet (the footer comes from the same response as the rows), and the
+ * helper returned having paged nothing. A page-2 row then failed as "absent",
+ * which reads as an app bug. `:not(:has(td.empty))` is the discriminator —
+ * the same idiom the discounts spec already uses — and it is deliberately the
+ * class rather than `DataTable`'s `data-testid`, so the hand-rolled tables
+ * that use the global `.empty` cell are covered too.
+ *
+ * **Precondition: the row exists somewhere in the list.** Every caller creates
+ * it first, so that holds by construction. On a genuinely empty list there is
+ * no non-text signal to distinguish "still loading" from "nothing here" (see
+ * `frontend/CLAUDE.md` § Data tables), so the opening poll fails on timeout
+ * with the message below rather than silently returning — the honest outcome,
+ * since the caller's own assertion was going to fail anyway.
  */
 export async function loadMoreUntilRow(page: Page, row: Locator): Promise<void> {
-	const rows = page.locator('table tbody tr');
+	// Real data rows only — never DataTable's loading / errored / empty
+	// placeholder, which is a `<tr>` too. See the note above.
+	const rows = page.locator('table tbody tr:not(:has(td.empty))');
 	const loadMore = page.locator('.btn-load-more');
 
 	// The first page has to be on screen before "is there more?" means anything.
-	await expect.poll(() => rows.count()).toBeGreaterThan(0);
+	await expect
+		.poll(() => rows.count(), {
+			message:
+				'loadMoreUntilRow: the table never rendered a real row (only DataTable\'s loading / errored / empty placeholder). The list is empty, still loading past the timeout, or its fetch failed.'
+		})
+		.toBeGreaterThan(0);
 
 	// Terminates on any finite list: each click consumes one page and the
 	// control disappears once every row is loaded.
