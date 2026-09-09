@@ -1,4 +1,4 @@
-import { expect, tenantPsql, test } from '../fixtures/helpers';
+import { deleteVendorsWhere, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * /vendors bulk operations (issue #328, power-user/Medium): /vendors and
@@ -21,10 +21,7 @@ function seedVendors(n: number, status = 'unverified'): void {
 }
 
 function purge(): void {
-	tenantPsql(
-		`DELETE FROM sanctions_checks WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE '${MARKER}%')`
-	);
-	tenantPsql(`DELETE FROM vendors WHERE name LIKE '${MARKER}%'`);
+	deleteVendorsWhere(`name LIKE '${MARKER}%'`);
 }
 
 test.describe('/vendors bulk operations (acme admin)', () => {
@@ -80,7 +77,7 @@ test.describe('/vendors bulk operations (acme admin)', () => {
 		const firstId = tenantPsql(
 			`SELECT id FROM vendors WHERE name LIKE '${MARKER}%' ORDER BY name LIMIT 1`
 		).trim();
-		tenantPsql(`DELETE FROM vendors WHERE id = '${firstId}'`);
+		deleteVendorsWhere(`id = '${firstId}'`);
 
 		const verifyResponse = page.waitForResponse(
 			(r) => r.url().includes('/api/vendors/bulk/status') && r.request().method() === 'POST'

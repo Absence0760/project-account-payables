@@ -1,7 +1,7 @@
 import {
 	API_BASE,
 	authedTenantHeaders,
-	deleteInvoicesWhere,
+	deleteVendorsWhere,
 	expect,
 	signInAndWait,
 	tenantPsql,
@@ -62,26 +62,13 @@ async function createLinkedInvoice(
 /**
  * Remove a test vendor and everything that points at it.
  *
- * Each statement stands alone deliberately: a single bad DELETE inside one
- * try-block aborts every statement after it, and the whole teardown then leaks
- * silently. (That is exactly what happens in the sibling enrichment spec, which
- * deletes from a non-existent `exceptions.vendor_id` before anything else.)
+ * `deleteVendorsWhere` owns the vendor's whole child graph — including the
+ * invoices this spec creates — so the ordering and the child list are not
+ * this file's to maintain.
  */
 function purgeVendor(vendorId: string): void {
 	try {
-		deleteInvoicesWhere(`vendor_id='${vendorId}'`);
-	} catch {
-		/* best-effort */
-	}
-	for (const table of ['sanctions_checks', 'vendor_extraction_priors', 'invoice_embeddings']) {
-		try {
-			tenantPsql(`DELETE FROM ${table} WHERE vendor_id='${vendorId}'`);
-		} catch {
-			/* best-effort */
-		}
-	}
-	try {
-		tenantPsql(`DELETE FROM vendors WHERE id='${vendorId}'`);
+		deleteVendorsWhere(`id='${vendorId}'`);
 	} catch {
 		/* best-effort */
 	}

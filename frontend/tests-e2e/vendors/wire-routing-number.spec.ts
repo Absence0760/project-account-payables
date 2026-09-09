@@ -1,4 +1,11 @@
-import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	deleteVendorsWhere,
+	expect,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Separate WIRE vs ACH routing numbers on a vendor's bank details.
@@ -36,9 +43,7 @@ function slugFromPage(page: import('@playwright/test').Page): string {
 
 function deleteVendorCascade(vendorId: string): void {
 	try {
-		tenantPsql(`DELETE FROM vendor_change_requests WHERE vendor_id='${vendorId}'`, SLUG);
-		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id='${vendorId}'`, SLUG);
-		tenantPsql(`DELETE FROM vendors WHERE id='${vendorId}'`, SLUG);
+		deleteVendorsWhere(`id='${vendorId}'`, SLUG);
 	} catch {
 		/* best-effort */
 	}

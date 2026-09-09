@@ -1,4 +1,4 @@
-import { deleteInvoicesWhere, expect, tenantPsql, test } from '../fixtures/helpers';
+import { deleteInvoicesWhere, deleteVendorsWhere, expect, test } from '../fixtures/helpers';
 
 /**
  * /invoices — Day-0 CSV import. `POST /api/invoices/import-csv` is
@@ -14,8 +14,9 @@ test.describe('/invoices — Import CSV', () => {
 
 	test.afterEach(async () => {
 		deleteInvoicesWhere(`invoice_number LIKE '${marker}%'`);
-		tenantPsql(`DELETE FROM sanctions_checks WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE '${marker}%')`);
-		tenantPsql(`DELETE FROM vendors WHERE name LIKE '${marker}%'`);
+		// The importer auto-creates an unverified vendor stub per unknown
+		// name; `deleteVendorsWhere` owns whatever the app hung off it.
+		deleteVendorsWhere(`name LIKE '${marker}%'`);
 	});
 
 	test('imports a CSV, reports the row-level result (skip-and-report), and the invoice lands as done', async ({ page }) => {
