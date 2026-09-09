@@ -2729,6 +2729,17 @@ export const en = {
 	'portal.invoices.resubmitted': 'Invoice resubmitted for AP review.',
 	'portal.invoices.resubmitFailed': 'Resubmission failed',
 	'portal.invoices.filterAll': 'All',
+	// Vendor-facing invoice PHASE labels ($lib/types/portalStatus.ts). A phase is a
+	// stable id, not the label — these strings are display only, so translating one
+	// can never move a status between filter chips.
+	'portal.invoices.phase.submitted': 'Submitted',
+	'portal.invoices.phase.processing': 'Processing',
+	'portal.invoices.phase.underReview': 'Under Review',
+	'portal.invoices.phase.approved': 'Approved',
+	'portal.invoices.phase.paymentScheduled': 'Payment Scheduled',
+	'portal.invoices.phase.paid': 'Paid',
+	'portal.invoices.phase.completed': 'Completed',
+	'portal.invoices.phase.rejected': 'Rejected',
 	'portal.invoices.searchLabel': 'Search invoices',
 	'portal.invoices.searchPlaceholder': 'Search by invoice number',
 	'portal.invoices.dateFromLabel': 'From date',
@@ -2758,6 +2769,12 @@ export const en = {
 	'portal.payments.emptyFiltered': 'No payments match your filters.',
 	'portal.payments.clearFilters': 'Clear filters',
 	'portal.payments.filterAll': 'All',
+	// Vendor-facing payment PHASE labels ($lib/types/portalStatus.ts).
+	'portal.payments.phase.scheduled': 'Scheduled',
+	'portal.payments.phase.processing': 'Processing',
+	'portal.payments.phase.completed': 'Completed',
+	'portal.payments.phase.failed': 'Failed',
+	'portal.payments.phase.cancelled': 'Cancelled',
 	'portal.payments.searchLabel': 'Search payments',
 	'portal.payments.searchPlaceholder': 'Search by invoice number',
 	'portal.payments.dateFromLabel': 'From date',

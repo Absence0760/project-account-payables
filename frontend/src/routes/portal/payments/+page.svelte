@@ -13,7 +13,7 @@
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { m } from '$lib/i18n/store.svelte';
-	import { portalPaymentStatusLabel, PORTAL_PAYMENT_PHASES } from '$lib/types/portalStatus';
+	import { portalPaymentStatusLabelKey, PORTAL_PAYMENT_PHASES } from '$lib/types/portalStatus';
 	import PortalListFilters from '$lib/components/portal/PortalListFilters.svelte';
 
 	type PortalPayment = PortalPaymentListItem;
@@ -30,12 +30,11 @@
 
 	const hasMore = $derived(items.length < total);
 
-	/* URL-backed filter state. The portal home deep-links here (e.g.
-	 * `?phase=Rejected` from "these need your attention"), and a supplier who
-	 * bookmarks or reloads a filtered list keeps it — the same treatment
-	 * `/invoices`, `/payments` and `/vendors` already have. `phase` is validated
+	/* URL-backed filter state, mirroring the invoice list: a supplier who
+	 * bookmarks or reloads a filtered history keeps it. `phase` is validated
 	 * against the known chips so a hand-edited URL cannot select a bucket the
-	 * backend would not recognise. */
+	 * backend would not recognise, and it carries the phase ID (`completed`),
+	 * never its label — so the link survives a locale switch. */
 	const seededPhase = (() => {
 		const raw = $page.url.searchParams.get('phase');
 		if (!raw) return null;
@@ -166,7 +165,7 @@
 
 	<PortalListFilters
 		bind:this={filtersEl}
-		chips={PORTAL_PAYMENT_PHASES.map((c) => ({ key: c.phase, label: c.phase }))}
+		chips={PORTAL_PAYMENT_PHASES.map((c) => ({ key: c.phase, label: m(c.labelKey) }))}
 		allLabel={m('portal.payments.filterAll')}
 		groupLabel={m('portal.payments.col.status')}
 		searchLabel={m('portal.payments.searchLabel')}
@@ -213,7 +212,7 @@
 						<td>{formatDate(p.completed_at, m('portal.common.dash'))}</td>
 						<td>{p.method || m('portal.common.dash')}</td>
 						<td class="num"><Money amount={p.amount} currency={p.currency} /></td>
-						<td><span class="status s-{p.status}">{portalPaymentStatusLabel(p.status)}</span></td>
+						<td><span class="status s-{p.status}">{m(portalPaymentStatusLabelKey(p.status))}</span></td>
 						<td>{p.reference || m('portal.common.dash')}</td>
 						<td class="actions">
 							{#if p.status === 'completed'}
