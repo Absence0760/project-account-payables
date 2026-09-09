@@ -81,11 +81,31 @@ new-child-tenant provisioning path — all three route through
 `provision_tenant`) binds every new org to the real **`free`** plan regardless
 of the cosmetic `Organization.plan` display string those callers pass (that
 field predates this billing model and has long carried values like `"pro"`
-that were never a real `Plan.code`). `scripts/seed.py` does the same for the
-two demo tenants (and every `e2e<N>` Playwright worker tenant) so local dev
-and CI both start with a real, working billing baseline. `free` grants no
-entitlements by design — `public_api` is a paid-tier feature; an org reaches
-it via `POST /api/billing/change-plan` to `growth` or `scale`.
+that were never a real `Plan.code`). `free` grants no entitlements by design —
+`public_api` is a paid-tier feature; an org reaches it via
+`POST /api/billing/change-plan` to `growth` or `scale`.
+
+#### Which plan the seed lands each tenant on
+
+`scripts/seed.py` gives every tenant a real, working billing baseline, but not
+all on the same plan — the codes are named on `ACME_PLAN_CODE` /
+`TECHFLOW_PLAN_CODE` / `E2E_PLAN_CODE` there:
+
+| Seeded tenant | Plan | Why |
+|---|---|---|
+| `acme` | `growth` | The tenant `docs/getting-started.md` logs into. `growth` grants `public_api`, so `GET /api/v1/...` works with a key minted straight after `pnpm seed` — see [public-api.md § Trying it locally](public-api.md#trying-it-locally). Seeding every tenant on `free` made the whole `/api/v1` surface 402 on a fresh clone, which guard rail 7 (local-first) forbids. |
+| `techflow` | `free` | Keeps the **refusal** path exercisable too. A seed where every tenant were entitled would make the 402 unreachable in exactly the way the 200 used to be. |
+| `e2e1..e2eN` | `free` | Load-bearing: `frontend/tests-e2e/billing/billing.spec.ts` parks whatever live subscription its worker's org holds, runs against its own fixture plans, then restores the parked row by id. That works because the worker tenants are interchangeable — entitling one would make which shard drew which tenant observable. The e2e suite only ever touches `acme` for cross-tenant isolation, never for billing. |
+
+`ensure_subscription` deliberately no-ops once an org holds a live
+subscription, so a plain re-seed could not have repaired a control plane
+already stranded on `free`. `seed.py::ensure_public_api_entitled` closes that:
+it **repoints the existing live row's `plan_id`** rather than adding a second
+(the unique index is never challenged), and only ever upward — an org already
+entitled, or on a richer plan, is left byte-identical. `seed_control_plane`
+runs that baseline on **both** branches of its already-seeded guard, mirroring
+the backfill `seed_e2e_control_plane` already does past its own `continue`.
+Guarded by `backend/tests/test_seed_billing_baseline.py`.
 
 **One live subscription per org** is enforced by a partial unique index
 `uq_subscription_one_live_per_org ON subscriptions (organization_id) WHERE
@@ -776,6 +796,16 @@ prorates (the bug where every change returned `0.00`), and a stale window rolls
 forward before the proration is computed. The `change_plan` audit row uses the
 `_audit_engine_on_loop` fixture (same loop-binding workaround as the webhook
 suite).
+
+`backend/tests/test_seed_billing_baseline.py` — which plan `scripts/seed.py`
+lands each tenant on: the cross-module claim that `ACME_PLAN_CODE` names a
+catalog plan actually granting `public_api` (and that `TECHFLOW_PLAN_CODE` /
+`E2E_PLAN_CODE` do not), plus the real-Postgres behaviour of
+`ensure_demo_billing_baseline` — a fresh control plane entitles the demo tenant
+and not the other, a control plane already stranded on `free` is repaired by
+repointing the SAME live row (never a second, which
+`uq_subscription_one_live_per_org` forbids), and an already-entitled or richer
+plan is never downgraded by a re-seed.
 
 `backend/tests/test_billing_period.py` — the pure period rules: `add_months`
 day clamping / year crossing / backwards, the window containing `now`, the
