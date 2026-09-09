@@ -69,9 +69,19 @@ class EntityStore {
 		return this.entities.filter((e) => e.is_active);
 	}
 
-	/** True once the tenant has more than one entity — gates the switcher UI. */
+	/**
+	 * True once the tenant has more than one entity — gates the switcher UI.
+	 *
+	 * Counts ALL entities, not just {@link activeEntities}. Deactivating one
+	 * must not make the control disappear: a tenant that retires a subsidiary
+	 * still needs the switcher to reach the consolidated view, and to see why
+	 * its selection was dropped. Archiving an entity is not a decision to stop
+	 * being a multi-entity tenant. The retired entity is filtered out of the
+	 * OPTIONS instead — see {@link activeEntities}, which is what the menu
+	 * renders.
+	 */
 	get multiEntity(): boolean {
-		return this.activeEntities.length > 1;
+		return this.entities.length > 1;
 	}
 
 	/** The selected Entity object, or `null` for the consolidated view. */
