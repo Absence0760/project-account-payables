@@ -33,7 +33,7 @@ from app.api.deps import ROLE_ADMIN, ROLE_AP_CLERK, ROLE_AP_MANAGER, ROLE_CFO
 from app.config import settings
 from app.database import _make_tenant_url, control_engine, control_session_factory
 from app.models import Base
-from app.models.billing import Plan, Subscription
+from app.models.billing import Plan
 from app.models.credit_memo import CreditMemo
 from app.models.exception import Exception as APException
 from app.models.gl_account import GLAccount
@@ -53,7 +53,11 @@ from app.models.workflow import (
     WorkflowStep,
 )
 from app.services.billing.entitlements import get_active_subscription, has_entitlement
-from app.services.billing.plan_catalog import ensure_plan_catalog, ensure_subscription
+from app.services.billing.plan_catalog import (
+    clear_stale_canceled_subscription,
+    ensure_plan_catalog,
+    ensure_subscription,
+)
 from app.services.tenant_provisioning import CONTROL_TABLES
 from app.utils.passwords import pwd_context
 
@@ -314,17 +318,12 @@ async def ensure_public_api_entitled(
         # the entitlement. Either way, leave the row alone rather than guess.
         return False
 
-    # Guard `uq_subscription_org_plan` exactly the way the codebase's other
-    # in-place repointer does (`services/billing/plan_change.py::change_plan`):
-    # a leftover CANCELED row for the target plan collides the moment we set
-    # `plan_id`. Drop it first — it is history of a plan the org is
-    # re-adopting, and the live row is the source of truth.
-    await session.execute(
-        Subscription.__table__.delete().where(
-            Subscription.organization_id == organization_id,
-            Subscription.plan_id == target.id,
-            Subscription.status == "canceled",
-        )
+    # Free the `(org, plan)` slot before repointing into it —
+    # `uq_subscription_org_plan` ignores status, so a leftover CANCELED row on
+    # the target plan collides the moment we set `plan_id`. One owner for that
+    # rule, shared with `change_plan` and `ensure_subscription`.
+    await clear_stale_canceled_subscription(
+        session, organization_id=organization_id, plan_id=target.id
     )
     subscription.plan_id = target.id
     await session.flush()
