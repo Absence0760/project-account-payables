@@ -95,8 +95,10 @@ async def prepare_international_payment(
 
     Raises `InternationalPaymentError` on any structural problem.
     """
-    target_currency = (invoice.currency or org_home_currency).upper()
-    source_currency = org_home_currency.upper()
+    # `.strip()` guards a hand-edited settings value like "USD " reaching the
+    # corridor selector, where a currency mismatch forces an FX leg.
+    target_currency = (invoice.currency or org_home_currency).strip().upper()
+    source_currency = org_home_currency.strip().upper()
 
     bank = vendor.bank_details or {}
     iban = bank.get("iban") or ""

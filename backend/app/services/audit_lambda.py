@@ -25,11 +25,15 @@ def handler(event, context):
 async def _process_message(body: dict) -> None:
     import os
 
+    from app.tenant_url import tenant_db_url
+
     db_url = os.environ["DATABASE_URL"]
     tenant_db_name = body["tenant_db_name"]
 
-    # Connect directly to the tenant DB
-    tenant_url = db_url.rsplit("/", 1)[0] + "/" + tenant_db_name
+    # Connect directly to the tenant DB — same derivation as
+    # `app.database._make_tenant_url`, shared via the dependency-free helper so
+    # this dotenv-free Lambda path cannot drift from it.
+    tenant_url = tenant_db_url(db_url, tenant_db_name)
     tenant_engine = create_async_engine(tenant_url)
     tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 

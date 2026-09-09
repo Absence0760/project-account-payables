@@ -124,6 +124,21 @@ class PaymentResponse(BaseModel):
     settled_amount: OptionalMoneyAmount = None
     settled_currency: str | None = None
 
+    # Set ONLY by `POST /{id}/void` — the outcome of the two best-effort legs
+    # that path fires: the payment rail (`void_adapter_outcome`) and, for a
+    # card payment, the card provider (`void_card_outcome`, e.g.
+    # `card_cancelled` / `card_already_charged` / `provider_error:*` /
+    # `card_provider_not_configured`). Both legs are best-effort so a provider
+    # outage cannot block the accounting void — but the outcome then landed
+    # only on the `payment.voided` audit row, so an operator who voided a card
+    # payment could not tell whether the card was actually closed at the
+    # provider, and a failed leg leaves a live, bearer-spendable card. When
+    # `void_card_outcome` is not `card_cancelled` / `card_already_cancelled` /
+    # `card_already_charged` / `no_card_linked`, retry the close via
+    # `POST /api/cards/{card_id}/cancel`. `None` on every non-void read.
+    void_card_outcome: str | None = None
+    void_adapter_outcome: str | None = None
+
     # Joined fields from invoice
     vendor_name: str | None = None
     invoice_number: str | None = None

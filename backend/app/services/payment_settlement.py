@@ -65,6 +65,7 @@ OUTCOME_UNVERIFIED = "unverified"
 DISCREPANCY_OUTCOMES = frozenset({OUTCOME_AMOUNT_MISMATCH, OUTCOME_CURRENCY_MISMATCH})
 
 REASON_NO_REPORTED_AMOUNT = "provider_reported_no_amount"
+REASON_NON_FINITE_AMOUNT = "provider_reported_non_finite_amount"
 REASON_CURRENCY_NOT_AUTHORIZED = "settled_currency_not_authorized"
 REASON_AMOUNT_DIFFERS = "settled_amount_differs_from_authorization"
 
@@ -217,6 +218,26 @@ def verify_settlement(
         return SettlementVerification(
             outcome=OUTCOME_UNVERIFIED,
             reason=REASON_NO_REPORTED_AMOUNT,
+            settled_currency=(reported_currency or None),
+            authorized_amount=target_leg.amount,
+            authorized_currency=target_leg.currency,
+            authorized_leg=target_leg.leg,
+        )
+
+    # A JSON `NaN` / `Infinity` (Python's `json.loads` accepts both by default)
+    # can reach here as `Decimal("NaN")` from an adapter that parses the amount
+    # itself rather than through `base.parse_amount`. `_q`'s `.quantize()` would
+    # then raise `InvalidOperation` before any tolerance check — an unhandled
+    # 500 on the webhook that is recording money movement. Treat a non-finite
+    # figure as "no usable amount": `unverified`, fail-open, same as `None`.
+    try:
+        amount_is_finite = Decimal(reported_amount).is_finite()
+    except (ArithmeticError, TypeError, ValueError):
+        amount_is_finite = False
+    if not amount_is_finite:
+        return SettlementVerification(
+            outcome=OUTCOME_UNVERIFIED,
+            reason=REASON_NON_FINITE_AMOUNT,
             settled_currency=(reported_currency or None),
             authorized_amount=target_leg.amount,
             authorized_currency=target_leg.currency,

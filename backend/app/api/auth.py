@@ -1019,6 +1019,17 @@ async def enroll_mfa_verify(
     user.mfa_enrolled_at = datetime.now(UTC)
     await db.commit()
     await mfa.clear_pending_totp_secret(user.id)
+    # Adding a second factor to an account that can approve invoices / stage
+    # bank changes is at least as audit-worthy as the step-up *failures* around
+    # it, and the passkey register/remove path already records its success.
+    # PII-free — the factor kind only, never the secret.
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.mfa.enrolled",
+        entity_id=user.id,
+        details={"factor": "totp"},
+    )
     org = await _load_user_org(db, user.organization_id)
     return _user_response(user, org)
 
@@ -1059,6 +1070,13 @@ async def disable_mfa(
     # Drop any half-finished enrollment too, so a candidate minted before the
     # disable can't be promoted afterwards by a later verify call.
     await mfa.clear_pending_totp_secret(user.id)
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.mfa.disabled",
+        entity_id=user.id,
+        details={"factor": "totp"},
+    )
     return _user_response(user, org)
 
 

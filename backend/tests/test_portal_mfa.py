@@ -631,6 +631,28 @@ async def test_portal_step_up_failure_is_audited(mfa_on, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_portal_mfa_enrollment_success_is_audited(mfa_on, monkeypatch):
+    """Adding a second factor to a supplier account writes `portal.mfa.enrolled`
+    — mirrors `api/auth.py::enroll_mfa_verify`. PII-free."""
+    audit = AsyncMock()
+    monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", audit)
+    vu = _vendor_user()
+    db = _mock_db(vendor_user=None, vendor=_vendor())
+
+    secret = pyotp.random_base32()
+    await mfa.stash_pending_vendor_totp_secret(vu.id, secret)
+    await portal_mfa_verify(
+        body=PortalMFAVerifyRequest(code=pyotp.TOTP(secret).now()), vu=vu, db=db
+    )
+
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] == "portal.mfa.enrolled"
+    assert kwargs["details"] == {"factor": "totp"}
+    assert secret not in repr(kwargs)
+
+
+@pytest.mark.asyncio
 async def test_portal_step_up_is_rate_limited_per_account(mfa_on):
     """Per-VENDOR-USER, not per-IP: the attacker already holds their token."""
     from app.api.portal_auth import STEP_UP_RATE_LIMIT_PER_MINUTE

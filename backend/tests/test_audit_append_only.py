@@ -277,13 +277,13 @@ _TENANT_MUTATORS_WITHOUT_DIRECT_AUDIT: dict[tuple[str, str], str] = {
         "tenant row (the failure budget is Redis) — auth trail, not business trail"
     ),
     ("app.api.portal_auth", "portal_mfa_disable"): (
-        "audits step-up failures via dispatch_auth_audit (auth trail)"
+        "audits `portal.mfa.disabled` on success + the step-up failure via "
+        "dispatch_auth_audit (the auth trail, not the business trail — the "
+        "grep for `dispatch_audit` does not see `dispatch_auth_audit`)"
     ),
     ("app.api.portal_auth", "portal_mfa_verify"): (
-        "completes the caller's own TOTP enrollment. A SUCCESSFUL enrollment is "
-        "unaudited on both surfaces — `api/auth.py::enroll_mfa_verify` behaves "
-        "identically — so this is a platform-wide auth-trail question, not a "
-        "portal-specific hole; step-up failures around it DO audit"
+        "audits `portal.mfa.enrolled` on success + the step-up failure via "
+        "dispatch_auth_audit; mirrors `api/auth.py::enroll_mfa_verify`"
     ),
     ("app.api.portal_auth", "portal_request_email_otp"): (
         "mints a single-use email OTP into Redis; writes no tenant row"

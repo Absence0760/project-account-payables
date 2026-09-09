@@ -625,6 +625,17 @@ async def portal_mfa_verify(
     vu.mfa_enrolled_at = datetime.now(UTC)
     await db.commit()
     await mfa.clear_pending_vendor_totp_secret(vu.id)
+    if vu.organization_id:
+        # Mirrors `api/auth.py::enroll_mfa_verify` — a second factor being added
+        # to a supplier account belongs on the auth trail, not just its
+        # step-up failures. PII-free.
+        await dispatch_auth_audit(
+            organization_id=vu.organization_id,
+            actor_id=vu.id,
+            action="portal.mfa.enrolled",
+            entity_id=vu.id,
+            details={"factor": "totp"},
+        )
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
@@ -669,6 +680,14 @@ async def portal_mfa_disable(
     # Drop any half-finished enrollment so a candidate minted before the
     # disable can't be promoted by a later verify call.
     await mfa.clear_pending_vendor_totp_secret(vu.id)
+    if vu.organization_id:
+        await dispatch_auth_audit(
+            organization_id=vu.organization_id,
+            actor_id=vu.id,
+            action="portal.mfa.disabled",
+            entity_id=vu.id,
+            details={"factor": "totp"},
+        )
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))

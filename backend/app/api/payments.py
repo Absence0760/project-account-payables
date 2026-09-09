@@ -5,7 +5,7 @@ import logging
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 from typing import Literal
 
@@ -656,8 +656,13 @@ async def payment_queue(
             and sched.discount_date >= today
         ):
             discount_eligible = True
+            # `ROUND_HALF_UP` matches Postgres `round(x, 2)` — the
+            # `_payment_queue_rollup` aggregate rounds each row's saving in SQL,
+            # so a plain `.quantize()` (Python's default `ROUND_HALF_EVEN`) here
+            # made this single-row figure disagree with the rollup's attribution
+            # of the same invoice by a cent on a half-cent boundary.
             discount_amount = (inv.amount * sched.discount_percent / Decimal(100)).quantize(
-                Decimal("0.01")
+                Decimal("0.01"), rounding=ROUND_HALF_UP
             )
         items.append(
             {
@@ -1393,7 +1398,14 @@ async def void_payment(
 
     await db.commit()
     await db.refresh(payment)
-    return PaymentResponse.from_db(payment, invoice)
+    resp = PaymentResponse.from_db(payment, invoice)
+    # Surface the two best-effort legs' outcomes so the operator (and the void
+    # dialog) can tell whether the rail was reversed and — for a card payment —
+    # whether the card was actually closed at the provider. A non-cancelled
+    # `void_card_outcome` is the prompt to retry via `POST /api/cards/{id}/cancel`.
+    resp.void_card_outcome = card_outcome
+    resp.void_adapter_outcome = adapter_outcome
+    return resp
 
 
 async def _recompute_parent_run_status(db: AsyncSession, payment: Payment) -> None:
@@ -2931,10 +2943,15 @@ async def _execute_single_payment(
     # adapter call and persist the source-side outflow + rate on
     # the row. The corridor lookup also decides whether the row
     # needs to flip to `sepa` / `international_wire`.
-    invoice_currency = (invoice.currency if invoice else "USD").upper()
+    # `.strip()` before `.upper()` — a settings value of "USD " (trailing space
+    # from a hand-edited config) otherwise compares unequal to the invoice's
+    # "USD" and routes every domestic payment through `international_wire`,
+    # locking an FX rate it never needed. `services/compliance` already strips
+    # `home_currency` at its two read sites; this was the odd one out.
+    invoice_currency = (invoice.currency if invoice else "USD").strip().upper()
     org_home_currency = (
         ((org.settings or {}).get("payments") or {}).get("home_currency") or "USD"
-    ).upper()
+    ).strip().upper() or "USD"
     has_intl_bank_fields = bool(
         vendor_bank and (vendor_bank.get("iban") or vendor_bank.get("swift_bic"))
     )

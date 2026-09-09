@@ -38,9 +38,20 @@ class EntityStore {
 	#loaded = false;
 	#inflight: Promise<void> | null = null;
 
-	/** True once the tenant has more than one entity — gates the switcher UI. */
+	/**
+	 * The entities the switcher may offer: active ones, plus the current
+	 * selection even if it was deactivated since (so its label + highlight
+	 * still resolve and the user can switch away). An inactive entity must not
+	 * be pickable — `/admin/entities` can deactivate one, and new rows created
+	 * while scoped to it would land under a dead entity.
+	 */
+	get selectableEntities(): Entity[] {
+		return this.entities.filter((e) => e.is_active || e.id === this.selectedId);
+	}
+
+	/** True once the tenant has more than one SELECTABLE entity — gates the switcher UI. */
 	get multiEntity(): boolean {
-		return this.entities.length > 1;
+		return this.selectableEntities.length > 1;
 	}
 
 	/** The selected Entity object, or `null` for the consolidated view. */

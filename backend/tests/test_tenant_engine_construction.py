@@ -19,12 +19,15 @@ So this module pins the construction discipline rather than the string:
 
 * `app/database.py` owns engine construction. `_make_tenant_url(db_name)` is the
   single place a tenant DB name becomes a URL, and its `db_name` comes off a
-  resolved `Organization` row.
-* Everywhere else under `app/`, `create_async_engine(...)` must be passed either
-  `_make_tenant_url(...)` (tenant) or `settings.database_url` (control plane) —
-  directly, or through a local assigned from one of them.
-* The three AWS Lambda handlers are the one exception, for a stated reason, and
-  are held to a narrower structural rule rather than waved through.
+  resolved `Organization` row. It delegates the string derivation to the
+  dependency-free `app/tenant_url.py::tenant_db_url(base_url, db_name)`.
+* Everywhere else under `app/`, `create_async_engine(...)` must be passed
+  `_make_tenant_url(...)` / `tenant_db_url(...)` (tenant) or
+  `settings.database_url` (control plane) — directly, or through a local
+  assigned from one of them.
+* The three AWS Lambda handlers used to be the one exception (they cannot
+  import `app.database`); they now import `tenant_db_url` directly, so the
+  exemption list is empty and every module plays by the same rule.
 * A `feoh_`-prefixed database name never appears as a literal outside
   `app/config.py`, which owns the prefix.
 
@@ -49,8 +52,12 @@ APP_DIR = BACKEND_DIR / "app"
 #: `_make_tenant_url` and the control-plane engine live.
 CHOKEPOINT = APP_DIR / "database.py"
 
-#: The only approved way to turn a tenant DB name into a URL.
+#: The approved ways to turn a tenant DB name into a URL. `_make_tenant_url`
+#: (app/database.py) delegates to `tenant_db_url` (app/tenant_url.py); the
+#: Lambda handlers call `tenant_db_url` directly since they cannot import
+#: `app.database`.
 TENANT_URL_BUILDER = "_make_tenant_url"
+TENANT_URL_BUILDERS = frozenset({"_make_tenant_url", "tenant_db_url"})
 
 #: The SQLAlchemy engine constructors. `create_engine` is the synchronous twin —
 #: the app has none today, and naming it here means reaching for it is not a way
@@ -71,22 +78,15 @@ LITERAL_EXEMPTIONS = {
     ("app/services/api_keys.py", "feoh_live"),
 }
 
-#: Modules exempt from the "build the URL with `_make_tenant_url`" rule, each
-#: with the reason it cannot follow it.
+#: Modules exempt from the "build the URL through an approved builder" rule.
 #:
-#: All three are AWS Lambda handlers. They run outside the app process and must
-#: not import `app.database` — that pulls in `app.config`, and backend/CLAUDE.md
-#: forbids dotenv-reaching imports on a Lambda path — so they read the control
-#: URL from the environment and inline `_make_tenant_url`'s own body. They are
-#: exempt from the *helper*, not from the rule:
-#: `test_no_engine_url_is_built_by_interpolation` and
-#: `test_the_lambda_handlers_mirror_make_tenant_url` both still apply to them, so
-#: the day one of these grows an f-string the suite goes red.
-EXEMPT_MODULES = {
-    "app/services/extraction_lambda.py": "Lambda entry point — cannot import app.database",
-    "app/services/erp_lambda.py": "Lambda entry point — cannot import app.database",
-    "app/services/audit_lambda.py": "Lambda entry point — cannot import app.database",
-}
+#: Empty by design. The three AWS Lambda handlers used to live here — they run
+#: outside the app process and must not import `app.database` (it pulls in
+#: `app.config`, and backend/CLAUDE.md forbids dotenv-reaching imports on a
+#: Lambda path). They now import the dependency-free `app.tenant_url.tenant_db_url`
+#: instead of inlining its body, so they follow the same rule as everything else
+#: and `test_lambda_handlers_use_the_shared_tenant_url_helper` pins that.
+EXEMPT_MODULES: dict[str, str] = {}
 
 #: Guard the guard. If a refactor moves engine construction somewhere this scan
 #: does not look, the count collapses and the suite says so instead of passing
@@ -203,17 +203,42 @@ def _resolve(expr: ast.expr, scope: ast.AST) -> list[ast.expr]:
 
 
 def _is_tenant_url_builder(expr: ast.expr) -> bool:
-    return isinstance(expr, ast.Call) and _call_name(expr) == TENANT_URL_BUILDER
+    return isinstance(expr, ast.Call) and _call_name(expr) in TENANT_URL_BUILDERS
 
 
 def _is_control_plane_url(expr: ast.expr) -> bool:
-    """`settings.database_url` — the control plane, which names no tenant."""
-    return (
+    """The control-plane URL, which names no tenant: `settings.database_url`
+    in-process, or `os.environ["DATABASE_URL"]` / `.get("DATABASE_URL")` on the
+    Lambda path (which must not import `app.config`)."""
+    if (
         isinstance(expr, ast.Attribute)
         and expr.attr == "database_url"
         and isinstance(expr.value, ast.Name)
         and expr.value.id == "settings"
-    )
+    ):
+        return True
+    # `os.environ["DATABASE_URL"]`
+    if (
+        isinstance(expr, ast.Subscript)
+        and isinstance(expr.value, ast.Attribute)
+        and expr.value.attr == "environ"
+        and isinstance(expr.slice, ast.Constant)
+        and expr.slice.value == "DATABASE_URL"
+    ):
+        return True
+    # `os.environ.get("DATABASE_URL")`
+    if (
+        isinstance(expr, ast.Call)
+        and _call_name(expr) == "get"
+        and isinstance(expr.func, ast.Attribute)
+        and isinstance(expr.func.value, ast.Attribute)
+        and expr.func.value.attr == "environ"
+        and expr.args
+        and isinstance(expr.args[0], ast.Constant)
+        and expr.args[0].value == "DATABASE_URL"
+    ):
+        return True
+    return False
 
 
 def _classify(expr: ast.expr, scope: ast.AST) -> str:
@@ -230,8 +255,8 @@ def _interpolations(expr: ast.expr, scope: ast.AST) -> list[str]:
     """Interpolation nodes reachable from `expr` — f-string, `%`, `.format()`.
 
     Those three are the shapes that splice a caller-supplied value into a URL.
-    Plain concatenation is deliberately absent: `_make_tenant_url`'s own body is
-    a concatenation, and the exempt Lambda handlers mirror it verbatim.
+    Plain concatenation is deliberately absent: `tenant_db_url`'s own body is a
+    concatenation, and it is the one place that construction lives.
     """
     found: list[str] = []
     for candidate in _resolve(expr, scope):
@@ -356,60 +381,50 @@ def test_no_engine_url_is_built_by_interpolation():
 # --------------------------------------------------------------------------- #
 
 
-def _mirrors_make_tenant_url(expr: ast.expr) -> bool:
-    """`<base>.rsplit("/", 1)[0] + "/" + <db name>` — `_make_tenant_url`'s body.
+#: The three AWS Lambda handlers. They still build their own tenant engine
+#: (they run outside the app process) but must derive the URL through the
+#: shared helper, not inline it.
+LAMBDA_HANDLERS = (
+    "app/services/extraction_lambda.py",
+    "app/services/erp_lambda.py",
+    "app/services/audit_lambda.py",
+)
 
-    Structural, not textual: base and name may be spelled however the module
-    spells them, but the construction must be the helper's.
+
+def test_lambda_handlers_use_the_shared_tenant_url_helper():
+    """Each Lambda handler builds its one tenant URL by calling
+    `app.tenant_url.tenant_db_url`, not by inlining `<base>.rsplit(...) + ...`.
+
+    This is what replaced the old `EXEMPT_MODULES` waiver: the handlers cannot
+    import `app.database`, but `app.tenant_url` is dependency-free, so there is
+    no longer any reason to duplicate the derivation. A rewrite back to an
+    inline concatenation fails here; an f-string additionally fails Rule 2.
     """
-    if not (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add)):
-        return False
-    if not isinstance(expr.right, ast.Name | ast.Attribute):
-        return False
-
-    left = expr.left
-    if not (isinstance(left, ast.BinOp) and isinstance(left.op, ast.Add)):
-        return False
-    if not (isinstance(left.right, ast.Constant) and left.right.value == "/"):
-        return False
-
-    head = left.left
-    return (
-        isinstance(head, ast.Subscript)
-        and isinstance(head.value, ast.Call)
-        and _call_name(head.value) == "rsplit"
-    )
-
-
-def test_the_lambda_handlers_mirror_make_tenant_url():
-    """The exempt modules inline the helper's body — they do not invent a URL.
-
-    Each Lambda handler builds exactly one tenant URL. Holding that expression to
-    `_make_tenant_url`'s own shape is what keeps the exemption from being a hole:
-    a rewrite to any other construction fails here, and an f-string additionally
-    fails Rule 2 above.
-    """
-    mirrored = 0
-
-    for rel in sorted(EXEMPT_MODULES):
+    for rel in LAMBDA_HANDLERS:
         path = BACKEND_DIR / rel
+        tree = ast.parse(path.read_text(), filename=str(path))
+
+        imports_helper = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "app.tenant_url"
+            and any(a.name == "tenant_db_url" for a in node.names)
+            for node in ast.walk(tree)
+        )
+        assert imports_helper, f"{rel} does not import `tenant_db_url` from app.tenant_url"
+
         assignments = {
             target.id: node.value
-            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
+            for node in ast.walk(tree)
             if isinstance(node, ast.Assign)
             for target in node.targets
             if isinstance(target, ast.Name)
         }
         tenant_url = assignments.get("tenant_url")
         assert tenant_url is not None, f"{rel} no longer builds a `tenant_url`"
-        assert _mirrors_make_tenant_url(tenant_url), (
-            f"{rel} builds its tenant URL as `{ast.unparse(tenant_url)}`, which is no "
-            f"longer `app.database.{TENANT_URL_BUILDER}`'s body — either restore the "
-            "mirror or import the helper"
+        assert _is_tenant_url_builder(tenant_url), (
+            f"{rel} builds its tenant URL as `{ast.unparse(tenant_url)}` — call "
+            "`tenant_db_url(base, db_name)` instead of reconstructing it"
         )
-        mirrored += 1
-
-    assert mirrored == len(EXEMPT_MODULES)
 
 
 def test_no_exemption_is_stale():

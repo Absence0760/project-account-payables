@@ -152,4 +152,73 @@ test.describe('/payments — reporting currency and FX exclusions', () => {
 		await expect(page.getByTestId('unconverted-payments')).toHaveCount(0);
 		await expect(page.getByTestId('unconverted-queue')).toHaveCount(0);
 	});
+
+	test('the run-detail modal renders each cell in the run currency, not USD', async ({ page }) => {
+		const runId = '00000000-0000-4000-8000-000000000abc';
+		await page.route(
+			(url) => url.pathname === '/api/payments/runs/' || url.pathname.startsWith('/api/payments/runs'),
+			(route) => {
+				const p = new URL(route.request().url()).pathname;
+				if (p === `/api/payments/runs/${runId}`) {
+					return route.fulfill({
+						status: 200,
+						contentType: 'application/json',
+						body: JSON.stringify({
+							id: runId,
+							status: 'draft',
+							total_amount: '250.00',
+							currency: 'EUR', // deliberately not the seeded org default
+							initiated_by: null,
+							executed_at: null,
+							created_at: new Date().toISOString(),
+							requires_cfo_approval: false,
+							cfo_approved_by: null,
+							cfo_approved_at: null,
+							payments: [
+								{
+									id: 'p1',
+									invoice_id: 'i1',
+									invoice_number: 'INV-EUR-1',
+									vendor_name: 'Euro Vendor',
+									amount: '250.00',
+									currency: 'EUR',
+									method: 'sepa',
+									status: 'pending',
+									reference: null
+								}
+							]
+						})
+					});
+				}
+				return route.fulfill({
+					status: 200,
+					contentType: 'application/json',
+					body: JSON.stringify({
+						items: [
+							{
+								id: runId,
+								status: 'draft',
+								total_amount: '250.00',
+								payment_count: 1,
+								created_at: new Date().toISOString()
+							}
+						],
+						total: 1,
+						page: 1,
+						page_size: 100
+					})
+				});
+			}
+		);
+
+		await page.goto('/payments?tab=runs');
+		await page.getByRole('button', { name: /View payment run/ }).first().click();
+
+		const modal = page.locator('.modal[role="dialog"][aria-label="Payment run"]');
+		await expect(modal).toBeVisible();
+		// Shape, not the exact glyph — but never a dollar sign.
+		await expect(modal.locator('.total')).toContainText(/€|EUR/);
+		await expect(modal.locator('.total')).not.toContainText('$');
+		await expect(modal.locator('td.mono.right, td.right.mono')).toContainText(/€|EUR/);
+	});
 });
