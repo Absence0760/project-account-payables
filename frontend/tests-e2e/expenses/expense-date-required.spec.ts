@@ -33,7 +33,6 @@ test.describe('/expenses expense-date handling', () => {
 		page
 	}) => {
 		await page.goto('/expenses');
-		await page.waitForLoadState('networkidle');
 
 		await page.getByRole('button', { name: '+ New Expense' }).click();
 		const dialog = page.getByRole('dialog', { name: 'New expense' });
@@ -51,7 +50,6 @@ test.describe('/expenses expense-date handling', () => {
 		page
 	}) => {
 		await page.goto('/expenses');
-		await page.waitForLoadState('networkidle');
 
 		await page.getByRole('button', { name: '+ New Expense' }).click();
 		const dialog = page.getByRole('dialog', { name: 'New expense' });
@@ -82,7 +80,6 @@ test.describe('/expenses expense-date handling', () => {
 
 	test('PATCHing an explicit null date is a 422, never a 500', async ({ page }) => {
 		await page.goto('/expenses');
-		await page.waitForLoadState('networkidle');
 		const headers = await authedTenantHeaders(page);
 
 		let expenseId: string | null = null;

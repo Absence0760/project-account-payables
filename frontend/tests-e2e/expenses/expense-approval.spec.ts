@@ -48,7 +48,6 @@ function deletePreapproval(id: string): void {
 test.describe('/expenses — WF3 approval', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/expenses');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('a policy-violating expense shows a violation badge', async ({ page }) => {
@@ -79,7 +78,6 @@ test.describe('/expenses — WF3 approval', () => {
 			expenseId = ((await expResp.json()) as Created).id;
 
 			await page.goto(`/expenses?search=${encodeURIComponent(merchant)}`);
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(merchant)).toBeVisible();
 			// The ⚠ violation pill renders next to the status badge.
 			await expect(page.locator('.badge.violation').first()).toBeVisible();
@@ -94,7 +92,6 @@ test.describe('/expenses — WF3 approval', () => {
 		let policyId: string | null = null;
 		try {
 			await page.goto('/expenses?tab=policies');
-			await page.waitForLoadState('networkidle');
 			await page.getByRole('button', { name: '+ New Policy' }).click();
 
 			const dialog = page.getByRole('dialog', { name: 'New policy' });
@@ -173,7 +170,6 @@ test.describe('/expenses — WF3 approval', () => {
 			// receipt is a blocking violation, so the UI surfaces the panel/toast
 			// and the report stays in draft (no transition).
 			await page.goto('/expenses?tab=reports');
-			await page.waitForLoadState('networkidle');
 			await page.getByRole('button', { name: `Open report ${reportNumber}` }).click();
 			await page.getByRole('button', { name: 'Submit' }).click();
 			// Inline violation panel renders the receipt rule.
@@ -190,7 +186,6 @@ test.describe('/expenses — WF3 approval', () => {
 
 			// Re-submit (still the clerk owner). Now it transitions to submitted.
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await page.getByRole('button', { name: `Open report ${reportNumber}` }).click();
 			await page.getByRole('button', { name: 'Submit' }).click();
 			await expect(page.locator('.report-title-block .badge')).toHaveText('Submitted');
@@ -205,7 +200,6 @@ test.describe('/expenses — WF3 approval', () => {
 			// Approve as the ADMIN (a manager, and NOT the owner) through the UI.
 			await signInAndWait(page, tenantAdmin);
 			await page.goto('/expenses?tab=reports');
-			await page.waitForLoadState('networkidle');
 			await page.getByRole('button', { name: `Open report ${reportNumber}` }).click();
 			await page.getByRole('button', { name: 'Approve' }).click();
 			await expect(page.locator('.report-title-block .badge')).toHaveText('Approved');
@@ -236,7 +230,6 @@ test.describe('/expenses — WF3 approval', () => {
 			// Admin (manager, different user) approves it in the Pre-approvals tab.
 			await signInAndWait(page, tenantAdmin);
 			await page.goto('/expenses?tab=preapprovals');
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(title)).toBeVisible();
 			// exact: the row action is "Approve"; the status filter chip is
 			// "Approved" — a non-exact match would resolve to both.

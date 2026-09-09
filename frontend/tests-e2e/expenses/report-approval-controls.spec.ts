@@ -91,7 +91,6 @@ async function actAsInUi(
 	const token = await roleToken(page, creds);
 	await page.evaluate((t) => localStorage.setItem('auth_token', t), token);
 	await page.goto('/expenses?tab=reports');
-	await page.waitForLoadState('networkidle');
 }
 
 function deleteReport(id: string): void {
@@ -168,7 +167,6 @@ test.describe('/expenses — WF3 report approval controls', () => {
 		// `page.request` shares the browser context. Storage state = the worker
 		// admin; per-role API setup uses freshly-minted tokens via roleHeaders.
 		await page.goto('/expenses');
-		await page.waitForLoadState('networkidle');
 	});
 
 	// --- CFO threshold gate --------------------------------------------------

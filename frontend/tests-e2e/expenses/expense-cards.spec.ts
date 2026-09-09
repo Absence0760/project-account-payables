@@ -38,7 +38,6 @@ test.describe('/expenses — Cards tab (WF4)', () => {
 			expect(r2.skipped).toBe(1);
 
 			await page.goto('/expenses?tab=cards');
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText('E2E Card Merchant')).toBeVisible();
 		} finally {
 			deleteCardTxnByExternalId(ext);
