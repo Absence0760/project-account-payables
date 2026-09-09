@@ -47,7 +47,7 @@ from sqlalchemy import text
 from alembic import op
 
 revision = "0095_vendor_user_provisioned_by"
-down_revision = "0094_drop_redundant_positive_pay_index"
+down_revision = "0094_drop_redundant_ppf_index"
 branch_labels = None
 depends_on = None
 
