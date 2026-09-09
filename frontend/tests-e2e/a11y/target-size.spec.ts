@@ -57,6 +57,31 @@ const PAINTED = 16;
 const HIT_INSET = (MIN_TARGET - PAINTED) / 2;
 
 /**
+ * Retire the response-rewriting route handler before the test does.
+ *
+ * `makeFirstRowSelectable` intercepts the invoice list and calls
+ * `route.fetch()` to get the real payload back. `/invoices` keeps issuing list
+ * and count requests while the page settles, so a handler can still be inside
+ * that `await` when the last assertion resolves and Playwright tears the test
+ * down — surfacing as `route.fetch: Test ended.` / `apiResponse.json: Response
+ * has been disposed`, attributed to whichever test owned the handler. It is a
+ * harness race, not an app defect, and it took down the two SHORTEST tests here
+ * (the select-all case and the sweep, which assert and finish before a
+ * page-load request has come back) on a CI shard, one of them hard enough to
+ * kill the worker.
+ *
+ * `unrouteAll({ behavior: 'ignoreErrors' })` is the documented remedy and the
+ * idiom this suite already uses (`bank-reconciliation.spec.ts`): it waits for
+ * running handlers and discards the teardown-only errors. Deliberately NOT a
+ * try/catch inside the handler falling back to `route.continue()` — that would
+ * let a genuinely failed fetch through un-rewritten, so the test would pass
+ * having measured a checkbox it never made selectable.
+ */
+test.afterEach(async ({ page }) => {
+	await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
+/**
  * Force the first invoice row into a selectable status so its checkbox is
  * enabled, and therefore in scope for the `target-size` rule.
  *
