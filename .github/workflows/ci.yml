@@ -106,6 +106,17 @@ jobs:
       - name: Format check
         run: ruff format --check .
 
+      # The frontend's e-invoice rule-code → message-key catalogue is GENERATED
+      # from `app/services/e_invoice/rule_catalog.py` (decisions.md §95). This
+      # regenerates it and fails if the committed file differs — the same
+      # "regenerating would change this ⇒ fail" shape as `ruff format --check`
+      # one step up. It lives in the BACKEND job because the generator needs
+      # Python and the backend source; the two guards it hands off to are on the
+      # frontend side (`pnpm check` rejects a key `en.ts` lacks, and the locale
+      # parity test rejects one the other five lack).
+      - name: E-invoice message catalogue is in sync with the validators
+        run: python scripts/gen_einvoice_rule_messages.py --check
+
   # The backend pytest suite (~3900 tests against a real Postgres/Redis/MinIO)
   # ran ~27 min as one serial job — the longest job in CI. It's sharded the same
   # way the Playwright e2e job below is: a matrix of runners, each booting its
@@ -560,6 +571,15 @@ jobs:
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
+          # The SPA's platform-vs-vanity host classification. A production
+          # build BAKES `$env/dynamic/public` in (adapter-static has no server
+          # to read it at runtime) and does not read `.env.development`, so
+          # this build step is the CI half of what `playwright.config.ts`'s
+          # `webServer.env` does locally — both take the value from
+          # `tests-e2e/fixtures/env.ts::PLATFORM_DOMAINS`. Unset means "no host
+          # is a vanity host", which would make `tenant/vanity-host.spec.ts`
+          # assert the opposite of what it asserts locally.
+          PUBLIC_PLATFORM_DOMAINS: localhost
         # Pre-build so `vite preview` (started by playwright.config.ts's
         # webServer block) has a `build/` directory to serve. Skipping
         # this falls back to `pnpm dev`, which pays HMR + transform
@@ -603,6 +623,11 @@ jobs:
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
+          # Must MATCH the Build step's value: the bundle was built with it,
+          # and `fixtures/env.ts` reads it to decide what counts as a vanity
+          # origin. Stated rather than left to the default so the two are
+          # visibly the same value rather than coincidentally equal.
+          PUBLIC_PLATFORM_DOMAINS: localhost
           # Override the playwright.config default (4) — each CI shard
           # is its own isolated runner already, so within-shard
           # parallelism just causes the spec-to-spec interference
@@ -781,6 +806,8 @@ jobs:
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
+          # See the e2e-shard job's Build step for why this is here.
+          PUBLIC_PLATFORM_DOMAINS: localhost
         run: pnpm build
 
       - name: Cache Playwright browsers
@@ -996,6 +1023,8 @@ jobs:
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
+          # See the e2e-shard job's Build step for why this is here.
+          PUBLIC_PLATFORM_DOMAINS: localhost
         run: pnpm build
 
       - name: Cache Playwright browsers

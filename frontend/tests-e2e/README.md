@@ -602,6 +602,27 @@ importing `NO_TENANT_BASE` from `fixtures/helpers.ts`. Prefer that over a
 literal `'http://localhost:7777'`, which pins the spec to the default port and
 breaks under `E2E_WEB_ORIGIN` (see "Running from a worktree" above).
 
+### …and the vanity-host origin
+
+A white-label **vanity** host is any host NOT under `PUBLIC_PLATFORM_DOMAINS`,
+where the SPA sends no `X-Tenant-Slug` and calls `/api` same-origin. No
+`*.localhost` name can play that part — `localhost` is exactly what the harness
+declares as the platform domain — so `fixtures/env.ts::VANITY_ORIGIN` is the
+loopback **IP literal** instead: never a platform host unless listed verbatim,
+served by Vite with no `allowedHosts` entry, and needing no DNS or Chromium
+resolver rule. `playwright.config.ts` pins the server to `--host 127.0.0.1` so
+the literal always connects — Vite's `localhost` default resolves to `::1` on
+some machines, and a literal reaches only the address that was bound.
+`test.use({ baseURL: VANITY_ORIGIN, storageState: { cookies: [], origins: [] } })`
+— the stored admin token is keyed by origin and does not travel there.
+
+Two pieces of plumbing make it work, and both must stay in step:
+`playwright.config.ts` passes `PUBLIC_PLATFORM_DOMAINS` to the dev server while
+CI's `pnpm build` bakes it into the preview bundle (both from
+`fixtures/env.ts::PLATFORM_DOMAINS`), and `vite.config.ts` proxies `/api` on the
+same origin so the vanity `Host` reaches the backend. See
+`tenant/vanity-host.spec.ts`'s header and `docs/white-label.md` § Custom domains.
+
 ## Storage-state (future)
 
 The auth-storage-state pattern (sign each user in once, persist to

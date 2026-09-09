@@ -4769,6 +4769,51 @@ export const messages = {
 		'Korrigieren Sie diese Felder in der Rechnung und laden Sie sie erneut herunter.',
 	'invoices.modal.einvoice.failed':
 		'Die E-Rechnung im Format {format} konnte nicht erzeugt werden.',
+	// EN 16931 / PEPPOL refusal sentences. The code→key map is GENERATED from
+	// the backend's own rule set (`api/einvoiceRuleMessages.generated.ts`), so
+	// a rule the validator gains cannot quietly render as a bare id — see
+	// decisions.md §95. The per-category families share one key each: the row
+	// already shows the rule id and the field beside the wording.
+	'invoices.modal.einvoice.rule.brCl01':
+		'Der Rechnungstypcode ist keiner, den die Norm EN 16931 kennt (UNTDID 1001).',
+	'invoices.modal.einvoice.rule.brCl03':
+		'Die Rechnungswährung ist kein gültiger ISO-4217-Währungscode.',
+	'invoices.modal.einvoice.rule.brCl14':
+		'Der Ländercode ist kein gültiger ISO-3166-1-alpha-2-Code.',
+	'invoices.modal.einvoice.rule.brCl16': 'Der Zahlungsartcode ist kein gültiger UNCL4461-Code.',
+	'invoices.modal.einvoice.rule.brCl17':
+		'Der Umsatzsteuerkategorie-Code der Steueraufstellung liegt außerhalb der EN-16931-Teilmenge von UNCL5305.',
+	'invoices.modal.einvoice.rule.brCl18':
+		'Der Umsatzsteuerkategorie-Code dieser Position liegt außerhalb der EN-16931-Teilmenge von UNCL5305.',
+	'invoices.modal.einvoice.rule.brCl23':
+		'Die Maßeinheit ist kein gültiger Code nach UN/ECE-Empfehlung 20.',
+	'invoices.modal.einvoice.rule.brCo09':
+		'Die USt-IdNr. muss mit dem zweistelligen Ländercode des ausstellenden Landes beginnen.',
+	'invoices.modal.einvoice.rule.brCo10':
+		'Die Summe der Positionsnettobeträge stimmt nicht mit der Rechnungssumme der Positionen überein.',
+	'invoices.modal.einvoice.rule.brCo13':
+		'Der Betrag ohne USt muss der Positionssumme abzüglich Nachlässe zuzüglich Zuschläge entsprechen.',
+	'invoices.modal.einvoice.rule.brCo14':
+		'Die USt-Gesamtsumme der Rechnung muss der Summe der Beträge in der Steueraufstellung entsprechen.',
+	'invoices.modal.einvoice.rule.brCo15':
+		'Der Betrag mit USt muss dem Betrag ohne USt zuzüglich der USt-Gesamtsumme entsprechen.',
+	'invoices.modal.einvoice.rule.brCo16': 'Der Zahlbetrag muss dem Betrag mit USt entsprechen.',
+	'invoices.modal.einvoice.rule.brCo17':
+		'Ein Betrag der Steueraufstellung muss dem steuerpflichtigen Betrag multipliziert mit dem Steuersatz entsprechen.',
+	'invoices.modal.einvoice.rule.brCo25':
+		'Eine Rechnung mit einem Zahlbetrag benötigt ein Fälligkeitsdatum oder Zahlungsbedingungen.',
+	'invoices.modal.einvoice.rule.brCo26':
+		'Der Verkäufer benötigt eine Handelsregisternummer oder eine USt-IdNr.',
+	'invoices.modal.einvoice.rule.brS05':
+		'Eine regelbesteuerte Position benötigt einen USt-Satz über null.',
+	'invoices.modal.einvoice.rule.peppolEn16931R120':
+		'Ein Positionsnettobetrag muss der Menge multipliziert mit dem Einzelpreis entsprechen.',
+	'invoices.modal.einvoice.rule.vatCategory01':
+		'Jede auf einer Position verwendete Umsatzsteuerkategorie benötigt eine eigene Gruppe in der Steueraufstellung.',
+	'invoices.modal.einvoice.rule.vatCategory05':
+		'Diese Umsatzsteuerkategorie erfordert einen Steuersatz von null.',
+	'invoices.modal.einvoice.rule.vatCategory08':
+		'Ein steuerpflichtiger Betrag der Steueraufstellung muss der Summe der Positionen dieser Kategorie entsprechen.',
 	'invoices.modal.peppol.title': 'PEPPOL',
 	'invoices.modal.peppol.hint':
 		'Überträgt die Rechnung über das PEPPOL-Netz an den Access Point des Empfängers.',

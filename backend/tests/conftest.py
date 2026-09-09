@@ -236,6 +236,7 @@ import contextlib  # noqa: E402
 import os  # noqa: E402
 import threading  # noqa: E402
 import uuid  # noqa: E402
+from collections.abc import Sequence  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 
 import pytest_asyncio  # noqa: E402
@@ -891,6 +892,89 @@ from sqlalchemy.pool import NullPool  # noqa: E402
 
 _HARNESS_ENGINE_KW = {"poolclass": NullPool}
 
+# ---------------------------------------------------------------------------
+# Control-plane billing rows: the per-test teardown and its seatbelt.
+#
+# `Plan` / `Subscription` live in this slot's CONTROL-plane database, which the
+# per-test reset never reaches — that TRUNCATE covers the tenant business tables
+# only, and `_rebuild_pytest_schema` clears the control DB just once per pytest
+# SESSION. So a throwaway plan a test minted stayed visible to every later test
+# in the run, and `GET /api/billing/plans` is a catalogue listing, so the
+# pollution is observable rather than inert.
+#
+# (It used to escape the run entirely: before slot-owned control DBs landed,
+# slot 0 wrote to the real, shared `feohledger`, which is where the leaked
+# `meter_test_*` rows this teardown was written for still sit. That half is
+# already fixed — see `control_db_name_for_slot` — so what remains to fix is the
+# within-session half, which is what a teardown, rather than a setup purge, is
+# for: a setup purge only ever reaps the PREVIOUS run's rows and always leaves
+# the last one behind.)
+# ---------------------------------------------------------------------------
+
+
+def _catalogue_plan_codes() -> tuple[str, ...]:
+    """The plan codes the app itself provisions — derived, never hand-listed."""
+    from app.services.billing.plan_catalog import DEFAULT_PLAN_CATALOG
+
+    return tuple(spec["code"] for spec in DEFAULT_PLAN_CATALOG)
+
+
+def _assert_purgeable_plan_prefix(prefix: str) -> None:
+    """Refuse a prefix that could reach a real plan. Raises ``ValueError``."""
+    if len(prefix) < 4:
+        raise ValueError(
+            f"purge_plans({prefix!r}): a prefix this short can match a real plan code; "
+            "name the test family instead (e.g. 'meter_test_')."
+        )
+    protected = sorted(code for code in _catalogue_plan_codes() if code.startswith(prefix))
+    if protected:
+        raise ValueError(
+            f"purge_plans({prefix!r}) would delete catalogue plan(s) {protected}, which "
+            "ensure_plan_catalog provisions and every entitlement lookup reads."
+        )
+
+
+async def _reset_control_billing(tenants: dict) -> None:
+    """Per-test teardown: drop the billing rows a test left in the control plane.
+
+    The counterpart of the tenant TRUNCATE and of the `Organization.settings`
+    baseline beside it. Two deletes, children first:
+
+    * every ``Subscription`` held by one of THIS harness's orgs — a live one
+      would otherwise occupy `uq_subscription_one_live_per_org` for the next
+      test that seeds its own;
+    * every ``Plan`` that is not a catalogue tier, plus any subscription still
+      pointing at one.
+
+    The catalogue tiers survive: `ensure_plan_catalog` creates them at
+    provisioning time and `require_entitlement` reads them, so the exemption is
+    derived from `DEFAULT_PLAN_CATALOG`, not a list here that could drift.
+
+    Safe to run unconditionally — this slot owns its control-plane database
+    outright (`control_db_name_for_slot`), so nothing here can reach a
+    concurrent pytest process or a developer's real `feohledger`.
+    """
+    from sqlalchemy import delete, not_, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.database import _make_tenant_url
+    from app.models.billing import Plan, Subscription
+
+    org_ids = [t.org_id for t in tenants.values()]
+    keep = _catalogue_plan_codes()
+    engine = create_async_engine(
+        _make_tenant_url(control_db_name_for_slot(_claim_realdb_slot())), **_HARNESS_ENGINE_KW
+    )
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+            throwaway = select(Plan.id).where(not_(Plan.code.in_(keep)))
+            await s.execute(delete(Subscription).where(Subscription.organization_id.in_(org_ids)))
+            await s.execute(delete(Subscription).where(Subscription.plan_id.in_(throwaway)))
+            await s.execute(delete(Plan).where(not_(Plan.code.in_(keep))))
+            await s.commit()
+    finally:
+        await engine.dispose()
+
 
 class RealDB:
     """Handle yielded by the ``realdb`` fixture.
@@ -957,6 +1041,45 @@ class RealDB:
         engine = create_async_engine(self.control_db_url(), **_HARNESS_ENGINE_KW)
         self._engines.append(engine)
         return async_sessionmaker(engine, expire_on_commit=False)
+
+    async def purge_plans(self, prefix: str, *, org_ids: Sequence[uuid.UUID] = ()) -> None:
+        """Delete every throwaway ``Plan`` whose ``code`` starts with *prefix*,
+        children first. The single owner of that graph.
+
+        Six billing test files hand-rolled the same two-statement purge, and one
+        of them (``test_public_api_keys._grant_public_api``) only ever wrote the
+        FIRST statement — so its ``meter_test_*`` plans accumulated for the whole
+        session while every sibling's were reaped. That is the §127 trap one
+        table over: N duplicated, partially-correct child lists.
+
+        Like ``deleteWorkflowsWhere`` this takes a **prefix, not a predicate**. A
+        free-form WHERE would let one caller write the purge that empties the
+        plan catalogue every other test's entitlement lookup reads, so the
+        seatbelt belongs to the helper, not to each caller — and it is derived
+        from ``DEFAULT_PLAN_CATALOG`` rather than hand-listed, so adding a real
+        tier protects it for free.
+
+        ``org_ids`` additionally clears those orgs' subscriptions whatever plan
+        they point at. Callers need that because
+        ``uq_subscription_one_live_per_org`` refuses a second live row and an org
+        bound to a *catalogue* plan is not reached by the prefix — a different
+        question from "is this plan a leak", which is why it is an explicit
+        argument rather than something the prefix silently implies.
+        """
+        from sqlalchemy import delete, select
+
+        from app.models.billing import Plan, Subscription
+
+        _assert_purgeable_plan_prefix(prefix)
+        matching = select(Plan.id).where(Plan.code.startswith(prefix, autoescape=True))
+        async with self.control_sessionmaker()() as s:
+            if org_ids:
+                await s.execute(
+                    delete(Subscription).where(Subscription.organization_id.in_(list(org_ids)))
+                )
+            await s.execute(delete(Subscription).where(Subscription.plan_id.in_(matching)))
+            await s.execute(delete(Plan).where(Plan.code.startswith(prefix, autoescape=True)))
+            await s.commit()
 
     def client(self, *, key: str, role: str | None = "admin"):
         import httpx
@@ -1119,17 +1242,30 @@ async def realdb():
     try:
         yield db
     finally:
-        await db.cleanup()
-        # Background-service code paths exercised by some realdb tests
-        # (audit_log_shipper.ship_once, peppol_receive, contract_renewal) reach
-        # the *module-global* engines in app.database — not this fixture's
-        # per-test harness engines. Those globals cache an asyncpg pool bound to
-        # the event loop of the first test that touches them; a later test runs
-        # under a fresh function-scoped loop, and reusing the cached pool raises
-        # "got Future attached to a different loop" / "another operation is in
-        # progress". Dispose them after every realdb test so the next test
-        # rebinds its own loop. (The per-test harness engines avoid this for the
-        # request path; this covers the background-service path.)
-        from app.database import dispose_all_engines
+        # Control-plane billing rows first — a failure here must still be loud
+        # (a silently-skipped teardown is the leak), but it must not cost the
+        # engine disposal below, whose absence poisons every later test.
+        try:
+            await _reset_control_billing(tenants)
+        finally:
+            await db.cleanup()
+            await _dispose_module_global_engines()
 
-        await dispose_all_engines()
+
+async def _dispose_module_global_engines() -> None:
+    """Drop the cached module-global engines after every realdb test.
+
+    Background-service code paths exercised by some realdb tests
+    (audit_log_shipper.ship_once, peppol_receive, contract_renewal) reach the
+    *module-global* engines in app.database — not this fixture's per-test
+    harness engines. Those globals cache an asyncpg pool bound to the event loop
+    of the first test that touches them; a later test runs under a fresh
+    function-scoped loop, and reusing the cached pool raises "got Future
+    attached to a different loop" / "another operation is in progress". Dispose
+    them after every realdb test so the next test rebinds its own loop. (The
+    per-test harness engines avoid this for the request path; this covers the
+    background-service path.)
+    """
+    from app.database import dispose_all_engines
+
+    await dispose_all_engines()

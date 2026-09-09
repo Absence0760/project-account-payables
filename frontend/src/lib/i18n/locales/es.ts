@@ -4794,6 +4794,51 @@ export const messages = {
 		'Corrija estos campos en la factura y vuelva a descargarla.',
 	'invoices.modal.einvoice.failed':
 		'No se pudo generar la factura electrónica en formato {format}.',
+	// EN 16931 / PEPPOL refusal sentences. The code→key map is GENERATED from
+	// the backend's own rule set (`api/einvoiceRuleMessages.generated.ts`), so
+	// a rule the validator gains cannot quietly render as a bare id — see
+	// decisions.md §95. The per-category families share one key each: the row
+	// already shows the rule id and the field beside the wording.
+	'invoices.modal.einvoice.rule.brCl01':
+		'El código de tipo de factura no es uno reconocido por la norma EN 16931 (UNTDID 1001).',
+	'invoices.modal.einvoice.rule.brCl03':
+		'La moneda de la factura no es un código ISO 4217 válido.',
+	'invoices.modal.einvoice.rule.brCl14':
+		'El código de país no es un código ISO 3166-1 alfa-2 válido.',
+	'invoices.modal.einvoice.rule.brCl16':
+		'El código de medio de pago no es un código UNCL4461 válido.',
+	'invoices.modal.einvoice.rule.brCl17':
+		'El código de categoría de IVA del desglose fiscal está fuera del subconjunto UNCL5305 de la EN 16931.',
+	'invoices.modal.einvoice.rule.brCl18':
+		'El código de categoría de IVA de esta línea está fuera del subconjunto UNCL5305 de la EN 16931.',
+	'invoices.modal.einvoice.rule.brCl23':
+		'La unidad de medida no es un código válido de la Recomendación 20 de la UN/ECE.',
+	'invoices.modal.einvoice.rule.brCo09':
+		'El identificador de IVA debe empezar por el código de país de dos letras del país que lo emitió.',
+	'invoices.modal.einvoice.rule.brCo10':
+		'La suma de los importes netos de las líneas no coincide con el total de líneas de la factura.',
+	'invoices.modal.einvoice.rule.brCo13':
+		'El total sin IVA debe ser igual al total de líneas, menos descuentos, más cargos.',
+	'invoices.modal.einvoice.rule.brCo14':
+		'El IVA total de la factura debe ser igual a la suma de los importes del desglose de IVA.',
+	'invoices.modal.einvoice.rule.brCo15':
+		'El total con IVA debe ser igual al total sin IVA más el IVA total.',
+	'invoices.modal.einvoice.rule.brCo16': 'El importe a pagar debe ser igual al total con IVA.',
+	'invoices.modal.einvoice.rule.brCo17':
+		'Un importe del desglose de IVA debe ser igual a su base imponible multiplicada por su tipo.',
+	'invoices.modal.einvoice.rule.brCo25':
+		'Una factura con importe a pagar necesita una fecha de vencimiento o condiciones de pago.',
+	'invoices.modal.einvoice.rule.brCo26':
+		'El vendedor necesita un número de registro legal o un identificador de IVA.',
+	'invoices.modal.einvoice.rule.brS05':
+		'Una línea con tipo general necesita un tipo de IVA superior a cero.',
+	'invoices.modal.einvoice.rule.peppolEn16931R120':
+		'El importe neto de una línea debe ser igual a su cantidad multiplicada por su precio unitario.',
+	'invoices.modal.einvoice.rule.vatCategory01':
+		'Cada categoría de IVA utilizada en una línea necesita su propio grupo en el desglose de IVA.',
+	'invoices.modal.einvoice.rule.vatCategory05': 'Esta categoría de IVA exige un tipo cero.',
+	'invoices.modal.einvoice.rule.vatCategory08':
+		'Una base imponible del desglose de IVA debe ser igual a la suma de las líneas de esa categoría.',
 	'invoices.modal.peppol.title': 'PEPPOL',
 	'invoices.modal.peppol.hint':
 		'Transmite la factura por la red PEPPOL al punto de acceso del destinatario.',

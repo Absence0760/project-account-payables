@@ -141,6 +141,21 @@ describe('classifyHost', () => {
 	it('never reports a vanity host when nothing is configured', () => {
 		expect(classifyHost('ap.acmecorp.com', UNSET).kind).toBe('platform-tenant');
 	});
+
+	it('treats the loopback IP literal as vanity — the e2e harness depends on it', () => {
+		// `tests-e2e/fixtures/env.ts::VANITY_ORIGIN` is `http://127.0.0.1:<port>`,
+		// because no `*.localhost` name can be a vanity host while `localhost` is
+		// the declared platform domain, and an IP literal is never a platform host
+		// unless listed verbatim. Pinned here so the e2e spec's premise is a unit
+		// assertion rather than an assumption about the classifier.
+		expect(classifyHost('127.0.0.1', DEV_DOMAINS).kind).toBe('vanity');
+		expect(tenantSlugForHost('127.0.0.1', DEV_DOMAINS)).toBeNull();
+		expect(resolveApiBase('127.0.0.1', DEV_DOMAINS, API_URL)).toBe('');
+		// …and it stops being one the moment an operator declares it.
+		expect(classifyHost('127.0.0.1', parsePlatformDomains('127.0.0.1')).kind).toBe(
+			'platform-apex'
+		);
+	});
 });
 
 describe('getApiBase (via resolveApiBase)', () => {

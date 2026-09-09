@@ -4900,6 +4900,50 @@ export const en = {
 	'invoices.modal.einvoice.invalidHint':
 		'Correct these fields on the invoice, then download again.',
 	'invoices.modal.einvoice.failed': 'Could not generate the {format} e-invoice.',
+	// EN 16931 / PEPPOL refusal sentences. The code→key map is GENERATED from
+	// the backend's own rule set (`api/einvoiceRuleMessages.generated.ts`), so
+	// a rule the validator gains cannot quietly render as a bare id — see
+	// decisions.md §95. The per-category families share one key each: the row
+	// already shows the rule id and the field beside the wording.
+	'invoices.modal.einvoice.rule.brCl01':
+		'The invoice type code is not one the EN 16931 standard recognises (UNTDID 1001).',
+	'invoices.modal.einvoice.rule.brCl03':
+		'The invoice currency is not a valid ISO 4217 currency code.',
+	'invoices.modal.einvoice.rule.brCl14':
+		'The country code is not a valid ISO 3166-1 alpha-2 code.',
+	'invoices.modal.einvoice.rule.brCl16': 'The payment means code is not a valid UNCL4461 code.',
+	'invoices.modal.einvoice.rule.brCl17':
+		'The VAT category code on the tax breakdown is outside the EN 16931 subset of UNCL5305.',
+	'invoices.modal.einvoice.rule.brCl18':
+		'The VAT category code on this line is outside the EN 16931 subset of UNCL5305.',
+	'invoices.modal.einvoice.rule.brCl23':
+		'The unit of measure is not a valid UN/ECE Recommendation 20 code.',
+	'invoices.modal.einvoice.rule.brCo09':
+		'The VAT identifier must start with the two-letter country code of the country that issued it.',
+	'invoices.modal.einvoice.rule.brCo10':
+		'The sum of the line net amounts does not match the invoice total for the lines.',
+	'invoices.modal.einvoice.rule.brCo13':
+		'The total without VAT must equal the line total, less allowances, plus charges.',
+	'invoices.modal.einvoice.rule.brCo14':
+		'The invoice total VAT must equal the sum of the VAT breakdown amounts.',
+	'invoices.modal.einvoice.rule.brCo15':
+		'The total with VAT must equal the total without VAT plus the total VAT.',
+	'invoices.modal.einvoice.rule.brCo16':
+		'The amount due for payment must equal the total with VAT.',
+	'invoices.modal.einvoice.rule.brCo17':
+		'A VAT breakdown amount must equal its taxable amount times its rate.',
+	'invoices.modal.einvoice.rule.brCo25':
+		'An invoice with an amount due needs a due date or payment terms.',
+	'invoices.modal.einvoice.rule.brCo26':
+		'The seller needs a legal registration number or a VAT identifier.',
+	'invoices.modal.einvoice.rule.brS05': 'A standard-rated line needs a VAT rate above zero.',
+	'invoices.modal.einvoice.rule.peppolEn16931R120':
+		'A line net amount must equal its quantity times its unit price.',
+	'invoices.modal.einvoice.rule.vatCategory01':
+		'Every VAT category used on a line needs its own group in the VAT breakdown.',
+	'invoices.modal.einvoice.rule.vatCategory05': 'This VAT category requires a zero rate.',
+	'invoices.modal.einvoice.rule.vatCategory08':
+		'A VAT breakdown taxable amount must equal the sum of the lines in that category.',
 	'invoices.modal.peppol.title': 'PEPPOL',
 	'invoices.modal.peppol.hint':
 		'Transmits the invoice over the PEPPOL network to the receiver\'s access point.',

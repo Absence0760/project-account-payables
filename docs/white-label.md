@@ -463,7 +463,11 @@ than frozen into a module constant at build time, and `$lib/api.ts` +
    the backend (CloudFront behaviour / ALB rule, or the `handle_path` block in
    `deploy/Caddyfile` on the single-VM shape). Without it every API call hits the
    static site and 404s. There is no CORS change to make for this path — the
-   request is same-origin by construction.
+   request is same-origin by construction. **Locally, `frontend/vite.config.ts`
+   does this for you** — `server.proxy` / `preview.proxy` forward `/api` to
+   `PUBLIC_API_URL` with `changeOrigin: false`, so the vanity `Host` survives to
+   the backend's lookup. Without that a custom domain could not be exercised on a
+   dev laptop at all.
 
 **The hostname is now free-form.** `ap.acmecorp.com` no longer has to be
 `<tenant-slug>.<customer-domain>`, because the first label is never read as a
@@ -541,14 +545,37 @@ outside `hostRouting.ts` splits a hostname into labels, and nothing outside
 `tenant.ts` imports the build-time `PUBLIC_API_URL` (bar a ratcheted two-file
 baseline), so a second spelling of either rule can't reappear.
 
-`frontend/tests-e2e/tenant/vanity-host.spec.ts` — the platform-host half
-end-to-end: every `/api` call from `<slug>.localhost:7777` still carries
+`frontend/tests-e2e/tenant/vanity-host.spec.ts` — **both halves** end-to-end.
+The platform half: every `/api` call from `<slug>.localhost:7777` still carries
 `X-Tenant-Slug: <slug>` and still targets the build-time API origin rather than
-collapsing to same-origin. The **vanity** half is deliberately unit-only: the
-e2e harness can neither guarantee `PUBLIC_PLATFORM_DOMAINS` reaches both run
-modes (local `pnpm dev` reads `.env.development`; CI serves a production-mode
-`vite build` that does not) nor serve a second hostname that terminates both the
-SPA and `/api`. The spec's header records exactly what would unlock it.
+collapsing to same-origin. The vanity half: from a non-platform origin the SPA
+sends **no** slug header and calls `/api` on its own origin.
+
+Two things make the vanity half reachable, and both are worth knowing before
+touching the harness:
+
+- **`PUBLIC_PLATFORM_DOMAINS` reaches both run modes.** Locally `pnpm dev` gets
+  it from `playwright.config.ts`'s `webServer.env`; in CI a production `vite
+  build` bakes it into `build/_app/env.js` from the build step's own env
+  (`adapter-static` has no server to read `$env/dynamic/public` at runtime, and
+  a production build does not read `.env.development`). Both take the value from
+  `tests-e2e/fixtures/env.ts::PLATFORM_DOMAINS` so they cannot disagree — which
+  matters because unset means "no host is a vanity host", and the same
+  navigation would otherwise assert opposite things in the two environments.
+  The failure is loud, not silent: with the variable missing the vanity origin
+  classifies as a platform host and the spec's own assertions fail.
+- **The vanity origin is the loopback IP literal**
+  (`fixtures/env.ts::VANITY_ORIGIN`). Every hostname the harness can reach is
+  `*.localhost`, and `localhost` is exactly what `PUBLIC_PLATFORM_DOMAINS`
+  declares, so no `.localhost` name can classify as vanity — while an IP literal
+  is never a platform host unless listed verbatim, Vite serves it with no
+  `allowedHosts` entry, and it needs no DNS. The code path is identical to a
+  real vanity hostname's.
+
+What the spec deliberately does **not** assert is that the backend then resolves
+a tenant from that `Host` — that needs the origin registered in a tenant's
+`custom_domains`, a cross-org-unique write, and it is covered on the backend
+side by `test_tenant_custom_domain.py`.
 
 ## Partner / reseller admin
 

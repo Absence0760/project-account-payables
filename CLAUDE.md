@@ -45,6 +45,8 @@ pnpm dev:frontend             # vite dev on :7777
 pnpm dev:mobile               # flutter run (needs a device/emulator — not part of `pnpm dev`)
 pnpm lint                     # ruff + svelte-check + tsc over tests-e2e/ + flutter analyze
 pnpm test                     # pytest + Playwright + flutter test
+pnpm gen:einvoice-messages    # regenerate the e-invoice rule-code → message-key catalogue from the backend rule set
+pnpm check:einvoice-messages  # its drift guard (CI's Backend lint job runs this)
 pnpm migrate:all              # alembic upgrade head + migrate_all_tenants.py
 
 # Frontend (from frontend/)
@@ -394,7 +396,7 @@ Full list in `backend/app/config.py`.
 | Backend details | `backend/CLAUDE.md` + `backend/docs/` — models, services, adapters, migrations |
 | Mobile app | `mobile/CLAUDE.md` — Flutter iOS app, screens, stores, API client |
 | AI extraction | `backend/docs/ai-extraction.md` — platform vs BYOK, provider configs |
-| Structured e-invoicing (in + outbound) | `backend/docs/e-invoicing.md` — UBL 2.1 / Factur-X / ZUGFeRD parsing, auto-detect routing, field map; outbound UBL + CII generate (`generate.py` / `generate_cii.py`) + national formats (`country_formats/`: FatturaPA·CFDI·NF-e·DIAN) via `GET /api/invoices/{id}/einvoice?format=` |
+| Structured e-invoicing (in + outbound) | `backend/docs/e-invoicing.md` — UBL 2.1 / Factur-X / ZUGFeRD parsing, auto-detect routing, field map; outbound UBL + CII generate (`generate.py` / `generate_cii.py`) + national formats (`country_formats/`: FatturaPA·CFDI·NF-e·DIAN) via `GET /api/invoices/{id}/einvoice?format=`; the structured 422 body + the **generated** rule-code→message-key catalogue behind its localized refusal rows (`rule_catalog.py` → `pnpm gen:einvoice-messages`, drift-checked in CI's Backend lint job) |
 | Conversational assistant | `backend/docs/conversational-assistant.md` — fixed toolset, mock/claude adapters, token budget, audit |
 | ERP integration | `backend/docs/erp-integration.md` — adapter pattern, Merge.dev, direct APIs |
 | Workflow design | `backend/docs/workflow-design.md` — state machine, step types, snapshots |

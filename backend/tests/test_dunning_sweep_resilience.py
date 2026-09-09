@@ -65,10 +65,12 @@ def _audit_engine_on_loop(monkeypatch, realdb):
 
 async def _clear_subscriptions(realdb):
     async with realdb.control_sessionmaker()() as s:
+        # Unqualified on purpose: the scratch orgs this file mints hold
+        # subscriptions too, and they are not the harness's own orgs.
         await s.execute(delete(Subscription))
-        await s.execute(delete(Plan).where(Plan.code.like(f"{_PLAN_PREFIX}%")))
         await s.execute(delete(Organization).where(Organization.slug.like(f"{_PLAN_PREFIX}%")))
         await s.commit()
+    await realdb.purge_plans(_PLAN_PREFIX)
 
 
 async def _scratch_org(realdb) -> uuid.UUID:
