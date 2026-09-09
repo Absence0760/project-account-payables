@@ -638,20 +638,13 @@ export const en = {
 	'vendors.invite.send': 'Send invite',
 	'vendors.invite.sending': 'Sending…',
 	'vendors.invite.toast.failed': 'Could not send the invite',
-	'vendors.invite.reveal.aria': 'Supplier portal invite sent',
-	'vendors.invite.reveal.heading': 'Portal invite sent',
-	'vendors.invite.reveal.warningStrong': 'Shown once.',
-	'vendors.invite.reveal.warning':
-		'Copy the temporary password now — it is not stored and cannot be shown again. It was also emailed to the contact.',
-	'vendors.invite.reveal.copy': 'Copy',
-	'vendors.invite.reveal.copied': 'Copied',
-	'vendors.invite.reveal.copiedToast': 'Temporary password copied',
-	'vendors.invite.reveal.copyFailedToast': 'Copy failed — select the value manually',
-	'vendors.invite.reveal.done': 'Done',
-	'vendors.invite.reveal.email': 'Email',
-	'vendors.invite.reveal.url': 'Portal URL',
-
-	// Vendor bank / tax change-approval queue (routes/vendors/change-requests)
+	'vendors.invite.sent.aria': 'Supplier portal invite sent',
+	'vendors.invite.sent.heading': 'Portal invite sent',
+	'vendors.invite.sent.body':
+		'The temporary password was emailed to {email}. It is never shown here — if the supplier never receives it, use Reset password to send a new one.',
+	'vendors.invite.sent.email': 'Email',
+	'vendors.invite.sent.url': 'Portal URL',
+	'vendors.invite.sent.done': 'Done',
 	'vendors.changeRequests.navLabel': 'Bank Changes',
 	'vendors.changeRequests.title': 'Bank & Tax Change Approvals',
 	'vendors.changeRequests.intro':
