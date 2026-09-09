@@ -365,9 +365,10 @@
 										style="width:{(parseMoneyForLayout(v.amount) / maxVendorSpend) * 100}%"
 									></div>
 								</div>
-								<span class="vendor-amount" class:partial-amount={v.unconverted_count > 0}>
-									{fmt(v.amount)}
-								</span>
+								<span
+									class="vendor-amount"
+									class:partial-amount={v.unconverted_count > 0}
+								>{fmt(v.amount)}</span>
 							</div>
 						{/each}
 					</div>
