@@ -52,6 +52,7 @@ from app.schemas.payment import (
     PaymentRunResponse,
 )
 from app.services.audit_access import log_access
+from app.services.card_issuance import card_cancel_disposition
 from app.services.currency_conversion import (
     card_currency_sql,
     invoice_reporting_amount_sql,
@@ -1342,6 +1343,7 @@ async def _cancel_card_for_void(
     payment: Payment,
     org: Organization,
     user: User,
+    via: str = "payment_void",
 ) -> str | None:
     """Kill the virtual card a voided payment issued. Returns an outcome tag
     for the void's audit row (``None`` when the payment isn't a card payment).
@@ -1363,6 +1365,20 @@ async def _cancel_card_for_void(
     direction is "dead at the provider, maybe stale in the DB" — never the
     reverse. A provider failure is recorded, not raised: an outage must not
     block the accounting void (same posture as the payment rail above).
+
+    Shared with the retry exit ``POST /{payment_id}/void/retry-card-cancel``,
+    which re-attempts the card leg alone when this one did not confirm a close.
+    ``via`` is what separates the two on the ``card.cancelled`` audit row; the
+    provider-first ordering, the spent-card refusal and the outcome vocabulary
+    are deliberately the same code so the retry cannot drift from the original
+    attempt.
+
+    The card row is taken ``FOR UPDATE``. That is what makes a retry idempotent
+    under concurrency: two operators retrying at once serialize, and the second
+    re-reads ``status == "cancelled"`` and returns ``card_already_cancelled``
+    without a second provider call or a second audit row. (The provider leg is
+    itself idempotent — every adapter treats an already-closed card as a
+    confirmed cancel — so the lock is about our own trail, not about the card.)
     """
     if payment.method != "virtual_card":
         return None
@@ -1370,8 +1386,25 @@ async def _cancel_card_for_void(
     from app.config import settings as app_settings
     from app.services.card_issuance import CARD_SPENT_STATUSES, cancel_card_at_provider
 
+    # `virtual_cards.payment_id` is NOT unique — a cancel-then-reissue leaves the
+    # dead row behind pointing at the same payment. An unordered `LIMIT 1` could
+    # therefore hand back the cancelled row and report `card_already_cancelled`
+    # while the LIVE card stayed open, which is the exact failure this function
+    # exists to prevent. Order live-first (at most one non-cancelled card can
+    # exist per invoice — `uq_virtual_cards_one_live_per_invoice`), then newest,
+    # so the row picked is deterministic and is always the spendable one.
     card = (
-        await db.execute(select(VirtualCard).where(VirtualCard.payment_id == payment.id).limit(1))
+        await db.execute(
+            select(VirtualCard)
+            .where(VirtualCard.payment_id == payment.id)
+            .order_by(
+                case((VirtualCard.status == "cancelled", 1), else_=0).asc(),
+                VirtualCard.created_at.desc(),
+                VirtualCard.id.asc(),
+            )
+            .limit(1)
+            .with_for_update()
+        )
     ).scalar_one_or_none()
     if card is None:
         return "no_card_linked"
@@ -1403,7 +1436,7 @@ async def _cancel_card_for_void(
             "last_four": card.last_four,
             "from": prior_status,
             "to": "cancelled",
-            "via": "payment_void",
+            "via": via,
             "payment_id": str(payment.id),
         },
     )
@@ -1550,10 +1583,105 @@ async def void_payment(
     resp = PaymentResponse.from_db(payment, invoice)
     # Surface the two best-effort legs' outcomes so the operator (and the void
     # dialog) can tell whether the rail was reversed and — for a card payment —
-    # whether the card was actually closed at the provider. A non-cancelled
-    # `void_card_outcome` is the prompt to retry via `POST /api/cards/{id}/cancel`.
+    # whether the card was actually closed at the provider. `void_card_disposition`
+    # is the verdict the UI branches on; a `not_closed_retryable` one is the
+    # prompt to retry via `POST /{payment_id}/void/retry-card-cancel` below.
     resp.void_card_outcome = card_outcome
+    resp.void_card_disposition = card_cancel_disposition(card_outcome)
     resp.void_adapter_outcome = adapter_outcome
+    return resp
+
+
+@router.post("/{payment_id}/void/retry-card-cancel", response_model=PaymentResponse)
+async def retry_void_card_cancel(
+    payment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    # The SAME gate as the void this completes. Deliberately not the card
+    # router's `require_roles(ADMIN, AP_MANAGER, CFO)`: an org that split the
+    # duties and withheld `payment.void` from `ap_manager` must not find the
+    # reversal's other half reachable behind a bare role.
+    user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Re-attempt ONLY the card close for an already-voided card payment.
+
+    The void's card leg is best-effort so a card-provider outage cannot block
+    the accounting void — but a leg that did not confirm leaves a live,
+    bearer-spendable card behind a payment the books call `voided`. Before this
+    route the outcome landed on the `payment.voided` audit row and nothing in
+    the app could close that card.
+
+    **The remedy sits on the void, not beside it** (docs/decisions.md §96, §130).
+    `POST /api/cards/{id}/cancel` exists and would close the card, but it is
+    reachable on a LIVE payment too, where it would kill the card while the
+    payment and its invoice still claim money is in flight on a now-dead rail —
+    two controls that both close a card and leave the ledger in different
+    states. This one refuses anything but an already-`voided` payment, so it can
+    only ever *finish* a reversal the books already recorded.
+
+    **Idempotent, and by construction rather than by claim.** It re-runs
+    `_cancel_card_for_void`'s exact provider-first path: the card row is taken
+    `FOR UPDATE`, an already-`cancelled` row short-circuits to
+    `card_already_cancelled` with no provider call and no second
+    `card.cancelled` row, and every card adapter treats an already-closed card
+    at the provider as a confirmed cancel. A second retry is a no-op, not an
+    error.
+
+    **Moves no money and re-touches nothing else.** The payment stays `voided`,
+    the invoice is not transitioned, and the payment rail is not re-asked — so
+    `void_adapter_outcome` is `None` on this response, because this call did not
+    ask it. The *attempt* is recorded on the append-only trail either way: the
+    operator needs to see that a retry happened and what the provider said, not
+    only the retries that happened to succeed.
+    """
+    payment = await _get_scoped_payment(db, payment_id, entity_id, for_update=True)
+
+    if payment.status != "voided":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Only a voided payment's card close can be retried "
+                f"(this payment is '{payment.status}'). Void it first."
+            ),
+        )
+    if payment.method != "virtual_card":
+        raise HTTPException(
+            status_code=409,
+            detail="This payment did not issue a virtual card, so there is nothing to close.",
+        )
+
+    card_outcome = await _cancel_card_for_void(
+        db, payment=payment, org=org, user=user, via="payment_void_retry"
+    )
+    disposition = card_cancel_disposition(card_outcome)
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=payment.correlation_id or uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment.void_card_cancel_retried",
+        entity_type="payment",
+        entity_id=payment.id,
+        # PII-free: the outcome tag and its verdict only. `card_cancel_error:*`
+        # carries the exception TYPE, never the provider's body — a card-provider
+        # error string can embed a partial PAN (`card_issuance` guards that at
+        # source).
+        details={"card_outcome": card_outcome, "card_disposition": disposition},
+    )
+
+    await db.commit()
+    await db.refresh(payment)
+
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
+    resp = PaymentResponse.from_db(payment, invoice)
+    resp.void_card_outcome = card_outcome
+    resp.void_card_disposition = disposition
     return resp
 
 

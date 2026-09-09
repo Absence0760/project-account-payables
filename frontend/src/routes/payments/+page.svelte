@@ -6,7 +6,8 @@
 		paymentMethodLabelKey,
 		PAYMENT_STATUS_TONES,
 		runStatusLabelKey,
-		runStatusTone
+		runStatusTone,
+		voidCardOutcomeLabelKey
 	} from '$lib/types/payment';
 	import { paymentStore } from '$lib/stores/payments.svelte';
 	import { appendUnique } from '$lib/utils/pagination';
@@ -56,6 +57,8 @@
 	import {
 		acceptPaymentSettlement,
 		retryRunErpSync,
+		retryVoidCardCancel,
+		voidPayment,
 		type RunErpSyncResult
 	} from '$lib/api/payments';
 	import {
@@ -627,10 +630,44 @@
 	let voidTarget = $state<Payment | null>(null);
 	let voidReason = $state('');
 	let voiding = $state(false);
+	// The voided payment's card verdict, once the void has run. The dialog stays
+	// open on it: both legs of a void are best-effort, so a bare success toast
+	// would let the operator read "voided" as "the card is shut" — and a card
+	// the provider did not close is still live and bearer-spendable. `null` is
+	// the pre-void state and every case with nothing to report (`closed`,
+	// `no_card`, a non-card payment), which closes the dialog as before.
+	let voidCardResult = $state<Payment | null>(null);
+	let retryingCardCancel = $state(false);
+	let cardRetryFailed = $state(false);
+
+	const voidCardDisposition = $derived(voidCardResult?.void_card_disposition ?? null);
+	// Only the retryable verdict gets a button. `not_closed_final` (the card was
+	// already charged) is shown, because the card was NOT closed and the
+	// operator must know — but a retry there can only fail forever, so offering
+	// one would be a control that cannot work.
+	const canRetryCardCancel = $derived(voidCardDisposition === 'not_closed_retryable');
 
 	function openVoid(p: Payment) {
 		voidTarget = p;
 		voidReason = '';
+		voidCardResult = null;
+		cardRetryFailed = false;
+	}
+
+	function closeVoid() {
+		voidTarget = null;
+		voidCardResult = null;
+		cardRetryFailed = false;
+	}
+
+	/** Refresh every surface a void (or a later card close) can change. */
+	async function reloadAfterVoid() {
+		await Promise.all([
+			loadSummary(),
+			loadQueue(),
+			paymentStore.fetch(buildParams()), // noqa: raw-fetch-in-component — store method; routes through api.get
+			fetchPaymentCounts(),
+		]);
 	}
 
 	async function commitVoid() {
@@ -642,21 +679,52 @@
 		}
 		voiding = true;
 		try {
-			await api.post(`/api/payments/${voidTarget.id}/void`, { reason });
+			const voided = await voidPayment(voidTarget.id, reason);
 			toast('Payment voided', 'success');
-			voidTarget = null;
-			voidReason = '';
-			await Promise.all([
-				loadSummary(),
-				loadQueue(),
-				paymentStore.fetch(buildParams()), // noqa: raw-fetch-in-component — store method; routes through api.get
-				fetchPaymentCounts(),
-			]);
+			// Branch on the SERVER's verdict, never on the raw outcome tag: a tag
+			// this build doesn't know must not read as "closed" (decisions §130).
+			const disposition = voided.void_card_disposition ?? null;
+			if (disposition === 'not_closed_retryable' || disposition === 'not_closed_final') {
+				voidCardResult = voided;
+				voidReason = '';
+			} else {
+				closeVoid();
+				voidReason = '';
+			}
+			await reloadAfterVoid();
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
 			toast(e?.detail ?? e?.message ?? 'Void failed', 'error');
 		} finally {
 			voiding = false;
+		}
+	}
+
+	/**
+	 * Finish the void's card leg. Server-side this is `payment.void`-gated and
+	 * 409s on anything but an already-voided card payment, so it can only ever
+	 * complete a reversal — never close a card while a payment still claims the
+	 * money is in flight (decisions §96).
+	 */
+	async function commitCardCancelRetry() {
+		if (!voidCardResult) return;
+		retryingCardCancel = true;
+		cardRetryFailed = false;
+		try {
+			const retried = await retryVoidCardCancel(voidCardResult.id);
+			voidCardResult = retried;
+			if ((retried.void_card_disposition ?? null) === 'closed') {
+				toast(m('payments.void.card.closed'), 'success');
+			} else {
+				cardRetryFailed = true;
+			}
+			await reloadAfterVoid();
+		} catch (err) {
+			const e = err as { detail?: string; message?: string } | null;
+			cardRetryFailed = true;
+			toast(e?.detail ?? e?.message ?? m('payments.void.card.retryFailed'), 'error');
+		} finally {
+			retryingCardCancel = false;
 		}
 	}
 
@@ -2521,8 +2589,10 @@
 <Modal
 	open={voidTarget !== null}
 	ariaLabel="Void payment"
-	title={m('payments.void.title')}
-	onclose={() => (voidTarget = null)}
+	title={voidCardResult && voidCardDisposition !== 'closed'
+		? m('payments.void.card.title')
+		: m('payments.void.title')}
+	onclose={closeVoid}
 >
 	{#if voidTarget}
 		<p class="modal-hint">
@@ -2530,33 +2600,90 @@
 			{#if voidTarget.vendor_name}· {voidTarget.vendor_name}{/if}
 			· {formatRowMoney(voidTarget.amount, voidTarget.currency)}
 		</p>
-		<p class="modal-warn">
-			{m('payments.void.warning')}
-		</p>
-		<form onsubmit={(e) => { e.preventDefault(); commitVoid(); }}>
-			<label>
-				<span>{m('payments.void.reason')}</span>
-				<input
-					type="text"
-					bind:value={voidReason}
-					placeholder={m('payments.void.reasonPlaceholder')}
-					maxlength="500"
-					autofocus
-				/>
-			</label>
+		{#if voidCardResult}
+			<!-- The void landed; its card leg did not. Both legs are best-effort so
+			     the accounting void is never blocked by a provider outage — which
+			     is exactly why the outcome has to be SAID here rather than left on
+			     the audit row. Retry is offered only where it can work. -->
+			{#if voidCardDisposition === 'closed'}
+				<!-- A retry landed. Confirm it here rather than closing on a toast:
+				     this panel is the record of the card being chased, so the
+				     operator sees the outcome that ends the chase. -->
+				<p class="modal-hint" data-testid="void-card-closed">
+					{m('payments.void.card.closed')}
+				</p>
+			{:else}
+				<p class="modal-warn" role="alert" data-testid="void-card-warning">
+					{voidCardDisposition === 'not_closed_final'
+						? m('payments.void.card.final')
+						: m('payments.void.card.retryable')}
+				</p>
+			{/if}
+			{#if voidCardResult.void_card_outcome}
+				{@const labelKey = voidCardOutcomeLabelKey(voidCardResult.void_card_outcome)}
+				<p class="modal-hint" data-testid="void-card-outcome">
+					<!-- An unknown tag renders raw rather than being dropped or dressed
+					     up as something friendlier: it is PII-free by construction
+					     (`card_cancel_error:*` carries an exception TYPE, never the
+					     provider's body) and the operator needs the literal value to
+					     quote at support. -->
+					{labelKey ? m(labelKey) : voidCardResult.void_card_outcome}
+				</p>
+			{/if}
+			{#if cardRetryFailed}
+				<p class="state error" role="alert" data-testid="void-card-retry-failed">
+					{m('payments.void.card.retryFailed')}
+				</p>
+			{/if}
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (voidTarget = null)}>
-					{m('common.cancel')}
+				<button type="button" class="btn-cancel" onclick={closeVoid} data-testid="void-card-close">
+					{m('payments.close')}
 				</button>
-				<button
-					type="submit"
-					class="btn-danger"
-					disabled={voiding || !voidReason.trim()}
-				>
-					{voiding ? m('payments.void.voiding') : m('payments.void.confirm')}
-				</button>
+				{#if canRetryCardCancel}
+					<button
+						type="button"
+						class="btn-primary"
+						data-testid="void-card-retry"
+						disabled={retryingCardCancel}
+						onclick={commitCardCancelRetry}
+					>
+						{retryingCardCancel
+							? m('payments.void.card.retrying')
+							: m('payments.void.card.retry')}
+					</button>
+				{/if}
 			</div>
-		</form>
+		{:else}
+			<p class="modal-warn">
+				{m('payments.void.warning')}
+			</p>
+			<form onsubmit={(e) => { e.preventDefault(); commitVoid(); }}>
+				<label>
+					<span>{m('payments.void.reason')}</span>
+					<input
+						type="text"
+						bind:value={voidReason}
+						placeholder={m('payments.void.reasonPlaceholder')}
+						maxlength="500"
+						data-testid="void-reason"
+						autofocus
+					/>
+				</label>
+				<div class="modal-footer">
+					<button type="button" class="btn-cancel" onclick={closeVoid}>
+						{m('common.cancel')}
+					</button>
+					<button
+						type="submit"
+						class="btn-danger"
+						data-testid="void-confirm"
+						disabled={voiding || !voidReason.trim()}
+					>
+						{voiding ? m('payments.void.voiding') : m('payments.void.confirm')}
+					</button>
+				</div>
+			</form>
+		{/if}
 	{/if}
 </Modal>
 

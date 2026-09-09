@@ -4,6 +4,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+from app.services.card_issuance import CardCancelDisposition
 
 
 class PaymentStatus(StrEnum):
@@ -133,10 +134,19 @@ class PaymentResponse(BaseModel):
     # only on the `payment.voided` audit row, so an operator who voided a card
     # payment could not tell whether the card was actually closed at the
     # provider, and a failed leg leaves a live, bearer-spendable card. When
-    # `void_card_outcome` is not `card_cancelled` / `card_already_cancelled` /
-    # `card_already_charged` / `no_card_linked`, retry the close via
-    # `POST /api/cards/{card_id}/cancel`. `None` on every non-void read.
+    # `void_card_outcome` is the fine-grained tag; `void_card_disposition` is
+    # the VERDICT derived from it by `card_issuance.card_cancel_disposition` —
+    # `closed` / `no_card` / `not_closed_final` / `not_closed_retryable`. The
+    # UI branches on the verdict, never on the tag: a client that enumerated
+    # outcome strings would mis-read every tag added later as success. A
+    # `not_closed_retryable` card is LIVE and bearer-spendable; the remedy is
+    # `POST /api/payments/{payment_id}/void/retry-card-cancel`, which re-attempts
+    # ONLY the card leg of that already-voided payment (docs/decisions.md §130).
+    #
+    # All three are `None` on every non-void read — the legs never ran, and
+    # "we never asked" is not "it is shut" (docs/decisions.md §34).
     void_card_outcome: str | None = None
+    void_card_disposition: CardCancelDisposition | None = None
     void_adapter_outcome: str | None = None
 
     # Joined fields from invoice
