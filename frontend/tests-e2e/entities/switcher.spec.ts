@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { API_BASE, expect, test } from '../fixtures/helpers';
 
 /**
  * Multi-entity (Phase 2) sidebar entity switcher.
@@ -13,7 +13,7 @@ import { expect, test } from '../fixtures/helpers';
  * doesn't leak into other specs.
  */
 
-const API = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+const API = API_BASE;
 
 /** Create an entity through the backend API using the page's stored auth. */
 async function createEntity(page, name: string, slug: string): Promise<string> {

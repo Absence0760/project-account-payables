@@ -237,6 +237,14 @@ Two things stay shared and are NOT covered by these variables:
   Mailpit :8025, LocalStack :4566, stripe-mock :12111, fake-erp :12112). They
   are one compose stack per machine, like Postgres — a second suite reuses them
   rather than starting its own.
+- **The backend's own idea of where the frontend lives.**
+  `FEOH_TENANT_URL_TEMPLATE` (`http://{slug}.localhost:7777` in
+  `.env.development`) is what the *backend* stamps into invite links, portal
+  links and the SSO callback base — `E2E_WEB_ORIGIN` does not reach it. Two
+  specs assert against that template (`organization/tenant-url.spec.ts`,
+  `organization/custom-domain-rejection.spec.ts`), so a second session on a
+  non-default web origin must set `FEOH_TENANT_URL_TEMPLATE` on its backend to
+  match, or those two fail while everything else passes.
 
 ## Service-backed specs (gated)
 

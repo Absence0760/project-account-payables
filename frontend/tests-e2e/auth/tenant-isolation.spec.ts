@@ -1,13 +1,5 @@
-import { expect, test } from '../fixtures/helpers';
+import { ACME_ADMIN, ACME_BASE, API_BASE, escapeRegExp, expect, signInAndWait, TECHFLOW_ADMIN, TECHFLOW_BASE, test } from '../fixtures/helpers';
 
-import {
-	ACME_ADMIN,
-	ACME_BASE,
-	escapeRegExp,
-	signInAndWait,
-	TECHFLOW_ADMIN,
-	TECHFLOW_BASE
-} from '../fixtures/helpers';
 
 // Start unauthenticated — this spec drives its own ACME/TECHFLOW logins to assert
 // cross-tenant read isolation. The per-worker admin storage state would point at
@@ -40,7 +32,7 @@ test.use({ baseURL: ACME_BASE });
  *     can't quietly leak data.
  */
 
-const API_URL = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+const API_URL = API_BASE;
 
 /** Sign in via the UI and pluck the JWT out of localStorage. */
 async function tokenAfterLogin(
@@ -70,7 +62,7 @@ test.describe('tenant isolation — UI', () => {
 		// rejects → api.ts redirects → end state: anon on acme /login.
 		await page.goto(`${ACME_BASE}/invoices`);
 		await page.waitForURL(/\/login/, { timeout: 10_000 });
-		expect(page.url()).toMatch(/^http:\/\/acme\.localhost:7777\//);
+		expect(page.url()).toMatch(new RegExp(`^${escapeRegExp(ACME_BASE)}/`));
 	});
 
 	test('reverse direction: acme JWT cannot reach techflow data', async ({ page }) => {
@@ -81,7 +73,7 @@ test.describe('tenant isolation — UI', () => {
 
 		await page.goto(`${TECHFLOW_BASE}/invoices`);
 		await page.waitForURL(/\/login/, { timeout: 10_000 });
-		expect(page.url()).toMatch(/^http:\/\/techflow\.localhost:7777\//);
+		expect(page.url()).toMatch(new RegExp(`^${escapeRegExp(TECHFLOW_BASE)}/`));
 	});
 });
 

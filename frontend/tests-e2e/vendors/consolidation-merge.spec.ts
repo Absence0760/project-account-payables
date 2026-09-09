@@ -1,5 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
-import { signInAndWait, authedTenantHeaders, API_BASE } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 /**
  * /vendors — "Merge into canonical" consolidation UI.

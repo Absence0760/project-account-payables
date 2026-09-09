@@ -1,11 +1,4 @@
-import {
-	API_BASE,
-	authedTenantHeaders,
-	currentTenantSlug,
-	expect,
-	signInAndWait,
-	test
-} from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, currentTenantSlug, expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 
 /**
  * /admin/webhooks — Outbound-webhook management + redelivery UI (admin only).
@@ -421,7 +414,7 @@ test.describe('/admin/webhooks (clerk — not authorized)', () => {
 
 		await page.goto('/admin/webhooks');
 		// admin-only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Webhooks', exact: true })).toHaveCount(0);
 
 		// The API itself 403s a non-admin.

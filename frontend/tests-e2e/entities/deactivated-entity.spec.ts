@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { expect, test, tenantPsql } from '../fixtures/helpers';
+import { API_BASE, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /**
  * The sidebar entity switcher must not offer a DEACTIVATED entity.
@@ -30,7 +30,7 @@ import { expect, test, tenantPsql } from '../fixtures/helpers';
  */
 
 const SLUG_PREFIX = 'e2e-retire';
-const API = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+const API = API_BASE;
 
 /** Create an entity through the backend API using the page's stored auth. */
 async function createEntity(page: Page, name: string, slug: string): Promise<string> {

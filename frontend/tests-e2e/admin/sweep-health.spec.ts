@@ -1,4 +1,4 @@
-import { API_BASE, currentTenantSlug, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, currentTenantSlug, expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 import { expectNoA11yViolations } from '../a11y/axe-helper';
 
 /**
@@ -123,7 +123,7 @@ test.describe('/admin/health (clerk — not authorized)', () => {
 		await signInAndWait(page, tenantClerk);
 
 		await page.goto('/admin/health');
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Sweep Health' })).toHaveCount(0);
 		// The nav row is admin-only too, so there is no dead end to click into.
 		await expect(page.locator('aside.sidebar a[href="/admin/health"]')).toHaveCount(0);

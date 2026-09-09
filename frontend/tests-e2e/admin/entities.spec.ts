@@ -1,11 +1,4 @@
-import {
-	API_BASE,
-	authedTenantHeaders,
-	currentTenantSlug,
-	expect,
-	signInAndWait,
-	test
-} from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, currentTenantSlug, expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 import { expectNoA11yViolations } from '../a11y/axe-helper';
 
 /**
@@ -243,7 +236,7 @@ test.describe('/admin/entities (clerk — not authorized)', () => {
 
 		await page.goto('/admin/entities');
 		// admin-only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Entities' })).toHaveCount(0);
 
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));

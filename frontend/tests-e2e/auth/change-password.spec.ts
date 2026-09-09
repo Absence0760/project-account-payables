@@ -1,12 +1,4 @@
-import {
-	API_BASE,
-	authedTenantHeaders,
-	expect,
-	signIn,
-	signInAndWait,
-	signOut,
-	test
-} from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, signIn, signInAndWait, signOut, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 
 // Start unauthenticated — this spec drives its own sign-in / sign-out for the change-password UX.
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -111,13 +103,13 @@ test.describe('/change-password', () => {
 			expect(body.must_change_password).toBe(false);
 
 			// Lands on the tenant root.
-			await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 10_000 });
+			await page.waitForURL(TENANT_ROOT_URL, { timeout: 10_000 });
 
 			// Verify new password actually works: sign out, sign back in,
 			// must_change_password is now false so we land on / directly.
 			await signOut(page);
 			await signIn(page, { email: created.email, password: newPw });
-			await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 10_000 });
+			await page.waitForURL(TENANT_ROOT_URL, { timeout: 10_000 });
 		} finally {
 			await deleteTestUser(page, created.id);
 		}

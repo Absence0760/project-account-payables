@@ -1,10 +1,4 @@
-import {
-	API_BASE,
-	currentTenantSlug,
-	expect,
-	signInAndWait,
-	test
-} from '../fixtures/helpers';
+import { API_BASE, currentTenantSlug, expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 
 /**
  * /admin/partner — Partner / reseller multi-tenant admin (admin only).
@@ -85,7 +79,7 @@ test.describe('/admin/partner (clerk — not authorized)', () => {
 
 		await page.goto('/admin/partner');
 		// admin-only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Partner Admin' })).toHaveCount(0);
 
 		// The API itself 403s a non-admin.

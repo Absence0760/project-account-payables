@@ -1,4 +1,4 @@
-import { API_BASE, currentTenantSlug, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, currentTenantSlug, expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 
 /**
  * /admin/access-review — periodic SOX access review (admin | cfo).
@@ -65,7 +65,7 @@ test.describe('/admin/access-review (clerk — not authorized)', () => {
 		await signInAndWait(page, tenantClerk);
 
 		await page.goto('/admin/access-review');
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Access Review' })).toHaveCount(0);
 
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));

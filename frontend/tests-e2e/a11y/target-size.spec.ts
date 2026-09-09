@@ -48,7 +48,7 @@ const PAINTED = 16;
  * Rewrites the real payload rather than replacing it (the pattern
  * `deemphasised-rows.spec.ts` uses for the credit-memo and payment-queue
  * cases): the row shape is wide, and what matters here is the row *state*, not
- * a fixture. The `**/api/invoices**` glob also matches `/api/invoices/counts`
+ * a fixture. The `**\/api/invoices**` glob also matches `/api/invoices/counts`
  * and `/api/invoices/{id}`, so the handler re-checks the pathname rather than
  * trusting the glob.
  */

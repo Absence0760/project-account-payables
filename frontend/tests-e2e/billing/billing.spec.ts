@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 
-import { currentTenantSlug, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, currentTenantSlug, expect, signInAndWait, TENANT_ROOT_URL, test } from '../fixtures/helpers';
 
 /**
  * /billing — Platform Billing & Metering (read/display surface).
@@ -570,7 +570,7 @@ test.describe('/billing (clerk — not authorized)', () => {
 
 		await page.goto('/billing');
 		// admin/cfo only — the page waits for /me then bounces the clerk to root.
-		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(TENANT_ROOT_URL, { timeout: 15_000 });
 		await expect(page.getByRole('heading', { name: 'Billing' })).toHaveCount(0);
 
 		// The clerk also can't reach the Subscription tab (it's admin/cfo-only,
@@ -581,7 +581,7 @@ test.describe('/billing (clerk — not authorized)', () => {
 	test('the API 403s a clerk directly', async ({ page, tenantClerk }) => {
 		await signInAndWait(page, tenantClerk);
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));
-		const base = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+		const base = API_BASE;
 		const headers = { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() };
 		// Every billing read (subscription + invoices + payment methods + the
 		// plan catalog) is admin/cfo-only; so is starting a SetupIntent or
