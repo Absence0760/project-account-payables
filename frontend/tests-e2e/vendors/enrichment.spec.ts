@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, deleteVendorsWhere, expect, signInAndWait, tenantPsql, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, deleteVendorsWhere, expect, signInAndWait, tenantPsql, test , isVendorListResponse} from '../fixtures/helpers';
 
 /**
  * /vendors — external firmographics enrichment "Apply" flow in VendorModal.
@@ -60,7 +60,7 @@ test.describe('/vendors external enrichment (admin)', () => {
 			// Search for the fresh vendor so it appears as the first row.
 			const searchBox = page.getByPlaceholder('Search vendors...');
 			await searchBox.fill(vendor.name);
-			await page.waitForResponse((r) => r.url().includes('/api/vendors') && r.url().includes('search='));
+			await page.waitForResponse((r) => isVendorListResponse(r.url(), 'search='));
 
 			const firstRow = page.locator('table tbody tr').first();
 			await firstRow.locator('td.vendor-name .row-link').click();
@@ -110,7 +110,7 @@ test.describe('/vendors external enrichment (admin)', () => {
 		try {
 			const searchBox = page.getByPlaceholder('Search vendors...');
 			await searchBox.fill(vendor.name);
-			await page.waitForResponse((r) => r.url().includes('/api/vendors') && r.url().includes('search='));
+			await page.waitForResponse((r) => isVendorListResponse(r.url(), 'search='));
 
 			const firstRow = page.locator('table tbody tr').first();
 			await firstRow.locator('td.vendor-name .row-link').click();

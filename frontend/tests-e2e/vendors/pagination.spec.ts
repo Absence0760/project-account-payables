@@ -5,7 +5,8 @@ import {
 	expect,
 	tenantPsql,
 	test
-} from '../fixtures/helpers';
+,
+	isVendorListResponse} from '../fixtures/helpers';
 
 /**
  * /vendors pagination. Bulk-insert vendors past the page_size=20 boundary and
@@ -48,7 +49,7 @@ test.describe('/vendors pagination', () => {
 		expect(total).toBeGreaterThanOrEqual(22);
 
 		const next = page.waitForResponse(
-			(r) => r.url().includes('/api/vendors') && r.url().includes('page=2')
+			(r) => isVendorListResponse(r.url(), 'page=2')
 		);
 		await loadMore.click();
 		await next;

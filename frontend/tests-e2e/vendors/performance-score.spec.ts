@@ -6,7 +6,8 @@ import {
 	signInAndWait,
 	tenantPsql,
 	test
-} from '../fixtures/helpers';
+,
+	isVendorListResponse} from '../fixtures/helpers';
 
 /**
  * /vendors — the vendor performance score panel in VendorModal.
@@ -88,7 +89,7 @@ test.describe('/vendors performance score (admin)', () => {
 			const searchBox = page.getByPlaceholder('Search vendors...');
 			await searchBox.fill(vendor.name);
 			await page.waitForResponse(
-				(r) => new URL(r.url()).pathname.endsWith('/api/vendors') && r.url().includes('search=')
+				(r) => isVendorListResponse(r.url(), 'search=')
 			);
 
 			// Identity, not position. `/api/vendors/counts?search=` answers the
@@ -142,7 +143,7 @@ test.describe('/vendors performance score (admin)', () => {
 			const searchBox = page.getByPlaceholder('Search vendors...');
 			await searchBox.fill(vendor.name);
 			await page.waitForResponse(
-				(r) => new URL(r.url()).pathname.endsWith('/api/vendors') && r.url().includes('search=')
+				(r) => isVendorListResponse(r.url(), 'search=')
 			);
 
 			// Identity, not position. `/api/vendors/counts?search=` answers the

@@ -880,6 +880,23 @@ export async function loadMoreUntilRow(page: Page, row: Locator): Promise<void> 
  * option renders `<name> <code>` when the vendor carries a code.
  */
 /**
+ * Matches the vendor LIST response, and only it.
+ *
+ * `/api/vendors/counts` and `/api/vendors/ids` sit under the same prefix and
+ * carry the same `search=` / `status=` query, and either can answer first — so
+ * a substring match on `/api/vendors` resolves while the table still holds the
+ * PREVIOUS result, and whatever the spec reads next is stale. Comparing the
+ * pathname exactly is what makes the wait mean "the list has been re-fetched".
+ *
+ * `carrying` is an optional literal the URL must also contain, e.g.
+ * `'search=Office'` or `'page=2'`.
+ */
+export function isVendorListResponse(url: string, carrying?: string): boolean {
+	if (!new URL(url).pathname.endsWith('/api/vendors')) return false;
+	return carrying ? url.includes(carrying) : true;
+}
+
+/**
  * The shared `ui/VendorPicker`'s combobox input, within `scope` (a dialog, a
  * page, a form). Filtering by role excludes the picker's own clear button,
  * whose accessible name also contains the field label — the strict-mode
