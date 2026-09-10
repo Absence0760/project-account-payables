@@ -104,3 +104,23 @@ class RecurringInvoiceTemplate(Base, EntityMixin, TimestampMixin):
 
     notes: Mapped[str | None] = mapped_column(String(500))
     meta: Mapped[dict | None] = mapped_column(JSONB)
+
+    # The control-plane ``User`` who created this template — the employee whose
+    # standing instruction every generated invoice is. No ForeignKey: ``users``
+    # lives in the control plane and this table is tenant-local, the same
+    # placement as ``Invoice.uploaded_by_id`` and
+    # ``VendorUser.provisioned_by_user_id``.
+    #
+    # It exists for segregation of duties. The background sweep has no human
+    # actor, so ``generate_one`` used to stamp the generated invoice's
+    # ``uploaded_by_id`` NULL — and ``approval_chain.violates_segregation``
+    # reads NULL as "no employee created this row" and returns False. The
+    # template's author could therefore approve the invoice their own template
+    # raised. Unlike email intake or inbound PEPPOL there IS an employee here;
+    # we simply had nowhere to record them. ``generate_one`` now falls back to
+    # this column when there is no live actor.
+    #
+    # Nullable and never backfilled: a template that predates the column has no
+    # honest author to recover, and inventing one would manufacture either a
+    # refusal or an absolution. Such rows keep the legacy NULL reading.
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
