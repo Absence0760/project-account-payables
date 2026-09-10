@@ -132,10 +132,19 @@ async function expectRowPending(row: Locator, count: number): Promise<void> {
 
 	// The accessibility tree itself — the thing axe cannot judge. The dash is
 	// out of it entirely; "Loading…" is in it once per card.
+	//
+	// Asserted on the VALUE nodes rather than by searching the row's whole aria
+	// snapshot for the dash character. Two of `/audit`'s five cards carry a
+	// `sub` line with a legitimate em dash ("Digest no longer re-derives —
+	// investigate"), so a substring search flags prose that has nothing to do
+	// with a placeholder. What the row is actually promising is narrower and
+	// exactly checkable: while pending, no card's value node is in the
+	// accessibility tree at all.
+	await expect(
+		row.locator('.kpi-value:not([aria-hidden="true"])'),
+		'a pending card must not announce its placeholder dash'
+	).toHaveCount(0);
 	const announced = await row.ariaSnapshot();
-	expect(announced, 'a pending card must not announce its placeholder dash').not.toContain(
-		NO_FIGURE
-	);
 	expect(announced.match(new RegExp(LOADING, 'g')) ?? []).toHaveLength(count);
 }
 
@@ -509,6 +518,11 @@ test.describe('accessibility — KPI pending affordance (WCAG 4.1.2 / 1.3.1)', (
 
 		try {
 			await page.goto('/adaptive');
+			// The threshold row lives behind its own tab — `/adaptive` opens on
+			// Suggestions, so without this the row is never in the DOM and the
+			// assertion below fails as "element(s) not found" rather than as a
+			// collapsed row, which is the opposite of what this case is for.
+			await page.getByRole('tab', { name: 'Auto-approve threshold' }).click();
 			const row = page.getByTestId('adaptive-threshold-card');
 			await expect(row.locator('.kpi').first()).toBeVisible();
 
