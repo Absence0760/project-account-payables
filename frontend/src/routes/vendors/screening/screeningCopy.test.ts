@@ -43,23 +43,30 @@ const RAW_SOURCE = RAW[ROUTE];
  * -->`, and whole-line `//`; a trailing `//` after code is left alone so a URL
  * inside a string can't be truncated.
  */
-function stripComments(source: string): string {
-	// Applied until the text stops changing. A single pass over a
-	// multi-character delimiter can re-form the delimiter it just removed —
-	// `<!<!-- x -->-- y -->` collapses to `<!-- y -->`, which survives — so one
-	// pass leaves comment text in `SOURCE` and the guard then scans the very
-	// prose it is meant to skip. Repeating to a fixed point is the documented
-	// remedy for that class (CodeQL `js/incomplete-multi-character-sanitization`).
+/**
+ * Apply `pattern` until the text stops changing.
+ *
+ * One pass over a PAIRED multi-character delimiter can re-form the delimiter it
+ * just removed: `<!<!-- x -->-- y -->` has its inner comment stripped and the
+ * surviving halves close up into `<!-- y -->`. Re-running to a fixed point is
+ * the documented remedy for that class, and it is kept to a single `replace`
+ * per call because that is the shape the check recognises.
+ */
+function replaceUntilStable(input: string, pattern: RegExp): string {
 	let previous: string;
-	let out = source;
+	let out = input;
 	do {
 		previous = out;
-		out = out
-			.replace(/\/\*[\s\S]*?\*\//g, '')
-			.replace(/<!--[\s\S]*?-->/g, '')
-			.replace(/^[ \t]*\/\/.*$/gm, '');
+		out = out.replace(pattern, '');
 	} while (out !== previous);
 	return out;
+}
+
+function stripComments(source: string): string {
+	let out = replaceUntilStable(source, /\/\*[\s\S]*?\*\//g);
+	out = replaceUntilStable(out, /<!--[\s\S]*?-->/g);
+	// Line-anchored and unpaired, so it cannot re-form its own opener.
+	return out.replace(/^[ \t]*\/\/.*$/gm, '');
 }
 
 const SOURCE = stripComments(RAW_SOURCE);
