@@ -608,7 +608,14 @@ test.describe('accessibility — KPI pending affordance (WCAG 4.1.2 / 1.3.1)', (
 			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value', {
 				timeout: 15_000
 			});
-			await expectRowSettled(row, 2);
+			// The SETTLED count is not a literal, unlike every other case in this
+			// spec: an org with no subscription gets one extra card per rebate
+			// currency, and whether the worker's tenant has accrued any is seed
+			// state this test does not own (`billing.spec.ts` avoids counting here
+			// for the same reason). Reading it after the row has provably settled
+			// is deterministic, and the count was never what this asserts — the
+			// absence of `aria-busy`, the hidden dash and the loading text is.
+			await expectRowSettled(row, await row.locator('.kpi').count());
 			await expectNoA11yViolations(page);
 		} finally {
 			held.release();
