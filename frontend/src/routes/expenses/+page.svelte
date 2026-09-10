@@ -1372,20 +1372,21 @@
 						pending={summaryLoading}
 					/>
 				</div>
-				{#if activeSummary}
-					<!--
-						The total sums each line's rate-locked conversion into the report
-						currency. Lines with no usable rate are EXCLUDED, so the figure
-						above would silently understate without this notice (issue #157).
-					-->
-					{#if activeSummary.unconverted_count > 0}
-						<div class="unconverted-panel" role="alert">
-							{m('expenses.reports.unconverted', {
-								count: activeSummary.unconverted_count,
-								currency: activeSummary.currency
-							})}
-						</div>
-					{/if}
+				<!--
+					The total sums each line's rate-locked conversion into the report
+					currency. Lines with no usable rate are EXCLUDED, so the figure
+					above would silently understate without this notice (issue #157).
+					One condition rather than the nested pair this used to be: the
+					outer `{#if activeSummary}` was the row's gate, and with the row
+					hoisted out it wrapped nothing else.
+				-->
+				{#if activeSummary && activeSummary.unconverted_count > 0}
+					<div class="unconverted-panel" role="alert">
+						{m('expenses.reports.unconverted', {
+							count: activeSummary.unconverted_count,
+							currency: activeSummary.currency
+						})}
+					</div>
 				{/if}
 
 				{#if canCreate && activeReport.status === 'draft'}
