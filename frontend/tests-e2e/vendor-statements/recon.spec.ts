@@ -5,7 +5,7 @@ import {
 	selectVendorInPicker,
 	signInAndWait,
 	tenantPsql,
-	test
+	test, vendorPicker
 } from '../fixtures/helpers';
 
 /**
@@ -168,7 +168,7 @@ test.describe('/vendor-statements (admin)', () => {
 		const dialog = page.getByRole('dialog', { name: 'New vendor statement reconciliation' });
 		await expect(dialog).toBeVisible();
 		// Vendor + statement-date controls are present.
-		await expect(dialog.getByLabel('Vendor')).toBeVisible();
+		await expect(vendorPicker(dialog)).toBeVisible();
 		await expect(dialog.getByLabel('Statement Date')).toBeVisible();
 	});
 
@@ -214,7 +214,7 @@ test.describe('/vendor-statements (admin)', () => {
 			await page.getByRole('button', { name: '+ New reconciliation' }).click();
 			const dialog = page.getByRole('dialog', { name: 'New vendor statement reconciliation' });
 
-			await selectVendorInPicker(dialog.getByLabel('Vendor'), vendor.name);
+			await selectVendorInPicker(vendorPicker(dialog), vendor.name);
 			await dialog.getByLabel('Statement Date').fill(statementDate);
 			await dialog.getByLabel('Statement Reference').fill(reference);
 			await dialog.getByRole('radio', { name: 'Upload a file' }).check();
@@ -271,7 +271,7 @@ test.describe('/vendor-statements (admin)', () => {
 		await page.getByRole('button', { name: '+ New reconciliation' }).click();
 		const dialog = page.getByRole('dialog', { name: 'New vendor statement reconciliation' });
 
-		await selectVendorInPicker(dialog.getByLabel('Vendor'), vendor.name);
+		await selectVendorInPicker(vendorPicker(dialog), vendor.name);
 		await dialog.getByLabel('Statement Date').fill('2026-05-31');
 		await dialog.getByRole('radio', { name: 'Upload a file' }).check();
 		// Header row only — `parse_statement_csv` refuses this structurally rather

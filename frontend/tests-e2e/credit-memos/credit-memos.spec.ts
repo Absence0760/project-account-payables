@@ -5,7 +5,7 @@ import {
 	expect,
 	selectVendorInPicker,
 	tenantPsql,
-	test
+	test, vendorPicker
 } from '../fixtures/helpers';
 
 interface Vendor {
@@ -109,7 +109,7 @@ test.describe('/credit-memos', () => {
 			// too (a searchable combobox, not a `<select>`), so a bare tag
 			// locator is a strict-mode violation on both fields.
 			await modal.getByLabel('Memo Number').fill(memoNumber);
-			await selectVendorInPicker(modal.getByLabel('Vendor'), vendor.name);
+			await selectVendorInPicker(vendorPicker(modal), vendor.name);
 			await modal.locator('input[type="number"]').fill('250.50');
 			await modal.locator('textarea').fill('e2e: returned defective monitors');
 

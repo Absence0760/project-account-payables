@@ -6,7 +6,7 @@ import {
 	selectVendorInPicker,
 	signInAndWait,
 	tenantPsql,
-	test
+	test, vendorPicker
 } from '../fixtures/helpers';
 
 /**
@@ -134,7 +134,7 @@ test.describe('/recurring (admin)', () => {
 
 			await dialog.getByLabel('Name').fill(name);
 			// Vendor select carries the vendor name as its option label.
-			await selectVendorInPicker(dialog.getByLabel('Vendor'), vendor.name);
+			await selectVendorInPicker(vendorPicker(dialog), vendor.name);
 			await dialog.getByLabel('Amount').fill('1500.00');
 			await dialog.getByLabel('Cadence').selectOption('monthly');
 			await dialog.getByLabel('Start Date').fill('2026-01-01');

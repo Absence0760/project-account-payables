@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { expect, test, vendorPicker } from '../fixtures/helpers';
 import { expectNoA11yViolations } from './axe-helper';
 
 /**
@@ -121,7 +121,7 @@ test.describe('accessibility — authenticated app (WCAG 2.2 AA)', () => {
 		await expect(modal).toBeVisible();
 		// The vendor picker is populated from a fetch — wait for it so the scan
 		// covers the fully rendered form rather than a half-built one.
-		await expect(modal.getByLabel('Vendor')).toBeVisible();
+		await expect(vendorPicker(modal)).toBeVisible();
 
 		await expectNoA11yViolations(page);
 	});

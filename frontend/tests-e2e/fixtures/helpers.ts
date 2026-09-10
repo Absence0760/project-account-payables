@@ -871,11 +871,24 @@ export async function loadMoreUntilRow(page: Page, row: Locator): Promise<void> 
  * type, exactly as a user does. `selectOption` on it fails as "element is not
  * a <select>", which is the honest failure for a spec that was never updated.
  *
- * `input` is the combobox itself — `getByTestId(...)` where the picker was
- * given a `testid`, `getByLabel('Vendor')` where it was given a visible label.
+ * `input` is the combobox itself. Reach it with `vendorPicker(scope)` rather
+ * than `getByLabel('Vendor')`: the picker renders a clear button named "Clear
+ * the selected vendor", so a substring label match resolves to two elements
+ * and fails strict mode. Filtering by the `combobox` role is what makes it
+ * unambiguous, and it is honest about the control being a combobox now.
  * `name` is matched as a SUBSTRING of the option's accessible name, because an
  * option renders `<name> <code>` when the vendor carries a code.
  */
+/**
+ * The shared `ui/VendorPicker`'s combobox input, within `scope` (a dialog, a
+ * page, a form). Filtering by role excludes the picker's own clear button,
+ * whose accessible name also contains the field label — the strict-mode
+ * collision that `getByLabel('Vendor')` walks into.
+ */
+export function vendorPicker(scope: Page | Locator, name = 'Vendor'): Locator {
+	return scope.getByRole('combobox', { name });
+}
+
 export async function selectVendorInPicker(input: Locator, name: string): Promise<void> {
 	await input.click();
 	// Typing IS the reach mechanism: the popup holds one server-filtered page,
