@@ -401,6 +401,14 @@ async def generate_one(
     ``approval_chain.violates_segregation`` keys on, so the AP manager who
     triggered a generation cannot also approve what it produced.
 
+    When the sweep runs it there is no live actor, so ``uploaded_by_id`` falls
+    back to ``template.created_by_user_id`` — the employee who authored the
+    standing instruction. The audit row keeps the honest ``actor_id`` (``None``
+    for the sweep: nobody ran it), because the two answer different questions.
+    *Who performed this action* is nobody; *whose instruction created this
+    payable* is the template's author, and it is the second that segregation of
+    duties must key on.
+
     Idempotent: a concurrent / retried call for an already-generated period
     hits the partial unique index, the INSERT raises ``IntegrityError`` inside
     a savepoint, and we return the already-existing invoice (no duplicate, no
@@ -449,19 +457,21 @@ async def generate_one(
         status=InvoiceStatus.ready_for_review,
         recurring_template_id=template.id,
         recurring_period_key=period_key,
-        # Whoever caused this payable to exist, when that is a person: `user.id`
-        # from `POST /{id}/generate-now`, NULL from the background sweep (no
-        # human ran it). Segregation of duties keys on this column, so without
-        # it the AP manager who clicked generate-now could also approve the
-        # invoice it produced.
+        # Whoever caused this payable to exist. Two answers, in order: the
+        # person who clicked `POST /{id}/generate-now`, and — when the
+        # background sweep raised it, so there is no live actor — the employee
+        # who authored the template, whose standing instruction this invoice
+        # is. Segregation of duties keys on this column, so without either the
+        # AP manager who clicked generate-now, or the one whose template fires
+        # every month, could also approve what it produced.
         #
-        # The sweep's NULL is a real, narrower gap: the template's AUTHOR is an
-        # employee, we just have nowhere to record who —
-        # `RecurringInvoiceTemplate` has no creator column, and adding one is a
-        # migration + backfill (tracked as a follow-up). Until then a
-        # sweep-generated invoice is exempt from segregation, exactly as a
-        # pre-`uploaded_by_id` legacy row is.
-        uploaded_by_id=actor_id,
+        # `template.created_by_user_id` is NULL only for a template that
+        # predates the column (migration 0096); it is deliberately not
+        # backfilled, since there is no honest author to recover and guessing
+        # one manufactures either a refusal or an absolution. Such an invoice
+        # keeps the legacy exemption, exactly as a pre-`uploaded_by_id` row
+        # does — a shrinking set, not a standing hole.
+        uploaded_by_id=actor_id or template.created_by_user_id,
     )
     try:
         # Savepoint so a unique-violation rolls back ONLY this generation — the

@@ -13,11 +13,19 @@ the CSV importer — the route had the user, the audit row used it, and the
 import a payable at ``new`` and immediately approve it, while the same person
 doing the same thing through ``POST /api/invoices`` got a 403.
 
-Failing CLOSED on NULL instead would take out email intake, inbound PEPPOL, the
-supplier portal and the recurring sweep, none of which have a control-plane user
-to record. So the enforcement is here: a new construction site must pass
-``uploaded_by_id`` explicitly, and passing a literal ``None`` must be declared
-below with the reason there is no employee actor.
+Failing CLOSED on NULL instead would take out email intake, inbound PEPPOL and
+the supplier portal, none of which have a control-plane user to record. So the
+enforcement is here: a new construction site must pass ``uploaded_by_id``
+explicitly, and passing a literal ``None`` must be declared below with the
+reason there is no employee actor.
+
+The recurring sweep was the fourth path on that list until migration 0096, and
+it was the one that did not belong: nobody *ran* the sweep, but an employee
+*authored* the template, and that is the person segregation has to exclude.
+``recurring_invoice_templates.created_by_user_id`` now records the author and
+``generate_one`` stamps ``actor_id or template.created_by_user_id``, so the
+sweep's invoices name a creator. That is why ``recurring_invoices.py`` is
+asserted below to pass a *value* rather than being excused here.
 """
 
 from __future__ import annotations
@@ -231,7 +239,15 @@ def test_no_stale_null_uploader_declarations():
 def test_employee_paths_stamp_a_real_actor(module: str):
     """The five paths a signed-in employee can reach must pass a *value*, never
     a literal None — this is what makes the NULL branch of
-    ``violates_segregation`` mean "no employee creator" rather than "unknown"."""
+    ``violates_segregation`` mean "no employee creator" rather than "unknown".
+
+    ``recurring_invoices.py`` qualifies even though the background sweep passes
+    ``actor_id=None``: the expression it stamps is ``actor_id or
+    template.created_by_user_id``, so a sweep-generated invoice carries the
+    employee who authored the template. It resolves to NULL only for a template
+    created before migration 0096 added that column — deliberately never
+    backfilled, because there is no honest author to recover and inventing one
+    would manufacture either a refusal or an absolution."""
     sites = [(rel, ln, call) for rel, ln, call in _construction_sites() if rel == module]
     assert sites, f"no Invoice construction site found in {module}"
     for rel, lineno, call in sites:

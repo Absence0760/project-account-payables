@@ -50,16 +50,26 @@ def violates_segregation(
     ``Invoice`` on behalf of a signed-in employee stamps ``uploaded_by_id``
     with that user (manual create, file upload, CSV import, the inter-company
     mirror). The paths that leave it NULL have no control-plane user to record
-    at all — email intake and inbound PEPPOL (system ingestion), the recurring
-    sweep (no human ran it), and supplier-portal submit / PO flip (the actor is
-    a tenant-scoped ``VendorUser``, who holds no employee JWT and can never
-    reach an approval endpoint). So NULL provably means "not created by anyone
-    who could approve it", and self-approval is impossible by construction
-    rather than by this check.
+    at all — email intake and inbound PEPPOL (system ingestion), and
+    supplier-portal submit / PO flip (the actor is a tenant-scoped
+    ``VendorUser``, who holds no employee JWT and can never reach an approval
+    endpoint). So NULL provably means "not created by anyone who could approve
+    it", and self-approval is impossible by construction rather than by this
+    check.
+
+    The recurring sweep used to be on that list and no longer is, because it
+    never belonged there: nobody *ran* it, but an employee *authored* the
+    template, and that is the person segregation has to exclude. Migration 0096
+    added ``recurring_invoice_templates.created_by_user_id`` and
+    ``recurring_invoices.generate_one`` falls back to it, so a sweep-generated
+    invoice now names its author. Templates predating that column still
+    generate NULL — deliberately not backfilled, since there is no honest
+    author to recover — so that residue is a shrinking legacy set, the same
+    kind as a pre-``uploaded_by_id`` row, not an open channel.
 
     Failing CLOSED on NULL instead was considered and rejected: it would make
-    every email-intake, PEPPOL, portal-submitted and recurring invoice
-    permanently unapprovable — an outage across four ingestion channels, not a
+    every email-intake, PEPPOL and portal-submitted invoice permanently
+    unapprovable — an outage across three ingestion channels, not a
     control. The real defect was that the invariant was assumed rather than
     enforced (``services/csv_import`` quietly violated it and let an importer
     approve what they had just imported), so the fix is the enforcement:

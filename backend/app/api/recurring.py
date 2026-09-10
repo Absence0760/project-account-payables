@@ -315,6 +315,12 @@ async def create_template(
         variance_tolerance_pct=body.variance_tolerance_pct,
         notes=body.notes,
         status=STATUS_ACTIVE,
+        # The employee whose standing instruction this is. Segregation of
+        # duties keys on it: the background sweep has no live actor, so
+        # `generate_one` falls back to this column when stamping the generated
+        # invoice's `uploaded_by_id` — without it the author could approve the
+        # invoice their own template raised, exempt exactly as a legacy row is.
+        created_by_user_id=user.id,
     )
     # First occurrence on/after start_date matching day_of_period.
     _seed_next_run_on(template, after=body.start_date)

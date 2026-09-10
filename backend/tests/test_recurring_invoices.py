@@ -414,7 +414,8 @@ async def test_generate_now_creates_precoded_review_invoice(realdb):
         # approval queue, so they are its uploader for segregation of duties —
         # `approval_chain.violates_segregation` reads a NULL here as "no
         # employee creator" and would let them approve their own generation.
-        # (The background sweep still passes None: nobody ran it.)
+        # (The background sweep passes actor_id=None and falls back to the
+        # template's author instead — see the authorship section below.)
         assert inv.uploaded_by_id == realdb.info("a").users["ap_manager"]
         # invoice.created audit row written
         created = (
@@ -649,7 +650,15 @@ async def test_generate_one_survives_a_racing_generation_for_the_same_period(rea
 _SWEEP_TODAY = date(2026, 3, 1)
 
 
-async def _add_recurring_template(mk, org_id, *, next_run_on, name="Sweep Co"):
+async def _add_recurring_template(mk, org_id, *, next_run_on, name="Sweep Co", created_by=None):
+    """Insert a template directly.
+
+    ``created_by`` defaults to None — the shape of a template written before
+    migration 0096 added ``created_by_user_id``. That is deliberate: those rows
+    are never backfilled, so the default here keeps most of this suite
+    exercising the legacy path, and a test that cares about authorship passes a
+    real user id.
+    """
     async with mk() as s:
         t = RecurringInvoiceTemplate(
             organization_id=org_id,
@@ -663,6 +672,7 @@ async def _add_recurring_template(mk, org_id, *, next_run_on, name="Sweep Co"):
             start_date=_SWEEP_TODAY.replace(day=1),
             status=STATUS_ACTIVE,
             next_run_on=next_run_on,
+            created_by_user_id=created_by,
         )
         s.add(t)
         await s.commit()
@@ -690,10 +700,10 @@ async def test_sweep_generated_counts_only_genuine_new_invoices(realdb):
             .all()
         )
         assert len(rows) == 2
-        # Nobody ran the sweep, so there is no employee creator to record — the
-        # counterpart to generate-now's stamped `uploaded_by_id`. This is a real
-        # (narrower) segregation gap: the template's AUTHOR is an employee, but
-        # `RecurringInvoiceTemplate` has no creator column to attribute it to.
+        # `_add_recurring_template` leaves `created_by_user_id` NULL — the
+        # pre-0096 shape — so there is no author to fall back to and the
+        # generated invoice keeps the legacy NULL. The post-0096 behaviour is
+        # pinned by `test_sweep_generated_invoice_names_the_template_author`.
         assert all(inv.uploaded_by_id is None for inv in rows)
 
 
@@ -1186,3 +1196,176 @@ async def test_resume_clears_the_marker_only_when_the_template_is_fixed(realdb):
         # Fix it, pause + resume -> the marker goes.
         assert (await c.patch(f"/api/recurring/{broken}", json={"amount": 12.0})).status_code == 200
     assert svc.SKIP_META_KEY not in ((await _reload(mk, broken)).meta or {})
+
+
+# --------------------------------------------------------------------------- #
+# Real-DB — a sweep-generated invoice names the employee who authored it
+# --------------------------------------------------------------------------- #
+#
+# `approval_chain.violates_segregation` returns False — no breach — when
+# `Invoice.uploaded_by_id` is NULL, because NULL is supposed to mean "no
+# employee created this row". The sweep has no live actor, so it stamped NULL
+# and the invoice became approvable by anyone, its own template's author
+# included. Unlike email intake / PEPPOL / the portal, there IS an employee
+# here: whoever wrote the standing instruction. Migration 0096 gave that person
+# a column (`recurring_invoice_templates.created_by_user_id`) and `generate_one`
+# falls back to it.
+
+
+async def test_create_template_records_its_author(realdb):
+    """`POST /api/recurring` stamps the caller. Without this the fallback below
+    has nothing to fall back to."""
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        tid = (await c.post("/api/recurring", json=_create_body())).json()["id"]
+
+    async with mk() as s:
+        t = (
+            await s.execute(
+                select(RecurringInvoiceTemplate).where(
+                    RecurringInvoiceTemplate.id == uuid.UUID(tid)
+                )
+            )
+        ).scalar_one()
+        assert t.created_by_user_id == realdb.info("a").users["ap_manager"]
+
+
+async def test_sweep_generated_invoice_names_the_template_author(realdb):
+    """The fix: nobody ran the sweep, but somebody authored the template, and
+    that is the person segregation of duties has to exclude."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+    author = realdb.info("a").users["ap_manager"]
+
+    tid = await _add_recurring_template(
+        mk, org_id, next_run_on=_SWEEP_TODAY, name="Authored Co", created_by=author
+    )
+
+    assert (await svc._sweep_tenant(db_name, _SWEEP_TODAY)).generated == 1
+
+    async with mk() as s:
+        inv = (
+            await s.execute(select(Invoice).where(Invoice.recurring_template_id == tid))
+        ).scalar_one()
+        assert inv.uploaded_by_id == author
+
+        # The AUDIT row keeps the honest actor — None. The two columns answer
+        # different questions: "who performed this action" is nobody (a
+        # background sweep did), while "whose instruction created this payable"
+        # is the author. Only the second is a segregation input, and conflating
+        # them would put a person in the audit trail as having acted when they
+        # did not.
+        created = (
+            await s.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "invoice.created",
+                    AuditLog.entity_id == inv.id,
+                )
+            )
+        ).scalar_one()
+        assert created.actor_id is None
+
+
+async def test_sweep_generated_invoice_stays_null_for_a_pre_0096_template(realdb):
+    """Existing rows are deliberately NOT backfilled.
+
+    There is no honest author to recover for a template written before the
+    column existed, and inventing one manufactures either a refusal (blocking
+    an innocent approver) or an absolution (clearing a guilty one). Such a
+    template keeps the legacy NULL — a shrinking set, not a standing hole — and
+    must not raise on the way through.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+
+    tid = await _add_recurring_template(
+        mk, org_id, next_run_on=_SWEEP_TODAY, name="Legacy Co", created_by=None
+    )
+
+    assert (await svc._sweep_tenant(db_name, _SWEEP_TODAY)).generated == 1
+
+    async with mk() as s:
+        inv = (
+            await s.execute(select(Invoice).where(Invoice.recurring_template_id == tid))
+        ).scalar_one()
+        assert inv.uploaded_by_id is None
+
+
+async def test_generate_now_actor_outranks_the_template_author(realdb):
+    """A live actor is the better answer when there is one.
+
+    `actor_id or template.created_by_user_id` — the person who clicked
+    generate-now caused THIS payable, so they are the one who must not approve
+    it. Falling back past a live actor to the author would exempt the clicker.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    author = realdb.info("a").users["cfo"]  # authored by someone else entirely
+    clicker = realdb.info("a").users["ap_manager"]
+
+    tid = await _add_recurring_template(
+        mk, org_id, next_run_on=_SWEEP_TODAY, name="Clicked Co", created_by=author
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(f"/api/recurring/{tid}/generate-now")
+        assert resp.status_code == 201, resp.text
+        invoice_id = uuid.UUID(resp.json()["invoice_id"])
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+        assert inv.uploaded_by_id == clicker
+        assert inv.uploaded_by_id != author
+
+
+async def test_template_author_cannot_approve_what_the_sweep_generated(realdb):
+    """End-to-end proof at the API, the whole point of the column.
+
+    Create the template through the router (which stamps the author), let the
+    BACKGROUND sweep raise the invoice (no live actor), then have the author
+    try to approve it. Before migration 0096 this returned 200: the invoice
+    carried no creator, so the segregation check read it as un-created and
+    waved the author through.
+    """
+    mk = realdb.sessionmaker("a")
+    db_name = realdb.info("a").db_name
+    vendor_id = await _add_vendor(mk, realdb.info("a").org_id, name="Sweep SoD Vendor")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        tid = (
+            await c.post(
+                "/api/recurring",
+                json=_create_body(name="Sweep SoD rent", vendor_id=vendor_id, amount=750.0),
+            )
+        ).json()["id"]
+
+        # Point the template's cursor at the sweep's date and let the sweep —
+        # not generate-now — raise the invoice, so `actor_id` is None and the
+        # only creator on the row is the fallback.
+        async with mk() as s:
+            t = (
+                await s.execute(
+                    select(RecurringInvoiceTemplate).where(
+                        RecurringInvoiceTemplate.id == uuid.UUID(tid)
+                    )
+                )
+            ).scalar_one()
+            t.next_run_on = _SWEEP_TODAY
+            await s.commit()
+
+        assert (await svc._sweep_tenant(db_name, _SWEEP_TODAY)).generated == 1
+
+        async with mk() as s:
+            invoice_id = (
+                await s.execute(
+                    select(Invoice.id).where(Invoice.recurring_template_id == uuid.UUID(tid))
+                )
+            ).scalar_one()
+
+        resp = await c.post(f"/api/invoices/{invoice_id}/approve", json={})
+
+    assert resp.status_code == 403, resp.text
+    assert "segregation" in resp.json()["detail"].lower()
