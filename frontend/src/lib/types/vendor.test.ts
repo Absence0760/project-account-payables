@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
 	ENRICHABLE_FIELD_LABEL_KEYS,
 	RISK_LEVEL_LABEL_KEYS,
+	SANCTIONS_RESULTS,
+	SANCTIONS_RESULT_LABEL_KEYS,
 	SCREENING_CATEGORIES,
 	SCREENING_CATEGORY_LABEL_KEYS,
 	SCREENING_STATUS_LABEL_KEYS,
@@ -10,6 +12,7 @@ import {
 	VENDOR_STATUS_LABEL_KEYS,
 	VENDOR_STATUS_TONES,
 	riskLevelLabelKey,
+	sanctionsResultLabelKey,
 	screeningCategoryLabelKey,
 	screeningCategoryLabels,
 	screeningStatusLabelKey,
@@ -192,6 +195,49 @@ describe('SCREENING_CATEGORY_LABEL_KEYS', () => {
 		expect(screeningCategoryLabels(null)).toEqual([]);
 		expect(screeningCategoryLabels(undefined)).toEqual([]);
 		expect(screeningCategoryLabels([])).toEqual([]);
+	});
+});
+
+/**
+ * The verdict vocabulary `backend/app/services/vendor_screening.py` writes onto
+ * `sanctions_checks.result` (`ScreeningResult.result`, and the literal the
+ * NULL-vendor path raises). Restated here, as the category list above is, so a
+ * backend widening shows up as a failure rather than a raw `snake_case` badge
+ * in a compliance reviewer's timeline.
+ */
+const BACKEND_SANCTIONS_RESULTS = ['clear', 'review_required', 'match'] as const;
+
+describe('SANCTIONS_RESULT_LABEL_KEYS', () => {
+	it('covers exactly the verdicts the backend can persist', () => {
+		expect([...SANCTIONS_RESULTS].sort()).toEqual([...BACKEND_SANCTIONS_RESULTS].sort());
+	});
+
+	it('names a real, non-empty catalogue key for every verdict', () => {
+		for (const result of SANCTIONS_RESULTS) {
+			const key = SANCTIONS_RESULT_LABEL_KEYS[result];
+			expect(key, `${result} has no label key`).toBeTruthy();
+			expect(Object.keys(en), `${result} → "${key}" is not in the catalogue`).toContain(key);
+			expect(en[key].trim().length).toBeGreaterThan(0);
+			expect(en[key]).not.toBe(result);
+		}
+	});
+
+	it('is a distinct vocabulary from the vendor-level screening status', () => {
+		// The backend collapses `review_required` to `review` when it stamps
+		// `Vendor.screening_status`, so the status map has no member that could
+		// label a `review_required` history row. Reusing it there would render a
+		// blank badge on the one verdict a reviewer most needs to read.
+		expect(screeningStatusLabelKey('review_required')).toBeNull();
+		expect(sanctionsResultLabelKey('review_required')).toBe(
+			'vendors.screening.result.reviewRequired'
+		);
+	});
+
+	it('resolves a known verdict and returns null otherwise', () => {
+		for (const result of SANCTIONS_RESULTS) {
+			expect(sanctionsResultLabelKey(result)).toBe(SANCTIONS_RESULT_LABEL_KEYS[result]);
+		}
+		expect(sanctionsResultLabelKey('pending_manual_review')).toBeNull();
 	});
 });
 

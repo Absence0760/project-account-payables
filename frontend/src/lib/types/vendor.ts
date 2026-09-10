@@ -475,6 +475,42 @@ export function screeningCategoryLabels(
 	}));
 }
 
+// The per-screen VERDICT vocabulary (`SanctionsCheck.result`), which is a THIRD
+// vocabulary — not `ScreeningStatus`, and not `ScreeningCategory`. The backend's
+// `vendor_screening._STATUS_MAP` collapses `review_required` to `review` when it
+// stamps `Vendor.screening_status`, so the vendor-level status map above cannot
+// label a history row: it has no `review_required` member.
+export const SANCTIONS_RESULTS = ['clear', 'review_required', 'match'] as const;
+
+export type SanctionsResult = (typeof SANCTIONS_RESULTS)[number];
+
+/**
+ * The i18n key carrying each verdict's label — never the English string itself.
+ *
+ * The screening-review modal's history timeline rendered these as
+ * `result.replace(/_/g, ' ')` under a `text-transform: capitalize`, which is an
+ * English-only derivation: it printed `Review Required` in an otherwise
+ * translated modal, and `capitalize` would have title-cased a German or French
+ * label mid-phrase. `vendor.test.ts` proves each key resolves in the catalogue.
+ */
+export const SANCTIONS_RESULT_LABEL_KEYS: Record<SanctionsResult, MessageKey> = {
+	clear: 'vendors.screening.result.clear',
+	review_required: 'vendors.screening.result.reviewRequired',
+	match: 'vendors.screening.result.match'
+};
+
+/**
+ * The message key for a screening verdict, or `null` for one this frontend
+ * doesn't know — the caller then renders the de-underscored raw value, visible
+ * and searchable, rather than a blank badge. `SanctionsCheck.result` is typed
+ * `string` off the wire precisely because an adapter can widen it before this
+ * map catches up, and a dropped verdict is the one outcome a compliance
+ * reviewer must never get (the rule `screeningCategoryLabelKey` states).
+ */
+export function sanctionsResultLabelKey(result: string): MessageKey | null {
+	return SANCTIONS_RESULT_LABEL_KEYS[result as SanctionsResult] ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Vendor change requests — the dual-control (BEC / bank-redirect) gate.
 //
