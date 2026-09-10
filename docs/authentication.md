@@ -596,6 +596,25 @@ exactly as before.
   uses for `GET /payments/queue` etc. Role/permission CRUD itself stays
   admin-only on `require_roles` (managing the catalog must not be a grantable
   permission — that would be a privilege-escalation path).
+  - **One migration deliberately does NOT reproduce the prior matrix.**
+    `POST /api/cards/{id}/cancel` was `require_roles(ADMIN, AP_MANAGER, CFO)`
+    and is now `require_permission(payment.void)`, so the system `ap_manager`
+    **loses** it. Everywhere else "migrating changes nothing for the four
+    system roles" holds; here the old role set was the bug. Three routes close
+    a virtual card — this one, `POST /api/payments/{id}/void`, and
+    `POST /api/payments/{id}/void/retry-card-cancel` — and the latter two gate
+    on `payment.void`, which `ap_manager` does not hold by default (it holds
+    `payment.execute`: initiating money, not reversing it). So an `ap_manager`
+    who could not reverse a card payment could still kill the card behind a
+    live one, through the widest of three doors onto one effect.
+    `docs/decisions.md` §132 stated the rule for the retry route; this applies
+    it to the door left open, and §96 is why nothing in the UI regresses — the
+    route is deliberately unwired. Pinned in
+    `tests/test_sod_endpoint_wiring.py` by
+    `test_card_cancel_narrows_ap_manager_by_design` (the four-role table) and
+    `test_every_card_closing_route_gates_on_payment_void` (the three doors
+    agree). See `backend/docs/virtual-cards.md` § Cancel → The gate is
+    `payment.void`.
   - **The reads a `user.manage` holder needs to actually use the grant are
     migrated too.** `GET /api/admin/users` (the roster), `GET /api/admin/roles`
     (the picker `role_names` is chosen from) and `GET /api/admin/permissions`
