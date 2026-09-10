@@ -734,8 +734,6 @@ export const en = {
 	'vendors.screening.queue.kpi.blockedScope': 'All vendors, not just this queue',
 	'vendors.screening.queue.search.placeholder': 'Search vendor or matched list…',
 	'vendors.screening.queue.search.aria': 'Search screening review queue',
-	'vendors.screening.queue.col.vendor': 'Vendor',
-	'vendors.screening.queue.col.screening': 'Screening',
 	'vendors.screening.queue.col.matchedList': 'Matched list',
 	'vendors.screening.queue.col.provider': 'Provider',
 	'vendors.screening.queue.col.riskScore': 'Risk score',
@@ -752,10 +750,7 @@ export const en = {
 	// half-width here and full-width in Japanese, so the shape is the
 	// translator's to choose (the rule `vendors.risk.pill` already states).
 	'vendors.screening.queue.modal.riskWithScore': '{level} ({score})',
-	'vendors.screening.queue.modal.matchedList': 'Matched list',
 	'vendors.screening.queue.modal.categories': 'Hit categories',
-	'vendors.screening.queue.modal.provider': 'Provider',
-	'vendors.screening.queue.modal.lastScreened': 'Last screened',
 	'vendors.screening.queue.modal.payments': 'Payments',
 	'vendors.screening.queue.modal.paymentsBlocked': 'Blocked',
 	'vendors.screening.queue.modal.paymentsAllowed': 'Allowed',

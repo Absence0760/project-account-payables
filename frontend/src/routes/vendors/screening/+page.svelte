@@ -138,9 +138,13 @@
 	// `$derived`, not a module constant: reading `m()` here is what makes the
 	// headers re-render when the locale picker moves (the convention the sibling
 	// `/vendors/change-requests` route established).
+	// The first two REUSE the `/vendors` list's own column keys rather than
+	// minting near-duplicates: it is the same column, and a second key would let
+	// the two pages drift apart in translation (they already had — the French
+	// list says "Contrôle").
 	const COLUMNS = $derived([
-		{ label: m('vendors.screening.queue.col.vendor') },
-		{ label: m('vendors.screening.queue.col.screening') },
+		{ label: m('vendors.col.vendor') },
+		{ label: m('vendors.col.screening') },
 		{ label: m('vendors.screening.queue.col.matchedList') },
 		{ label: m('vendors.screening.queue.col.provider') },
 		{ label: m('vendors.screening.queue.col.riskScore') },
@@ -558,8 +562,10 @@
 				<dt>{m('vendors.screening.queue.modal.riskLevel')}</dt>
 				<dd>{riskWithScore(selected.risk_level, selected.risk_score)}</dd>
 			</div>
+			<!-- Three of these `<dt>`s label the same field as a table column
+			     above, so they read the column's key rather than a duplicate. -->
 			<div>
-				<dt>{m('vendors.screening.queue.modal.matchedList')}</dt>
+				<dt>{m('vendors.screening.queue.col.matchedList')}</dt>
 				<dd>{selected.latest_matched_list ?? '—'}</dd>
 			</div>
 			<div>
@@ -567,11 +573,11 @@
 				<dd>{formatCategories(selected.latest_categories)}</dd>
 			</div>
 			<div>
-				<dt>{m('vendors.screening.queue.modal.provider')}</dt>
+				<dt>{m('vendors.screening.queue.col.provider')}</dt>
 				<dd>{selected.latest_provider ?? '—'}</dd>
 			</div>
 			<div>
-				<dt>{m('vendors.screening.queue.modal.lastScreened')}</dt>
+				<dt>{m('vendors.screening.queue.col.lastScreened')}</dt>
 				<dd>{formatDate(selected.last_screened_at)}</dd>
 			</div>
 			<div>
