@@ -26,7 +26,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/reports (admin, real backend)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/reports');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the builder header + catalog-driven controls', async ({ page }) => {
@@ -76,7 +75,6 @@ test.describe('/reports (admin, real backend)', () => {
 
 		// Reload — the saved report survives (server-persisted) and can be run.
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 		await expect(savedSection.getByText(name)).toBeVisible({ timeout: 10_000 });
 
 		await savedSection.getByRole('button', { name: `Run report ${name}` }).click();
@@ -150,7 +148,6 @@ test.describe('/reports export (stubbed — backend-independent)', () => {
 		);
 
 		await page.goto('/reports');
-		await page.waitForLoadState('networkidle');
 
 		const savedSection = page.getByTestId('saved-reports');
 		await expect(savedSection.getByText('Stubbed Vendor Spend')).toBeVisible({ timeout: 10_000 });

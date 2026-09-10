@@ -2,12 +2,16 @@ import { describe, it, expect } from 'vitest';
 import {
 	ENRICHABLE_FIELD_LABEL_KEYS,
 	RISK_LEVEL_LABEL_KEYS,
+	SCREENING_CATEGORIES,
+	SCREENING_CATEGORY_LABEL_KEYS,
 	SCREENING_STATUS_LABEL_KEYS,
 	VENDOR_SOURCE_LABEL_KEYS,
 	VENDOR_STATUSES,
 	VENDOR_STATUS_LABEL_KEYS,
 	VENDOR_STATUS_TONES,
 	riskLevelLabelKey,
+	screeningCategoryLabelKey,
+	screeningCategoryLabels,
 	screeningStatusLabelKey,
 	vendorSourceLabelKey,
 	vendorStatusLabelKey,
@@ -130,6 +134,64 @@ describe('RISK_LEVEL_LABEL_KEYS', () => {
 				interpolate(en[key], { level: en[RISK_LEVEL_LABEL_KEYS.high] })
 			).not.toContain('{level}');
 		}
+	});
+});
+
+/**
+ * Drift guard for the screening-hit taxonomy.
+ *
+ * The vocabulary is fixed on the backend
+ * (`app/services/sanctions_categories.py` — CATEGORY_SANCTIONS / _PEP /
+ * _ADVERSE_MEDIA / _HIGH_RISK_COUNTRY), so it is enumerated from THERE rather
+ * than from the map under test: a map that forgot a kind would otherwise agree
+ * with itself, and a dropped hit is the one outcome a compliance reviewer must
+ * never get.
+ */
+const BACKEND_SCREENING_CATEGORIES = [
+	'sanctions',
+	'pep',
+	'adverse_media',
+	'high_risk_country'
+] as const;
+
+describe('SCREENING_CATEGORY_LABEL_KEYS', () => {
+	it('covers exactly the taxonomy the backend can persist', () => {
+		expect([...SCREENING_CATEGORIES].sort()).toEqual([...BACKEND_SCREENING_CATEGORIES].sort());
+	});
+
+	it('names a real, non-empty catalogue key for every category', () => {
+		for (const category of SCREENING_CATEGORIES) {
+			const key = SCREENING_CATEGORY_LABEL_KEYS[category];
+			expect(key, `${category} has no label key`).toBeTruthy();
+			expect(Object.keys(en), `${category} → "${key}" is not in the catalogue`).toContain(key);
+			expect(en[key].trim().length).toBeGreaterThan(0);
+			expect(en[key]).not.toBe(category);
+		}
+	});
+
+	it('resolves a known category and returns null otherwise', () => {
+		for (const category of SCREENING_CATEGORIES) {
+			expect(screeningCategoryLabelKey(category)).toBe(SCREENING_CATEGORY_LABEL_KEYS[category]);
+		}
+		expect(screeningCategoryLabelKey('crypto_exposure')).toBeNull();
+	});
+
+	it('resolves a hit list in order, degrading an unknown kind to readable text', () => {
+		const parts = screeningCategoryLabels(['pep', 'crypto_exposure']);
+		expect(parts.map((p) => p.category)).toEqual(['pep', 'crypto_exposure']);
+		expect(parts[0].key).toBe('vendors.screening.category.pep');
+		// A provider adapter can widen the taxonomy before this build catches
+		// up (`categories_from_raw_response` accepts any list of strings), so an
+		// unrecognised kind renders de-underscored — never dropped, never raw
+		// snake_case.
+		expect(parts[1].key).toBeNull();
+		expect(parts[1].fallback).toBe('crypto exposure');
+	});
+
+	it('resolves a missing or empty list to no entries', () => {
+		expect(screeningCategoryLabels(null)).toEqual([]);
+		expect(screeningCategoryLabels(undefined)).toEqual([]);
+		expect(screeningCategoryLabels([])).toEqual([]);
 	});
 });
 

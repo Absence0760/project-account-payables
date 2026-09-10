@@ -568,6 +568,12 @@ async def submit_invoice(
         # The supplier portal has no entity selector — a vendor's invoice lands
         # under the same entity as the vendor (multi-entity Phase 2).
         entity_id=vendor.entity_id,
+        # No employee creator: the actor is a tenant-scoped `VendorUser`, and
+        # `uploaded_by_id` names a control-plane `User`. Stated explicitly so
+        # `approval_chain.violates_segregation`'s NULL branch stays a declared
+        # "nobody who could approve this made it", not an omission — a supplier
+        # holds no employee JWT and can never reach an approval endpoint.
+        uploaded_by_id=None,
     )
     db.add(invoice)
     await db.flush()
@@ -1068,6 +1074,9 @@ async def flip_purchase_order(
         # Inherit the PO's entity so the flipped invoice stays in the same
         # subsidiary as the order it came from (multi-entity Phase 2).
         entity_id=po.entity_id,
+        # No employee creator — the flip is driven by a `VendorUser`. Same
+        # reasoning as `submit_invoice` above.
+        uploaded_by_id=None,
     )
     db.add(invoice)
     try:
@@ -1393,6 +1402,15 @@ async def _stage_change(
         vendor_id=vendor.id,
         organization_id=vendor.organization_id,
         requested_by_vendor_user_id=vu.id,
+        # Freeze WHO (if anyone) on the AP side handed this portal identity its
+        # password. `approve_change_request` refuses when that is the approver —
+        # otherwise one ap_manager could invite a portal user, sign in as it,
+        # stage a bank redirect and approve their own request, because the AP
+        # requester column is NULL on every portal submission. Copied instead of
+        # joined at approval time so deleting the portal user afterwards can't
+        # erase the evidence. NULL for a supplier who holds their own
+        # credential, which is the normal case.
+        requester_provisioned_by_user_id=vu.provisioned_by_user_id,
         change_type=change_type,
         status="pending",
         proposed_value=proposed_value,

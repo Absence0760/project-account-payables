@@ -102,7 +102,19 @@ def test_segregation_disabled_allows_uploader():
 
 
 def test_segregation_skips_null_uploaded_by():
-    """uploaded_by_id=None (pre-existing invoice) skips the check entirely."""
+    """uploaded_by_id=None means "no employee creator" — the check is skipped.
+
+    This branch reads fail-open on a fraud control, and is only sound because
+    every path under `app/` that creates an invoice for a signed-in employee
+    stamps the column (manual create, upload, CSV import, generate-now, the
+    inter-company mirror). The remaining NULLs have no control-plane user to
+    record at all: email intake and inbound PEPPOL (system), supplier-portal
+    submit / PO flip (a tenant-scoped VendorUser, who holds no employee JWT and
+    can never reach an approval endpoint), and the recurring sweep. Failing
+    CLOSED here would make all of those permanently unapprovable — an outage,
+    not a control. `tests/test_invoice_uploader_stamping.py` is what keeps the
+    premise true; see `docs/decisions.md`.
+    """
     from app.services.approval_chain import check_segregation
 
     actor_id = uuid.uuid4()

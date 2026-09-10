@@ -14,92 +14,17 @@
 	} from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
 	import { partialLabels, totalUnconverted } from '$lib/utils/dashboardPartials';
-	import type { DashboardDiscountCapture } from '$lib/types/analytics';
+	import type { DashboardData } from '$lib/types/analytics';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 
-	interface AgingBuckets {
-		current: number;
-		days_30: number;
-		days_60: number;
-		days_90: number;
-		days_90_plus: number;
-	}
-
-	interface ReportingAgingBuckets extends AgingBuckets {
-		/** Invoices summed into these five bands at FACE value because no
-		 *  locked rate bridged them into the reporting currency. ONE count for
-		 *  the band set, not five — the actionable fact is the same either way.
-		 *  The bare `aging` deliberately carries none: it is a face-value
-		 *  cross-currency sum in its entirety, so a count would understate it. */
-		unconverted_count: number;
-	}
-
-	interface DashboardData {
-		total_invoices: number;
-		total_amount: number;
-		// Currency-aware rollup of the whole invoice book into ONE reporting
-		// currency — `total_amount` above sums raw `Invoice.amount` across
-		// currencies and is kept only for API back-compat; every KPI below
-		// renders from this instead.
-		reporting: {
-			reporting_currency: string;
-			total_amount: MoneyAmount;
-			total_count: number;
-			unconverted_count: number;
-		};
-		total_paid: MoneyAmount;
-		total_pending: MoneyAmount;
-		// Reporting-currency counterparts of `total_paid` / `total_pending`.
-		total_paid_reporting: MoneyAmount;
-		total_pending_reporting: MoneyAmount;
-		total_paid_unconverted_count: number;
-		total_pending_unconverted_count: number;
-		total_rebates: MoneyAmount;
-		// Rebates left out of `total_rebates` for being denominated in another
-		// currency — a DIFFERENT fact from the unconverted counts above, which
-		// are rows whose reporting figure could not be established at all.
-		excluded_rebate_count?: number;
-		touchless_rate: number;
-		stale_approvals: number;
-		open_exceptions: number;
-		pipeline: Record<string, number>;
-		vendor_spend: Array<{
-			vendor: string;
-			amount: MoneyAmount;
-			// This vendor's invoices that entered `amount` at face value for
-			// want of a rate lock. Per vendor, and it matters here beyond the
-			// number: the tile RANKS vendors against each other, and an
-			// unconverted total is not comparable to a converted one.
-			unconverted_count: number;
-		}>;
-		aging: AgingBuckets;
-		// Reporting-currency counterpart of `aging`.
-		aging_reporting: ReportingAgingBuckets;
-		monthly_trend: Array<{
-			month: string;
-			count: number;
-			amount: MoneyAmount;
-			reporting_amount: MoneyAmount;
-			// Per MONTH, not per series: a trend is read bar against bar, so
-			// which step in the line is part-converted is the useful fact.
-			unconverted_count: number;
-		}>;
-		upcoming_payments: Array<{
-			id: string;
-			invoice_number: string;
-			vendor_name: string;
-			amount: MoneyAmount;
-			due_date: string | null;
-			is_overdue: boolean;
-		}>;
-		// Early-payment discount capture — a three-way captured / missed /
-		// PENDING fold with its own reporting currency and its own
-		// `unconverted_count`. The API has carried this since round 16 with no
-		// consumer at all; see `$lib/types/analytics.ts` for why the pending
-		// bucket and the `null` capture rate are not cosmetic.
-		discount_capture: DashboardDiscountCapture;
-	}
+	// The response shape lives in `$lib/types/analytics.ts` (`DashboardData`,
+	// `ReportingAgingBuckets`, `AgingBuckets`) rather than here. Declared
+	// inline and un-exported, it was a shape only this file could compare a
+	// payload against — so every e2e stub of `/api/dashboard` was a
+	// hand-maintained literal that drifted silently the moment the API gained
+	// a non-optional field. Exported, the fixtures `satisfies` it and
+	// `pnpm check:e2e` turns that drift into a compile error.
 
 	let data = $state<DashboardData | null>(null);
 	let loading = $state(true);
@@ -177,6 +102,15 @@
 
 	const AGING_COLORS = ['#1fa86a', '#d4940a', '#f59e0b', '#ea580c', '#e04040'];
 
+	// Each band carries BOTH its money figure (`value`, rendered through
+	// `fmt` / `fmtFull`) and its chart geometry (`layout`). The five bands are
+	// money — `backend/app/schemas/dashboard.py::AgingBuckets` annotates them
+	// `MoneyAmount` — so `sum + b.value` and `b.value / agingTotal` were raw
+	// arithmetic on currency, which the frontend type only started refusing
+	// once these shapes moved into `$lib/types/analytics.ts` and the money-type
+	// ratchet could see them. `parseMoneyForLayout` is the one sanctioned hop
+	// and is named so the call site refuses the wrong use: `layout` drives a
+	// width and must never be rendered or read as a business fact.
 	const agingBuckets = $derived(
 		data
 			? [
@@ -185,11 +119,12 @@
 				{ label: m('dashboard.aging.days60'), value: data.aging_reporting.days_60, color: AGING_COLORS[2] },
 				{ label: m('dashboard.aging.days90'), value: data.aging_reporting.days_90, color: AGING_COLORS[3] },
 				{ label: m('dashboard.aging.days90plus'), value: data.aging_reporting.days_90_plus, color: AGING_COLORS[4] },
-			]
+			].map((b) => ({ ...b, layout: parseMoneyForLayout(b.value) }))
 			: []
 	);
 
-	let agingTotal = $derived(agingBuckets.reduce((sum, b) => sum + b.value, 0));
+	// A chart SCALE, not a figure — never rendered, never reported.
+	let agingTotal = $derived(agingBuckets.reduce((sum, b) => sum + b.layout, 0));
 
 	// Chart SCALES, not figures. `parseMoneyForLayout` is the one sanctioned
 	// money -> number hop and is named so the call site refuses the wrong use:
@@ -396,10 +331,10 @@
 					{#if agingTotal > 0}
 					<div class="aging-bar">
 						{#each agingBuckets as bucket}
-							{#if bucket.value > 0}
+							{#if bucket.layout > 0}
 								<div
 									class="aging-segment"
-									style="width:{(bucket.value / agingTotal * 100)}%;background:{bucket.color}"
+									style="width:{(bucket.layout / agingTotal * 100)}%;background:{bucket.color}"
 									title="{bucket.label}: {fmtFull(bucket.value)}"
 								></div>
 							{/if}

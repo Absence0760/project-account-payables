@@ -6,6 +6,11 @@ import {
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
+import {
+	markSeededWorkflowVersions,
+	purgeSeededWorkflowVersions,
+	type SeededVersionMark
+} from '../workflows/seededWorkflowVersions';
 
 async function createUser(
 	page: import('@playwright/test').Page,
@@ -39,6 +44,19 @@ async function deleteUser(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/admin user-delete safety', () => {
+	// The approver test below PATCHes the SEEDED default workflow's steps to
+	// put its throwaway user into `approver_ids`, then PATCHes them back — and
+	// each of those writes an auto-saved `workflow_versions` row that no name
+	// sweep can reach, because `deleteWorkflowsWhere` refuses `is_default` rows
+	// on purpose (decisions §127). Same leak as the two `workflows/` specs;
+	// this one was found by their guard rather than by the report that named
+	// them. See `workflows/seededWorkflowVersions.ts`.
+	let seededVersions: SeededVersionMark;
+	test.beforeEach(() => {
+		seededVersions = markSeededWorkflowVersions();
+	});
+	test.afterEach(() => purgeSeededWorkflowVersions(seededVersions));
+
 	test('user with no references can be deleted', async ({ page }) => {
 		const id = await createUser(page, `e2e-safe-${Date.now()}@test.local`);
 		const resp = await deleteUser(page, id);

@@ -76,7 +76,6 @@ async function deleteUploadedReconciliation(
 test.describe('/vendor-statements (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/vendor-statements');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the reconciliation surface — header, KPIs, filters, table', async ({ page }) => {
@@ -122,7 +121,6 @@ test.describe('/vendor-statements (admin)', () => {
 			expect(created.status).toBe('open');
 
 			await page.goto(`/vendor-statements?search=${encodeURIComponent(reference)}`);
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(reference)).toBeVisible();
 		} finally {
 			if (id) deleteReconciliation(id);
@@ -147,7 +145,6 @@ test.describe('/vendor-statements (admin)', () => {
 
 			// Open the detail modal from the list (clickable row / RowLink).
 			await page.goto(`/vendor-statements?search=${encodeURIComponent(reference)}`);
-			await page.waitForLoadState('networkidle');
 			await page
 				.getByRole('button', {
 					name: `Open reconciliation for ${vendor.name} 2026-02-28`
@@ -308,7 +305,6 @@ test.describe('/vendor-statements (clerk — read-only)', () => {
 		await signInAndWait(page, tenantClerk);
 
 		await page.goto('/vendor-statements');
-		await page.waitForLoadState('networkidle');
 
 		// Read is allowed for all four roles, so the page renders.
 		await expect(page.getByRole('heading', { name: 'Statements' })).toBeVisible();

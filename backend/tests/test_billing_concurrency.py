@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.billing import Plan, Subscription
@@ -109,9 +109,8 @@ async def _preprovision_settings(realdb, org_id, *, price_ids: dict[str, str]) -
 
 
 async def _cleanup(realdb, org_id) -> None:
+    await realdb.purge_plans("conctest_", org_ids=[org_id])
     async with realdb.control_sessionmaker()() as s:
-        await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
-        await s.execute(delete(Plan).where(Plan.code.like("conctest_%")))
         org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
         settings_dict = dict(org.settings or {})
         settings_dict.pop("billing", None)

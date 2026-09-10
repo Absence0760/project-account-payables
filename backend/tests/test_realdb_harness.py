@@ -31,22 +31,30 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
+import uuid
+from decimal import Decimal
 
 import asyncpg
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import _make_tenant_url
+from app.models.billing import Plan, Subscription
 from app.models.organization import Organization
+from tests import conftest
 from tests.conftest import (
     _REAP_STALE_BACKENDS_SQL,
     _REBUILT_TENANT_DBS,
     _SLOT_LOCK_NAMESPACE,
+    _assert_purgeable_plan_prefix,
     _asyncpg_dsn,
     _base_control_db_name,
+    _catalogue_plan_codes,
     _claim_realdb_slot,
     _ensure_test_tenants,
+    _reset_control_billing,
     control_db_name_for_slot,
     role_email,
     tenant_slugs_for_slot,
@@ -308,3 +316,88 @@ async def test_control_plane_org_state_is_reset_for_the_next_test(realdb):
         ).scalar_one()
     assert (org.settings or {}) == {}, "settings leaked from the previous test"
     assert org.parent_org_id is None, "parent_org_id leaked from the previous test"
+
+
+# ── Control-plane BILLING reset between tests ─────────────────────────
+#
+# `plans` / `subscriptions` live in this slot's control-plane database, which
+# the per-test TRUNCATE (tenant tables only) never reaches and
+# `_rebuild_pytest_schema` clears just once per SESSION. A throwaway plan a test
+# minted therefore stayed visible to every later test in the run — and
+# `GET /api/billing/plans` is a catalogue listing, so that is observable, not
+# inert. Six billing files hand-rolled the same purge at SETUP, which by
+# construction can only reap the PREVIOUS run's rows and always leaves the last
+# one behind; the fix is a teardown, plus one owner for the child graph.
+
+
+def test_purge_plans_refuses_a_prefix_that_reaches_a_catalogue_plan():
+    """The seatbelt is derived from the app's own catalogue, not hand-listed."""
+    for code in _catalogue_plan_codes():
+        # Any prefix of a real tier — including the full code — is refused.
+        with pytest.raises(ValueError, match="catalogue plan"):
+            _assert_purgeable_plan_prefix(code)
+    # A prefix short enough to sweep up a real code by accident is refused too.
+    with pytest.raises(ValueError, match="prefix this short"):
+        _assert_purgeable_plan_prefix("f")
+    # A named test family is fine.
+    _assert_purgeable_plan_prefix("meter_test_")
+
+
+def test_the_realdb_fixture_actually_runs_the_billing_teardown():
+    """Wiring guard: the helper below is only worth anything if it is called.
+
+    A source assertion rather than an ordering-dependent pair, because
+    `pytest-split` may put two tests from one file in different shards.
+    """
+    source = inspect.getsource(conftest.realdb)
+    assert "_reset_control_billing(tenants)" in source, (
+        "the realdb fixture no longer purges control-plane billing rows on teardown"
+    )
+
+
+async def test_billing_teardown_drops_throwaway_plans_and_keeps_the_catalogue(realdb):
+    keeper = _catalogue_plan_codes()[0]
+    throwaway_id = uuid.uuid4()
+    async with realdb.control_sessionmaker()() as s:
+        await s.execute(delete(Subscription))
+        await s.execute(delete(Plan).where(Plan.code.in_([keeper, "harness_probe_plan"])))
+        s.add(
+            Plan(
+                id=throwaway_id,
+                code="harness_probe_plan",
+                name="Harness Probe",
+                monthly_price=Decimal("1.00"),
+                currency="USD",
+            )
+        )
+        s.add(
+            Plan(
+                id=uuid.uuid4(),
+                code=keeper,
+                name="Catalogue",
+                monthly_price=Decimal("0.00"),
+                currency="USD",
+            )
+        )
+        s.add(
+            Subscription(
+                id=uuid.uuid4(),
+                organization_id=realdb.info("a").org_id,
+                plan_id=throwaway_id,
+                status="active",
+            )
+        )
+        await s.commit()
+
+    await _reset_control_billing(realdb.tenants)
+
+    async with realdb.control_sessionmaker()() as s:
+        codes = set((await s.execute(select(Plan.code))).scalars().all())
+        subs = (await s.execute(select(Subscription.id))).scalars().all()
+    # The throwaway plan AND its subscription child are both gone — a bare plan
+    # delete would have failed on the FK, which is exactly why the owner deletes
+    # the children first.
+    assert "harness_probe_plan" not in codes
+    assert subs == []
+    # …and the tier the app itself provisions survived.
+    assert keeper in codes

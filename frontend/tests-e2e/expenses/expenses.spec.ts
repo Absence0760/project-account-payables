@@ -56,7 +56,6 @@ function deleteReport(id: string): void {
 test.describe('/expenses', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/expenses');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the expenses workspace', async ({ page }) => {
@@ -79,7 +78,6 @@ test.describe('/expenses', () => {
 			expect(created.status).toBe('draft');
 
 			await page.goto(`/expenses?search=${encodeURIComponent(merchant)}`);
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(merchant)).toBeVisible();
 
 			// KPI cards render (period total + count are present on the expenses tab).
@@ -114,7 +112,6 @@ test.describe('/expenses', () => {
 
 			// The GL code is now visible in the row's GL cell after a reload.
 			await page.goto(`/expenses?search=${encodeURIComponent(merchant)}`);
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(merchant)).toBeVisible();
 			await expect(page.getByText(gl!.code, { exact: false }).first()).toBeVisible();
 		} finally {
@@ -166,7 +163,6 @@ test.describe('/expenses', () => {
 
 			// The Reports tab lists the report and opening it shows the row.
 			await page.goto('/expenses?tab=reports');
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(reportNumber)).toBeVisible();
 			await page.getByRole('button', { name: `Open report ${reportNumber}` }).click();
 			await expect(page.getByText(merchant)).toBeVisible();

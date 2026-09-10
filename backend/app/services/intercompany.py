@@ -76,6 +76,12 @@ async def route_intercompany_invoice(
     mirror = Invoice(
         organization_id=invoice.organization_id,
         entity_id=counterparty_id,
+        # The routing actor CREATED this payable, so they are its uploader for
+        # segregation-of-duties purposes — exactly as on the manual-create and
+        # upload paths. Without it the mirror is a NULL-uploader row, and the
+        # one person who caused a live liability to exist under another entity
+        # could also sign it off.
+        uploaded_by_id=actor_id,
         invoice_number=f"IC-{invoice.invoice_number}",
         vendor_name=invoice.vendor_name,
         amount=invoice.amount,

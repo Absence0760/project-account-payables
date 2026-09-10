@@ -125,7 +125,6 @@ test.describe('/invoices coding suggestions', () => {
 		page
 	}) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 		const seeded = await seedHistory(page);
 		try {
 			const modal = await openDraft(page, seeded.draftNumber);
@@ -175,7 +174,6 @@ test.describe('/invoices coding suggestions', () => {
 
 	test('saving after applying persists the suggested coding', async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 		const seeded = await seedHistory(page);
 		try {
 			const modal = await openDraft(page, seeded.draftNumber);

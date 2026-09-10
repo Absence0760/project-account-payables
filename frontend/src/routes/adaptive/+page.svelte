@@ -879,11 +879,19 @@
 					/>
 					<!-- The honest insufficient-data state. Below the minimum sample
 					     the backend reports NO rate, so neither does this — a dash
-					     plus the reason, never a computed-looking 0%. -->
+					     plus the reason, never a computed-looking 0%.
+
+					     `null`, never a literal em dash: `KpiCard` owns the glyph
+					     (`$lib/utils/kpiValue.ts::KPI_NO_FIGURE`, pinned equal to
+					     `formatMoney(null)`) and a hand-written one renders
+					     `data-kpi-state="value"` — the card CLAIMING a figure
+					     exists, which is the opposite of what this branch means
+					     and is invisible to the state-based a11y guard
+					     (`tests-e2e/a11y/kpi-pending.spec.ts`). -->
 					{#if feedback.outcomes.insufficient_data}
 						<KpiCard
 							label={m('adaptive.feedback.overturnRate')}
-							value="—"
+							value={null}
 							sub={m('adaptive.feedback.insufficientShort')}
 						/>
 					{:else}

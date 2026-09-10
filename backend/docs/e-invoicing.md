@@ -238,10 +238,52 @@ same thing off an exception):
 Why this shape and not the old `"field: code; field: code"` join: `FieldError`
 has always carried a human `message`, and `__str__` threw it away, so every
 client had to keep its own code→prose table to say anything actionable. The
-frontend had one; it is deleted, and the modal renders the server's own
-sentence. The shape is FastAPI's because the app's shared error renderer
+frontend had one; it was **hand-written**, covered 4 codes out of dozens, and is
+deleted. The shape is FastAPI's because the app's shared error renderer
 (`frontend/src/lib/utils/apiError.ts::formatApiDetail`) already understands it,
 so nothing on the client special-cases this endpoint.
+
+`is_rule_id(code)` is the single predicate deciding whether a code is folded
+into `msg`. It is public, and three places depend on agreeing with it:
+`_message_with_rule` (folds), `rule_catalog` (records which codes a client can
+therefore recover), and the frontend (parses the prefix back out). A second
+spelling of it anywhere is a drift bug.
+
+
+#### The refusal sentences are localized again — from a GENERATED catalogue
+
+The trade-off §95 stated plainly was that these sentences became the server's
+English. They are localized again, and the mechanism is what matters: a
+code→message-key map **derived from this rule set**, never hand-maintained.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Enumeration | `app/services/e_invoice/rule_catalog.py` | AST-scans this package for every `FieldError.code` — the literals in the 2nd positional arg of `_err` / `FieldError`, the `vat_category_rule(...)` families expanded over `VAT_CATEGORY_RULE_INFIX`, and the declared `GENERIC_ERROR_CODES` (which no scan can see, because `tax_rules` passes its code through a local). |
+| Generator | `backend/scripts/gen_einvoice_rule_messages.py` | Writes `frontend/src/lib/api/einvoiceRuleMessages.generated.ts` — `pnpm gen:einvoice-messages`. |
+| Drift check | the same script, `--check` | `pnpm check:einvoice-messages`, run in CI's **Backend lint** job. Regenerates and fails if the committed file differs. |
+
+Three guards, each catching the step after the one before it:
+
+1. **Backend lint** — add a rule and the generator's output changes ⇒ red until
+   the catalogue is regenerated.
+2. **`pnpm check`** — the generated map is `satisfies Record<string, MessageKey>`,
+   so a key `en.ts` lacks is a compile error.
+3. **`messages_parity.test.ts`** — once `en.ts` has it, the other five locales
+   must too.
+
+Two shape decisions worth not re-deriving. The per-VAT-category families
+collapse onto **one key each** (`BR-Z-08` and `BR-S-08` are the same sentence
+about different categories, and the rendered row already shows the rule id and
+the field path), while `BR-S-05` keeps its own — it is the family's mirror
+("a rate ABOVE zero" vs "a zero rate"), so collapsing it would state the
+opposite rule to a supplier. And the four `GENERIC_ERROR_CODES` are deliberately
+**not** mapped: `_message_with_rule` doesn't fold them into `msg`, so a client
+that flattens the payload cannot identify them and any key would be dead. They
+are emitted as a separate `E_INVOICE_OPAQUE_CODES` list rather than dropped, so
+a new generic kind shows up as a diff instead of as an unmapped code nobody
+notices. Guards: `tests/test_e_invoice_rule_catalog.py` (including a test that
+appends a fake rule to a sandbox copy of this package and asserts `--check`
+returns 1) + `frontend/src/lib/api/einvoiceIssues.test.ts`.
 
 `str(exc)` is **unchanged** and still the `"field: code"` join — it is the
 LOGGING contract (`services/peppol_receive`, the `einvoice` extraction adapter),

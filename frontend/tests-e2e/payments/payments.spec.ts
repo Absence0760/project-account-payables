@@ -9,7 +9,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/payments (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/payments');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('summary cards render', async ({ page }) => {

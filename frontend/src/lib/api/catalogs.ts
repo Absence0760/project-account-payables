@@ -31,12 +31,10 @@ export interface GlAccountOption {
 	account_type?: string;
 }
 
-/** Vendor option from `GET /api/vendors` — picker value is the uuid `id`. */
-export interface VendorOption {
-	id: string;
-	name: string;
-	code?: string | null;
-}
+// The vendor picker's option type + loader live with the rest of the vendor
+// surface in `api/vendors.ts`; re-exported here because `CatalogModal` and the
+// `/catalogs` page already import them from this module.
+export { listVendors, type VendorOption } from './vendors';
 
 export function listCatalogs(params: CatalogListParams = {}): Promise<CatalogListResponse> {
 	const qs = new URLSearchParams();
@@ -128,14 +126,3 @@ export function listGlAccounts(): Promise<GlAccountOption[]> {
 	return api.get<GlAccountOption[]>('/api/gl-accounts');
 }
 
-/** Vendor picker options. `/api/vendors` returns a paginated envelope and is
- *  gated to admin/ap_manager/cfo — an ap_clerk gets a 403, so we unwrap the
- *  envelope and degrade to an empty list rather than failing the whole page. */
-export async function listVendors(): Promise<VendorOption[]> {
-	try {
-		const res = await api.get<{ items: VendorOption[] }>('/api/vendors?page_size=100');
-		return res.items ?? [];
-	} catch {
-		return [];
-	}
-}

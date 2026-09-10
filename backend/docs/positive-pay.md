@@ -206,8 +206,13 @@ Registered formatters:
 3. Import it in `positive_pay_adapters/__init__.py` so the decorator runs at
    import time.
 4. The frontend exposes formats via the `BANK_FORMATS` constant in
-   `frontend/src/lib/types/positivePay.ts` — add your key + label there to
-   surface it in the generate modal.
+   `frontend/src/lib/types/positivePay.ts` — add your key there to surface it in
+   the generate modal, plus its **label key** in `BANK_FORMAT_LABEL_KEYS` (the
+   record is total over `BankFormat`, so a format with no label is a compile
+   error) and that key's string in all six locale catalogues under
+   `frontend/src/lib/i18n/locales/`. Until then the list's Format column, the
+   detail meta pill and the picker fall back to the raw key via
+   `bankFormatLabelKey()` — visible and searchable, never a blank cell.
 
 Amounts are always derived from the `Decimal` on the item (zero-padded cents in
 fixed-width, plain decimal string in CSV) — never a float.

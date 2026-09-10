@@ -68,7 +68,6 @@ async function actAsInUi(
 	const token = await roleToken(page, creds);
 	await page.evaluate((t) => localStorage.setItem('auth_token', t), token);
 	await page.goto('/expenses?tab=reports');
-	await page.waitForLoadState('networkidle');
 }
 
 function deleteReport(id: string): void {
@@ -128,7 +127,6 @@ async function buildSubmittedReport(
 test.describe('/expenses — CFO report approval', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/expenses');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('a CFO sees Approve on an OVER-threshold report and it works', async ({

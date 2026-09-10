@@ -380,7 +380,25 @@ Consequences worth knowing:
   database is long-lived across separate pytest invocations of the same slot,
   even though it's no longer shared with any other slot.
 
-The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
+The harness resets tenant tables plus `Organization.settings` / `parent_org_id`,
+and — **on teardown, not setup** — the control-plane billing rows: every
+`Subscription` its own orgs hold, and every `Plan` that is not one of
+`DEFAULT_PLAN_CATALOG`'s tiers (`_reset_control_billing`). Those two tables live
+in the slot's control-plane database, which the per-test TRUNCATE never reaches
+and `_rebuild_pytest_schema` clears only once per session, so a throwaway plan
+stayed visible to every later test in the run — and `GET /api/billing/plans` is
+a catalogue listing, so that is observable rather than inert. Six billing files
+hand-rolled the same purge at *setup*, which by construction can only reap the
+previous run's rows and always leaves the last one behind; one of them
+(`test_public_api_keys`) wrote only the subscription half, so its `meter_test_*`
+plans accumulated unchecked. **Seed a throwaway plan through
+`RealDB.purge_plans(prefix, org_ids=…)`** — the single owner of that child graph
+(the control-plane counterpart of `deleteVendorsWhere` / `deleteWorkflowsWhere`,
+`docs/decisions.md` §127). Like those it takes a **prefix, not a predicate**, and
+its seatbelt is derived from `DEFAULT_PLAN_CATALOG` so a free-form WHERE can't
+empty the catalogue every entitlement lookup reads. Guarded by
+`tests/test_realdb_harness.py`.
+
 It does **not** delete extra control-plane `users` rows a test creates — those
 accumulate, so a test must not assume a fixed user count for a test org.
 
@@ -502,8 +520,8 @@ backend/
    - `ScheduledReport` — recurring CFO report definition (cron, recipients, format)
    - `InvoiceEmbedding` — vector embedding per invoice for RAG / duplicate detection
    - `VendorExtractionPrior` — accumulated vendor field priors that bias the next extraction
-   - `VendorUser` — supplier-portal credentials scoped to a single Vendor
-   - `VendorChangeRequest` — staged supplier-portal change to a vendor's `bank_details` / `tax_id`, pending AP approval (migration 0022; fraud-prevention gate — see `docs/supplier-portal.md`)
+   - `VendorUser` — supplier-portal credentials scoped to a single Vendor. `provisioned_by_user_id` (migration 0095) records the control-plane `User` who last minted a password for it (invite, or admin reset — the only two routes that hand an AP actor a working supplier credential). It is a segregation-of-duties record, not bookkeeping: see `VendorChangeRequest` below
+   - `VendorChangeRequest` — staged supplier-portal change to a vendor's `bank_details` / `tax_id`, pending AP approval (migration 0022; fraud-prevention gate — see `docs/supplier-portal.md`). Carries TWO requester columns, and `approve_change_request` refuses when either equals the approver: `requested_by_user_id` (AP-initiated, migration 0066) and `requester_provisioned_by_user_id` (migration 0095) — the submitting portal identity's `provisioned_by_user_id`, **frozen at staging** so deleting that portal user afterwards can't erase the evidence. Without the second column every portal-submitted request short-circuited the check on a NULL, and one `ap_manager` could invite a portal user, sign in as it, stage a bank redirect, approve it and pay it
    - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
    - `Notification` — in-app notification center rows (recipient_user_id, event_type, entity_id, title/body, read_at). See `docs/notifications.md`
    - `PeppolTransmission` — one row per PEPPOL transmission (direction=outbound|inbound). Outbound idempotency: partial unique index `uq_peppol_one_live_per_invoice_direction` on `(invoice_id, direction) WHERE status <> 'failed'`. Inbound dedupe: partial unique index `uq_peppol_message_id` on `message_id WHERE message_id IS NOT NULL`. See `docs/peppol.md`

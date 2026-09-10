@@ -460,6 +460,22 @@ export const en = {
 	'payments.void.reasonPlaceholder': 'Why is this being voided?',
 	'payments.void.voiding': 'Voiding…',
 	'payments.void.confirm': 'Void payment',
+	'payments.void.card.title': 'Virtual card not closed',
+	'payments.void.card.retryable':
+		'The payment was voided, but its virtual card was not closed at the provider. The card is still live and can be spent until it is closed.',
+	'payments.void.card.final':
+		'The payment was voided, but its virtual card had already been charged, so it cannot be closed. The money has moved — settle this with the vendor or the card provider.',
+	'payments.void.card.closed': 'The virtual card was closed at the provider.',
+	'payments.void.card.retry': 'Retry closing the card',
+	'payments.void.card.retrying': 'Closing card…',
+	'payments.void.card.retryFailed': 'The card still could not be closed.',
+	'payments.void.card.outcome.cancelled': 'Closed at the provider',
+	'payments.void.card.outcome.alreadyCancelled': 'Already closed at the provider',
+	'payments.void.card.outcome.alreadyCharged': 'Already charged — it cannot be un-spent',
+	'payments.void.card.outcome.rejected': 'The card provider refused the close',
+	'payments.void.card.outcome.cardsOff': 'Card issuing is switched off for this organization',
+	'payments.void.card.outcome.providerUnknown': 'The configured card provider is not recognised',
+	'payments.void.card.outcome.error': 'The card provider could not be reached',
 	'payments.compliance.release.title': 'Release compliance hold',
 	'payments.compliance.release.warning': 'This re-runs the same sanctions and AML checks the payment run did, then hands the payment to the processor. A payment that is still genuinely blocked stays on hold — this is never a bypass. Audit-logged.',
 	'payments.compliance.release.confirm': 'Release payment',
@@ -544,6 +560,12 @@ export const en = {
 	'vendors.screening.blocked': 'Blocked',
 	'vendors.screening.adverseMedia': 'Negative news',
 	'vendors.screening.adverseMediaTitle': 'Adverse-media (negative news) hit — review the relationship',
+	// Screening-hit taxonomy ($lib/types/vendor.ts). Fixed, PII-free vocabulary —
+	// the adapters normalise every provider's own wording into these four.
+	'vendors.screening.category.sanctions': 'Sanctions list',
+	'vendors.screening.category.pep': 'Politically exposed person',
+	'vendors.screening.category.adverseMedia': 'Negative news',
+	'vendors.screening.category.highRiskCountry': 'High-risk jurisdiction',
 
 	// Vendor risk level + the two composed pill strings, and the enrichable-field names ($lib/types/vendor.ts)
 	'vendors.risk.low': 'Low',
@@ -638,20 +660,13 @@ export const en = {
 	'vendors.invite.send': 'Send invite',
 	'vendors.invite.sending': 'Sending…',
 	'vendors.invite.toast.failed': 'Could not send the invite',
-	'vendors.invite.reveal.aria': 'Supplier portal invite sent',
-	'vendors.invite.reveal.heading': 'Portal invite sent',
-	'vendors.invite.reveal.warningStrong': 'Shown once.',
-	'vendors.invite.reveal.warning':
-		'Copy the temporary password now — it is not stored and cannot be shown again. It was also emailed to the contact.',
-	'vendors.invite.reveal.copy': 'Copy',
-	'vendors.invite.reveal.copied': 'Copied',
-	'vendors.invite.reveal.copiedToast': 'Temporary password copied',
-	'vendors.invite.reveal.copyFailedToast': 'Copy failed — select the value manually',
-	'vendors.invite.reveal.done': 'Done',
-	'vendors.invite.reveal.email': 'Email',
-	'vendors.invite.reveal.url': 'Portal URL',
-
-	// Vendor bank / tax change-approval queue (routes/vendors/change-requests)
+	'vendors.invite.sent.aria': 'Supplier portal invite sent',
+	'vendors.invite.sent.heading': 'Portal invite sent',
+	'vendors.invite.sent.body':
+		'The temporary password was emailed to {email}. It is never shown here — if the supplier never receives it, use Reset password to send a new one.',
+	'vendors.invite.sent.email': 'Email',
+	'vendors.invite.sent.url': 'Portal URL',
+	'vendors.invite.sent.done': 'Done',
 	'vendors.changeRequests.navLabel': 'Bank Changes',
 	'vendors.changeRequests.title': 'Bank & Tax Change Approvals',
 	'vendors.changeRequests.intro':
@@ -2536,6 +2551,61 @@ export const en = {
 	'positivePay.col.created': 'Created',
 	'positivePay.col.status': 'Status',
 
+	// Bank formatter labels ($lib/types/positivePay.ts) — read by the generate
+	// picker, the list's Format column AND the detail meta pill, which used to print
+	// the raw `fixed_width`. "CSV" stays verbatim in every locale (a format name).
+	'positivePay.bankFormat.csv': 'CSV',
+	'positivePay.bankFormat.fixedWidth': 'Fixed width',
+
+	// PositivePayModal — generate form + detail view + return processing.
+	'positivePay.modal.generateTitle': 'Generate Positive Pay File',
+	'positivePay.modal.generateAria': 'Generate positive pay file',
+	'positivePay.modal.detailTitle': 'Positive Pay — {type}',
+	'positivePay.modal.detailAria': 'Positive pay file detail',
+	'positivePay.modal.fileType': 'File type',
+	'positivePay.modal.fileType.checkIssue': 'Check issue (per payment run)',
+	'positivePay.modal.fileType.achAuthorization': 'ACH authorization (org-wide)',
+	'positivePay.modal.bankFormat': 'Bank format',
+	'positivePay.modal.paymentRun': 'Payment run',
+	'positivePay.modal.selectRun': 'Select a payment run…',
+	'positivePay.modal.noExecutedRuns': 'No executed payment runs yet. A check-issue file lists the cheques a run actually issued, so the run has to be executed before its file can be generated.',
+	'positivePay.modal.runIdPlaceholder': 'Payment run id (UUID)',
+	'positivePay.modal.runIdAria': 'Payment run id',
+	'positivePay.modal.hintCheckIssue': "Renders every cheque in the selected run into the bank's Positive Pay format. Only executed runs are listed — a draft has issued no cheques. Generation is idempotent per (run, format) — re-running returns the existing file.",
+	'positivePay.modal.hintAchAuthorization': 'Lists every active vendor with ACH bank details as an authorized originator for debit-block filtering.',
+	'positivePay.modal.cancel': 'Cancel',
+	'positivePay.modal.generate': 'Generate',
+	'positivePay.modal.generating': 'Generating…',
+	'positivePay.modal.items': 'Items',
+	'positivePay.modal.totalAmount': 'Total amount',
+	'positivePay.modal.account': 'Account',
+	'positivePay.modal.download': 'Download file',
+	'positivePay.modal.returnSummary': 'Return summary',
+	'positivePay.modal.chip.presented': '{count, plural, one {# presented} other {# presented}}',
+	'positivePay.modal.chip.matched': '{count, plural, one {# matched} other {# matched}}',
+	'positivePay.modal.chip.altered': '{count, plural, one {# altered} other {# altered}}',
+	'positivePay.modal.chip.notOnFile': '{count, plural, one {# not on file} other {# not on file}}',
+	'positivePay.modal.chip.exceptions': '{count, plural, one {# exception} other {# exceptions}}',
+	'positivePay.modal.fraudNotePre': 'Fraud signals were raised as ',
+	'positivePay.modal.fraudNoteLink': 'fraud exceptions',
+	'positivePay.modal.fraudNotePost': ' — including never-issued cheques (which have no invoice).',
+	'positivePay.modal.processReturn': 'Process bank return',
+	'positivePay.modal.returnHintPre': 'Paste the items the bank reports as presented — one per line, ',
+	'positivePay.modal.returnHintPost': '. Altered or never-issued cheques raise a fraud exception.',
+	'positivePay.modal.presentedAria': 'Presented items',
+	'positivePay.modal.processReturnAction': 'Process return',
+	'positivePay.modal.processing': 'Processing…',
+	'positivePay.modal.close': 'Close',
+	'positivePay.modal.toast.generated': 'Positive Pay file generated',
+	'positivePay.modal.toast.generateFailed': 'Generation failed',
+	'positivePay.modal.toast.badAmount': 'Line {line}: the amount must be a plain number (e.g. 1234.56). Fix it and re-paste — an unreadable amount would be sent as no amount at all.',
+	'positivePay.modal.toast.noItems': 'Paste at least one presented item (check#,amount per line)',
+	'positivePay.modal.toast.returnFlagged': '{flagged, plural, one {Return processed — # item flagged} other {Return processed — # items flagged}}',
+	'positivePay.modal.toast.returnExceptions': '{exceptions, plural, one {, # exception raised} other {, # exceptions raised}}',
+	'positivePay.modal.toast.returnClean': 'Return processed — no discrepancies',
+	'positivePay.modal.toast.returnFailed': 'Could not process return',
+	'positivePay.modal.toast.downloadFailed': 'Download failed',
+
 	// Positive Pay file-type + status value labels ($lib/types/positivePay.ts). The type also interpolates into positivePay.fileLabel below, so an English literal would land mid-sentence.
 	'positivePay.fileType.checkIssue': 'Check issue',
 	'positivePay.fileType.achAuthorization': 'ACH authorization',
@@ -2729,6 +2799,17 @@ export const en = {
 	'portal.invoices.resubmitted': 'Invoice resubmitted for AP review.',
 	'portal.invoices.resubmitFailed': 'Resubmission failed',
 	'portal.invoices.filterAll': 'All',
+	// Vendor-facing invoice PHASE labels ($lib/types/portalStatus.ts). A phase is a
+	// stable id, not the label — these strings are display only, so translating one
+	// can never move a status between filter chips.
+	'portal.invoices.phase.submitted': 'Submitted',
+	'portal.invoices.phase.processing': 'Processing',
+	'portal.invoices.phase.underReview': 'Under Review',
+	'portal.invoices.phase.approved': 'Approved',
+	'portal.invoices.phase.paymentScheduled': 'Payment Scheduled',
+	'portal.invoices.phase.paid': 'Paid',
+	'portal.invoices.phase.completed': 'Completed',
+	'portal.invoices.phase.rejected': 'Rejected',
 	'portal.invoices.searchLabel': 'Search invoices',
 	'portal.invoices.searchPlaceholder': 'Search by invoice number',
 	'portal.invoices.dateFromLabel': 'From date',
@@ -2758,6 +2839,12 @@ export const en = {
 	'portal.payments.emptyFiltered': 'No payments match your filters.',
 	'portal.payments.clearFilters': 'Clear filters',
 	'portal.payments.filterAll': 'All',
+	// Vendor-facing payment PHASE labels ($lib/types/portalStatus.ts).
+	'portal.payments.phase.scheduled': 'Scheduled',
+	'portal.payments.phase.processing': 'Processing',
+	'portal.payments.phase.completed': 'Completed',
+	'portal.payments.phase.failed': 'Failed',
+	'portal.payments.phase.cancelled': 'Cancelled',
 	'portal.payments.searchLabel': 'Search payments',
 	'portal.payments.searchPlaceholder': 'Search by invoice number',
 	'portal.payments.dateFromLabel': 'From date',
@@ -4158,6 +4245,37 @@ export const en = {
 	'csvImport.vendors.hint.intro': 'Bulk-create vendors from a customer export. Unknown columns are ignored.',
 	'csvImport.vendors.hint.name': 'Only name is required.',
 	'csvImport.vendors.hint.status': 'Newly-created vendors land as unverified — review them here before paying any invoices.',
+	'discounts.bulk.addTier': '+ Add tier',
+	'discounts.bulk.aria': 'Propose a vendor-wide early-payment discount',
+	'discounts.bulk.baseExplain': 'This is the total the supplier’s discount applies to — every open invoice for this vendor in the current entity, summed by the server when the offer was created.',
+	'discounts.bulk.baseLabel': 'Open balance covered',
+	'discounts.bulk.confirm': 'Confirm — propose to {vendor}',
+	'discounts.bulk.createFailed': 'Could not create the vendor offer',
+	'discounts.bulk.createdFor': 'Offer created for {vendor}.',
+	'discounts.bulk.colDays': 'Pay within (days)',
+	'discounts.bulk.colPercent': 'Discount (%)',
+	'discounts.bulk.daysAria': 'Tier {n} — pay within days',
+	'discounts.bulk.done': 'Done',
+	'discounts.bulk.errorTitle': 'Offer not created',
+	'discounts.bulk.intro': 'One standing offer covering every open invoice this vendor has. The amount it applies to is the vendor’s open balance, totalled by the server when you propose — it is shown once the offer exists. Nothing is paid: the offer lands as Offered and still has to be accepted and funded.',
+	'discounts.bulk.noValidUntil': 'With no end date the offer never lapses on its own and the optimizer cannot rank it — it has no horizon to annualize a return over.',
+	'discounts.bulk.noVendors': 'No vendors are available to negotiate with.',
+	'discounts.bulk.notes': 'Notes (optional)',
+	'discounts.bulk.open': 'Propose vendor offer',
+	'discounts.bulk.percentAria': 'Tier {n} — discount percent',
+	'discounts.bulk.propose': 'Propose offer',
+	'discounts.bulk.proposing': 'Proposing…',
+	'discounts.bulk.removeTierAria': 'Remove tier {n}',
+	'discounts.bulk.selectVendor': 'Select a vendor…',
+	'discounts.bulk.thisVendor': 'this vendor',
+	'discounts.bulk.tierDuplicate': 'Two tiers use the same number of days. Give each rung its own deadline.',
+	'discounts.bulk.tierInvalid': 'Every tier needs days between 0 and 365 and a discount above 0 % and below 100 %.',
+	'discounts.bulk.tiersHint': 'Pay within the days on a rung and earn that percentage off. Add more rungs for a sliding scale.',
+	'discounts.bulk.tiersTitle': 'Sliding-scale tiers',
+	'discounts.bulk.title': 'Propose a vendor-wide discount',
+	'discounts.bulk.validUntil': 'Valid until',
+	'discounts.bulk.vendor': 'Vendor',
+	'discounts.bulk.vendorsLoading': 'Loading vendors…',
 	'discounts.chip.missed': 'Missed',
 	'discounts.col.base': 'Base',
 	'discounts.col.bestDiscount': 'Best discount',
@@ -4782,6 +4900,50 @@ export const en = {
 	'invoices.modal.einvoice.invalidHint':
 		'Correct these fields on the invoice, then download again.',
 	'invoices.modal.einvoice.failed': 'Could not generate the {format} e-invoice.',
+	// EN 16931 / PEPPOL refusal sentences. The code→key map is GENERATED from
+	// the backend's own rule set (`api/einvoiceRuleMessages.generated.ts`), so
+	// a rule the validator gains cannot quietly render as a bare id — see
+	// decisions.md §95. The per-category families share one key each: the row
+	// already shows the rule id and the field beside the wording.
+	'invoices.modal.einvoice.rule.brCl01':
+		'The invoice type code is not one the EN 16931 standard recognises (UNTDID 1001).',
+	'invoices.modal.einvoice.rule.brCl03':
+		'The invoice currency is not a valid ISO 4217 currency code.',
+	'invoices.modal.einvoice.rule.brCl14':
+		'The country code is not a valid ISO 3166-1 alpha-2 code.',
+	'invoices.modal.einvoice.rule.brCl16': 'The payment means code is not a valid UNCL4461 code.',
+	'invoices.modal.einvoice.rule.brCl17':
+		'The VAT category code on the tax breakdown is outside the EN 16931 subset of UNCL5305.',
+	'invoices.modal.einvoice.rule.brCl18':
+		'The VAT category code on this line is outside the EN 16931 subset of UNCL5305.',
+	'invoices.modal.einvoice.rule.brCl23':
+		'The unit of measure is not a valid UN/ECE Recommendation 20 code.',
+	'invoices.modal.einvoice.rule.brCo09':
+		'The VAT identifier must start with the two-letter country code of the country that issued it.',
+	'invoices.modal.einvoice.rule.brCo10':
+		'The sum of the line net amounts does not match the invoice total for the lines.',
+	'invoices.modal.einvoice.rule.brCo13':
+		'The total without VAT must equal the line total, less allowances, plus charges.',
+	'invoices.modal.einvoice.rule.brCo14':
+		'The invoice total VAT must equal the sum of the VAT breakdown amounts.',
+	'invoices.modal.einvoice.rule.brCo15':
+		'The total with VAT must equal the total without VAT plus the total VAT.',
+	'invoices.modal.einvoice.rule.brCo16':
+		'The amount due for payment must equal the total with VAT.',
+	'invoices.modal.einvoice.rule.brCo17':
+		'A VAT breakdown amount must equal its taxable amount times its rate.',
+	'invoices.modal.einvoice.rule.brCo25':
+		'An invoice with an amount due needs a due date or payment terms.',
+	'invoices.modal.einvoice.rule.brCo26':
+		'The seller needs a legal registration number or a VAT identifier.',
+	'invoices.modal.einvoice.rule.brS05': 'A standard-rated line needs a VAT rate above zero.',
+	'invoices.modal.einvoice.rule.peppolEn16931R120':
+		'A line net amount must equal its quantity times its unit price.',
+	'invoices.modal.einvoice.rule.vatCategory01':
+		'Every VAT category used on a line needs its own group in the VAT breakdown.',
+	'invoices.modal.einvoice.rule.vatCategory05': 'This VAT category requires a zero rate.',
+	'invoices.modal.einvoice.rule.vatCategory08':
+		'A VAT breakdown taxable amount must equal the sum of the lines in that category.',
 	'invoices.modal.peppol.title': 'PEPPOL',
 	'invoices.modal.peppol.hint':
 		'Transmits the invoice over the PEPPOL network to the receiver\'s access point.',

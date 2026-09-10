@@ -135,7 +135,6 @@ test.describe('/invoices — Invoice detail file management', () => {
 	}) => {
 		await signInAndWait(page, tenantClerk);
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 
 		const firstRow = page.locator('table tbody tr').first();
 		await expect(firstRow).toBeVisible({ timeout: 10_000 });

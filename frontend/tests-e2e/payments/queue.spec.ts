@@ -194,8 +194,16 @@ test.describe('/payments queue selection', () => {
 			created.push(await createApprovedInvoice(page, `E2E-SUM-${stamp}-A`));
 			created.push(await createApprovedInvoice(page, `E2E-SUM-${stamp}-B`));
 
+			// Wait for the queue's own fetch before paging, so `loadMoreUntilRow`
+			// starts from a settled list rather than one still filling. The
+			// helper no longer mistakes `DataTable`'s placeholder row for a real
+			// one, but the "Load more" footer arrives with the same response as
+			// the rows, so this keeps the first paging decision off an empty DOM.
+			const queueLoaded = page.waitForResponse((r) =>
+				new URL(r.url()).pathname.endsWith('/api/payments/queue')
+			);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
+			await queueLoaded;
 			await page.locator('.tab', { hasText: 'Queue' }).click();
 
 			const rowA = page.locator('table tbody tr', { hasText: `E2E-SUM-${stamp}-A` });
@@ -232,8 +240,16 @@ test.describe('/payments queue selection', () => {
 			created.push(await createApprovedInvoice(page, `E2E-PAY-${stamp}-A`));
 			created.push(await createApprovedInvoice(page, `E2E-PAY-${stamp}-B`));
 
+			// Wait for the queue's own fetch before paging, so `loadMoreUntilRow`
+			// starts from a settled list rather than one still filling. The
+			// helper no longer mistakes `DataTable`'s placeholder row for a real
+			// one, but the "Load more" footer arrives with the same response as
+			// the rows, so this keeps the first paging decision off an empty DOM.
+			const queueLoaded = page.waitForResponse((r) =>
+				new URL(r.url()).pathname.endsWith('/api/payments/queue')
+			);
 			await page.reload();
-			await page.waitForLoadState('networkidle');
+			await queueLoaded;
 			await page.locator('.tab', { hasText: 'Queue' }).click();
 
 			const rowA = page.locator('table tbody tr', { hasText: `E2E-PAY-${stamp}-A` });

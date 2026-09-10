@@ -23,7 +23,6 @@ test.use({ storageState: { cookies: [], origins: [] } });
 test.describe('/login/forgot-password', () => {
 	test('is reachable from the login page', async ({ page }) => {
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 
 		const link = page.getByRole('link', { name: /Forgot password/i });
 		await expect(link).toBeVisible();
@@ -37,7 +36,6 @@ test.describe('/login/forgot-password', () => {
 		page
 	}) => {
 		await page.goto('/login/forgot-password');
-		await page.waitForLoadState('networkidle');
 
 		await page.locator('input[type="email"]').fill(`nobody-${Date.now()}@nowhere.example`);
 		await page.getByRole('button', { name: /Send reset link/i }).click();
@@ -53,15 +51,16 @@ test.describe('/login/forgot-password', () => {
 test.describe('/login/reset-password', () => {
 	test('flags a missing token instead of rendering a form', async ({ page }) => {
 		await page.goto('/login/reset-password');
-		await page.waitForLoadState('networkidle');
 
-		await expect(page.locator('input[type="password"]')).toHaveCount(0);
+		// Assert the rendered no-token state FIRST: it is the auto-waiting
+		// signal that the route mounted. The absence check below only means
+		// something once something is on the page.
 		await expect(page.getByText(/missing its token/i)).toBeVisible();
+		await expect(page.locator('input[type="password"]')).toHaveCount(0);
 	});
 
 	test('rejects a bogus token with the opaque invalid/expired message', async ({ page }) => {
 		await page.goto('/login/reset-password?token=not-a-real-token');
-		await page.waitForLoadState('networkidle');
 
 		await page.locator('input[type="password"]').first().fill('BrandNewPassw0rd!42');
 		await page.locator('input[type="password"]').nth(1).fill('BrandNewPassw0rd!42');

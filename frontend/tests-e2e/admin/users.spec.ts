@@ -23,19 +23,24 @@ async function deleteUser(page: import('@playwright/test').Page, id: string) {
 test.describe('/admin user lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/admin');
-		// `table tbody tr` alone is satisfied by DataTable's own loading-state
-		// placeholder row ("No users found." — isEmpty is true until the fetch
-		// resolves, same markup shape as a genuine empty result), so it isn't
-		// proof the real user list has loaded. `networkidle` (the convention
-		// already used by the sibling `search-pagination.spec.ts` beforeEach
-		// for this same page) waits for the actual GET /api/admin/users to
-		// complete. Without it, a slow/loaded runner can let a test start
-		// interacting (and read `table tbody tr`'s count as "before") while
-		// the initial fetch is still in flight; when that fetch — or the
-		// admin panel's own debounced search refetch — finally resolves after
-		// a subsequent create/delete, it replaces the whole list wholesale and
-		// stomps the just-mutated state, producing an unrelated row count
-		// ("table shows N rows instead of M").
+		// KEPT deliberately, unlike every other `networkidle` in this
+		// directory. `table tbody tr` alone is satisfied by DataTable's own
+		// loading-state placeholder row ("No users found." — isEmpty is true
+		// until the fetch resolves, same markup shape as a genuine empty
+		// result), so it isn't proof the real user list has loaded — and the
+		// first test below reads that selector's `count()` as its "before"
+		// baseline, which is a point-in-time read with no waiting of its own.
+		//
+		// The second half of the original rationale — a late mount fetch
+		// replacing the whole list and stomping a just-created row — no longer
+		// applies: `stores/admin.svelte.ts` retires the in-flight fetch
+		// (`usersSequence.supersedeInFlight()`) on every create/update/delete.
+		//
+		// The durable replacement is the sibling `search-pagination.spec.ts`'s
+		// `mountUsersFetch()` — an explicit `waitForResponse` on the very
+		// `GET /api/admin/users` this comment names, rather than a
+		// no-network-for-500ms guess. Lifting it into a shared helper is the
+		// remaining networkidle work for this directory.
 		await page.waitForLoadState('networkidle');
 	});
 
@@ -102,7 +107,6 @@ test.describe('/admin user lifecycle', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: email });
 			await expect(row).toBeVisible();
 
@@ -147,7 +151,6 @@ test.describe('/admin user lifecycle', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: email });
 			await expect(row).toBeVisible();
 
@@ -196,7 +199,6 @@ test.describe('/admin user lifecycle', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: email });
 			await expect(row.locator('.status-dot')).toContainText('Active');
 
@@ -239,7 +241,6 @@ test.describe('/admin user lifecycle', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: email });
 			await expect(row).toBeVisible();
 

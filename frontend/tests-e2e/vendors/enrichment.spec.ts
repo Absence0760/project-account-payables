@@ -52,7 +52,6 @@ function deleteTestVendor(id: string): void {
 test.describe('/vendors external enrichment (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('enrich renders the suggestion diff, then apply updates the row', async ({ page }) => {

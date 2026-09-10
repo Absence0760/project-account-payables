@@ -83,7 +83,6 @@ function deleteMemo(id: string): void {
 test.describe('/credit-memos', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/credit-memos');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the empty-state placeholder when no memos exist', async ({ page }) => {
@@ -148,7 +147,6 @@ test.describe('/credit-memos', () => {
 			created.push(open.id);
 
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			// "Open" chip should reveal it.
 			const openFiltered = page.waitForResponse(
@@ -189,7 +187,6 @@ test.describe('/credit-memos', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			const row = page.locator('table tbody tr', { hasText: `CM-APPLY-` });
 			await row.getByRole('button', { name: 'Apply' }).click();
@@ -311,7 +308,6 @@ test.describe('/credit-memos', () => {
 
 		try {
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: `CM-VOID-OK-` });
 
 			// Void is a two-click armed-confirm action (irreversible-action guard).

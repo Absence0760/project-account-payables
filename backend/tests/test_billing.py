@@ -461,11 +461,9 @@ async def _cleanup_billing(realdb, org_id):
     """Remove the plan/subscription (control plane) + usage (tenant DB) rows a
     test created — neither is truncated by the fixture. All billing tests act as
     tenant "a"."""
-    async with realdb.control_sessionmaker()() as s:
-        await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
-        # Drop any test plans (by the per-test codes we use below).
-        await s.execute(delete(Plan).where(Plan.code.like("test_%")))
-        await s.commit()
+    # The shared teardown owner (`RealDB.purge_plans`) deletes the subscription
+    # children before the plans; see conftest for why it takes a prefix.
+    await realdb.purge_plans("test_", org_ids=[org_id])
     # extraction_usage / card_rebates are per-tenant tables — clean them in the
     # tenant DB, not the control plane.
     async with realdb.sessionmaker("a")() as s:

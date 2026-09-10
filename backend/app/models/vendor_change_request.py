@@ -57,6 +57,22 @@ class VendorChangeRequest(Base, TimestampMixin):
     requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    # Frozen at staging time: `VendorUser.provisioned_by_user_id` of the portal
+    # identity in `requested_by_vendor_user_id` — i.e. the AP actor who handed
+    # out that identity's password, if any.
+    #
+    # Copied here rather than resolved by a join at approval time for one
+    # reason: `DELETE /api/vendors/{id}/portal-users/{id}` carries no FK to this
+    # table, so an approver who provisioned the identity could otherwise erase
+    # the evidence (delete the portal user) between staging and approving and
+    # walk the request through alone. A frozen column cannot be un-stamped by a
+    # later delete.
+    #
+    # NULL is the normal case: a supplier who manages their own credential.
+    # `approve_change_request` refuses only when this equals the approver.
+    requester_provisioned_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     # 'bank_details' | 'tax_id'
     change_type: Mapped[str] = mapped_column(String(30), nullable=False)
     # pending | approved | rejected

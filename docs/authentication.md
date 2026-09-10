@@ -669,6 +669,17 @@ exactly as before.
     redirect guards) mirrors whatever `require_roles` the page's READ
     endpoint uses by default** — only the specific sensitive ACTION checks
     move to `auth.can(perm)`. The vendor pages above follow that default.
+  - **A nav `roles` gate is per ENTRY, read off that route's own backend
+    gate — never one list copied across a group.** A group's children
+    routinely disagree: in Procurement, `GET /api/purchase-orders` and
+    `GET /api/goods-receipts` (and `GET /api/inspections`, behind the same
+    page's second tab) are `get_current_user` — auth-gated, role-open —
+    while every `/api/budgets` read is
+    `require_roles(ADMIN, AP_MANAGER, CFO)`. Those five rows shared one
+    admin/ap_manager/cfo list, so an `ap_clerk` was hidden from two pages
+    whose own code says a clerk reads them (`goods-receipts/+page.svelte`:
+    "a clerk sees every inspection and no button"). `src/lib/nav.test.ts`
+    now pins the exact link set each system role sees in that group.
   - **Exception: a permission-gated control is unreachable if the nav row
     that leads to it is still role-only.** `NavLink`/`NavChild` take an
     optional `permissions?: string[]`, OR'd with `roles` in
@@ -676,12 +687,23 @@ exactly as before.
     optional `can: PermissionCheck` alongside the existing `has: RoleCheck`);
     `Sidebar.svelte` and `SectionTabs.svelte` pass `auth.can`. Two nav
     entries need this: **Payments** — a custom role holding ONLY
-    `payment.execute` (no `admin`/`ap_manager`/`cfo`) could call every
-    backend endpoint the `/payments` page needs (the supporting reads
-    are `require_permission(PERM_PAYMENT_EXECUTE[, PERM_PAYMENT_VOID])`,
-    exactly matching the prior `require_roles(ADMIN, AP_MANAGER, CFO)`
-    footprint) but the sidebar row stayed hidden without this — carries
-    `permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]`. **Users** — 
+    `payment.execute` (no `admin`/`ap_manager`/`cfo`) can call every backend
+    endpoint the `/payments` page needs, so the sidebar row carries
+    `permissions: [PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]`.
+    **That claim used to be false, and the nav row was the worse half of the
+    bug**: widening a nav entry means checking what the PAGE loads on mount,
+    not just the endpoint the row is named after. `/payments`' mount effect
+    fires `GET /api/payments/summary`, `/api/payments/queue` and — on the
+    default tab — `/api/payments/queue/ids` unconditionally, and all three
+    were still `require_roles(ADMIN, AP_MANAGER, CFO)` while their siblings
+    migrated, so the row led a permission-only holder to three 403s on first
+    paint. All three now gate on
+    `require_permission(PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID)` like the
+    `GET /api/payments` reads beside them, which reproduces the prior role
+    footprint exactly (`ap_clerk` holds neither permission and is still
+    refused). `backend/tests/test_sod_endpoint_wiring.py` pins all three, and
+    its `test_every_permission_gated_route_is_pinned` makes forgetting one a
+    failure rather than a silent gap. **Users** — 
     `GET /api/admin/users` migrated to `require_permission(user.manage)`,
     so a custom role holding only that permission needs the tab too —
     carries `permissions: [PERM_USER_MANAGE]`; the sibling Roles tab
@@ -691,6 +713,63 @@ exactly as before.
     pages above didn't need this treatment — their read endpoints stayed on
     the same role set their actions default to, so no custom-role holder
     loses reachability.
+
+### Segregation of duties on a vendor bank change (the BEC gate)
+
+A staged `VendorChangeRequest` is applied by
+`POST /api/vendors/change-requests/{id}/approve`, which refuses a proposer who
+is also the approver. That check compared **one** column —
+`requested_by_user_id`, the AP-side requester — and that column is NULL for
+every request submitted through the supplier portal. The comment beside it
+stated the assumption it rested on: *"portal-submitted requests have no AP
+requester, so this only bites AP-initiated ones."* True only if AP cannot create
+portal identities.
+
+AP can. `POST /api/vendors/{id}/portal-users` is
+`require_roles(ADMIN, AP_MANAGER)`, and `ROLE_AP_MANAGER` holds `vendor.manage`,
+`vendor.bank_change.approve` **and** `payment.execute` by default — so one
+person could invite a portal user at an address they controlled, sign in as it,
+stage a bank redirect, approve their own request through the NULL
+short-circuit, and pay it. The compensating `fraud_flag` raised on the
+vendor's in-queue invoices is not a second control against the same actor:
+exception resolution has no segregation check either (see
+[Open gap](#open-gap-exception-resolution-has-no-segregation-check) below).
+
+The approve path now refuses on **both** axes an AP actor can be the proposer:
+
+| Column | Set when | Refuses |
+|---|---|---|
+| `vendor_change_requests.requested_by_user_id` | AP staged the change from the app | approver == that user |
+| `vendor_change_requests.requester_provisioned_by_user_id` | frozen at staging from `vendor_users.provisioned_by_user_id` | approver == the AP actor who minted that portal identity's password |
+
+`vendor_users.provisioned_by_user_id` is stamped by invite AND by
+`POST .../reset-password` — the only two routes that hand an AP actor a working
+supplier credential — and is deliberately NOT cleared when the supplier changes
+their own password (that route needs the *current* password, which the
+provisioner has, so clearing there would be a one-request bypass). NULL means
+no AP actor has ever held this credential, which is correctly permissive: a
+self-managed supplier's request approves normally. Migration `0095`, tenant DBs.
+Full reasoning, including why the value is frozen rather than joined:
+[`backend/docs/supplier-portal.md`](../backend/docs/supplier-portal.md) §
+Credential provenance and the BEC dual control.
+
+The credential itself no longer travels in the invite/reset response — it is
+emailed to the portal user's own address, and a delivery failure rolls the
+request back rather than leaving an undeliverable account. That is
+defence-in-depth, not the control: an AP actor who supplies their own address
+still receives the email. The approval refusal is what closes the chain.
+
+#### Open gap: exception resolution has no segregation check
+
+`POST /api/exceptions/{id}/resolve` (and `/bulk/resolve`) gate on
+`require_roles(ADMIN, AP_MANAGER)` and nothing else — there is no check that the
+resolver is not the actor whose action raised the exception. With the approval
+refusal above in place this is no longer load-bearing for the bank-redirect
+chain (the approval itself is refused, so the `fraud_flag` is never reached by
+that path), but it remains true of every other exception type. Closing it needs
+a `raised_by` provenance column on `exceptions` and a decision about whether a
+small AP team can afford it — a control-design question, recorded rather than
+patched. Tracked in `docs/followups.md`.
 
 ### Segregation of duties on a workflow's approval step
 
@@ -716,6 +795,46 @@ is off) so disabling the control is a deliberate, auditable choice rather than
 a silent default. `frontend/src/lib/types/workflow.test.ts` is the drift guard
 on the default; `frontend/tests-e2e/workflows/segregation-default.spec.ts`
 covers the persisted value and the toggle round-trip.
+
+#### The other way SoD can be silently off: a NULL uploader
+
+The flag is one of two ways `violates_segregation` returns False. The other is
+`Invoice.uploaded_by_id IS NULL`, which the check reads as **"no employee
+created this row"** and therefore nobody who could self-approve.
+
+That is fail-open, and it holds only because of an invariant enforced outside
+the function: every path under `app/` that creates an invoice on behalf of a
+signed-in employee stamps the column —
+
+| Path | Uploader recorded |
+|---|---|
+| `POST /api/invoices` (manual entry) | the caller |
+| `POST /api/workflow/upload` (file upload) | the caller |
+| `POST /api/invoices/import-csv` (CSV import) | the caller |
+| `POST /api/recurring/{id}/generate-now` | the caller |
+| `POST /api/invoices/{id}/route-intercompany` (the mirror payable) | the routing actor |
+| email intake, inbound PEPPOL | NULL — system ingestion, no human |
+| supplier-portal submit, portal PO flip | NULL — the actor is a tenant-scoped `VendorUser`, who holds no employee JWT and can never reach an approval endpoint |
+| the recurring-invoice background sweep | NULL — nobody ran it |
+
+The CSV importer was the hole: the route had the user and the audit row used
+it, but the `Invoice(...)` constructor never passed it, so the importer could
+approve what they had just imported while the same person doing the same thing
+through `POST /api/invoices` got a 403.
+
+Making the NULL case fail CLOSED was considered and rejected — it would render
+every email-intake, PEPPOL, portal-submitted and sweep-generated invoice
+permanently unapprovable, an outage across four ingestion channels rather than
+a control. `backend/tests/test_invoice_uploader_stamping.py` enforces the
+invariant instead: a new construction site must pass `uploaded_by_id`
+explicitly, and passing a literal `None` must be declared with the reason there
+is no employee actor. See `docs/decisions.md`.
+
+One residual gap is known and narrower: a **sweep-generated** recurring invoice
+has an employee author (whoever created the template) that we have nowhere to
+record — `RecurringInvoiceTemplate` carries no creator column. Until one is
+added, such an invoice is exempt from segregation exactly as a legacy
+pre-`uploaded_by_id` row is.
 
 ### Approve and reject are not always the same role set
 
@@ -1500,6 +1619,6 @@ broken by renaming the real one.
 
 ### Not in this pass
 
-- **Segregation of duties (SoD)** — users currently can approve invoices they themselves created. The classic AP SoD invariant ("approver != creator") is a sensible follow-up but not part of basic RBAC. Tracked in the roadmap.
+- **Segregation of duties (SoD)** — *Done.* The classic AP invariant ("approver ≠ creator") ships as `services/approval_chain.check_segregation`, enforced in `services/review.approve_invoice` and default-ON (`require_segregation: true`). It keys on `Invoice.uploaded_by_id`, so its correctness depends on every employee-facing creation path recording the creator — see § Segregation of duties on a workflow's approval step above, and its "NULL uploader" subsection for what NULL means and which paths legitimately produce it.
 - **Per-org custom roles with teeth** — *Done.* Custom roles now grant access via the granular permission layer (`roles.permissions` + `require_permission`) — see § Granular permissions / segregation of duties above. A custom role granted, say, only `invoice.approve` can approve invoices but is 403'd on payment execution. Permission CRUD itself stays admin-only on purpose.
 - **Audit log of denied requests** — denials are logged via Python `logging.warning` for now, not persisted to the `audit_log` table. If oncall wants to query historical denials, surface them via centralized log shipping (planned under SOC 2 readiness).

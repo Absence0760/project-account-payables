@@ -16,7 +16,6 @@ import { expect, signInAndWait, test } from '../fixtures/helpers';
 test.describe('/cfo (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/cfo');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the forecast surface with KPI cards and controls', async ({ page }) => {

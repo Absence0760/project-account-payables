@@ -10,7 +10,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/vendors (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('lists seeded vendors', async ({ page }) => {
@@ -27,6 +26,10 @@ test.describe('/vendors (acme admin)', () => {
 
 	test('search input filters the visible vendor list', async ({ page }) => {
 		const search = page.getByPlaceholder('Search vendors...');
+		// `count()` does not auto-wait, and this baseline is what the searched
+		// count is compared against — so anchor on the unfiltered list being on
+		// screen first rather than on a quiet network.
+		await expect(page.locator('table tbody tr').first()).toBeVisible();
 		const beforeRows = await page.locator('table tbody tr').count();
 
 		// Search is server-side via /api/vendors?search=…. networkidle

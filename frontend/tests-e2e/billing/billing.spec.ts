@@ -118,7 +118,6 @@ test.describe('/billing (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/billing');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the billing surface header', async ({ page }) => {
@@ -167,7 +166,6 @@ test.describe('/billing (admin)', () => {
 			);
 
 			await page.goto('/billing');
-			await page.waitForLoadState('networkidle');
 
 			const plan = page.getByTestId('billing-plan');
 			await expect(plan).toBeVisible({ timeout: 10_000 });
@@ -248,7 +246,6 @@ test.describe('/billing (admin)', () => {
 		});
 
 		await page.goto('/billing');
-		await page.waitForLoadState('networkidle');
 
 		const section = page.getByTestId('billing-invoices');
 		await expect(section).toBeVisible({ timeout: 10_000 });
@@ -280,7 +277,6 @@ test.describe('/billing (admin)', () => {
 		});
 
 		await page.goto('/billing');
-		await page.waitForLoadState('networkidle');
 
 		const section = page.getByTestId('billing-invoices');
 		await expect(section).toBeVisible({ timeout: 10_000 });
@@ -328,7 +324,6 @@ test.describe('/billing (admin)', () => {
 		});
 
 		await page.goto('/billing');
-		await page.waitForLoadState('networkidle');
 
 		const section = page.getByTestId('billing-payment-methods');
 		await expect(section).toBeVisible({ timeout: 10_000 });
@@ -347,7 +342,6 @@ test.describe('/billing (admin)', () => {
 		});
 
 		await page.goto('/billing');
-		await page.waitForLoadState('networkidle');
 
 		const section = page.getByTestId('billing-payment-methods');
 		await expect(section).toBeVisible({ timeout: 10_000 });
@@ -374,7 +368,6 @@ test.describe('/billing (admin)', () => {
 		});
 
 		await page.goto('/billing');
-		await page.waitForLoadState('networkidle');
 
 		await page.getByTestId('billing-add-card').click();
 		const setup = page.getByTestId('billing-card-setup');
@@ -399,7 +392,6 @@ test.describe('/billing (admin)', () => {
 		});
 
 		await page.goto('/billing');
-		await page.waitForLoadState('networkidle');
 
 		await page.getByTestId('billing-add-card').click();
 		const setup = page.getByTestId('billing-card-setup');
@@ -459,7 +451,6 @@ test.describe('/billing (admin)', () => {
 			);
 
 			await page.goto('/billing');
-			await page.waitForLoadState('networkidle');
 		});
 
 		test.afterEach(() => {

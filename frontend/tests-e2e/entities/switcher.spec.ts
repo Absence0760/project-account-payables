@@ -67,12 +67,16 @@ test.describe('sidebar entity switcher', () => {
 		const slug = `${SLUG_PREFIXES[0]}-${suffix}`;
 
 		await page.goto('/');
-		await page.waitForLoadState('networkidle');
 		const entityId = await createEntity(page, name, slug);
 
-		// Reload so the switcher store picks up the new entity.
+		// Reload so the switcher store picks up the new entity, and let that
+		// reload's OWN dashboard fetch land first: `entityStore.select()` calls
+		// window.location.reload(), so the scoped request below comes from a
+		// fresh page load. Arming the waiter any earlier lets it capture this
+		// reload's unscoped request instead.
+		const firstDashboard = page.waitForResponse((r) => r.url().includes('/api/dashboard'));
 		await page.reload();
-		await page.waitForLoadState('networkidle');
+		await firstDashboard;
 
 		const switcher = page.locator('.entity-btn');
 		await expect(switcher).toBeVisible();
@@ -85,7 +89,6 @@ test.describe('sidebar entity switcher', () => {
 		expect(req.headers()['x-entity-id']).toBe(entityId);
 
 		// After reload the switcher shows the selected entity name.
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('.entity-name')).toHaveText(name);
 
 		// "All entities" returns to the consolidated view — no X-Entity-ID.
@@ -95,7 +98,6 @@ test.describe('sidebar entity switcher', () => {
 		const req2 = await consolidatedReq;
 		expect(req2.headers()['x-entity-id']).toBeFalsy();
 
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('.entity-name')).toHaveText('All entities');
 	});
 
@@ -105,10 +107,8 @@ test.describe('sidebar entity switcher', () => {
 		const slug = `e2e-deact-${suffix}`;
 
 		await page.goto('/');
-		await page.waitForLoadState('networkidle');
 		const entityId = await createEntity(page, name, slug);
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 
 		// Visible while active.
 		await page.locator('.entity-btn').click();
@@ -134,8 +134,15 @@ test.describe('sidebar entity switcher', () => {
 			},
 			{ api: API, id: entityId }
 		);
+		// `isVisible()` below is a point-in-time read, not an auto-waiting
+		// assertion, so the branch has to be taken AFTER the store has the
+		// entity list — that GET is what decides whether the switcher renders
+		// at all.
+		const entitiesLoaded = page.waitForResponse(
+			(r) => r.request().method() === 'GET' && r.url().endsWith('/api/entities')
+		);
 		await page.reload();
-		await page.waitForLoadState('networkidle');
+		await entitiesLoaded;
 
 		// The deactivated entity can no longer be picked. Two valid end states,
 		// depending on how many OTHER entities the shared worker tenant carries
@@ -158,10 +165,8 @@ test.describe('sidebar entity switcher', () => {
 		const slug = `${SLUG_PREFIXES[1]}-${suffix}`;
 
 		await page.goto('/');
-		await page.waitForLoadState('networkidle');
 		await createEntity(page, name, slug);
 		await page.reload();
-		await page.waitForLoadState('networkidle');
 
 		await page.locator('.entity-btn').click();
 		await expect(page.locator('.entity-menu')).toBeVisible();

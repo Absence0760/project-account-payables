@@ -14,7 +14,6 @@ test.describe('/exceptions AI Agents dashboard (manager)', () => {
 	test.beforeEach(async ({ page, tenantManager }) => {
 		await signInAndWait(page, tenantManager);
 		await page.goto('/exceptions');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('switching to the AI Agents tab shows the KPI dashboard', async ({ page }) => {
@@ -59,7 +58,6 @@ test.describe('/exceptions AI Agents dashboard (manager)', () => {
 
 		// The action filter chips are operable.
 		await page.locator('[data-testid="agent-decision-log"] .filter-chip', { hasText: 'Auto-resolved' }).click();
-		await page.waitForLoadState('networkidle');
 		await expect(page.getByTestId('agent-dashboard')).toBeVisible();
 	});
 

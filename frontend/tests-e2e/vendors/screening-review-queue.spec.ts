@@ -88,7 +88,6 @@ test.describe('/vendors/screening review queue (admin — cached session)', () =
 			flagForReview(vendor.id);
 
 			await page.goto('/vendors/screening');
-			await page.waitForLoadState('networkidle');
 
 			await expect(page.getByRole('columnheader', { name: 'Vendor' })).toBeVisible();
 			// KPI summary renders the match tally.
@@ -110,7 +109,6 @@ test.describe('/vendors/screening review queue (admin — cached session)', () =
 			flagForReview(vendor.id);
 
 			await page.goto('/vendors/screening');
-			await page.waitForLoadState('networkidle');
 
 			const row = page.locator('table tbody tr', { hasText: name });
 			await row.locator('.row-link').click();
@@ -135,7 +133,6 @@ test.describe('/vendors/screening review queue (admin — cached session)', () =
 			flagForReview(vendor.id);
 
 			await page.goto('/vendors/screening');
-			await page.waitForLoadState('networkidle');
 
 			const row = page.locator('table tbody tr', { hasText: name });
 			await row.locator('.row-link').click();
@@ -187,7 +184,6 @@ test.describe('/vendors/screening review queue (cfo — non-holder)', () => {
 			await signInAndWait(page, tenantCfo);
 
 			await page.goto('/vendors/screening');
-			await page.waitForLoadState('networkidle');
 
 			const row = page.locator('table tbody tr', { hasText: name });
 			await expect(row).toBeVisible();

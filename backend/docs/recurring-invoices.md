@@ -128,6 +128,24 @@ savepoint is purely the concurrency backstop.)
 **The sweep never moves money.** It only creates an `Invoice` in the queue; the
 CFO-gated payment run is what funds it, exactly as for a manually-uploaded bill.
 
+### Who counts as the generated invoice's creator
+
+`generate_one` stamps `Invoice.uploaded_by_id` with its `actor_id` — `user.id`
+on the manual `POST /{id}/generate-now`, `None` from the sweep. That column is
+what segregation of duties keys on
+(`approval_chain.violates_segregation`), so without the stamp the AP manager who
+clicked generate-now could also approve the invoice it produced.
+
+The sweep's NULL is a real, narrower gap rather than a clean "no human here":
+the template's **author** is an employee, but `RecurringInvoiceTemplate` carries
+no creator column to attribute the generated invoice to. Adding one is a
+migration plus a backfill decision (a pre-existing template has no recorded
+author to backfill from). Until then, a sweep-generated invoice is exempt from
+segregation exactly as a legacy pre-`uploaded_by_id` invoice is — the approver
+may be the person who set the template up. A tenant that cares can keep template
+CRUD and invoice approval on different people, since the two are separately
+gated. See `../../docs/authentication.md` § Segregation of duties.
+
 ### One template's failure never costs its siblings their work
 
 Within a tenant the sweep mirrors `vendor_rescreen`: it selects template **ids**,

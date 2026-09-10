@@ -281,6 +281,52 @@
 		{/if}
 	{/snippet}
 
+	<!-- KPI row — rendered on EVERY state, never gated on the response.
+	     `docs/decisions.md` §125: an absent figure is a dash, and whether it is
+	     absent because it is still arriving is ANNOUNCED, not drawn. This row
+	     used to sit inside `{:else if report}` and collapse to nothing while the
+	     report was in flight — the same §34-satisfying-but-different mechanism
+	     `/cfo` carried, so the one convention had three shapes across four
+	     pages. `/discounts`, `/bank-reconciliation` and `/cfo` are the others.
+
+	     `pending` is only consulted when the value is MISSING, so switching year
+	     keeps the previous year's figures on screen rather than blanking the row
+	     — the loading card below names the year being fetched — and a FAILED
+	     load leaves them absent-but-not-loading with the retry card above saying
+	     why. The two counts that carry a red verdict drop it while there is no
+	     figure to have a verdict about, which is the point: "0 reportable
+	     vendors without a W-9" is the reassuring answer, and it must not be
+	     drawn before anyone has computed it. -->
+	<div class="kpi-row">
+		<KpiCard
+			value={report ? String(report.vendor_count_total) : null}
+			label={m('tax.kpi.vendorsWithPayments')}
+			pending={loading}
+		/>
+		<KpiCard
+			value={report ? String(report.vendor_count_eligible_over_threshold) : null}
+			label={m('tax.kpi.reportableOver', { threshold: report?.threshold_usd ?? '' })}
+			highlight="green"
+			pending={loading}
+		/>
+		<KpiCard
+			value={report ? String(report.vendor_count_over_threshold_without_w9) : null}
+			label={m('tax.kpi.reportableWithoutW9')}
+			highlight={report && report.vendor_count_over_threshold_without_w9 > 0 ? 'red' : null}
+			pending={loading}
+		/>
+		<KpiCard
+			value={report ? formatMoney(report.total_reportable, { currency: report.currency }) : null}
+			label={m('tax.kpi.totalReportable')}
+			sub={report && isPositiveAmount(report.total_card_excluded)
+				? m('tax.kpi.cardExcludedSub', {
+						amount: formatMoney(report.total_card_excluded, { currency: report.currency })
+					})
+				: null}
+			pending={loading}
+		/>
+	</div>
+
 	{#if error}
 		<div class="state-card error" role="alert">
 			<p>{error}</p>
@@ -289,29 +335,6 @@
 	{:else if loading && !report}
 		<div class="state-card" aria-busy="true">{m('tax.loadingReport', { year })}</div>
 	{:else if report}
-		<div class="kpi-row">
-			<KpiCard value={String(report.vendor_count_total)} label={m('tax.kpi.vendorsWithPayments')} />
-			<KpiCard
-				value={String(report.vendor_count_eligible_over_threshold)}
-				label={m('tax.kpi.reportableOver', { threshold: report.threshold_usd })}
-				highlight="green"
-			/>
-			<KpiCard
-				value={String(report.vendor_count_over_threshold_without_w9)}
-				label={m('tax.kpi.reportableWithoutW9')}
-				highlight={report.vendor_count_over_threshold_without_w9 > 0 ? 'red' : null}
-			/>
-			<KpiCard
-				value={formatMoney(report.total_reportable, { currency: report.currency })}
-				label={m('tax.kpi.totalReportable')}
-				sub={isPositiveAmount(report.total_card_excluded)
-					? m('tax.kpi.cardExcludedSub', {
-							amount: formatMoney(report.total_card_excluded, { currency: report.currency })
-						})
-					: null}
-			/>
-		</div>
-
 		{#if report.box_allocations.length > 0}
 			<section class="box-panel" aria-labelledby="box-panel-title">
 				<h2 id="box-panel-title">{m('tax.boxes.title')}</h2>

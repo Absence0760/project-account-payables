@@ -47,15 +47,20 @@ test.describe('/payments pagination', () => {
 		seedPayments(22);
 
 		await page.goto('/payments');
-		await page.waitForLoadState('networkidle');
 		// The wait is armed BEFORE the click, not after it. `waitForResponse`
 		// only observes responses that arrive after it is called, so awaiting it
 		// afterwards loses a race the local dev stack wins routinely — the fetch
 		// completes before the listener attaches and the test times out having
 		// missed the very response it was waiting for. The Load-more step below
 		// already used this shape; the tab click did not.
+		//
+		// The predicate matches on the PATHNAME, not a substring: the Queue tab
+		// is the default and its mount fetch is `/api/payments/queue?page=1…`,
+		// which `url().includes('/api/payments')` also matches. Only the exact
+		// path distinguishes the History list from it, so the waiter cannot be
+		// satisfied by whichever request happens to be in flight.
 		const firstPage = page.waitForResponse(
-			(r) => r.url().includes('/api/payments') && r.url().includes('page=1')
+			(r) => new URL(r.url()).pathname.endsWith('/api/payments') && r.url().includes('page=1')
 		);
 		await page.getByRole('button', { name: /History/ }).click();
 		await firstPage;
@@ -69,7 +74,7 @@ test.describe('/payments pagination', () => {
 		expect(total).toBeGreaterThanOrEqual(22);
 
 		const next = page.waitForResponse(
-			(r) => r.url().includes('/api/payments') && r.url().includes('page=2')
+			(r) => new URL(r.url()).pathname.endsWith('/api/payments') && r.url().includes('page=2')
 		);
 		await loadMore.click();
 		await next;

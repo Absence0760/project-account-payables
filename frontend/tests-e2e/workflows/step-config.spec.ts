@@ -89,7 +89,6 @@ test.describe('/workflows/[id] step config', () => {
 
 			// Reload — left pipeline shows the new name.
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await expect(
 				page.locator('.canvas .node').first().locator('.node-name')
 			).toHaveText(newName);

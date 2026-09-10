@@ -22,8 +22,8 @@ import type { Page } from '@playwright/test';
  * Per-route gates (mirroring the backend read-RBAC):
  *   Direct: Dashboard(all) · Invoices(all) · Payments(adm/mgr/cfo) ·
  *           Vendors(adm/mgr/cfo) · Screening(adm/mgr/cfo) · Exceptions(adm/mgr)
- *   Procurement: PurchaseOrders·GoodsReceipts·Budgets(adm/mgr/cfo);
- *                Requisitions·Intake·Catalogs(all)
+ *   Procurement: Budgets(adm/mgr/cfo);
+ *                PurchaseOrders·GoodsReceipts·Requisitions·Intake·Catalogs(all)
  *   Billing: Contracts·Expenses·VendorStatements(all); CreditMemos·Discounts(adm/mgr/cfo)
  *   Insights: AIAssistant(all); CashFlow(adm/cfo); 1099(adm/mgr/cfo)
  *   Settings: Organization·Users·Roles·Workflows·APIKeys·Webhooks·Partner(admin);
@@ -59,11 +59,19 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		await signInAndWait(page, tenantClerk);
 		// A group row links to the FIRST child the role can see.
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/vendors/screening', '/requisitions', '/contracts', '/assistant'].sort()
+			['/', '/invoices', '/vendors/screening', '/purchase-orders', '/contracts', '/assistant'].sort()
 		);
-		// Procurement tabs: only the all-roles children.
-		expect(await sectionTabHrefs(page, '/requisitions')).toEqual(
-			['/requisitions', '/intake', '/catalogs'].sort()
+		// Procurement tabs: every child whose reads admit a clerk — which is all
+		// of them but Budgets. Purchase Orders and Goods Receipts joined this set
+		// when the group stopped carrying one blanket gate: both routers read via
+		// `get_current_user`, as does the Inspections tab's `GET /api/inspections`,
+		// and each page gates its own mutations on `auth.isManager`. Budgets stays
+		// out — every `/api/budgets` read is `require_roles(ADMIN, AP_MANAGER, CFO)`,
+		// so a clerk's first paint would 403. Purchase Orders being first in nav
+		// order is also why the group's sidebar row now lands there, not on
+		// Requisitions. `frontend/src/lib/nav.test.ts` pins the same set.
+		expect(await sectionTabHrefs(page, '/purchase-orders')).toEqual(
+			['/purchase-orders', '/goods-receipts', '/requisitions', '/intake', '/catalogs'].sort()
 		);
 		// Billing tabs: every child whose LIST endpoint admits a clerk. Credit
 		// Memos and Recurring joined this set when the nav stopped hiding pages

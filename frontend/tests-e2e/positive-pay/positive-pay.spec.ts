@@ -28,7 +28,6 @@ import {
 test.describe('/positive-pay (admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/positive-pay');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the Positive Pay surface — header, KPIs, filters, table', async ({ page }) => {
@@ -169,7 +168,6 @@ test.describe('/positive-pay (admin)', () => {
 			id = ((await resp.json()) as { id: string }).id;
 
 			await page.goto('/positive-pay?file_type=ach_authorization');
-			await page.waitForLoadState('networkidle');
 
 			const row = page.locator('tr', { hasText: id!.slice(0, 8) });
 			await expect(row).toBeVisible({ timeout: 10_000 });
@@ -227,7 +225,6 @@ test.describe('/positive-pay (admin)', () => {
 			expect(file.file_type).toBe('ach_authorization');
 
 			await page.goto('/positive-pay?file_type=ach_authorization');
-			await page.waitForLoadState('networkidle');
 			await expect(
 				page.getByRole('button', { name: new RegExp(`Open Positive Pay file.*${id!.slice(0, 8)}`) })
 			).toBeVisible({ timeout: 10_000 });
@@ -254,7 +251,11 @@ test.describe('/positive-pay (clerk — no access)', () => {
 		// Positive Pay is gated to admin/ap_manager/cfo — the clerk never sees the
 		// nav entry.
 		await page.goto('/');
-		await page.waitForLoadState('networkidle');
+		// The sidebar has to be rendered before an absence check means anything:
+		// the pre-hydration document is empty (the root layout renders nothing
+		// until its browser-only `$effect` resolves the tenant), so a bare
+		// `toHaveCount(0)` would pass vacuously against it.
+		await expect(page.locator('aside.sidebar').first()).toBeVisible();
 		await expect(page.getByRole('link', { name: 'Positive Pay' })).toHaveCount(0);
 
 		// And a mutate call is rejected by the backend (admin / ap_manager only).

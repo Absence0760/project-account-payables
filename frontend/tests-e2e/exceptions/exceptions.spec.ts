@@ -12,7 +12,6 @@ test.describe('/exceptions (manager)', () => {
 	test.beforeEach(async ({ page, tenantManager }) => {
 		await signInAndWait(page, tenantManager);
 		await page.goto('/exceptions');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the page and the seeded exception rows', async ({ page }) => {

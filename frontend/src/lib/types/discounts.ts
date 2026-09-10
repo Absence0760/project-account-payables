@@ -1,4 +1,5 @@
 import type { MoneyAmount } from '$lib/utils/money';
+import { normalizeMoneyInput } from '$lib/utils/moneyInput';
 import type { BadgeTone } from '$lib/components/ui/Badge.svelte';
 
 // Types for the Dynamic Discounting & Early-Payment Optimization surface.
@@ -214,3 +215,55 @@ export interface DiscountOptimization {
 /** Status-filter keys the dashboard's FilterChips drive. `missed` maps to the
  *  backend `declined` + `expired` statuses (a derived bucket, not a status). */
 export type DiscountStatusFilter = 'all' | 'offered' | 'accepted' | 'captured' | 'missed';
+
+// --- Bulk vendor negotiation (`POST /api/discounts/bulk-negotiate`) ---
+
+/**
+ * One tier of a proposed vendor-wide offer, as the user typed it.
+ *
+ * Both halves stay TEXT until they go on the wire. `percent` in particular is
+ * sent as the exact decimal string it was typed as, never as a JSON number:
+ * `json.loads` on the server decodes the body before any validator runs, so a
+ * JSON number is already a float by the time pydantic sees it. Same reasoning
+ * as the optimizer's cash budget (`utils/moneyInput.ts`) — and here the
+ * percent is applied to a base spanning the vendor's whole open balance.
+ */
+export interface BulkTierInput {
+	days: string;
+	percent: string;
+}
+
+/**
+ * `days` as an integer inside the server's own `ge=0, le=365` range, else
+ * `null`.
+ *
+ * Refusing client-side buys the user a sentence they can act on instead of a
+ * raw pydantic 422; the server stays authoritative either way.
+ */
+export function normalizeTierDays(raw: string | null | undefined): number | null {
+	const text = (raw ?? '').trim();
+	if (!/^\d{1,3}$/.test(text)) return null;
+	const days = parseInt(text, 10);
+	return days >= 0 && days <= 365 ? days : null;
+}
+
+/**
+ * The exact decimal string to send for a tier percent, or `null` when it is
+ * not a percent the server would accept (`gt=0, lt=100`).
+ *
+ * `Number` is read ONLY to compare against those bounds. What comes back is
+ * the untouched text — the check must never become the value, which is the
+ * discipline `utils/moneyInput.ts` is built around.
+ */
+export function normalizeTierPercent(raw: string | null | undefined): string | null {
+	const text = normalizeMoneyInput(raw);
+	if (text === null) return null;
+	const bound = Number(text);
+	if (!(bound > 0 && bound < 100)) return null;
+	return text;
+}
+
+/** A tier row the user has started filling in — either field carrying text. */
+export function isTierStarted(tier: BulkTierInput): boolean {
+	return tier.days.trim() !== '' || tier.percent.trim() !== '';
+}

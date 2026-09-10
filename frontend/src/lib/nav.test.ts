@@ -220,3 +220,80 @@ test('retention, access-review, and privacy nav entries match their backend RBAC
 	expect(canSee(privacy.roles, hasAdmin)).toBe(true);
 	expect(canSee(privacy.roles, hasCfo)).toBe(false);
 });
+
+// --- Procurement: the nav is gated PER ITEM against each route's own backend
+// gate, never one blanket group role list. -----------------------------------
+
+const procurement = NAV.find(
+	(e): e is NavGroup => e.kind === 'group' && e.label === 'Procurement'
+)!;
+
+/** The Procurement links a holder of exactly this one system role can see. */
+function procurementFor(role: string): string[] {
+	const has = (...roles: string[]) => roles.includes(role);
+	return visibleChildren(procurement, has, () => false).map((c) => c.href);
+}
+
+test('an ap_clerk sees exactly the Procurement links their backend reads allow', () => {
+	// The whole point of gating this group per item. Five of the six routes have
+	// list/detail reads open to any authenticated user or to all four roles:
+	//   - /purchase-orders  api/purchase_orders.py — list, /counts, detail are
+	//                       all `get_current_user`; only POST /sync-erp is
+	//                       admin | ap_manager, and the page gates that button
+	//                       on `auth.isManager`.
+	//   - /goods-receipts   api/goods_receipts.py — list + detail
+	//                       `get_current_user`; the Inspections tab's
+	//                       `GET /api/inspections` likewise.
+	//   - /requisitions, /intake, /catalogs — `require_roles(ADMIN, AP_MANAGER,
+	//                       AP_CLERK, CFO)` on every read.
+	// /budgets is the one genuine exclusion: `require_roles(ADMIN, AP_MANAGER,
+	// CFO)` on every read, so a clerk's FIRST page load would 403 — the nav must
+	// keep hiding it. A group-level gate cannot express both halves, which is
+	// why this asserts the exact set rather than a subset.
+	expect(procurementFor('ap_clerk')).toEqual([
+		'/purchase-orders',
+		'/goods-receipts',
+		'/requisitions',
+		'/intake',
+		'/catalogs'
+	]);
+});
+
+test('the other three system roles see every Procurement link', () => {
+	// admin / ap_manager / cfo are on every one of the six gates, so a
+	// per-item split must not have narrowed anyone by accident.
+	const all = procurement.children.map((c) => c.href);
+	expect(procurementFor('admin')).toEqual(all);
+	expect(procurementFor('ap_manager')).toEqual(all);
+	expect(procurementFor('cfo')).toEqual(all);
+});
+
+test('Procurement nav entries carry their own gate, not the group\'s', () => {
+	// Reading the roles directly, so a future edit that re-flattens the group
+	// onto one shared list fails here rather than only in the derived sets above.
+	const child = (href: string) => procurement.children.find((c) => c.href === href)!;
+	const openToAll = ['admin', 'ap_manager', 'ap_clerk', 'cfo'];
+	expect(child('/purchase-orders').roles).toEqual(openToAll);
+	expect(child('/goods-receipts').roles).toEqual(openToAll);
+	expect(child('/requisitions').roles).toEqual(openToAll);
+	expect(child('/intake').roles).toEqual(openToAll);
+	expect(child('/catalogs').roles).toEqual(openToAll);
+	expect(child('/budgets').roles).toEqual(['admin', 'ap_manager', 'cfo']);
+});
+
+test('the Payments nav row admits a permission-only role its backend now serves', () => {
+	// `nav.ts` OR's `payment.execute` / `payment.void` into the Payments row so a
+	// custom role holding one of them (and no system role) can reach the page.
+	// The page's mount effect fires `/api/payments/summary`, `/api/payments/queue`
+	// and — on the default tab — `/queue/ids` unconditionally, and all three sat
+	// on `require_roles(ADMIN, AP_MANAGER, CFO)`, so that row led to three 403s
+	// on first paint. They now gate on the same any-of permission pair as the
+	// `GET /api/payments` reads beside them (backend
+	// `tests/test_sod_endpoint_wiring.py` pins it), which reproduces the prior
+	// matrix exactly for the four system roles.
+	const payments = link('/payments');
+	expect(payments.permissions).toEqual([PERM_PAYMENT_EXECUTE, PERM_PAYMENT_VOID]);
+	const noRoles = () => false;
+	const onlyVoid = (perm: string) => perm === PERM_PAYMENT_VOID;
+	expect(canSee(payments.roles, noRoles, payments.permissions, onlyVoid)).toBe(true);
+});

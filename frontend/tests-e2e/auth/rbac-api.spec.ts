@@ -36,7 +36,6 @@ async function tokenAfterLogin(
 ): Promise<string> {
 	const origin = tenantBase(currentTenantSlug());
 	await page.goto(`${origin}/login`);
-	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(creds.email);
 	await page.locator('input[type="password"]').fill(creds.password);
 	await page.locator('form button[type="submit"]').click();

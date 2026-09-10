@@ -24,11 +24,39 @@ from app.services.e_invoice.model import EInvoiceDocument
 _TOLERANCE = Decimal("0.01")
 
 
+#: The generic *kinds* of problem the structural + tax passes report, as
+#: opposed to the EN 16931 / PEPPOL rule ids the conformance pass reports.
+#: Closed vocabulary, and the one place it is written down: the tax pass
+#: reaches ``FieldError`` through a local variable rather than a literal, so a
+#: source scan cannot see those two, and ``services/e_invoice/rule_catalog``
+#: unions this in instead of guessing. None of these is folded into the 422's
+#: ``msg`` (see :func:`is_rule_id`), so no client-side map can name them —
+#: their message already spells the problem out in words.
+GENERIC_ERROR_CODES: tuple[str, ...] = ("implausible", "inconsistent", "malformed", "missing")
+
+
 @dataclass
 class FieldError:
     field: str  # dotted path e.g. "seller.name", "payable_amount", "lines[2].quantity"
-    code: str  # "missing" | "malformed" | "inconsistent"
+    code: str  # a GENERIC_ERROR_CODES kind, or an EN 16931 / PEPPOL rule id
     message: str  # names the FIELD only — never the value (no PII)
+
+
+def is_rule_id(code: str | None) -> bool:
+    """Is this ``FieldError.code`` an EN 16931 / PEPPOL rule id?
+
+    A rule id is recognised by being upper-case and carrying a letter
+    (``BR-CO-09``, ``PEPPOL-EN16931-R120``); a generic kind (``missing`` /
+    ``malformed`` / ``inconsistent`` / ``implausible``) is not.
+
+    Public because it is the SINGLE fact three places depend on and must agree
+    on: :func:`_message_with_rule` folds a rule id into ``msg``,
+    ``services/e_invoice/rule_catalog`` records which codes a client can
+    therefore recover, and the frontend parses that same prefix back out. A
+    second spelling of this predicate anywhere is a drift bug waiting to
+    happen.
+    """
+    return bool(code) and code == code.upper() and any(ch.isalpha() for ch in code)
 
 
 def _message_with_rule(error: FieldError) -> str:
@@ -43,11 +71,9 @@ def _message_with_rule(error: FieldError) -> str:
     it. Folding the rule id into the message keeps it reaching a client that
     flattens :func:`error_payload` down to a string (ours does), instead of
     the rule id living only in a field such a client discards.
-
-    A rule id is recognised by being upper-case; a generic code is not.
     """
     code = error.code
-    if not code or code != code.upper() or not any(ch.isalpha() for ch in code):
+    if not is_rule_id(code):
         return error.message
     if error.message.startswith(f"{code}:"):
         return error.message

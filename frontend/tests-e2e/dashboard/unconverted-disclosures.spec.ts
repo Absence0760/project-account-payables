@@ -1,4 +1,7 @@
+import type { Page } from '@playwright/test';
+
 import { expect, test } from '../fixtures/helpers';
+import { REPORTING_CURRENCY, dashboardResponse, monthlyTrendRow, vendorSpendRow } from './fixture';
 
 /**
  * Dashboard — the three CHART unconverted disclosures.
@@ -21,27 +24,15 @@ import { expect, test } from '../fixtures/helpers';
  *
  * `discount-capture.spec.ts` owns the fourth notice on this page (the discount
  * card's) and the KPI row's `unconverted-rollup` banner is a different
- * question again — every count in this fixture that feeds it stays at zero, so
- * a chart notice here can never be the rollup banner misread.
+ * question again — every count in `./fixture.ts` that feeds it stays at zero,
+ * so a chart notice here can never be the rollup banner misread.
+ *
+ * The payload lives in `./fixture.ts`, typed `satisfies DashboardData`. That
+ * matters most to THIS spec: the shared shape it replaced omitted
+ * `aging_reporting`'s `unconverted_count` entirely, `undefined > 0` is false,
+ * and the aging notice below could only ever be exercised on its absent
+ * branch. `pnpm check` does not typecheck `tests-e2e/`; `pnpm check:e2e` does.
  */
-
-const REPORTING_CURRENCY = 'USD';
-
-/** One `vendor_spend` row. */
-function vendor(name: string, amount: number, unconverted: number) {
-	return { vendor: name, amount, unconverted_count: unconverted };
-}
-
-/** One `monthly_trend` row. */
-function month(key: string, amount: number, unconverted: number) {
-	return {
-		month: key,
-		count: 2,
-		amount,
-		reporting_amount: amount,
-		unconverted_count: unconverted
-	};
-}
 
 interface Series {
 	/** Per-vendor face-value counts, in rank order. */
@@ -52,83 +43,25 @@ interface Series {
 	trend?: number[];
 }
 
-/**
- * A dashboard payload whose three chart series are always POPULATED; only the
- * per-entry `unconverted_count`s vary. Every KPI-row count is pinned at zero
- * so the page-level `unconverted-rollup` banner never fires and can't be
- * confused for a chart notice.
- */
-function dashboard({ vendors = [0, 0], aging = 0, trend = [0, 0, 0] }: Series) {
-	return {
-		total_invoices: 6,
-		total_amount: 6000,
-		reporting: {
-			reporting_currency: REPORTING_CURRENCY,
-			total_amount: 6000,
-			total_count: 6,
-			unconverted_count: 0
-		},
-		total_paid: 2000,
-		total_pending: 4000,
-		total_paid_reporting: 2000,
-		total_pending_reporting: 4000,
-		total_paid_unconverted_count: 0,
-		total_pending_unconverted_count: 0,
-		total_rebates: 0,
-		excluded_rebate_count: 0,
-		open_exceptions: 0,
-		touchless_rate: 0,
-		stale_approvals: 0,
-		pipeline: { new: 6 },
-		vendor_spend: [
-			vendor('Northwind Traders', 3000, vendors[0] ?? 0),
-			vendor('Contoso Supplies', 1500, vendors[1] ?? 0)
-		],
-		aging: { current: 4000, days_30: 1000, days_60: 500, days_90: 300, days_90_plus: 200 },
-		aging_reporting: {
-			current: 4000,
-			days_30: 1000,
-			days_60: 500,
-			days_90: 300,
-			days_90_plus: 200,
-			unconverted_count: aging
-		},
-		monthly_trend: [
-			month('2026-01', 1800, trend[0] ?? 0),
-			month('2026-02', 2200, trend[1] ?? 0),
-			month('2026-03', 2000, trend[2] ?? 0)
-		],
-		upcoming_payments: [],
-		upcoming_total_amount: 0,
-		upcoming_total_amount_reporting: 0,
-		upcoming_unconverted_count: 0,
-		processing_time: {},
-		approval_bottleneck: [],
-		discount_capture: {
-			eligible_count: 0,
-			captured_count: 0,
-			missed_count: 0,
-			pending_count: 0,
-			captured_amount: 0,
-			missed_amount: 0,
-			pending_amount: 0,
-			reporting_currency: REPORTING_CURRENCY,
-			captured_amount_reporting: 0,
-			missed_amount_reporting: 0,
-			pending_amount_reporting: 0,
-			unconverted_count: 0,
-			capture_rate_pct: null,
-			insufficient_data: true
-		}
-	};
-}
-
-async function stubDashboard(page: import('@playwright/test').Page, series: Series) {
+async function stubDashboard(page: Page, { vendors = [0, 0], aging = 0, trend = [0, 0, 0] }: Series) {
 	await page.route('**/api/dashboard*', (route) =>
 		route.fulfill({
 			status: 200,
 			contentType: 'application/json',
-			body: JSON.stringify(dashboard(series))
+			body: JSON.stringify(
+				dashboardResponse({
+					agingUnconverted: aging,
+					vendorSpend: [
+						vendorSpendRow('Northwind Traders', 3000, vendors[0] ?? 0),
+						vendorSpendRow('Contoso Supplies', 1500, vendors[1] ?? 0)
+					],
+					monthlyTrend: [
+						monthlyTrendRow('2026-01', 1800, trend[0] ?? 0),
+						monthlyTrendRow('2026-02', 2200, trend[1] ?? 0),
+						monthlyTrendRow('2026-03', 2000, trend[2] ?? 0)
+					]
+				})
+			)
 		})
 	);
 }
@@ -141,7 +74,7 @@ const ROLLUP_BANNER = 'unconverted-rollup';
 
 /** Wait for the dashboard to have actually rendered its charts, so a
  *  `toHaveCount(0)` can't pass against a page that is still loading. */
-async function awaitCharts(page: import('@playwright/test').Page) {
+async function awaitCharts(page: Page) {
 	await expect(page.locator('.charts-grid .chart-card').first()).toBeVisible({
 		timeout: 15_000
 	});

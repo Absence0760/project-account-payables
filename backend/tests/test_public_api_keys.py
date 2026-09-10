@@ -104,6 +104,12 @@ async def _seed_invoice(mk, org_id, *, number: str) -> uuid.UUID:
     return inv_id
 
 
+#: Code prefix for the throwaway plans this file mints. Shared by the seed and
+#: its teardown so the two cannot drift — the teardown is what stops these rows
+#: outliving the test that needed them.
+_PLAN_PREFIX = "meter_test_"
+
+
 async def _grant_public_api(realdb, key: str) -> None:
     """Give the tenant a live plan that includes the ``public_api`` entitlement.
 
@@ -111,20 +117,18 @@ async def _grant_public_api(realdb, key: str) -> None:
     → 402 without a granting plan), so any test that exercises a metered v1 call
     must seed one. Mirrors ``tests/test_billing.py::_seed_plan/_seed_subscription``.
     """
-    from sqlalchemy import delete
-
     org_id = realdb.info(key).org_id
     plan_id = uuid.uuid4()
-    async with realdb.control_sessionmaker()() as s:
-        # The fixture reuses org rows across tests and doesn't truncate billing;
-        # a leftover live subscription trips uq_subscription_one_live_per_org.
-        await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
-        await s.commit()
+    # Clear the org's live subscription AND any plan this helper left behind:
+    # a leftover live subscription trips uq_subscription_one_live_per_org, and
+    # the plan half used to be missing entirely, so `meter_test_*` rows piled up
+    # for the whole session. `purge_plans` owns both halves (see conftest).
+    await realdb.purge_plans(_PLAN_PREFIX, org_ids=[org_id])
     async with realdb.control_sessionmaker()() as s:
         s.add(
             Plan(
                 id=plan_id,
-                code=f"meter_test_{uuid.uuid4().hex[:8]}",
+                code=f"{_PLAN_PREFIX}{uuid.uuid4().hex[:8]}",
                 name="Meter Test",
                 monthly_price=Decimal("49.00"),
                 currency="USD",

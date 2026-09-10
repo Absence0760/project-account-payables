@@ -105,7 +105,6 @@ test.describe('/vendors consolidation merge (admin)', () => {
 		});
 
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
 
 		// Open the consolidation modal from the header action.
 		await page.getByRole('button', { name: 'Merge duplicates' }).click();
@@ -157,8 +156,15 @@ test.describe('/vendors consolidation (clerk has no access)', () => {
 
 	test('ap_clerk does not see the Merge duplicates action', async ({ page, tenantClerk }) => {
 		await signInAndWait(page, tenantClerk);
+		// The action gates on `auth.can('vendor.manage')`, which is only
+		// populated once GET /api/auth/me lands — asserting the absence before
+		// that would pass for the wrong reason (nobody holds any permission
+		// yet). Wait on the identity fetch itself, not on a quiet network.
+		const me = page.waitForResponse(
+			(r) => r.url().includes('/api/auth/me') && r.request().method() === 'GET'
+		);
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
+		await me;
 
 		await expect(page.getByRole('button', { name: 'Merge duplicates' })).toHaveCount(0);
 	});

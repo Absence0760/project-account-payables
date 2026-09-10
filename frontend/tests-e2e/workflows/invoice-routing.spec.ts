@@ -8,6 +8,11 @@ import {
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
+import {
+	markSeededWorkflowVersions,
+	purgeSeededWorkflowVersions,
+	type SeededVersionMark
+} from './seededWorkflowVersions';
 
 interface WorkflowResponse {
 	id: string;
@@ -125,6 +130,17 @@ test.describe('workflow definition drives invoice routing', () => {
 	// invoice's `workflow_instances`); `exceptions` is inside it, so the extra
 	// clears `hardDeleteInvoice` does per-id aren't needed here.
 	test.afterEach(() => deleteInvoicesWhere(`invoice_number LIKE 'WF-RT-%'`));
+
+	// Every test here PATCHes the seeded default's steps and PATCHes them back,
+	// and each of those writes an auto-saved `workflow_versions` row. Nothing in
+	// the app or the suite ever reads them again, and no name sweep can reach
+	// them — they hang off a SEEDED definition, which `deleteWorkflowsWhere`
+	// exists to refuse. See `seededWorkflowVersions.ts`.
+	let seededVersions: SeededVersionMark;
+	test.beforeEach(() => {
+		seededVersions = markSeededWorkflowVersions();
+	});
+	test.afterEach(() => purgeSeededWorkflowVersions(seededVersions));
 
 	test('approval step + no auto_below: new invoice goes to ready_for_review', async ({
 		page

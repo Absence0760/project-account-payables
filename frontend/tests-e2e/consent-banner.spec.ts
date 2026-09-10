@@ -1,3 +1,5 @@
+import type { Page } from '@playwright/test';
+
 import { expect, test } from './fixtures/helpers';
 
 /**
@@ -16,7 +18,7 @@ import { expect, test } from './fixtures/helpers';
  */
 
 const CONSENT_KEY = 'feoh_consent_choice';
-const banner = (page) => page.getByRole('region', { name: 'Cookie and privacy consent' });
+const banner = (page: Page) => page.getByRole('region', { name: 'Cookie and privacy consent' });
 
 test.describe('consent banner', () => {
 	test.beforeEach(async ({ page }) => {

@@ -8,7 +8,12 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/workflows list (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
+		// Anchor on the SEEDED default row, not on `table tbody tr`: DataTable
+		// renders a placeholder <tr> while the list fetch is in flight, so the
+		// bare selector is satisfied before any workflow exists — and two tests
+		// below read its `count()`, which does no waiting of its own, and one
+		// leads with a `toHaveCount(0)` that passes on an empty page.
+		await expect(page.locator('table tbody tr', { hasText: 'Default Workflow' })).toBeVisible();
 	});
 
 	test('lists the seeded default workflow with the Default badge', async ({ page }) => {

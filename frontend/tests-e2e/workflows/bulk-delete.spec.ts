@@ -67,7 +67,6 @@ async function deleteWorkflow(page: import('@playwright/test').Page, id: string)
 test.describe('/workflows bulk delete', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test.afterEach(() => deleteWorkflowsWhere(MARKER));
@@ -84,7 +83,6 @@ test.describe('/workflows bulk delete', () => {
 			created.push(await createWorkflow(page, `${MARKER}BulkBar A ${Date.now()}`));
 			created.push(await createWorkflow(page, `${MARKER}BulkBar B ${Date.now()}`));
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 
 			// Pick the two new rows by name.
 			await page
@@ -112,7 +110,17 @@ test.describe('/workflows bulk delete', () => {
 		const a = await createWorkflow(page, `${MARKER}Bulk Del A ${ts}`);
 		const b = await createWorkflow(page, `${MARKER}Bulk Del B ${ts}`);
 		await page.reload();
-		await page.waitForLoadState('networkidle');
+		// `count()` is a point-in-time read, so the two rows this test created
+		// have to be on the page before the baseline the final
+		// `toHaveCount(beforeRows - 2)` is measured against. Matching on the
+		// name also rules out DataTable's loading placeholder row, which
+		// `table tbody tr` alone would count.
+		await expect(
+			page.locator('table tbody tr', { hasText: `${MARKER}Bulk Del A ${ts}` })
+		).toBeVisible();
+		await expect(
+			page.locator('table tbody tr', { hasText: `${MARKER}Bulk Del B ${ts}` })
+		).toBeVisible();
 		const beforeRows = await page.locator('table tbody tr').count();
 
 		await page

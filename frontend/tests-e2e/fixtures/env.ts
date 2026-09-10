@@ -61,6 +61,55 @@ export function tenantOrigin(slug: string): string {
 }
 
 /**
+ * The registrable domains the SPA under test treats as the PLATFORM's own —
+ * the value `playwright.config.ts` passes to the dev server as
+ * `PUBLIC_PLATFORM_DOMAINS`, and the one CI's `pnpm build` step must bake into
+ * the preview bundle.
+ *
+ * It is derived here rather than written twice because the two run modes
+ * disagreeing is the exact failure that kept `tenant/vanity-host.spec.ts` from
+ * covering the vanity half at all: unset means "no host is a vanity host", so
+ * the same navigation would assert opposite things locally and in CI.
+ */
+export const PLATFORM_DOMAINS: string = process.env.PUBLIC_PLATFORM_DOMAINS ?? WEB_HOSTNAME;
+
+/**
+ * An origin that is deliberately NOT under any platform domain — the harness's
+ * stand-in for a customer's `ap.acmecorp.com`.
+ *
+ * It is the loopback **IP literal**, and that is the whole trick. Every
+ * hostname the harness can reach is `*.localhost` (Chromium resolves those to
+ * loopback per RFC 6761, which is why no /etc/hosts entry is needed) — and
+ * `localhost` is precisely what `PUBLIC_PLATFORM_DOMAINS` declares, so no
+ * `.localhost` name can ever classify as vanity. An IP literal is never a
+ * platform host unless it is listed verbatim (`$lib/hostRouting.ts`), Vite
+ * serves it with no `allowedHosts` entry (IP literals are exempt from the host
+ * check), and it needs no DNS and no Chromium resolver rule at all. The code
+ * path it exercises is identical to a real vanity hostname's:
+ * `kind === 'vanity'` → no slug, same-origin `/api`.
+ *
+ * A literal connects only to the address the server actually BOUND, which is
+ * why `playwright.config.ts` pins the dev/preview server to `--host 127.0.0.1`
+ * rather than leaving it on Vite's `localhost` default (which resolves to `::1`
+ * on at least one of the machines this runs on). See the comment there.
+ */
+export const VANITY_ORIGIN: string = `${WEB_PROTOCOL}//127.0.0.1${WEB_PORT_SUFFIX}`;
+
+// Loud at config-load time rather than as a mystifying spec failure: if the
+// loopback IP were ever declared a platform domain, `VANITY_ORIGIN` would be a
+// platform host and the vanity spec would assert the opposite of its intent.
+if (
+	PLATFORM_DOMAINS.split(',')
+		.map((d: string) => d.trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
+		.includes('127.0.0.1')
+) {
+	throw new Error(
+		'PUBLIC_PLATFORM_DOMAINS lists 127.0.0.1, which is what tests-e2e uses as its ' +
+			'VANITY_ORIGIN. Pick a different vanity origin or drop the IP from the list.'
+	);
+}
+
+/**
  * Matches a tenant ROOT url — where the login handler's `goto('/')` lands.
  *
  * The trailing-slash anchor is load-bearing: without it the pattern also

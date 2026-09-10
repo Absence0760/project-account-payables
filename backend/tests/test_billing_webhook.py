@@ -27,7 +27,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.pool import NullPool as _NullPool
 
 from app.config import settings
@@ -259,10 +259,7 @@ async def _cleanup(realdb, org_id):
     # NB: audit_log is append-only (DB immutability trigger) — never delete it.
     # Tests scope their audit assertions to the subscription id they created, so
     # rows accumulating across tests is fine.
-    async with realdb.control_sessionmaker()() as s:
-        await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
-        await s.execute(delete(Plan).where(Plan.code.like("whtest_%")))
-        await s.commit()
+    await realdb.purge_plans("whtest_", org_ids=[org_id])
 
 
 async def _seed_sub(realdb, *, org_id, status, external_id, period_end=None):

@@ -23,7 +23,6 @@ test.describe('/vendors create + portal invite (acme admin)', () => {
 
 		try {
 			await page.goto('/vendors');
-			await page.waitForLoadState('networkidle');
 
 			// --- Create ---
 			await page.getByRole('button', { name: 'New Vendor' }).click();
@@ -61,12 +60,20 @@ test.describe('/vendors create + portal invite (acme admin)', () => {
 			await inviteModal.getByRole('button', { name: 'Send invite' }).click();
 			expect((await inviteResp).status()).toBe(201);
 
-			// The one-time temp password is revealed and non-empty.
-			const secret = page.getByTestId('vendor-invite-temp-password');
-			await expect(secret).toBeVisible({ timeout: 10_000 });
-			expect((await secret.textContent())?.trim().length ?? 0).toBeGreaterThan(8);
+			// The confirmation names the address the credential was emailed to —
+			// and carries NO password. The temp password is delivered only by the
+			// email adapter now: returning it to the caller (who also chose the
+			// address) let one ap_manager mint a supplier login they controlled,
+			// which is the first link of the BEC bank-redirect chain the approval
+			// segregation check now refuses. If a password ever reappears in this
+			// dialog, that hole is back.
+			const sent = page.getByTestId('vendor-invite-sent');
+			await expect(sent).toBeVisible({ timeout: 10_000 });
+			await expect(sent).toContainText(contactEmail);
+			const inviteBody = await (await inviteResp).json();
+			expect(inviteBody).not.toHaveProperty('temp_password');
 
-			// Dismiss — the secret must be gone from the DOM afterwards.
+			// Dismiss — the confirmation must be gone from the DOM afterwards.
 			// `exact: true`, because the default substring match also hits the
 			// row link of any vendor whose NAME contains "Done" — and one exists
 			// in every worker tenant that has run `invoices/file-management`
@@ -74,7 +81,7 @@ test.describe('/vendors create + portal invite (acme admin)', () => {
 			// vendor). A real tenant can name a supplier anything, so the exact
 			// match is the durable fix, not a tidier fixture.
 			await page.getByRole('button', { name: 'Done', exact: true }).click();
-			await expect(secret).toHaveCount(0);
+			await expect(sent).toHaveCount(0);
 		} finally {
 			if (vendorId) {
 				await page.request.delete(`${API_BASE}/api/vendors/${vendorId}`, {

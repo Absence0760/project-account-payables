@@ -342,7 +342,8 @@ concurrency) and `tests/test_card_reveal_endpoint.py` (handler ordering).
 | Method | Path                                                 | Notes                                 |
 |--------|------------------------------------------------------|---------------------------------------|
 | GET    | `/vendors/{id}/portal-users`                         | List portal users for a vendor        |
-| POST   | `/vendors/{id}/portal-users`                         | Invite — temp password + welcome email |
+| POST   | `/vendors/{id}/portal-users`                         | Invite — the temp password is **emailed only**, never returned. Stamps `provisioned_by_user_id` |
+| POST   | `/vendors/{id}/portal-users/{vendor_user_id}/reset-password` | Mint + email a replacement password on the SAME row. Re-stamps `provisioned_by_user_id` |
 | DELETE | `/vendors/{id}/portal-users/{vendor_user_id}`        | Remove a portal user                  |
 | GET    | `/vendors/change-requests/counts`                    | Whole-set tallies for the queue — `{total, pending, by_status}` (admin, ap_manager — **exactly** the queue list's gate, decisions §48: it previously admitted `cfo`, who cannot read the queue, so the size of the staged-bank-change review set was visible to a role excluded from it); counts only, PII-free. A nav badge driven off a page of results undercounts once the queue paginates — the same reason `/vendors/counts` exists |
 | GET    | `/vendors/change-requests`                           | Pending change-request queue (admin, ap_manager); value masked |
@@ -369,6 +370,71 @@ A vendor can hold at most one pending request per `change_type` (dedupe → 409)
 
 This is the fraud control: a redirected bank account has **zero effect on where
 money goes** until an AP admin explicitly approves it.
+
+## Credential provenance and the BEC dual control
+
+"Dual control" on a bank change means two humans. Until this landed, one
+`ap_manager` could be both of them.
+
+The chain, every link verified:
+
+1. `POST /vendors/{id}/portal-users` is `require_roles(ADMIN, AP_MANAGER)` and
+   took the address from the caller.
+2. Signing in as that identity and staging a bank change fills
+   `requested_by_vendor_user_id` and leaves `requested_by_user_id` **NULL**.
+3. `approve_change_request`'s segregation check compared only
+   `requested_by_user_id`, so a NULL passed it unconditionally. The code comment
+   stated the assumption — *"portal-submitted requests have no AP requester, so
+   this only bites AP-initiated ones"* — which holds only if AP cannot mint
+   portal identities. It can.
+4. `ROLE_AP_MANAGER`'s default permissions hold `vendor.manage`,
+   `vendor.bank_change.approve` **and** `payment.execute`.
+
+Two nullable columns close it (migration `0095`, tenant-scoped):
+
+| Column | Meaning |
+|---|---|
+| `vendor_users.provisioned_by_user_id` | The control-plane `User` who last minted a password for this portal identity — stamped by invite AND by `reset-password`, the only two routes that hand an AP actor a working supplier credential. |
+| `vendor_change_requests.requester_provisioned_by_user_id` | That value, **frozen onto the request at staging time**. |
+
+`approve_change_request` refuses (403) when either requester column equals the
+approver.
+
+Three properties are deliberate and easy to get wrong:
+
+- **NULL is permissive, and that is correct.** A legacy credential, or one a
+  supplier has always managed themselves, has no provisioner — and an AP actor
+  cannot sign in as it without going through invite or reset, both of which
+  stamp the column. Fail-closing on NULL would refuse every genuine
+  supplier-initiated bank change forever and buy nothing.
+- **The value is copied, not joined.** `DELETE /portal-users/{id}` carries no FK
+  into `vendor_change_requests`, so resolving the provisioner at approval time
+  would let an approver delete the portal identity between staging and approving
+  and walk their own request through. A frozen column cannot be un-stamped by a
+  later delete.
+- **The supplier changing their own password does NOT clear the stamp.**
+  `POST /portal/auth/change-password` requires the *current* password, which the
+  provisioner has — so clearing there would be a one-request bypass of the whole
+  control. The stamp is durable provenance, not a "who knows the password right
+  now" flag. The operational cost is real and accepted: an AP user who onboarded
+  a supplier is never an independent second party to what that identity submits,
+  so someone else approves. Admin holds `vendor.bank_change.approve` by default,
+  so no tenant can be left with nobody able to approve.
+
+Regression coverage is two files, because the fix has two failure modes:
+
+- `tests/test_vendor_bank_change_provisioner_sod.py` drives the whole chain
+  (provision → sign in with the emailed credential → stage → refused), the
+  negative case (a different approver succeeds), the untouched case (a
+  self-managed supplier still approves normally), the delete-the-evidence
+  attempt, and the reset-password takeover of a legacy identity.
+- `tests/test_vendor_credential_provenance.py` guards the **exhaustiveness
+  claim** the NULL-permissive reading rests on. Invite and reset being the only
+  two ways an AP actor learns a supplier's password is a property of the whole
+  `app/` tree, so a third route — "resend credentials", "impersonate supplier" —
+  would reopen the hole silently with every other test green. It AST-scans for a
+  `VendorUser(...)` construction or a `.hashed_password =` write that neither
+  stamps the column nor carries a reasoned exemption.
 
 ## Security invariants
 
@@ -490,6 +556,19 @@ Add these when there's demand from the first paying customer:
   one via the admin UI (or SCIM) does not create a portal login.
 - Deleting a `Vendor` cascades to `vendor_users` (`ON DELETE CASCADE`). An
   orphaned portal user row is therefore impossible.
-- The temp password is returned in the invite response body in addition to
-  being emailed — in local dev where SMTP is a stub, the admin can still
-  share it out of band.
+- **The temp password is emailed and nothing else.** It is not in the invite
+  (or reset) response body, and delivery is not best-effort: a send failure
+  rolls the whole request back (502) rather than leaving a portal account whose
+  credential nobody received. Local dev is unaffected — the default `console`
+  adapter renders the message, exactly as the tenant-signup welcome email
+  already relies on. Recovery for a lost credential is `reset-password`, which
+  mints and emails a new one on the same row.
+
+  This changed for a security reason, not a tidiness one. AP chooses the
+  address, so returning the plaintext made "mint a supplier login I control" a
+  single frictionless request with no delivery record — the first link of the
+  BEC chain in [Credential provenance](#credential-provenance-and-the-bec-dual-control)
+  below. Removing it does not close that chain on its own (an AP actor who
+  supplies their own address can still read the email); the approval refusal
+  does. It removes the *silent* path and forces the credential through a channel
+  that leaves a record.

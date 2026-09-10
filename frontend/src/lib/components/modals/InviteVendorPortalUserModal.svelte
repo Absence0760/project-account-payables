@@ -30,7 +30,8 @@
 				email: email.trim(),
 				full_name: fullName.trim()
 			});
-			// The parent shows the one-time temp password via SecretReveal.
+			// The parent confirms delivery. There is no credential in `result` —
+			// the temp password is emailed to the supplier and never returned.
 			oninvited(result);
 			onclose();
 		} catch (err) {

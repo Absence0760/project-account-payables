@@ -1643,7 +1643,22 @@ async def invite_vendor_portal_user(
 ):
     """Create a supplier-portal user for a vendor and email them a temp
     password. Idempotent-ish: second invite for the same email is rejected
-    (409) so we don't silently overwrite a working credential."""
+    (409) so we don't silently overwrite a working credential.
+
+    The temp password is **delivered only by email** — it is not in the
+    response. AP chooses the address, so returning the plaintext credential to
+    the caller made "provision a supplier identity I control" a single
+    frictionless request with no delivery record; the credential now always
+    leaves through the email adapter, which every environment has (`console` in
+    local dev). Delivery is therefore no longer best-effort: a send failure
+    rolls the whole request back (502) rather than leaving a portal account
+    whose password nobody holds. Recovery for a genuinely lost credential is
+    `POST .../reset-password`, which mints and emails a new one.
+
+    The AP actor is recorded on `VendorUser.provisioned_by_user_id`, which
+    `approve_change_request` reads to refuse a bank-change approval by the same
+    person — see that route and `backend/docs/supplier-portal.md`.
+    """
     vendor = await _get_vendor_or_404(db, vendor_id)
 
     existing = (
@@ -1661,6 +1676,10 @@ async def invite_vendor_portal_user(
         hashed_password=await hash_password(temp_password),
         is_active=True,
         must_change_password=True,
+        # Segregation of duties, not bookkeeping: this AP actor now knows a
+        # working password for a supplier identity, so they are not an
+        # independent second party to anything that identity submits.
+        provisioned_by_user_id=user.id,
     )
     db.add(vu)
     await db.flush()
@@ -1674,8 +1693,8 @@ async def invite_vendor_portal_user(
     # delete row, so both ends of the credential's life sit on the same trail.
     # PII-free by construction: the AP actor, the vendor and the new
     # `VendorUser` id — never the supplier's login address, and never the temp
-    # password (which is returned to the caller and emailed, but must not be
-    # written into an append-only, WORM-shipped store).
+    # password (which is emailed, but must not be written into an append-only,
+    # WORM-shipped store).
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -1687,9 +1706,10 @@ async def invite_vendor_portal_user(
         details={"vendor_user_id": str(vu.id)},
     )
 
-    # Best-effort welcome email. If delivery fails we still return 201 with
-    # `temp_password` so the admin can share it manually — same pattern as
-    # the tenant-signup welcome email.
+    # The welcome email is now the ONLY channel the temp password travels on,
+    # so it is a required step rather than a best-effort one. Sent before the
+    # commit: if it fails we raise and the transaction unwinds, so we never
+    # leave a portal account whose credential was never delivered.
     email_adapter = get_email_adapter()
     # Real tenant portal URL, resolved through the one `tenant_base_url`
     # resolver the signup welcome email and the supplier-chat portal-link email
@@ -1715,15 +1735,19 @@ async def invite_vendor_portal_user(
                 ),
             )
         )
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "Portal-user welcome email failed for %s (vendor=%s)", body.email, vendor.id
-        )
+    except Exception as exc:  # noqa: BLE001
+        # PII guard: the vendor id only — never the supplier's login address.
+        logger.exception("Portal-user welcome email failed (vendor=%s)", vendor.id)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Could not deliver the portal invitation email, so no account "
+                "was created. Check the email provider configuration and retry."
+            ),
+        ) from exc
 
     await db.commit()
-    return PortalInviteResponse(
-        user=_vendor_user_response(vu), temp_password=temp_password, portal_url=portal_url
-    )
+    return PortalInviteResponse(user=_vendor_user_response(vu), portal_url=portal_url)
 
 
 @router.delete(
@@ -1772,6 +1796,7 @@ async def delete_vendor_portal_user(
 async def reset_vendor_portal_user_password(
     vendor_id: uuid.UUID,
     vendor_user_id: uuid.UUID,
+    org: Organization = Depends(get_tenant),
     org_id: uuid.UUID = Depends(get_org_id),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
@@ -1790,7 +1815,17 @@ async def reset_vendor_portal_user_password(
     the existing `must_change_password` flag (mirrors `invite_vendor_portal_user`).
     Overwriting `hashed_password` immediately invalidates the old password —
     there is no separate "revoke" step.
+
+    Like invite, the new password is **emailed to the portal user's own stored
+    address and not returned in the response**, and the reset re-stamps
+    `VendorUser.provisioned_by_user_id` with the resetting AP actor. Reset is
+    the *other* way an AP actor can come to hold a working supplier credential
+    — it is how the bank-redirect attack works against an already-existing
+    portal identity — so it has to leave the same record invite does. Delivery
+    failure rolls the reset back so a working credential is never replaced by
+    one nobody received.
     """
+    vendor = await _get_vendor_or_404(db, vendor_id)
     result = await db.execute(
         select(VendorUser).where(
             VendorUser.id == vendor_user_id,
@@ -1804,6 +1839,7 @@ async def reset_vendor_portal_user_password(
     temp_password = generate_temp_password()
     vu.hashed_password = await hash_password(temp_password)
     vu.must_change_password = True
+    vu.provisioned_by_user_id = user.id
     await db.flush()
     await db.refresh(vu)
 
@@ -1817,9 +1853,40 @@ async def reset_vendor_portal_user_password(
         entity_id=vu.id,
         details={"vendor_id": str(vendor_id)},
     )
+
+    template_base = tenant_base_url(org.slug, org.settings)
+    portal_url = f"{template_base}/portal" if template_base else None
+    try:
+        await get_email_adapter().send(
+            EmailMessage(
+                to=vu.email,
+                subject=f"Your {org.name} supplier-portal password was reset",
+                body_text=(
+                    f"Hi {vu.full_name},\n\n"
+                    f"{org.name} has reset the supplier-portal password for "
+                    f"{vendor.name}.\n\n"
+                    + (f"  URL:      {portal_url}\n" if portal_url else "")
+                    + f"  Email:    {vu.email}\n"
+                    f"  Password: {temp_password}\n\n"
+                    "You'll be asked to change your password on first sign-in.\n"
+                ),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        # PII guard: ids only — never the supplier's login address.
+        logger.exception("Portal-user password-reset email failed (vendor=%s)", vendor.id)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Could not deliver the new password, so the reset was not "
+                "applied and the existing password still works. Check the "
+                "email provider configuration and retry."
+            ),
+        ) from exc
+
     await db.commit()
 
-    return PortalInviteResponse(user=_vendor_user_response(vu), temp_password=temp_password)
+    return PortalInviteResponse(user=_vendor_user_response(vu), portal_url=portal_url)
 
 
 # ---------- Vendor change-request approval (fraud-prevention gate) ----------
@@ -1882,13 +1949,47 @@ async def approve_change_request(
         raise HTTPException(status_code=404, detail="Change request not found")
     if req.status != "pending":
         raise HTTPException(status_code=409, detail="Change request already resolved")
-    # Segregation of duties: the AP user who PROPOSED a change can't be the one
-    # who approves it (dual control). Portal-submitted requests have no AP
-    # requester, so this only bites AP-initiated ones.
-    if req.requested_by_user_id is not None and req.requested_by_user_id == user.id:
+    # Segregation of duties, on BOTH axes an AP actor can be the proposer.
+    #
+    # (1) AP-initiated: the user named on `requested_by_user_id` staged it.
+    #
+    # (2) Portal-submitted BY AN IDENTITY THIS APPROVER CREATED. This is the
+    #     half that used to fail open. `requested_by_user_id` is NULL for every
+    #     portal submission, so the check above passed unconditionally — and the
+    #     comment that used to sit here ("portal-submitted requests have no AP
+    #     requester, so this only bites AP-initiated ones") assumed AP could not
+    #     mint portal identities. It can: `POST /vendors/{id}/portal-users` is
+    #     open to admin/ap_manager, and `ROLE_AP_MANAGER` holds `vendor.manage`,
+    #     `vendor.bank_change.approve` AND `payment.execute` — so one person
+    #     could invite a portal user, sign in as it, stage a bank redirect,
+    #     approve it, and pay it. Dual control existed on paper only.
+    #
+    #     `requester_provisioned_by_user_id` is frozen onto the request at
+    #     staging time from `VendorUser.provisioned_by_user_id`, so it survives
+    #     the approver deleting the portal identity first, and it is stamped by
+    #     invite AND by admin password reset — the only two ways an AP actor
+    #     comes to know a supplier's password.
+    #
+    # A genuine third-party submission is untouched: a supplier who holds their
+    # own credential has a NULL provisioner, and a request provisioned by a
+    # DIFFERENT AP user still has a real second pair of eyes, which is all dual
+    # control asks for.
+    self_requested = req.requested_by_user_id is not None and req.requested_by_user_id == user.id
+    self_provisioned = (
+        req.requester_provisioned_by_user_id is not None
+        and req.requester_provisioned_by_user_id == user.id
+    )
+    if self_requested or self_provisioned:
         raise HTTPException(
             status_code=403,
-            detail="You cannot approve a bank-detail change you requested.",
+            detail=(
+                "You cannot approve a bank-detail change you requested."
+                if self_requested
+                else (
+                    "You cannot approve a change submitted by a supplier-portal "
+                    "login you provisioned. Another approver must review it."
+                )
+            ),
         )
 
     vendor = (

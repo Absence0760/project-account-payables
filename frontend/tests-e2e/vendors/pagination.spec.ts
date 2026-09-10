@@ -34,13 +34,16 @@ test.describe('/vendors pagination', () => {
 		seedVendors(22);
 
 		await page.goto('/vendors');
-		await page.waitForLoadState('networkidle');
+
+		// `count()` does not auto-wait and `toBeLessThanOrEqual(20)` is satisfied
+		// by zero rows, so anchor on the Load-more button first: it only renders
+		// once page 1 has come back with more rows behind it, which is exactly
+		// the "first page is on screen" signal this needs.
+		const loadMore = page.getByRole('button', { name: /Load more/ });
+		await expect(loadMore).toBeVisible();
 
 		const firstPageRows = await page.locator('table tbody tr').count();
 		expect(firstPageRows).toBeLessThanOrEqual(20);
-
-		const loadMore = page.getByRole('button', { name: /Load more/ });
-		await expect(loadMore).toBeVisible();
 		const total = Number((await loadMore.textContent())?.match(/of\s+(\d+)/)?.[1]);
 		expect(total).toBeGreaterThanOrEqual(22);
 

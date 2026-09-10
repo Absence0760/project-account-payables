@@ -182,9 +182,15 @@ test.describe('/invoices — Create Invoice modal', () => {
 
 			// Reload so the page's ensureLoaded() effect resolves the org
 			// currency from scratch (the store is session-cached) before the
-			// modal reads it at construction time.
+			// modal reads it at construction time. The modal reads the currency
+			// AT CONSTRUCTION, so a retrying assertion below cannot recover from
+			// clicking too early — wait on the org fetch itself (registered
+			// before the navigation that triggers it), not on a quiet network.
+			const orgLoaded = page.waitForResponse(
+				(r) => r.url().includes('/api/organization') && r.request().method() === 'GET'
+			);
 			await page.goto('/invoices');
-			await page.waitForLoadState('networkidle');
+			await orgLoaded;
 
 			await page.getByRole('button', { name: 'Create Invoice' }).click();
 			const modal = page.locator('div.modal[role="dialog"][aria-label="Create Invoice"]');
@@ -208,8 +214,15 @@ test.describe('/invoices — Create Invoice modal', () => {
 
 	test('ap_clerk does not see the toolbar button', async ({ page, tenantClerk }) => {
 		await signInAndWait(page, tenantClerk);
+		// The toolbar gates on `auth.hasAnyRole(...)`, which is only populated once
+		// GET /api/auth/me lands. Asserting the absence before that would pass for
+		// the wrong reason (nobody has any role yet), so wait on the identity fetch
+		// itself rather than on a quiet network.
+		const me = page.waitForResponse(
+			(r) => r.url().includes('/api/auth/me') && r.request().method() === 'GET'
+		);
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
+		await me;
 		await expect(page.getByRole('button', { name: 'Create Invoice' })).toHaveCount(0);
 	});
 });

@@ -38,16 +38,25 @@ test.describe('/workflows pagination', () => {
 	test.afterEach(() => deleteWorkflowsWhere(MARKER));
 
 	test('Load more appends the next page', async ({ page }) => {
-		// Hit the page once so the default workflow exists, giving the SQL seed a
-		// row to source organization_id from.
-		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
+		// Hit the list endpoint once so the default workflow exists, giving the
+		// SQL seed a row to source organization_id from. `page.request` rather
+		// than the page's own fetch: it is the same call the sibling test makes
+		// below, and it is AWAITED — waiting for the network to fall quiet was
+		// only ever a guess that the provisioning GET had finished.
+		await page.request.get(`${API_BASE}/api/workflows`, {
+			headers: await authedTenantHeaders(page)
+		});
 		seedWorkflows(22);
 
-		await page.reload();
-		await page.waitForLoadState('networkidle');
+		await page.goto('/workflows');
 
-		const firstPageRows = await page.locator('table tbody tr').count();
+		// 22 seeded rows plus the tenant's own definitions, against page_size
+		// 20, means the first page is a full one. Asserting the exact count
+		// auto-waits and cannot be satisfied by DataTable's single loading
+		// placeholder <tr>, which the bare `count()` below would otherwise read.
+		const rows = page.locator('table tbody tr');
+		await expect(rows).toHaveCount(20);
+		const firstPageRows = await rows.count();
 		expect(firstPageRows).toBeLessThanOrEqual(20);
 
 		const loadMore = page.getByRole('button', { name: /Load more/ });
@@ -60,7 +69,9 @@ test.describe('/workflows pagination', () => {
 		);
 		await loadMore.click();
 		await next;
-		expect(await page.locator('table tbody tr').count()).toBeGreaterThan(firstPageRows);
+		// The response arriving is not the rows being rendered, so poll rather
+		// than read once.
+		await expect.poll(() => rows.count()).toBeGreaterThan(firstPageRows);
 	});
 
 	test('API returns the paginated envelope with default page size 20', async ({ page }) => {

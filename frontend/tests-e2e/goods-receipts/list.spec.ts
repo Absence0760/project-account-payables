@@ -10,7 +10,6 @@ import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers
 test.describe('/goods-receipts', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/goods-receipts');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the seeded goods receipts with their PO numbers', async ({ page }) => {

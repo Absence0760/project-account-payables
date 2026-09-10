@@ -95,59 +95,18 @@ export function sendInvoiceOverPeppol(
 	return api.post<PeppolSendResult>(`/api/invoices/${invoiceId}/peppol-send`, body);
 }
 
-export interface EInvoiceValidationIssue {
-	/** Dotted field path, e.g. `seller.tax_id`, `lines`, `taxes[0].rate`. */
-	field: string;
-	/** The backend's own PII-free sentence for this field. Where the failure is
-	 *  an EN 16931 / PEPPOL rule the message leads with the rule id
-	 *  (`BR-CO-25: …`) — the identifier a receiving Access Point's validator
-	 *  names — so nothing here needs a code→prose map on the client. */
-	message: string;
-}
-
-// A field path is a dotted/indexed identifier — anything else means the detail
-// is not the validation rendering (a different 4xx, a proxy's HTML error page),
-// and the caller must render it verbatim instead of pretending it parsed.
-const FIELD_PATH = /^[A-Za-z0-9_]+(?:\[\d+\])?(?:\.[A-Za-z0-9_]+(?:\[\d+\])?)*$/;
-
 /**
- * Split the rendered 422 detail into its per-field parts so the UI can list
- * *why* the dialect refused the invoice, one row per field.
- *
- * The backend returns the errors STRUCTURED — `[{loc, type, msg}]` — and the
- * shared `formatApiDetail` (in `utils/apiError.ts`, which every response in the
- * app already goes through) flattens exactly that shape to
- * `"issue_date: Issue date is required; lines: At least one invoice line is
- * required"`. `ApiError` carries only a message, so this re-splits that one
- * rendering rather than duplicating the transport. The message is the SERVER's
- * wording — there is deliberately no code→prose table here.
- *
- * Returns `[]` when the string is not that shape — the caller then shows the
- * raw message. Never throws, never guesses: a partially-parseable detail is
- * treated as unparseable, because dropping half the reasons would be worse
- * than showing the backend's own wording.
+ * The 422 refusal rows are parsed and localized in `einvoiceIssues.ts`, a
+ * DEPENDENCY-FREE sibling — this module reaches `$lib/api`, which reaches
+ * `$env/static/public`, which the node-environment vitest config does not
+ * alias. Same split, and the same reason, as `hostRouting.ts` under
+ * `tenant.ts`. Re-exported here so callers still see one module.
  */
-export function parseEInvoiceIssues(detail: string): EInvoiceValidationIssue[] {
-	// `formatApiDetail` joins with exactly `'; '`. Splitting on the bare `;`
-	// would cut a message that legitimately contains one.
-	const parts = detail
-		.split('; ')
-		.map((p) => p.trim())
-		.filter(Boolean);
-	if (parts.length === 0) return [];
-	const issues: EInvoiceValidationIssue[] = [];
-	for (const part of parts) {
-		// First `': '` only: a rule-id message carries its own colon
-		// (`due_date: BR-CO-25: an invoice needs a due date`).
-		const at = part.indexOf(': ');
-		if (at < 0) return [];
-		const field = part.slice(0, at).trim();
-		const message = part.slice(at + 2).trim();
-		if (!FIELD_PATH.test(field) || !message) return [];
-		issues.push({ field, message });
-	}
-	return issues;
-}
+export {
+	einvoiceRuleMessageKey,
+	parseEInvoiceIssues,
+	type EInvoiceValidationIssue,
+} from '$lib/api/einvoiceIssues';
 
 /** One row of `GET /api/invoices/{id}/peppol-transmissions` — PII-free by
  *  construction: the counterparty's and our own registered participant ids

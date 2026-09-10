@@ -45,7 +45,6 @@ function deleteContract(id: string): void {
 test.describe('/contracts', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/contracts');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the contracts list page', async ({ page }) => {
@@ -71,7 +70,6 @@ test.describe('/contracts', () => {
 			expect(created.status).toBe('draft');
 
 			await page.reload();
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(number)).toBeVisible();
 		} finally {
 			if (id) deleteContract(id);
@@ -98,7 +96,6 @@ test.describe('/contracts', () => {
 			expect(((await activated.json()) as { status: string }).status).toBe('active');
 
 			await page.goto(`/contracts?search=${number}`);
-			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(number)).toBeVisible();
 		} finally {
 			if (id) deleteContract(id);

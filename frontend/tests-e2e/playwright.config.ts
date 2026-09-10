@@ -1,8 +1,25 @@
 import { defineConfig, devices } from '@playwright/test';
 
-import { API_BASE, WEB_ORIGIN, WEB_PORT, tenantOrigin } from './fixtures/env';
+import { API_BASE, PLATFORM_DOMAINS, WEB_ORIGIN, WEB_PORT, tenantOrigin } from './fixtures/env';
 
 const PORT_ARG = WEB_PORT ? ` --port ${WEB_PORT}` : '';
+
+// Pin the dev/preview server to the IPv4 loopback ADDRESS, not the `localhost`
+// NAME (Vite's default). Two reasons, and the second is load-bearing:
+//
+//   * It is deterministic. Resolving `localhost` picks one family per glibc's
+//     RFC 3484 address selection, which on this machine yields `::1` even
+//     though `/etc/hosts` lists 127.0.0.1 first — so which address the server
+//     actually listens on is not a property of the config.
+//   * `fixtures/env.ts::VANITY_ORIGIN` is the loopback IP literal, and a
+//     literal only connects to the address the server bound. Pinning it is what
+//     makes `tenant/vanity-host.spec.ts` portable rather than dependent on the
+//     box's resolver.
+//
+// Nothing else changes: `localhost` and every `<slug>.localhost` origin still
+// reach it (both Chromium and Node fall back across families for a NAME), and
+// this is NARROWER than the default — no LAN interface is exposed.
+const HOST_ARG = ' --host 127.0.0.1';
 
 /**
  * Playwright e2e config for the frontend.
@@ -116,15 +133,23 @@ export default defineConfig({
 		// the origin uses the scheme's default port — then vite picks its own.
 		command:
 			process.env.FEOH_E2E_USE_PREVIEW === 'true'
-				? `pnpm exec vite preview${PORT_ARG}`
-				: `pnpm exec vite dev${PORT_ARG}`,
+				? `pnpm exec vite preview${PORT_ARG}${HOST_ARG}`
+				: `pnpm exec vite dev${PORT_ARG}${HOST_ARG}`,
 		url: WEB_ORIGIN,
 		reuseExistingServer: !process.env.CI,
 		timeout: 60_000,
 		stdout: 'ignore',
 		stderr: 'pipe',
 		env: {
-			PUBLIC_API_URL: API_BASE
+			PUBLIC_API_URL: API_BASE,
+			// The dev server's half of the platform-vs-vanity classification.
+			// CI's counterpart is the `pnpm build` step's env — a
+			// production-mode build does not read `.env.development`, and this
+			// value is baked into the bundle there rather than read per request.
+			// Both come from `fixtures/env.ts::PLATFORM_DOMAINS`, because the two
+			// run modes disagreeing is what kept `tenant/vanity-host.spec.ts`
+			// from covering the vanity half at all.
+			PUBLIC_PLATFORM_DOMAINS: PLATFORM_DOMAINS
 		}
 	},
 

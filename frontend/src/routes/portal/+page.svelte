@@ -125,7 +125,11 @@
 					<p>
 						{m('portal.home.actionRequired.body', { count: summary.invoices_action_required })}
 					</p>
-					<a class="btn-primary" href="/portal/invoices?phase=Rejected">
+					<!-- `phase` carries the stable phase ID from
+					     `$lib/types/portalStatus`, never a display label — the
+					     chips used to be keyed by their English text, which a
+					     translated portal would have stopped matching. -->
+					<a class="btn-primary" href="/portal/invoices?phase=rejected">
 						{m('portal.home.actionRequired.cta')}
 					</a>
 				</article>

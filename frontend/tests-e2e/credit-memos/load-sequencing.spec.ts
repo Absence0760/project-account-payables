@@ -83,6 +83,14 @@ test.describe('/credit-memos — list request sequencing', () => {
 
 		await page.goto('/credit-memos');
 		await expect(page.getByText('E2E-CM-1')).toBeVisible();
+		// `networkidle` STAYS in this file, and only in this file. Everywhere else
+		// in the suite it stood in for "the page is ready", which the next
+		// auto-waiting assertion already establishes — but the assertion here is
+		// that NO SECOND request was issued, and a quiet network is the only
+		// honest signal for "nothing more is coming". A `waitForResponse` proves
+		// at least one fired, never that a duplicate did not; deleting the wait
+		// would let the test pass because the duplicate had not landed yet, which
+		// is a false negative on the very defect it guards.
 		await page.waitForLoadState('networkidle');
 
 		expect(listUrls, `mount fired ${listUrls.length} list requests: ${listUrls.join(', ')}`)
@@ -91,6 +99,8 @@ test.describe('/credit-memos — list request sequencing', () => {
 		// A status chip is one request too — not one per subscribed effect.
 		listUrls.length = 0;
 		await page.getByRole('button', { name: /^Applied/ }).click();
+		// Same reason as above: the claim is "exactly one", so the wait is the
+		// absence-of-further-traffic signal, not a readiness stand-in.
 		await page.waitForLoadState('networkidle');
 		expect(listUrls, `the chip fired ${listUrls.length} requests: ${listUrls.join(', ')}`)
 			.toHaveLength(1);

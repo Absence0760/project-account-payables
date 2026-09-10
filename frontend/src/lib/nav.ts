@@ -124,12 +124,35 @@ export const NAV: NavEntry[] = [
 		label: 'Procurement',
 		labelKey: 'nav.group.procurement',
 		icon: 'cart',
+		// Gated PER ITEM, against each route's OWN backend gate — never one
+		// blanket group role list. The two reads below are `get_current_user`
+		// (auth-gated, role-open) while `/budgets` is genuinely narrower, and a
+		// group-level gate cannot express both.
 		children: [
-			{ label: 'Purchase Orders', labelKey: 'nav.purchaseOrders', href: '/purchase-orders', roles: ['admin', 'ap_manager', 'cfo'] },
-			{ label: 'Goods Receipts', labelKey: 'nav.goodsReceipts', href: '/goods-receipts', roles: ['admin', 'ap_manager', 'cfo'] },
+			// ap_clerk included deliberately: `GET /api/purchase-orders`, its
+			// `/counts` sibling and the detail route are ALL `get_current_user` —
+			// the counts route says so in its own docstring ("RBAC matches the
+			// list itself — auth-gated, role-open"). The only mutation,
+			// `POST /sync-erp`, is admin | ap_manager and is already gated in-page
+			// on `auth.isManager`, so the page renders read-only for a clerk.
+			// Hiding the row was a dead end, not a gate — and PO data is exactly
+			// what 3-way matching sends a clerk to chase.
+			{ label: 'Purchase Orders', labelKey: 'nav.purchaseOrders', href: '/purchase-orders', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
+			// ap_clerk included deliberately, and this one contradicted the page's
+			// own header comment: the receipts list + detail (`api/goods_receipts.py`)
+			// and the Inspections tab (`GET /api/inspections`) are all
+			// `get_current_user`, and `/goods-receipts/+page.svelte` documents
+			// "a clerk sees every inspection and no button". The clerk the page was
+			// written for could not reach it from the sidebar.
+			{ label: 'Goods Receipts', labelKey: 'nav.goodsReceipts', href: '/goods-receipts', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Requisitions', labelKey: 'nav.requisitions', href: '/requisitions', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Intake', labelKey: 'nav.intake', href: '/intake', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Catalogs', labelKey: 'nav.catalogs', href: '/catalogs', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
+			// ap_clerk EXCLUDED deliberately, unlike its four siblings: every
+			// `/api/budgets` read is `require_roles(ADMIN, AP_MANAGER, CFO)` and
+			// mutation is admin | cfo (the CFO owns budgets), so a clerk's first
+			// page load would 403. Per-item gating is what lets this stay narrow
+			// while the rows above widen.
 			{ label: 'Budgets', labelKey: 'nav.budgets', href: '/budgets', roles: ['admin', 'ap_manager', 'cfo'] },
 		],
 	},

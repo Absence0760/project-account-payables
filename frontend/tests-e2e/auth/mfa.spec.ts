@@ -120,13 +120,11 @@ test.describe('/login/mfa — challenge UI (sessionStorage-seeded)', () => {
 		// Land on the tenant origin first so sessionStorage is same-origin
 		// writable, then seed + navigate to the MFA page.
 		await page.goto('/login');
-		await page.waitForLoadState('networkidle');
 		await page.evaluate(
 			([key, value]) => sessionStorage.setItem(key, value),
 			[CHALLENGE_KEY, JSON.stringify(challenge)] as const
 		);
 		await page.goto('/login/mfa');
-		await page.waitForLoadState('networkidle');
 	}
 
 	test('redirects back to /login when no challenge is present', async ({ page }) => {
@@ -242,7 +240,6 @@ test.describe('/login/mfa — challenge UI (sessionStorage-seeded)', () => {
 test.describe('/profile — two-factor section', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/profile');
-		await page.waitForLoadState('networkidle');
 	});
 
 	test('renders the Two-factor authentication card', async ({ page }) => {
@@ -296,7 +293,6 @@ test.describe('/profile — real TOTP enrollment (MFA-enabled backend)', () => {
 
 	test('enrolls TOTP end to end (QR → verify → Enabled)', async ({ page }) => {
 		await page.goto('/profile');
-		await page.waitForLoadState('networkidle');
 
 		// Start enrollment → backend mints the secret + QR. Capture the secret
 		// from the enroll response so we can compute a matching TOTP code.
