@@ -316,9 +316,25 @@
 		typed = (e.currentTarget as HTMLInputElement).value;
 	}
 
+	/**
+	 * Focus SELECTS but deliberately does not OPEN.
+	 *
+	 * `ui/Modal` focus-traps, and `actions/focusTrap` moves focus to the first
+	 * focusable element as the dialog mounts. Where this picker is the first
+	 * field — `/credit-memos`, `/recurring`, `/vendor-statements`, `/contracts`
+	 * — opening on focus dropped the listbox over the rest of the form before
+	 * the user had done anything, and every control beneath it was then
+	 * unclickable until something dismissed the popup. That is also what the
+	 * ARIA 1.2 combobox pattern says: the listbox expands on an explicit user
+	 * action, not on focus arriving.
+	 *
+	 * No intentional path loses its popup — a click opens it (`onClick`),
+	 * typing opens it (`onInput`), and Arrow/Home/End open it (`onKeyDown`).
+	 * A click on an unfocused input fires `focus` then `click`, so
+	 * click-to-open still works in one gesture.
+	 */
 	function onFocus() {
 		if (disabled) return;
-		open = true;
 		// Select the committed label so the first keystroke replaces it rather
 		// than appending to a name the user is not trying to extend.
 		inputEl?.select();
