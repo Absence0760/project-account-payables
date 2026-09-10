@@ -37,7 +37,9 @@ for the tracker view. Keep the two reconciled when either moves.
 **Last reconciled:** 2026-09-10 (round 29) — five agents, each in its own git
 worktree, plus integrator verification of the merged branch. **Nine** entries
 closed and half of a tenth, four opened. **31 → 26** — by category, **16 (c)** ·
-**7 (a)** · **3 (b)**.
+**7 (a)** · **3 (b)**. One more **(c)** was opened the same day while clearing
+the open-PR backlog (the passlib/bcrypt pin, PR #392), taking it to **27** —
+**17 (c)** · **7 (a)** · **3 (b)**.
 
 **Two entries undercounted their own scope, and the pattern is now five rounds
 old.** "Seven panel-scoped KPI rows" listed nine and there were twelve — three
@@ -1365,6 +1367,35 @@ found it.
       **Durable fix:** the product call, then either a `/discounts` create surface
       or the endpoint's removal.
       **Trigger:** the #328 product review.
+
+### Surfaced while clearing the open-PR backlog (2026-09-10, PR #392)
+
+- [ ] **(c) The password hasher is pinned to an abandoned passlib, which pins
+      bcrypt to 4.0.** `backend/pyproject.toml` holds `bcrypt>=4.0,<4.1` because
+      passlib 1.7.4 does two things bcrypt 4.1+ broke: it reads
+      `bcrypt.__about__.__version__` (deleted in 5.0), and its
+      `_finalize_backend_mixin` wrap-bug probe hashes a >72-byte secret, which
+      4.1+ rejects with `ValueError` where 4.0 truncated. That probe fires on the
+      first hash, so the failure is an **import-time** one: PR #392 raised the
+      floor to 5.0 and every module importing `app.utils.passwords` failed to
+      collect — 29 collection errors across all four backend shards. passlib has
+      been 1.7.4 since 2020 with no release since, so "wait for a passlib fix" is
+      not a plan with a date on it. Meanwhile bcrypt 4.0.1 is frozen in both
+      locks and receives no upstream fixes.
+      **Durable fix:** drop passlib and call `bcrypt` directly behind the
+      existing `app/utils/passwords.py` seam, keeping the `bcrypt_sha256` scheme
+      by doing its pre-hash ourselves — base64(sha256(password)) before
+      `bcrypt.hashpw`, which is exactly what passlib's `bcrypt_sha256` computes,
+      so existing `$bcrypt-sha256$` hashes stay verifiable and nobody is forced
+      to reset a password. The seam already exists and is already the single
+      hash context (a project invariant), so the blast radius is one module plus
+      its drift guards; the risk is that the digest must match passlib's
+      byte-for-byte or every stored credential stops verifying, which is what
+      makes this a slice of its own rather than an opportunistic edit.
+      **Trigger:** a bcrypt CVE, or the next auth slice — whichever comes first.
+      `.github/dependabot.yml` ignores `bcrypt >=4.1` until then, so the red PR
+      stops arriving weekly; lift that ignore and the pyproject pin together.
+
 
 ## (a) Blocked on external credentials, accounts, or hardware
 
