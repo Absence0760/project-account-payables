@@ -181,7 +181,8 @@ on every tab switch. The tab shipped with no box at all until the server leg
 existed, because the only filter available was an EXACT `account_identifier`
 match — a free-text box over that returns nothing for a partial term, and a
 chip set built from page one omits every account further down. Both are the
-"filter that quietly hides rows" class `frontend/CLAUDE.md` § Search forbids.
+"filter that quietly hides rows" class `frontend/docs/ui-patterns.md` § Search
+forbids.
 
 When the term matches nothing the table renders its own
 `bankRecon.empty.statementsFiltered` row — deliberately NOT the first-run

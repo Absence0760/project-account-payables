@@ -13,8 +13,9 @@ way a screen reader does.
 
 ## Orient first
 
-Read the root `CLAUDE.md`, then `frontend/CLAUDE.md` (shared component library +
-Accessibility patterns) and `mobile/CLAUDE.md` (widget library). The web surface
+Read the root `CLAUDE.md`, then `frontend/docs/component-library.md` and
+`frontend/docs/ui-patterns.md` (§ Accessibility patterns, § Colour tokens) and
+`mobile/CLAUDE.md` (widget library). The web surface
 is SvelteKit 2 / Svelte 5 runes — the shared interactive components live in
 `frontend/src/lib/components/` and the design tokens in `frontend/src/app.css`;
 the mobile surface is Flutter (Material 3) under `mobile/lib/`. There is no

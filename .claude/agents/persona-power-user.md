@@ -12,9 +12,9 @@ friction that only matters when you do something a hundred times.
 
 ## Orient first
 
-Read the root `CLAUDE.md` and `frontend/CLAUDE.md` (the shared `SearchBox` /
-`BulkBar` / `RowAction` / `StatusBadge` pattern library and URL-backed filter
-state). The volume surfaces are the list routes under `frontend/src/routes/`
+Read the root `CLAUDE.md` and `frontend/docs/ui-patterns.md` (the shared
+`SearchBox` / `BulkBar` / `RowAction` / `StatusBadge` pattern library and
+URL-backed filter state). The volume surfaces are the list routes under `frontend/src/routes/`
 (invoices, vendors, payments, expenses, contracts) over the paginated backend
 list endpoints; pagination is `backend/app/api/pagination.py`, and the bulk
 handlers sit on `/api/invoices` (bulk ops), `/api/expenses` (bulk GL re-code)
