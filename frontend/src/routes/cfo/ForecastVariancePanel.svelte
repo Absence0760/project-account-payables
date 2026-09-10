@@ -104,7 +104,7 @@
 		</div>
 		<p class="fv-hint">{m('cfo.forecastVariance.hint')}</p>
 
-		{#if result}
+		{#if result || submitting}
 			<!-- The disclosure sits ABOVE the amounts it qualifies, not in a
 			     tooltip: a completed payment whose outflow cannot be expressed in
 			     the reporting currency is EXCLUDED from `actual` rather than added
@@ -112,7 +112,7 @@
 			     variance derived from one — is a FLOOR (decisions §35). Same
 			     `role="alert"` treatment as the cash-position card's unconverted
 			     outflows and the budget rollup's excluded rows. -->
-			{#if unconverted > 0}
+			{#if result && unconverted > 0}
 				<p class="cf-skipped" role="alert" data-testid="forecast-variance-unconverted">
 					{m('cfo.forecastVariance.unconverted', {
 						n: unconverted,
@@ -120,62 +120,81 @@
 					})}
 				</p>
 			{/if}
+			<!-- Rendered from the moment a comparison is SUBMITTED, not from the
+			     moment it answers — `docs/decisions.md` §125, with the same
+			     adjustment `/audit`'s verification counts needed. The backend
+			     persists no forecast, so there is nothing to fetch on mount and
+			     nothing to report until the CFO submits one; the row is gated on
+			     `result || submitting` for that reason rather than rendered
+			     unconditionally, and the `{:else}` branch below it stays the
+			     genuine "you have not entered a forecast" state.
+
+			     `submitting` is what carries it through the wait: the modal closes
+			     only once the POST lands, so a slow variance used to leave the
+			     panel on its empty state — "no forecast entered" asserted while
+			     one was in flight — and then pop a row in. `pending` is consulted
+			     only for a missing figure, so re-submitting an edited forecast
+			     keeps the previous answer on screen. -->
 			<div class="kpi-row" data-testid="forecast-variance-kpis">
 				<KpiCard
-					value={String(result.rows.length)}
+					value={result ? String(result.rows.length) : null}
 					label={m('cfo.forecastVariance.kpiMonths')}
+					pending={submitting}
 				/>
 				<KpiCard
-					value={result.reporting_currency}
+					value={result ? result.reporting_currency : null}
 					label={m('cfo.forecastVariance.kpiCurrency')}
+					pending={submitting}
 				/>
 			</div>
-			<DataTable
-				columns={[
-					{ label: m('cfo.forecastVariance.colMonth') },
-					{ label: m('cfo.forecastVariance.colForecast'), class: 'right' },
-					{ label: m('cfo.forecastVariance.colActual'), class: 'right' },
-					{ label: m('cfo.forecastVariance.colVariance'), class: 'right' },
-					{ label: m('cfo.forecastVariance.colVariancePct'), class: 'right' }
-				]}
-				isEmpty={result.rows.length === 0}
-				empty={m('cfo.forecastVariance.empty')}
-			>
-				{#snippet body()}
-					{#each result?.rows ?? [] as row (row.month)}
-						{@const pct = variancePctLabel(row)}
-						{@const tone = varianceTone(row)}
-						<tr data-unconverted={row.unconverted_count}>
-							<td>
-								{formatPeriod(row.month)}
-								{#if row.unconverted_count > 0}
-									<span class="cf-row-sub"
-										>{m('cfo.forecastVariance.rowUnconverted', {
-											n: row.unconverted_count
-										})}</span
-									>
-								{/if}
-							</td>
-							<td class="right num"
-								><Money amount={row.forecast} currency={result?.reporting_currency} whole /></td
-							>
-							<td class="right num"
-								><Money amount={row.actual} currency={result?.reporting_currency} whole /></td
-							>
-							<!-- The backend's own subtraction, in Decimal. The tone
-							     predicate only decides whether to tint it. -->
-							<td class="right num" class:over={tone === 'over'} class:under={tone === 'under'}>
-								<Money amount={row.variance} currency={result?.reporting_currency} whole accounting />
-							</td>
-							<!-- `null`, never 0%: a percentage of a zero (or absent)
-							     forecast is not computable, and 0% reads as "exactly on
-							     plan" — the most reassuring statement available over the
-							     one row carrying no information. -->
-							<td class="right num">{pct ?? m('cfo.forecastVariance.noVariancePct')}</td>
-						</tr>
-					{/each}
-				{/snippet}
-			</DataTable>
+			{#if result}
+				<DataTable
+					columns={[
+						{ label: m('cfo.forecastVariance.colMonth') },
+						{ label: m('cfo.forecastVariance.colForecast'), class: 'right' },
+						{ label: m('cfo.forecastVariance.colActual'), class: 'right' },
+						{ label: m('cfo.forecastVariance.colVariance'), class: 'right' },
+						{ label: m('cfo.forecastVariance.colVariancePct'), class: 'right' }
+					]}
+					isEmpty={result.rows.length === 0}
+					empty={m('cfo.forecastVariance.empty')}
+				>
+					{#snippet body()}
+						{#each result?.rows ?? [] as row (row.month)}
+							{@const pct = variancePctLabel(row)}
+							{@const tone = varianceTone(row)}
+							<tr data-unconverted={row.unconverted_count}>
+								<td>
+									{formatPeriod(row.month)}
+									{#if row.unconverted_count > 0}
+										<span class="cf-row-sub"
+											>{m('cfo.forecastVariance.rowUnconverted', {
+												n: row.unconverted_count
+											})}</span
+										>
+									{/if}
+								</td>
+								<td class="right num"
+									><Money amount={row.forecast} currency={result?.reporting_currency} whole /></td
+								>
+								<td class="right num"
+									><Money amount={row.actual} currency={result?.reporting_currency} whole /></td
+								>
+								<!-- The backend's own subtraction, in Decimal. The tone
+								     predicate only decides whether to tint it. -->
+								<td class="right num" class:over={tone === 'over'} class:under={tone === 'under'}>
+									<Money amount={row.variance} currency={result?.reporting_currency} whole accounting />
+								</td>
+								<!-- `null`, never 0%: a percentage of a zero (or absent)
+								     forecast is not computable, and 0% reads as "exactly on
+								     plan" — the most reassuring statement available over the
+								     one row carrying no information. -->
+								<td class="right num">{pct ?? m('cfo.forecastVariance.noVariancePct')}</td>
+							</tr>
+						{/each}
+					{/snippet}
+				</DataTable>
+			{/if}
 		{:else}
 			<p class="empty">{m('cfo.forecastVariance.empty')}</p>
 		{/if}

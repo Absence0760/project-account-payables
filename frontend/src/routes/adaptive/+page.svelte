@@ -530,6 +530,56 @@
 				</div>
 			{/if}
 
+			<!-- KPI row — rendered on EVERY state, never gated on the response.
+			     `docs/decisions.md` §125: an absent figure is a dash, and whether it
+			     is absent because it is still arriving is ANNOUNCED, not drawn. This
+			     row used to sit inside `{:else if threshold}` and collapse to nothing
+			     while the recommendation was in flight — the same
+			     §34-satisfying-but-different mechanism `/cfo` and `/tax` carried at
+			     page level, which is why the one convention could not be learned once.
+
+			     `pending` is only consulted when the value is MISSING, so a re-fetch
+			     keeps the recommendation already on screen rather than blanking a row
+			     somebody is reading; a FAILED load leaves the cards
+			     absent-but-not-loading, which is why the error moved UNDER the row
+			     rather than replacing it. The green "raise it" verdict drops with the
+			     figure — `KpiCard` does that itself, and the `?.` here only keeps the
+			     expression from dereferencing a null. -->
+			<div class="kpi-row" data-testid="adaptive-threshold-card">
+				<KpiCard
+					label={m('adaptive.threshold.current')}
+					value={threshold
+						? formatMoney(threshold.current_threshold, { currency: orgCurrency.currency })
+						: null}
+					pending={thresholdLoading}
+				/>
+				<KpiCard
+					label={m('adaptive.threshold.recommended')}
+					value={threshold
+						? formatMoney(threshold.recommended_threshold, {
+								currency: orgCurrency.currency
+							})
+						: null}
+					highlight={threshold?.should_raise ? 'green' : null}
+					pending={thresholdLoading}
+				/>
+				<KpiCard
+					label={m('adaptive.threshold.cap')}
+					value={threshold
+						? formatMoney(threshold.cap_threshold, { currency: orgCurrency.currency })
+						: null}
+					pending={thresholdLoading}
+				/>
+				<KpiCard
+					label={m('adaptive.threshold.qualifyingVendors')}
+					value={threshold ? threshold.qualifying_vendor_count : null}
+					sub={threshold
+						? m('adaptive.threshold.cleanInvoices', { n: threshold.total_clean_invoices })
+						: null}
+					pending={thresholdLoading}
+				/>
+			</div>
+
 			{#if thresholdError}
 				<div class="state error" role="alert" data-testid="adaptive-threshold-error">
 					<p>{thresholdError}</p>
@@ -540,29 +590,6 @@
 			{:else if thresholdLoading && !threshold}
 				<p class="state">{m('common.loading')}</p>
 			{:else if threshold}
-				<div class="kpi-row" data-testid="adaptive-threshold-card">
-					<KpiCard
-						label={m('adaptive.threshold.current')}
-						value={formatMoney(threshold.current_threshold, { currency: orgCurrency.currency })}
-					/>
-					<KpiCard
-						label={m('adaptive.threshold.recommended')}
-						value={formatMoney(threshold.recommended_threshold, {
-							currency: orgCurrency.currency
-						})}
-						highlight={threshold.should_raise ? 'green' : null}
-					/>
-					<KpiCard
-						label={m('adaptive.threshold.cap')}
-						value={formatMoney(threshold.cap_threshold, { currency: orgCurrency.currency })}
-					/>
-					<KpiCard
-						label={m('adaptive.threshold.qualifyingVendors')}
-						value={threshold.qualifying_vendor_count}
-						sub={m('adaptive.threshold.cleanInvoices', { n: threshold.total_clean_invoices })}
-					/>
-				</div>
-
 				<p class="rationale" data-testid="adaptive-threshold-rationale">{threshold.rationale}</p>
 
 				{#if threshold.evidence.length}
@@ -858,6 +885,50 @@
 			<p class="hint">{m('adaptive.feedback.intro')}</p>
 			<p class="hint">{m('adaptive.feedback.auditNote')}</p>
 
+			<!-- Rendered on EVERY state, like the threshold row above — see the
+			     comment there for why (`docs/decisions.md` §125). -->
+			<div class="kpi-row" data-testid="adaptive-feedback-card">
+				<KpiCard
+					label={m('adaptive.feedback.autoApproved')}
+					value={feedback ? feedback.outcomes.auto_approved_count : null}
+					pending={feedbackLoading}
+				/>
+				<KpiCard
+					label={m('adaptive.feedback.overturned')}
+					value={feedback ? feedback.outcomes.overturned_count : null}
+					pending={feedbackLoading}
+				/>
+				<!-- The honest insufficient-data state. Below the minimum sample
+				     the backend reports NO rate, so neither does this — a dash
+				     plus the reason, never a computed-looking 0%.
+
+				     `null`, never a literal em dash: `KpiCard` owns the glyph
+				     (`$lib/utils/kpiValue.ts::KPI_NO_FIGURE`, pinned equal to
+				     `formatMoney(null)`) and a hand-written one renders
+				     `data-kpi-state="value"` — the card CLAIMING a figure
+				     exists, which is the opposite of what this branch means
+				     and is invisible to the state-based a11y guard
+				     (`tests-e2e/a11y/kpi-pending.spec.ts`).
+
+				     One card rather than the two-branch `{#if}` this used to be:
+				     with the row now rendering while the response is in flight
+				     there are THREE outcomes here (a rate, an
+				     insufficient-sample dash, a still-loading dash), and the
+				     branch only ever expressed two. `sub` carries the reason, so
+				     "no rate because too few decisions" stays distinguishable
+				     from "no rate yet" without a second glyph. -->
+				<KpiCard
+					label={m('adaptive.feedback.overturnRate')}
+					value={feedback && !feedback.outcomes.insufficient_data
+						? `${feedback.outcomes.overturn_rate_pct}%`
+						: null}
+					sub={feedback?.outcomes.insufficient_data
+						? m('adaptive.feedback.insufficientShort')
+						: null}
+					pending={feedbackLoading}
+				/>
+			</div>
+
 			{#if feedbackError}
 				<div class="state error" role="alert" data-testid="adaptive-feedback-error">
 					<p>{feedbackError}</p>
@@ -868,40 +939,6 @@
 			{:else if feedbackLoading}
 				<p class="state">{m('common.loading')}</p>
 			{:else if feedback}
-				<div class="kpi-row">
-					<KpiCard
-						label={m('adaptive.feedback.autoApproved')}
-						value={feedback.outcomes.auto_approved_count}
-					/>
-					<KpiCard
-						label={m('adaptive.feedback.overturned')}
-						value={feedback.outcomes.overturned_count}
-					/>
-					<!-- The honest insufficient-data state. Below the minimum sample
-					     the backend reports NO rate, so neither does this — a dash
-					     plus the reason, never a computed-looking 0%.
-
-					     `null`, never a literal em dash: `KpiCard` owns the glyph
-					     (`$lib/utils/kpiValue.ts::KPI_NO_FIGURE`, pinned equal to
-					     `formatMoney(null)`) and a hand-written one renders
-					     `data-kpi-state="value"` — the card CLAIMING a figure
-					     exists, which is the opposite of what this branch means
-					     and is invisible to the state-based a11y guard
-					     (`tests-e2e/a11y/kpi-pending.spec.ts`). -->
-					{#if feedback.outcomes.insufficient_data}
-						<KpiCard
-							label={m('adaptive.feedback.overturnRate')}
-							value={null}
-							sub={m('adaptive.feedback.insufficientShort')}
-						/>
-					{:else}
-						<KpiCard
-							label={m('adaptive.feedback.overturnRate')}
-							value={`${feedback.outcomes.overturn_rate_pct}%`}
-						/>
-					{/if}
-				</div>
-
 				<h3>{m('adaptive.feedback.metrics')}</h3>
 				<ul class="metrics">
 					{#each feedback.metrics as metric (metric.name)}

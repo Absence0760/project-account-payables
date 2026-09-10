@@ -147,6 +147,43 @@
 
 	<p class="page-hint">{m('sweepHealth.intro')}</p>
 
+	<!-- KPI row — rendered on EVERY state, never gated on the response.
+	     `docs/decisions.md` §125: an absent figure is a dash, and whether it is
+	     absent because it is still arriving is ANNOUNCED, not drawn. It used to
+	     sit inside `{:else if report}` and collapse while the snapshot was in
+	     flight.
+
+	     Both tints here are verdicts on an operational control — a green
+	     "Overall: OK" and an untinted "0 needing attention" drawn before the
+	     snapshot lands are exactly the reassuring-answer-asserted-while-still-
+	     asking failure §125 documents. `KpiCard` withholds both while there is
+	     no figure, and the derived `attentionCount` / `alertStreak` are
+	     `?? 0`-safe, so the guard here is on `report`, not on the derivation. -->
+	<div class="kpi-row" data-testid="sweep-health-summary">
+		<KpiCard
+			value={report ? m(OVERALL_LABEL[report.state]) : null}
+			label={m('sweepHealth.kpi.overall')}
+			highlight={report ? (report.state === 'ok' ? 'green' : 'red') : null}
+			pending={loading}
+		/>
+		<KpiCard
+			value={report ? String(sweeps.length) : null}
+			label={m('sweepHealth.kpi.reporting')}
+			pending={loading}
+		/>
+		<KpiCard
+			value={report ? String(attentionCount) : null}
+			label={m('sweepHealth.kpi.attention')}
+			highlight={report && attentionCount > 0 ? 'red' : null}
+			pending={loading}
+		/>
+		<KpiCard
+			value={report ? String(report.failure_alert_streak) : null}
+			label={m('sweepHealth.kpi.streak')}
+			pending={loading}
+		/>
+	</div>
+
 	{#if loading && report === null}
 		<p class="state" data-testid="sweep-health-loading">{m('common.loading')}</p>
 	{:else if error}
@@ -155,24 +192,6 @@
 			<button type="button" class="btn-cancel" onclick={load}>{m('sweepHealth.retry')}</button>
 		</div>
 	{:else if report}
-		<div class="kpi-row" data-testid="sweep-health-summary">
-			<KpiCard
-				value={m(OVERALL_LABEL[report.state])}
-				label={m('sweepHealth.kpi.overall')}
-				highlight={report.state === 'ok' ? 'green' : 'red'}
-			/>
-			<KpiCard value={String(sweeps.length)} label={m('sweepHealth.kpi.reporting')} />
-			<KpiCard
-				value={String(attentionCount)}
-				label={m('sweepHealth.kpi.attention')}
-				highlight={attentionCount > 0 ? 'red' : null}
-			/>
-			<KpiCard
-				value={String(report.failure_alert_streak)}
-				label={m('sweepHealth.kpi.streak')}
-			/>
-		</div>
-
 		<DataTable columns={COLUMNS} isEmpty={sweeps.length === 0} empty={m('sweepHealth.empty')}>
 			{#snippet body()}
 				{#each sweeps as s (s.name)}
