@@ -44,10 +44,22 @@ const RAW_SOURCE = RAW[ROUTE];
  * inside a string can't be truncated.
  */
 function stripComments(source: string): string {
-	return source
-		.replace(/\/\*[\s\S]*?\*\//g, '')
-		.replace(/<!--[\s\S]*?-->/g, '')
-		.replace(/^[ \t]*\/\/.*$/gm, '');
+	// Applied until the text stops changing. A single pass over a
+	// multi-character delimiter can re-form the delimiter it just removed —
+	// `<!<!-- x -->-- y -->` collapses to `<!-- y -->`, which survives — so one
+	// pass leaves comment text in `SOURCE` and the guard then scans the very
+	// prose it is meant to skip. Repeating to a fixed point is the documented
+	// remedy for that class (CodeQL `js/incomplete-multi-character-sanitization`).
+	let previous: string;
+	let out = source;
+	do {
+		previous = out;
+		out = out
+			.replace(/\/\*[\s\S]*?\*\//g, '')
+			.replace(/<!--[\s\S]*?-->/g, '')
+			.replace(/^[ \t]*\/\/.*$/gm, '');
+	} while (out !== previous);
+	return out;
 }
 
 const SOURCE = stripComments(RAW_SOURCE);
