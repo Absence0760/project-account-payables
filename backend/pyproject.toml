@@ -25,7 +25,17 @@ dependencies = [
     # which was removed in bcrypt 5.0, and 5.0's strict >72-byte handling
     # collides with passlib's bcrypt-detection probe. Lift only when passlib
     # ships a fix or the codebase migrates off passlib for bcrypt_sha256.
-    "bcrypt>=5.0.0,<5.1",
+    #
+    # Dependabot proposed >=5.0.0,<5.1 in #392 and CI reproduced the second
+    # half of that exactly: passlib's `_finalize_backend_mixin` probes for a
+    # historical wrap bug by hashing a >72-byte secret, bcrypt 5.0 raises
+    # `ValueError` where 4.x truncated, and every module importing
+    # `app.utils.passwords` died at COLLECTION — 29 collection errors, all
+    # four backend shards red. The range is `<4.1`, not `<5`, because 4.1
+    # also carries the strict-length change. `.github/dependabot.yml` now
+    # ignores bcrypt so this does not arrive again each Monday; the comment
+    # alone could not prevent it, since Dependabot reads ranges, not prose.
+    "bcrypt>=4.0,<4.1",
     "redis>=8.1.0,<9",
     "python-jose[cryptography]>=3.5.0,<4",
     "httpx>=0.28.1,<1",
