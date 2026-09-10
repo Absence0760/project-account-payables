@@ -131,6 +131,57 @@ async def test_update_catalog(realdb):
         assert len(actions) >= 1
 
 
+async def test_vendor_name_is_resolved_on_every_catalog_read(realdb):
+    """``vendor_name`` rides create, get, list and patch — not just one of them.
+
+    The frontend's shared vendor picker takes it as the label for an already-set
+    ``vendor_id``: the chosen supplier can sit on any page of the tenant's set,
+    so the id alone leaves an edit form unable to name it. A response shape that
+    carried the name on only some reads would fix the modal opened one way and
+    not the other, which is the failure the picker was extracted to end.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_name = _uniq("PickerVendor")
+
+    async with mk() as s:
+        vendor = await _seed_vendor(s, org_id, vendor_name)
+        vendor_id = str(vendor.id)
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        created = await c.post(
+            "/api/catalogs",
+            json={"name": _uniq("Cat"), "catalog_type": "internal", "vendor_id": vendor_id},
+        )
+        assert created.status_code == 201
+        assert created.json()["vendor_name"] == vendor_name
+        cid = created.json()["id"]
+
+        assert (await c.get(f"/api/catalogs/{cid}")).json()["vendor_name"] == vendor_name
+
+        listed = (await c.get("/api/catalogs")).json()["items"]
+        row = next(r for r in listed if r["id"] == cid)
+        assert row["vendor_name"] == vendor_name
+
+        # Clearing the vendor clears the name with it — a stale label pointing at
+        # a supplier the catalog no longer names is worse than none.
+        cleared = await c.patch(f"/api/catalogs/{cid}", json={"vendor_id": None})
+        assert cleared.status_code == 200
+        assert cleared.json()["vendor_id"] is None
+        assert cleared.json()["vendor_name"] is None
+
+
+async def test_vendorless_catalog_reports_a_null_vendor_name(realdb):
+    """No vendor set is ``None``, never an empty string or a missing key."""
+    async with realdb.client(key="a", role="ap_manager") as c:
+        body = (
+            await c.post("/api/catalogs", json={"name": _uniq("Cat"), "catalog_type": "internal"})
+        ).json()
+    assert body["vendor_id"] is None
+    assert body["vendor_name"] is None
+
+
 async def test_delete_catalog_cascades_items(realdb):
     mk = realdb.sessionmaker("a")
     async with realdb.client(key="a", role="ap_manager") as c:

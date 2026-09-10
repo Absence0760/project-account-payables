@@ -495,7 +495,7 @@ If the supplier portal is implemented, vendors can:
 | `GET` | `/api/cards` | List virtual cards (filterable by status, vendor, date) |
 | `GET` | `/api/cards/{id}/details` | Get full card number + CVV (admin/ap_manager/cfo, audit logged — see § Security) |
 | `POST` | `/api/cards/generate` | Generate cards for selected invoices |
-| `POST` | `/api/cards/{id}/cancel` | Cancel an unused card |
+| `POST` | `/api/cards/{id}/cancel` | Cancel an unused card (`require_permission(payment.void)` — admin/cfo by default, **not** `ap_manager`; see § Cancel → The gate is `payment.void`) |
 | `POST` | `/api/cards/webhook/{provider}` | Receive charge/settlement webhooks (public-by-design, HMAC-gated) |
 | `GET` | `/api/cards/rebates` | List rebates (paginated `page` / `page_size`, optional `period`) — see § The rebate list is paginated |
 | `POST` | `/api/cards/rebates/{id}/confirm` | Advance a rebate `pending` → `confirmed` (admin/ap_manager/cfo) — see § Rebate status lifecycle |
@@ -796,6 +796,40 @@ savepoints are deliberately identical in shape.) Regression coverage:
 real Postgres so the partial index actually fires).
 
 ### Cancel (`POST /{id}/cancel`) — provider-first + idempotent
+
+#### The gate is `payment.void`, and that deliberately narrows `ap_manager`
+
+This endpoint gates on `require_permission(PERM_PAYMENT_VOID)`. It is the **one**
+route migrated off `require_roles` that does not reproduce its prior
+admin/ap_manager/cfo matrix for the four system roles — and the mismatch was the
+defect, not the migration.
+
+Three routes close a virtual card: this one, `POST /api/payments/{id}/void`, and
+`POST /api/payments/{id}/void/retry-card-cancel`. The latter two gate on
+`payment.void`, which the default `ap_manager` does **not** hold (it holds
+`payment.execute` — initiating money, not reversing it). This one gated on
+`require_roles(ADMIN, AP_MANAGER, CFO)`, so an `ap_manager` who could not reverse
+a card payment could still kill the card behind a live one, through the widest of
+three doors onto the same effect. `docs/decisions.md` §132 already stated the rule
+for the retry route — "not the card router's bare roles, which would hand an
+`ap_manager` in a duty-split org the half of the reversal the org withheld" — and
+this applies it to the door that was left open.
+
+| System role | Before | After |
+|---|---|---|
+| `admin` | allowed | allowed |
+| `cfo` | allowed | allowed |
+| `ap_manager` | allowed | **403** |
+| `ap_clerk` | 403 | 403 |
+
+Nothing in the UI regresses: the route is deliberately unwired (`docs/decisions.md`
+§96 — see the note under § Card Generation in Payment Run), so the supported
+remedy for a live card behind a voided payment remains
+`POST /api/payments/{id}/void/retry-card-cancel`. Pinned by
+`tests/test_sod_endpoint_wiring.py::test_card_cancel_narrows_ap_manager_by_design`
+and `::test_every_card_closing_route_gates_on_payment_void`.
+
+#### Provider-first ordering
 
 The handler cancels at the **provider first**, then reflects it in the DB — never
 the other way round. The fail-safe direction is "dead at the provider, maybe

@@ -5,6 +5,7 @@ import {
 	authedTenantHeaders,
 	deleteVendorsWhere,
 	expect,
+	selectVendorInPicker,
 	signInAndWait,
 	signOut,
 	tenantPsql,
@@ -80,21 +81,10 @@ async function makeApprovedInvoice(
 	);
 }
 
-/**
- * The vendor picker loads the first 100 vendors. State that premise rather
- * than assuming it: past 100 the fixture vendor may not be in the list at all,
- * and the failure should say WHY instead of surfacing as "option not found".
- */
-async function assertPickerCoversFixtures(page: import('@playwright/test').Page): Promise<void> {
-	const resp = await page.request.get(`${API_BASE}/api/vendors?page_size=100`, {
-		headers: await authedTenantHeaders(page)
-	});
-	const items = ((await resp.json()) as { items: Vendor[] }).items ?? [];
-	expect(
-		items.length,
-		'the vendor picker shows the first 100 vendors; this tenant now has more, so the fixture vendor may not be selectable'
-	).toBeLessThan(100);
-}
+// The "does this tenant have under 100 vendors?" premise check that used to
+// live here is GONE, along with the cap it guarded. The picker is a searchable,
+// server-paged combobox: the fixture vendor is found by typing its name, so a
+// tenant's vendor count no longer decides whether this spec can run.
 
 function openForm(page: import('@playwright/test').Page) {
 	return page.getByRole('button', { name: 'Propose vendor offer' });
@@ -116,15 +106,11 @@ test.describe('/discounts — propose a vendor-wide offer', () => {
 	test('the created offer reports the summed open balance the server computed', async ({
 		page
 	}) => {
-		await page.goto('/discounts');
-		await assertPickerCoversFixtures(page);
-
 		try {
 			const vendor = await makeVendor(page, VENDOR_WITH_BALANCE);
 			await makeApprovedInvoice(page, vendor, 1000);
 			await makeApprovedInvoice(page, vendor, 2000);
 
-			// Reload so the picker's one-shot vendor fetch sees the new vendor.
 			await page.goto('/discounts');
 			await expect(page.getByRole('heading', { name: 'Discounts' })).toBeVisible();
 			await openForm(page).click();
@@ -133,9 +119,10 @@ test.describe('/discounts — propose a vendor-wide offer', () => {
 			// it — the result panel is the first and only sighting of that figure.
 			await expect(page.getByTestId('bulk-negotiate-result')).toHaveCount(0);
 
-			await page
-				.getByTestId('bulk-negotiate-vendor')
-				.selectOption({ label: VENDOR_WITH_BALANCE });
+			await selectVendorInPicker(
+				page.getByTestId('bulk-negotiate-vendor'),
+				VENDOR_WITH_BALANCE
+			);
 			await fillTier(page, '10', '2.00');
 
 			// First click ARMS and posts nothing.
@@ -173,15 +160,12 @@ test.describe('/discounts — propose a vendor-wide offer', () => {
 	});
 
 	test('a vendor with no open invoices is refused, and the reason persists', async ({ page }) => {
-		await page.goto('/discounts');
-		await assertPickerCoversFixtures(page);
-
 		try {
 			await makeVendor(page, VENDOR_NO_BALANCE);
 
 			await page.goto('/discounts');
 			await openForm(page).click();
-			await page.getByTestId('bulk-negotiate-vendor').selectOption({ label: VENDOR_NO_BALANCE });
+			await selectVendorInPicker(page.getByTestId('bulk-negotiate-vendor'), VENDOR_NO_BALANCE);
 			await fillTier(page, '7', '1.50');
 
 			await submit(page).click(); // arm

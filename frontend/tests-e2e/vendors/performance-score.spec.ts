@@ -6,7 +6,8 @@ import {
 	signInAndWait,
 	tenantPsql,
 	test
-} from '../fixtures/helpers';
+,
+	isVendorListResponse} from '../fixtures/helpers';
 
 /**
  * /vendors — the vendor performance score panel in VendorModal.
@@ -88,10 +89,17 @@ test.describe('/vendors performance score (admin)', () => {
 			const searchBox = page.getByPlaceholder('Search vendors...');
 			await searchBox.fill(vendor.name);
 			await page.waitForResponse(
-				(r) => r.url().includes('/api/vendors') && r.url().includes('search=')
+				(r) => isVendorListResponse(r.url(), 'search=')
 			);
 
-			await page.locator('table tbody tr').first().locator('td.vendor-name .row-link').click();
+			// Identity, not position. `/api/vendors/counts?search=` answers the
+			// same predicate as the list and often lands first, so the wait above
+			// used to resolve before the table had re-rendered and this clicked
+			// whichever vendor the unfiltered page was showing — a vendor WITH
+			// history, against a case whose whole point is a vendor without any.
+			const row = page.locator('table tbody tr').first();
+			await expect(row).toContainText(vendor.name);
+			await row.locator('td.vendor-name .row-link').click();
 			const modal = page.getByRole('dialog', { name: 'Vendor screening and risk' });
 			await expect(modal).toBeVisible();
 
@@ -135,10 +143,17 @@ test.describe('/vendors performance score (admin)', () => {
 			const searchBox = page.getByPlaceholder('Search vendors...');
 			await searchBox.fill(vendor.name);
 			await page.waitForResponse(
-				(r) => r.url().includes('/api/vendors') && r.url().includes('search=')
+				(r) => isVendorListResponse(r.url(), 'search=')
 			);
 
-			await page.locator('table tbody tr').first().locator('td.vendor-name .row-link').click();
+			// Identity, not position. `/api/vendors/counts?search=` answers the
+			// same predicate as the list and often lands first, so the wait above
+			// used to resolve before the table had re-rendered and this clicked
+			// whichever vendor the unfiltered page was showing — a vendor WITH
+			// history, against a case whose whole point is a vendor without any.
+			const row = page.locator('table tbody tr').first();
+			await expect(row).toContainText(vendor.name);
+			await row.locator('td.vendor-name .row-link').click();
 			const modal = page.getByRole('dialog', { name: 'Vendor screening and risk' });
 			await expect(modal).toBeVisible();
 

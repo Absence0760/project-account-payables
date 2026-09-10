@@ -96,6 +96,43 @@
 		</p>
 	{/if}
 
+	<!-- KPI row — rendered on EVERY state, never gated on the response.
+	     `docs/decisions.md` §125: an absent figure is a dash, and whether it is
+	     absent because it is still arriving is ANNOUNCED, not drawn. It used to
+	     sit inside `{:else if review}` and collapse while the review was being
+	     computed.
+
+	     The Dormant card is why this one matters beyond consistency: its red
+	     tint is a VERDICT on a SOX access control, and an untinted "0 dormant"
+	     drawn before anyone had counted is the reassuring answer asserted while
+	     still asking — the `/bank-reconciliation` case §125 calls the sharpest
+	     one. `KpiCard` withholds the tint while there is no figure. -->
+	<div class="kpi-row">
+		<KpiCard
+			value={review ? String(review.total) : null}
+			label="Elevated users"
+			pending={loading}
+		/>
+		<KpiCard
+			value={review ? String(review.dormant_count) : null}
+			label="Dormant"
+			highlight={review && review.dormant_count > 0 ? 'red' : null}
+			pending={loading}
+		/>
+		<KpiCard
+			value={review ? `${review.dormant_after_days}d` : null}
+			label="Dormancy window"
+			pending={loading}
+		/>
+		<KpiCard
+			value={review
+				? formatDate(review.generated_at, undefined, { hour: 'numeric', minute: 'numeric' })
+				: null}
+			label="Generated"
+			pending={loading}
+		/>
+	</div>
+
 	{#if loading}
 		<p class="state" data-testid="access-review-loading">Loading…</p>
 	{:else if error}
@@ -104,20 +141,6 @@
 			<button type="button" class="btn-cancel" onclick={load}>Retry</button>
 		</div>
 	{:else if review}
-		<div class="kpi-row">
-			<KpiCard value={String(review.total)} label="Elevated users" />
-			<KpiCard
-				value={String(review.dormant_count)}
-				label="Dormant"
-				highlight={review.dormant_count > 0 ? 'red' : null}
-			/>
-			<KpiCard value={`${review.dormant_after_days}d`} label="Dormancy window" />
-			<KpiCard
-				value={formatDate(review.generated_at, undefined, { hour: 'numeric', minute: 'numeric' })}
-				label="Generated"
-			/>
-		</div>
-
 		<DataTable columns={COLUMNS} isEmpty={reviewUsers.length === 0} empty="No elevated users.">
 			{#snippet body()}
 				{#each reviewUsers as u (u.user_id)}

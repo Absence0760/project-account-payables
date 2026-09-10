@@ -596,6 +596,25 @@ exactly as before.
   uses for `GET /payments/queue` etc. Role/permission CRUD itself stays
   admin-only on `require_roles` (managing the catalog must not be a grantable
   permission — that would be a privilege-escalation path).
+  - **One migration deliberately does NOT reproduce the prior matrix.**
+    `POST /api/cards/{id}/cancel` was `require_roles(ADMIN, AP_MANAGER, CFO)`
+    and is now `require_permission(payment.void)`, so the system `ap_manager`
+    **loses** it. Everywhere else "migrating changes nothing for the four
+    system roles" holds; here the old role set was the bug. Three routes close
+    a virtual card — this one, `POST /api/payments/{id}/void`, and
+    `POST /api/payments/{id}/void/retry-card-cancel` — and the latter two gate
+    on `payment.void`, which `ap_manager` does not hold by default (it holds
+    `payment.execute`: initiating money, not reversing it). So an `ap_manager`
+    who could not reverse a card payment could still kill the card behind a
+    live one, through the widest of three doors onto one effect.
+    `docs/decisions.md` §132 stated the rule for the retry route; this applies
+    it to the door left open, and §96 is why nothing in the UI regresses — the
+    route is deliberately unwired. Pinned in
+    `tests/test_sod_endpoint_wiring.py` by
+    `test_card_cancel_narrows_ap_manager_by_design` (the four-role table) and
+    `test_every_card_closing_route_gates_on_payment_void` (the three doors
+    agree). See `backend/docs/virtual-cards.md` § Cancel → The gate is
+    `payment.void`.
   - **The reads a `user.manage` holder needs to actually use the grant are
     migrated too.** `GET /api/admin/users` (the roster), `GET /api/admin/roles`
     (the picker `role_names` is chosen from) and `GET /api/admin/permissions`
@@ -813,9 +832,9 @@ signed-in employee stamps the column —
 | `POST /api/invoices/import-csv` (CSV import) | the caller |
 | `POST /api/recurring/{id}/generate-now` | the caller |
 | `POST /api/invoices/{id}/route-intercompany` (the mirror payable) | the routing actor |
+| the recurring-invoice background sweep | `RecurringInvoiceTemplate.created_by_user_id` — the employee who authored the template (NULL only for a template predating migration 0096) |
 | email intake, inbound PEPPOL | NULL — system ingestion, no human |
 | supplier-portal submit, portal PO flip | NULL — the actor is a tenant-scoped `VendorUser`, who holds no employee JWT and can never reach an approval endpoint |
-| the recurring-invoice background sweep | NULL — nobody ran it |
 
 The CSV importer was the hole: the route had the user and the audit row used
 it, but the `Invoice(...)` constructor never passed it, so the importer could
@@ -823,18 +842,34 @@ approve what they had just imported while the same person doing the same thing
 through `POST /api/invoices` got a 403.
 
 Making the NULL case fail CLOSED was considered and rejected — it would render
-every email-intake, PEPPOL, portal-submitted and sweep-generated invoice
-permanently unapprovable, an outage across four ingestion channels rather than
-a control. `backend/tests/test_invoice_uploader_stamping.py` enforces the
-invariant instead: a new construction site must pass `uploaded_by_id`
-explicitly, and passing a literal `None` must be declared with the reason there
-is no employee actor. See `docs/decisions.md`.
+every email-intake, PEPPOL and portal-submitted invoice permanently
+unapprovable, an outage across three ingestion channels rather than a control.
+`backend/tests/test_invoice_uploader_stamping.py` enforces the invariant
+instead: a new construction site must pass `uploaded_by_id` explicitly, and
+passing a literal `None` must be declared with the reason there is no employee
+actor. See `docs/decisions.md`.
 
-One residual gap is known and narrower: a **sweep-generated** recurring invoice
-has an employee author (whoever created the template) that we have nowhere to
-record — `RecurringInvoiceTemplate` carries no creator column. Until one is
-added, such an invoice is exempt from segregation exactly as a legacy
-pre-`uploaded_by_id` row is.
+#### The recurring sweep was on that list and did not belong
+
+It was the one row where NULL was *wrong* rather than merely permissive. Nobody
+**runs** the sweep, but an employee **authored** the template, and that is the
+person segregation has to exclude — so the template's author could approve the
+invoice their own standing instruction raised, exempt exactly as a legacy
+pre-`uploaded_by_id` row is. The other three channels have no control-plane user
+in the picture at all; this one did, and we simply had nowhere to put them.
+
+Migration 0096 added `recurring_invoice_templates.created_by_user_id`, stamped
+by `POST /api/recurring`, and `recurring_invoices.generate_one` now stamps
+`actor_id or template.created_by_user_id` — the live actor when there is one
+(generate-now), the author when there is not (the sweep). The **audit** row
+keeps `actor_id` honest (`None` for the sweep): *who acted* is nobody, *whose
+instruction created this payable* is the author, and only the second is a
+segregation input.
+
+Templates created before that migration are deliberately **not** backfilled.
+There is no honest author to recover, and guessing one manufactures either a
+refusal or an absolution. Those keep the legacy NULL reading — a shrinking set,
+not a standing hole.
 
 ### Approve and reject are not always the same role set
 

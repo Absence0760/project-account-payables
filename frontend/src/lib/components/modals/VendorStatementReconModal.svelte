@@ -23,6 +23,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import VendorPicker from '$lib/components/ui/VendorPicker.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
@@ -35,20 +36,13 @@
 		downloadSourceStatement
 	} from '$lib/api/vendorStatementRecon';
 
-	interface VendorOption {
-		id: string;
-		name: string;
-	}
-
 	let {
 		recon,
-		vendors,
 		onclose,
 		onsaved
 	}: {
 		// null → create mode; a Reconciliation → detail/diff mode.
 		recon: Reconciliation | null;
-		vendors: VendorOption[];
 		onclose: () => void;
 		onsaved: (r: Reconciliation) => void;
 	} = $props();
@@ -292,15 +286,13 @@
 	{#if isCreate}
 		<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 			<div class="form-grid">
-				<label>
-					<span>{m('vendorStatements.modal.vendor')} <em class="required">*</em></span>
-					<select bind:value={vendor_id} required disabled={!canEdit}>
-						<option value="">{m('vendorStatements.modal.selectVendor')}</option>
-						{#each vendors as v (v.id)}
-							<option value={v.id}>{v.name}</option>
-						{/each}
-					</select>
-				</label>
+				<VendorPicker
+					bind:value={vendor_id}
+					label={m('vendorStatements.modal.vendor')}
+					placeholder={m('vendorStatements.modal.selectVendor')}
+					required
+					disabled={!canEdit}
+				/>
 				<label>
 					<span>{m('vendorStatements.modal.statementDate')} <em class="required">*</em></span>
 					<input type="date" bind:value={statement_date} required disabled={!canEdit} />

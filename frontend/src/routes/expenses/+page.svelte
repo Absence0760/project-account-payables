@@ -528,6 +528,10 @@
 	let reportsHasMore = $derived(reports.length < reportsTotal);
 	let activeReport = $state<ExpenseReport | null>(null);
 	let activeSummary = $state<ExpenseReportSummary | null>(null);
+	// The summary is its OWN fetch, separate from the report body, so the KPI
+	// row it feeds needs its own in-flight flag — `reportBusy` tracks the
+	// lifecycle mutations, not this read. See the row's comment for why.
+	let summaryLoading = $state(false);
 	let showNewReport = $state(false);
 	let newReportNumber = $state('');
 	let newReportTitle = $state('');
@@ -585,6 +589,11 @@
 	});
 
 	async function openReport(r: ExpenseReport) {
+		// Set BEFORE the first await, so the summary row renders `pending` from
+		// the frame the detail view opens rather than spending one frame in the
+		// `unavailable` state — the report id is known here, so the fetch is
+		// certain to happen.
+		summaryLoading = true;
 		try {
 			activeReport = await getExpenseReport(r.id);
 		} catch {
@@ -594,17 +603,24 @@
 	}
 
 	async function refreshSummary() {
-		if (!activeReport) return;
+		if (!activeReport) {
+			summaryLoading = false;
+			return;
+		}
+		summaryLoading = true;
 		try {
 			activeSummary = await expenseReportSummary(activeReport.id);
 		} catch {
 			activeSummary = null;
+		} finally {
+			summaryLoading = false;
 		}
 	}
 
 	function closeReport() {
 		activeReport = null;
 		activeSummary = null;
+		summaryLoading = false;
 	}
 
 	async function handleNewReport() {
@@ -1324,25 +1340,53 @@
 					</div>
 				{/if}
 
-				{#if activeSummary}
-					<div class="kpi-row">
-						<KpiCard value={formatMoney(activeSummary.total, { currency: activeSummary.currency })} label={m('expenses.reports.total')} />
-						<KpiCard value={activeSummary.count} label={m('expenses.reports.expenses')} />
-						<KpiCard value={activeSummary.by_category.length} label={m('expenses.reports.categories')} />
+				<!-- Rendered on every state of the summary fetch, never gated on it
+				     (`docs/decisions.md` §125). It used to sit inside
+				     `{#if activeSummary}` and collapse to nothing while the summary
+				     was in flight — and again, permanently, whenever that fetch
+				     FAILED, which `refreshSummary`'s `catch` turns into a silent
+				     `null`. An `unavailable` row of dashes is the honest rendering
+				     of that second case; a row that simply isn't there says the
+				     report has no total.
+
+				     Every lifecycle action on this report (submit / approve /
+				     reject / attach / detach) re-runs `refreshSummary`, and
+				     `pending` is only consulted when the value is MISSING, so those
+				     keep the figures on screen instead of blanking them. -->
+				<div class="kpi-row">
+					<KpiCard
+						value={activeSummary
+							? formatMoney(activeSummary.total, { currency: activeSummary.currency })
+							: null}
+						label={m('expenses.reports.total')}
+						pending={summaryLoading}
+					/>
+					<KpiCard
+						value={activeSummary ? activeSummary.count : null}
+						label={m('expenses.reports.expenses')}
+						pending={summaryLoading}
+					/>
+					<KpiCard
+						value={activeSummary ? activeSummary.by_category.length : null}
+						label={m('expenses.reports.categories')}
+						pending={summaryLoading}
+					/>
+				</div>
+				<!--
+					The total sums each line's rate-locked conversion into the report
+					currency. Lines with no usable rate are EXCLUDED, so the figure
+					above would silently understate without this notice (issue #157).
+					One condition rather than the nested pair this used to be: the
+					outer `{#if activeSummary}` was the row's gate, and with the row
+					hoisted out it wrapped nothing else.
+				-->
+				{#if activeSummary && activeSummary.unconverted_count > 0}
+					<div class="unconverted-panel" role="alert">
+						{m('expenses.reports.unconverted', {
+							count: activeSummary.unconverted_count,
+							currency: activeSummary.currency
+						})}
 					</div>
-					<!--
-						The total sums each line's rate-locked conversion into the report
-						currency. Lines with no usable rate are EXCLUDED, so the figure
-						above would silently understate without this notice (issue #157).
-					-->
-					{#if activeSummary.unconverted_count > 0}
-						<div class="unconverted-panel" role="alert">
-							{m('expenses.reports.unconverted', {
-								count: activeSummary.unconverted_count,
-								currency: activeSummary.currency
-							})}
-						</div>
-					{/if}
 				{/if}
 
 				{#if canCreate && activeReport.status === 'draft'}

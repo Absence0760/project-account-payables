@@ -367,30 +367,58 @@
 			<p class="audit-error" role="alert" data-testid="verify-error">{verifyError}</p>
 		{/if}
 
-		{#if report}
+		<!-- Rendered from the moment a sweep is ASKED FOR, not from the moment it
+		     answers — `docs/decisions.md` §125, with the one adjustment this
+		     panel needs.
+
+		     The row is still gated, and deliberately: unlike a page-level KPI row
+		     this one reports the result of a sweep the operator RUNS, and the
+		     read is audited (`audit.viewed`), so nothing is fetched on mount.
+		     Five dashes before anyone has pressed Run would be a card claiming a
+		     figure is on its way for a question nobody asked. `report ||
+		     verifyLoading` is the honest gate: the row appears on the click,
+		     reserves its space through the wait, and re-runs keep the previous
+		     period's counts on screen (`pending` is only consulted when a value
+		     is missing) rather than blanking a row somebody is reading. -->
+		{#if report || verifyLoading}
 			<div class="kpi-row" data-testid="verify-counts">
-				<KpiCard value={String(report.approvals_checked)} label={m('audit.verify.kpi.checked')} />
-				<KpiCard value={String(report.invoices_covered)} label={m('audit.verify.kpi.invoices')} />
 				<KpiCard
-					value={String(report.valid)}
-					label={m('audit.verify.kpi.valid')}
-					highlight={report.valid > 0 ? 'green' : null}
+					value={report ? String(report.approvals_checked) : null}
+					label={m('audit.verify.kpi.checked')}
+					pending={verifyLoading}
 				/>
-				<!-- Red only for `invalid`: a tampered row is the alarm. -->
 				<KpiCard
-					value={String(report.invalid)}
+					value={report ? String(report.invoices_covered) : null}
+					label={m('audit.verify.kpi.invoices')}
+					pending={verifyLoading}
+				/>
+				<KpiCard
+					value={report ? String(report.valid) : null}
+					label={m('audit.verify.kpi.valid')}
+					highlight={report && report.valid > 0 ? 'green' : null}
+					pending={verifyLoading}
+				/>
+				<!-- Red only for `invalid`: a tampered row is the alarm. And the
+				     alarm is withheld while there is no figure — a SOX control
+				     test must not paint "0 tampered rows" before it has looked. -->
+				<KpiCard
+					value={report ? String(report.invalid) : null}
 					label={m('audit.verify.kpi.invalid')}
-					highlight={report.invalid > 0 ? 'red' : null}
+					highlight={report && report.invalid > 0 ? 'red' : null}
 					sub={m('audit.verify.sub.invalid')}
+					pending={verifyLoading}
 				/>
 				<!-- Deliberately never red, and never folded into `invalid`. -->
 				<KpiCard
-					value={String(report.unsigned)}
+					value={report ? String(report.unsigned) : null}
 					label={m('audit.verify.kpi.unsigned')}
 					sub={m('audit.verify.sub.unsigned')}
+					pending={verifyLoading}
 				/>
 			</div>
+		{/if}
 
+		{#if report}
 			{#if !report.signing_configured}
 				<p class="verify-notice" data-testid="verify-not-configured">
 					{m('audit.verify.notConfigured')}

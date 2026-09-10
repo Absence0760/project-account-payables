@@ -237,7 +237,7 @@ down, and must report an unavailable probe.
 | Method + path | Roles | Purpose |
 |---|---|---|
 | `GET /offers` | all four | list (filters: `status` — `missed` = declined+expired — `scope`, `vendor_id`; paginated, entity-scoped). Both the filter and the reported `status` use the **effective** status (`effective_status_sql`), so a lapsed `offered` row is filtered and rendered as `expired` |
-| `POST /offers` | admin, ap_manager | create an offer (invoice base_amount defaults from the invoice) |
+| `POST /offers` | admin, ap_manager | create an offer (invoice base_amount defaults from the invoice). `422` for a malformed `invoice_id`/`vendor_id` **or an unknown key** — `DiscountOfferCreate` is `extra="forbid"` (§ Both create surfaces refuse what they cannot read) |
 | `GET /offers/{id}` | all four | detail (entity-scoped) |
 | `POST /offers/{id}/accept` | admin, ap_manager, **cfo** | accept at a tier (`tier_days` or best tier today) |
 | `POST /offers/{id}/decline` | admin, ap_manager, **cfo** | decline |
@@ -297,6 +297,56 @@ Three properties are load-bearing on both sides:
   and it stands against the vendor's whole open balance indefinitely. And a
   malformed `vendor_id` reached an unguarded `uuid.UUID(...)` and surfaced as a
   500 instead of a 422.
+
+### Both create surfaces refuse what they cannot read
+
+`DiscountOfferCreate` (`POST /offers`) now carries `extra="forbid"` too. The
+hazard is the same as its `bulk-negotiate` sibling's and then some: drop
+`valid_until` and the offer is horizon-less and unrankable; drop `currency` and
+the offer is stamped from the invoice or the org rather than what the caller
+asserted, which is precisely the divergence `discount_capture` refuses to
+capture against (§ Currency is checked before amount) — so the savings are never
+realised and nothing says why.
+
+It landed a round later than the bulk one for a real reason worth keeping
+written down: `bulk-negotiate` shipped **caller-less**, so tightening it broke
+nobody, while `POST /offers` has live callers and forbidding extras on a surface
+in use is a breaking change owed an audit first. That audit:
+
+| Caller | Kind | Sites | Keys sent |
+|---|---|---|---|
+| `frontend/src/lib/api/discounts.ts` | SPA client | 0 | no `createOffer` function exists — the client covers dashboard / list / accept / decline / roi / optimize / bulk-negotiate only |
+| `mobile/lib/**` | Flutter | 0 | no discount-offer creation on mobile |
+| `backend/scripts/seed_extras.py` | seed | 2 | constructs `DiscountOffer` **ORM rows** directly; never touches this schema |
+| `backend/tests/test_discounts_api.py` | pytest | 20 | `{scope, invoice_id, tiers}`, plus `{scope, vendor_id, base_amount, tiers}` |
+| `backend/tests/test_cash_flow_copilot.py` | pytest | 11 | `{scope, invoice_id, tiers}` (+ `currency` on one) |
+| `backend/tests/test_discount_capture.py` | pytest | 4 | `{scope, invoice_id, tiers}` (+ `currency` on one) |
+| `backend/tests/test_discount_currency_resolution.py` | pytest | 2 | `{scope, vendor_id, base_amount, tiers}` (+ `currency` on one) |
+| `backend/tests/test_cash_flow_plan_lifecycle.py` | pytest | 1 | `{scope, invoice_id, tiers}` |
+| `frontend/tests-e2e/discounts/money-path.spec.ts` | Playwright | 3 | `{scope, invoice_id, tiers}` (+ `valid_from` on two) |
+| `frontend/tests-e2e/discounts.spec.ts` | Playwright | 1 | `{scope, invoice_id, tiers}` |
+| `frontend/tests-e2e/discounts/currency-notice.spec.ts` | Playwright | 1 | `{scope, invoice_id, tiers, currency, valid_from}` |
+
+Union across all 42 sites: `{scope, invoice_id, vendor_id, tiers, base_amount,
+currency, valid_from}` — a strict subset of the declared fields, so no caller
+changes. `test_create_offer_accepts_every_field_its_live_callers_send` re-asserts
+that union in the suite, because a grep result rots and the next field rename
+should fail there rather than in a deployed caller.
+
+The nested `DiscountTier` objects stay permissive on **both** schemas,
+deliberately: `DiscountTier` is also a *response* model
+(`DiscountOfferResponse.tiers` / `.accepted_tier` are hydrated from the
+`discount_offers.tiers` JSONB), so forbidding there would turn a stored row
+carrying an unexpected key into a 500 on read — a worse failure than the one
+being prevented, and on the wrong side of the request/response boundary.
+
+**Still an open product question, deliberately not decided here:** whether AP
+should create offers by hand at all. `POST /offers` has no frontend caller
+either, and unlike `bulk-negotiate` that may be *correct* rather than a gap — an
+early-pay offer normally arrives **from** the supplier (the portal's
+`POST /portal/discount-offers/{id}/accept` side, or the `financing_adapters`
+marketplace), so a manual AP-side create could be a deliberate absence rather
+than an unwired feature. Wiring it is a product call, not an engineering one.
 
 The tier `percent` travels as an **exact decimal string**, never a JSON number:
 `json.loads` decodes the body before any validator runs, so a JSON number is

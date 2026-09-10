@@ -34,31 +34,35 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-09 (round 28) — ten agents, each in its own git
-worktree, plus integrator verification of the merged branch. **Thirteen** entries
-closed, ten opened. **34 → 31** — by category, **20 (c)** · **7 (a)** · **4 (b)**.
-The closure count outruns the net because a round that closes thirteen entries
-also learns ten things; a file that only shrank would mean the agents stopped
-looking.
+**Last reconciled:** 2026-09-10 (round 29) — five agents, each in its own git
+worktree, plus integrator verification of the merged branch. **Nine** entries
+closed and half of a tenth, four opened. **31 → 26** — by category, **16 (c)** ·
+**7 (a)** · **3 (b)**.
 
-**Both segregation-of-duties items are closed**, under the repo owner's explicit
-authorisation, which is what satisfies the standing "loop in the CISO" gate on
-that section. They were the two highest-severity items in the file and had been
-deliberately untouched by rounds 24–27. A new control-design question opened in
-their place — exception resolution has no segregation check at all — and is held
-on the same terms.
+**Two entries undercounted their own scope, and the pattern is now five rounds
+old.** "Seven panel-scoped KPI rows" listed nine and there were twelve — three
+more surfaces carried the identical defect with a loading flag already to hand.
+"Five consumers share the vendor picker" was six; `/credit-memos` walked every
+vendor page on mount, the same defect by a different mechanism. An entry is a
+lead, not a specification, and the count in it is the least reliable part.
 
-**Four entries were wrong about themselves**, which is now the pattern four
-rounds running and the reason an entry is a lead rather than a specification.
-The `networkidle` count was 250, not 242 (the original count matched only
-single-quoted call sites). The CSV-import entry claimed two sibling paths had "no
-creator column to fix with"; both already carried the actor in their signatures.
-The bank-redirect entry named only the invite route, missing the password-reset
-route that is the same hole against an existing supplier — and finding it
-mattered, because the fix's soundness rests on those two being *exhaustive*. And
-the bulk-negotiate entry described a multi-vendor batch; the endpoint returns one
-offer, so the bulk-selection UI the entry implied would have been the wrong shape
-entirely.
+**One entry's stated durable fix broke the rule it was written under, and
+shipping it anyway was the right call.** Moving `POST /api/cards/{id}/cancel`
+onto `require_permission` cannot reproduce the prior four-system-role matrix that
+every other such migration preserves: `ap_manager` holds `payment.execute`, not
+`payment.void`, so closing the gap and keeping the matrix are the same sentence
+read in opposite directions. The narrowing is stated in five places rather than
+shipped quietly — see [decisions.md](decisions.md) §142.
+
+**The KPI work was not the cosmetic tidy its entry described.** Six of those rows
+carried an unconditional `highlight`, and `KpiCard` withholds a tint only from a
+*missing* figure — so the one thing that had ever stopped a SOX access review, an
+operational health check and a tamper check each painting a green "all clear"
+over a question still being asked was the row not existing yet.
+
+**Exception resolution stays held.** It remains the only segregation-of-duties
+item in the file and was deliberately untouched again, pending the standing "loop
+in the CISO / Security Analyst" gate on that section.
 
 **One belief cost two rounds and was retired by looking.** The `networkidle`
 sweep had preserved sites on a documented Svelte 5 form-hydration hazard. The app
@@ -1175,26 +1179,14 @@ had closed in parallel.
       since the row's presence is no longer a signal that loading finished.
       Seven panel-scoped rows still collapse; they are a separate entry below.
 
-- [ ] **(b) Delete the leaked `meter_test_*` plan rows on long-lived local boxes.**
-      The durable half landed in round 28 and the entry's mechanism was **stale**:
-      the 41 rows in the shared `feohledger` control plane are historical, left
-      before the harness moved to per-slot control databases (newest row
-      2026-08-06). The live problem was *within-session* pollution, so the fix is
-      a teardown, not another setup purge — six billing files hand-rolled a SETUP
-      purge, which by construction reaps only the previous run and always leaves
-      the last row behind, and one wrote only the subscription half.
-      `_reset_control_billing` now runs on the `realdb` teardown and
-      `RealDB.purge_plans` is the single owner of that child graph
-      ([decisions.md](decisions.md) §135).
-      **What remains** is the one-off cleanup of the historical rows on a
-      developer box; CI builds its control plane fresh and the `feohledger_pytest*`
-      slot databases were checked and are already clean. Children first,
-      `meter_test_*` only, against
-      `postgresql://postgres:postgres@localhost:5432/feohledger`:
-      `DELETE FROM subscriptions WHERE plan_id IN (SELECT id FROM plans WHERE code LIKE 'meter\_test\_%'); DELETE FROM plans WHERE code LIKE 'meter\_test\_%';`
-      **Trigger:** the next time a billing spec behaves oddly on a long-lived
-      local box.
-
+- [x] **DONE (round 29).** The one-off cleanup ran on this box: 42 `meter_test_*`
+      plan rows and their 2 child subscriptions deleted from the shared
+      `feohledger` control plane, children first, leaving the three real plans
+      (`free`/`growth`/`scale`) untouched. The durable half —
+      `_reset_control_billing` on the `realdb` teardown, with `RealDB.purge_plans`
+      owning that child graph ([decisions.md](decisions.md) §135) — landed in round
+      28 and is what stops them coming back. Any *other* long-lived developer box
+      still needs the same two statements; CI builds its control plane fresh.
 
 ### Surfaced by the round-28 batch (2026-09-09)
 
@@ -1203,89 +1195,176 @@ entry had not predicted; where that was itself a defect it was fixed in the same
 round rather than recorded. What follows is only what genuinely could not be
 closed in the slice that found it.
 
-- [ ] **(c) A sweep-generated recurring invoice has no recorded creator.**
-      Unlike email intake, PEPPOL and the portal — where no control-plane user
-      exists to record — the template here *does* have an employee author, and
-      `RecurringInvoiceTemplate` has no column to hold them. So such an invoice is
-      exempt from the segregation check exactly as a legacy row is.
-      **Durable fix:** `created_by_user_id` on `recurring_invoice_templates`
-      (tenant migration, stamped by `POST /api/recurring`), with `generate_one`
-      falling back to it. Existing rows stay NULL — there is no honest author to
-      backfill and guessing one manufactures either a refusal or an absolution.
-      **Trigger:** the next migration touching that table.
+- [x] **DONE (round 29).** Migration `0096` adds
+      `recurring_invoice_templates.created_by_user_id` (tenant-scoped, nullable, no
+      FK — `users` is control-plane while the table is tenant-local);
+      `POST /api/recurring` stamps it and `generate_one` stamps
+      `actor_id or template.created_by_user_id`, so the live actor wins for
+      generate-now and the author is used for the sweep. Existing rows stay NULL —
+      no honest author exists to backfill, and every proxy manufactures either a
+      refusal or an absolution. The tests were proven non-vacuous by a negative
+      control: with the fallback reverted, the author approving their own template's
+      invoice returns `200 {"status": "approved"}`. See
+      [decisions.md](decisions.md) §141.
 
-- [ ] **(c) `POST /api/cards/{id}/cancel` gates on roles where the void it
-      duplicates gates on a permission.** It is `require_roles(ADMIN, AP_MANAGER,
-      CFO)`, so in a duty-split org an `ap_manager` explicitly denied
-      `payment.void` can still close a card through it. It stays unwired in the UI
-      ([decisions.md](decisions.md) §96, §132), so it is not reachable by
-      accident.
-      **Durable fix:** move it onto `require_permission`, which is an SoD-catalogue
-      change with its own `test_sod_endpoint_wiring` pin.
-      **Trigger:** the next virtual-card slice, or a duty-split tenant.
+- [x] **DONE (round 29).** Moved onto `require_permission(payment.void)`, matching
+      the two sibling routes that close the same card. It is the one migration that
+      does **not** reproduce the prior four-system-role matrix, and cannot:
+      `ap_manager` holds `payment.execute`, not `payment.void`, so closing the gap
+      and preserving the matrix are the same sentence read in opposite directions.
+      The narrowing is stated in five places rather than shipped quietly, including
+      an explicit four-role table in
+      `test_sod_endpoint_wiring.py::test_card_cancel_narrows_ap_manager_by_design`,
+      and a second test holds all three card-closing doors to one gate. See
+      [decisions.md](decisions.md) §142.
 
-- [ ] **(c) The shared vendor picker is capped at 100 with no search and no
-      truncation notice.** `listVendors()` requests `page_size=100` and renders
-      page 1. **Five** consumers share it (`/catalogs`, `ContractModal`,
-      `RecurringModal`, `VendorStatementReconModal`, `BulkNegotiationModal`), so a
-      tenant past 100 vendors silently cannot select the rest anywhere.
-      **Durable fix:** one shared searchable, server-paged picker for all five.
-      Half-fixing it in one modal leaves four wrong, which is why it was not taken
-      opportunistically. `VendorOption` is also still re-declared locally in three
-      of those modals now that the canonical type lives in `api/vendors.ts`.
-      **Trigger:** the first tenant past 100 vendors, or the next modal that needs
-      one.
+- [x] **DONE (round 29).** One shared `ui/VendorPicker` — a WAI-ARIA 1.2 combobox
+      over a new `searchVendorOptions()`, so filtering is server-side and a vendor on
+      page 40 is reachable, with a count line stating how much of the matching set is
+      on screen. The entry named five consumers; there were **six** (`/credit-memos`
+      walked every page on mount — the same defect class, not on the list). No local
+      `VendorOption` re-declarations remain. Three further defects surfaced on the
+      way and were fixed with coverage: Escape closed the enclosing modal instead of
+      the popup, a click on an already-focused picker never re-opened it (making the
+      control one-shot), and a failed *next* page reported the whole list as failed.
+      `CatalogResponse` gained `vendor_name` so an existing selection can be labelled
+      without a per-open SOX access-audit row. See [decisions.md](decisions.md)
+      §145-§147.
 
-- [ ] **(c) Seven panel-scoped KPI rows still collapse while loading.**
-      `/adaptive` ×2, `/admin/access-review`, `/admin/health`, `/billing` ×2,
-      `/expenses` Reports, `/audit` and `ForecastVariancePanel`. Round 28 brought
-      the page-level rows onto the `pending` convention
-      ([decisions.md](decisions.md) §125); these sit in different loading chains.
-      Consistency, not a defect — §34 is satisfied either way.
-      **Durable fix:** the same `pending` treatment per panel.
-      **Trigger:** the next design pass on `KpiCard`.
+- [x] **DONE (round 29).** The entry said seven; its own list enumerated nine, and
+      three more surfaces had the identical defect with a loading flag already to
+      hand (`CfoMetrics`, `AgentDashboard`, `BudgetModal`). **Twelve** fixed,
+      rendering as eleven rows — `/billing`'s two copies of the usage section
+      collapsed into one, since neither branch of a chain gated on the subscription
+      response could own the row. It was not only consistency: six of these rows
+      carried an unconditional `highlight`, so the only thing that had ever stopped a
+      SOX access review, an operational health check and a tamper check each painting
+      a green "all clear" over an unanswered question was the row not existing yet.
+      Two rows keep a gate on purpose — `/audit` and `ForecastVariancePanel` report a
+      sweep the *user* runs. `tests-e2e/a11y/kpi-pending.spec.ts` extended with six
+      cases rather than a parallel spec. See [decisions.md](decisions.md) §143.
 
-- [ ] **(c) Two nav rows are admin-only while their reads are open to any
-      authenticated user.** `/workflows` has no redirect guard, so a non-admin who
-      types the URL reaches a dead end rather than a 403; `/organization` ships a
-      non-admin read-only mode that only a typed URL can reach.
-      **Durable fix:** a product call per row — widen the nav, or delete the
-      read-only mode as dead code. (`/admin?tab=roles` is a deliberate keep: role
-      CRUD is a write surface first.)
-      **Trigger:** a product decision on who sees each.
+- [ ] **(c) `/organization` is admin-only in the nav while its read is open, and
+      the non-admin who reaches it meets one live 403 and five panels of defaults.**
+      The `/workflows` half of this entry is **closed**: round 29 gave the list and
+      the builder the redirect guard four sibling routes already use, with four e2e
+      cases, so a typed URL no longer lands a non-admin on an editing surface whose
+      every control 403s — and on the builder, loses their canvas edit
+      ([decisions.md](decisions.md) §144). What remains is `/organization`, and round
+      29 established the facts the product call needs. The non-admin read-only mode
+      is **deliberate and live** — a derived `readOnly` wrapping every panel in one
+      disabled `<fieldset>` — and four of its six mount reads are role-open and
+      render real data. But `GET /api/organization/chat-notifications` is admin-only
+      and is *not* gated on `auth.isAdmin` the way Email Intake is, so a clerk gets a
+      live `role="alert"` reading "Your role does not permit this action." — the
+      exact anti-pattern that panel's own comment says the design avoids. And
+      `services/org_settings_view.py` strips six settings blocks, so five panels show
+      platform defaults rather than the tenant's truth: Extraction reads
+      "Claude Vision / Platform" regardless, and Fraud Detection vanishes entirely.
+      Three clerk specs load the page and assert the banner; none touches either.
+      **Durable fix:** the product call — keep the read-only mode and make it honest
+      (a one-line `auth.isAdmin` gate on `loadChat()` plus a `chat.adminOnly` hint
+      mirroring `email-intake-admin-only`, and either widen the view or hide the five
+      defaulted panels), or delete it as dead code and leave the nav as it is. Half
+      of it is a defect on either answer. (`/admin?tab=roles` remains a deliberate
+      keep: role CRUD is a write surface first.)
+      **Trigger:** a product decision on who sees `/organization`.
 
-- [ ] **(c) `tsconfig.e2e.json` carries one exclusion, and it is shrink-only.**
-      `tests-e2e/entities/switcher.spec.ts` misses a `Page` annotation and was
-      excluded rather than edited, because another session owned that file during
-      round 28. The new `check:e2e` gate is otherwise whole-tree.
-      **Durable fix:** annotate it and delete the exclusion. Never add an entry —
-      the fix for a type error in that tree is the annotation.
-      **Trigger:** the next touch of that spec.
+- [x] **DONE (round 29).** `switcher.spec.ts` annotated exactly as
+      `cfo/by-entity.spec.ts` does, the exclusion deleted, and `exclude: []` kept in
+      place so the standing rule — never add an entry; the fix for a type error in
+      that tree is the annotation — still has somewhere to live. `pnpm check:e2e` is
+      green whole-tree with the spec's assertions unchanged.
 
-- [ ] **(c) List joining is not locale-aware.** Translated fragments are joined
-      with a literal `', '` throughout; Japanese wants an ideographic comma. There
-      is no `Intl.ListFormat` usage anywhere in the tree.
-      **Durable fix:** one shared helper covering every `.join(', ')` over
-      translated content. **Trigger:** the next i18n slice.
+- [x] **DONE (round 29).** `utils/list.ts::formatList` is the one owner, sited
+      beside `money.ts`/`time.ts` and reading the same active-locale holder;
+      `Intl.ListFormat` at `conjunction`/`narrow`, memoized, degrading to `', '` when
+      unavailable rather than throwing. Six prose sites migrated; the other thirteen
+      deliberately keep the literal and `listJoinAudit.test.ts` records why each does
+      — a value re-split on `,` by its own input, or a bare list of identifiers,
+      becomes a correctness bug under a locale-dependent separator, so banning the
+      literal outright was rejected. vitest pins Japanese (`A、B、C`) differing from
+      English. See [decisions.md](decisions.md) §148.
 
-- [ ] **(c) `/vendors/screening`'s page body is still English.** Round 28 keyed
-      its label *maps*; the route's own copy — the definition labels, the
-      Blocked/Allowed cell, the block/unblock/re-screen buttons, the three history
-      states and the no-permission note — is unextracted.
-      **Durable fix:** the route extraction, as its own slice.
+- [x] **DONE (round 29).** Every literal on the route keyed, with real translations
+      in all six locales — 51 keys each, not English placeholders. Two things the
+      entry did not name went with it: the history verdict badge derived its label as
+      `result.replace(/_/g, ' ')` under a `capitalize` that would have title-cased a
+      translated phrase mid-word, and the risk level and score were concatenated as
+      bare text. The obvious reuse of `SCREENING_STATUS_LABEL_KEYS` does not work —
+      the backend collapses `review_required` to `review` before stamping the vendor
+      — so `SANCTIONS_RESULT_LABEL_KEYS` is its own drift-guarded map. See
+      [decisions.md](decisions.md) §149.
+
+- [x] **DONE (round 29) on the engineering half.** The caller audit ran first, as
+      the entry required: 42 call sites across pytest, Playwright and the seed
+      script, zero frontend client functions and zero mobile callers, and a union of
+      keys that is a strict subset of the declared fields — so nobody breaks and
+      `extra="forbid"` landed. The audit ships as an executable assertion rather than
+      a claim in a commit message, because a grep result rots. The nested
+      `DiscountTier` stays permissive by design: it is also a response model hydrated
+      from JSONB, where forbidding would turn an unexpected stored key into a 500 on
+      read. The entry's separate product question is re-filed below on its own. See
+      [decisions.md](decisions.md) §150.
+
+### Surfaced by the round-29 batch (2026-09-10)
+
+Five agents closed nine entries and half of a tenth. Each returned something its
+entry had not predicted — two entries undercounted their own scope, and one
+named a durable fix that turned out to break the standing rule it was written
+under. What follows is only what genuinely could not be closed in the slice that
+found it.
+
+- [ ] **(c) A recurring template records its author but not its editor.** §141
+      closed the sweep's segregation exemption by stamping `created_by_user_id` at
+      create. An `ap_manager` who PATCHes *someone else's* template — repointing
+      the vendor and the amount — is recorded nowhere on it, so they can still
+      approve the invoice it then generates.
+      **Durable fix:** segregation keyed on a *set* of implicated actors (author
+      plus material editors) rather than the single `uploaded_by_id` column.
+      Stamping the editor instead merely moves the exemption to the author, which
+      is why it was not taken opportunistically — the predicate and every path
+      feeding it have to change together.
+      **Trigger:** the next SoD slice, or a tenant that splits template CRUD from
+      approval.
+
+- [ ] **(c) The dashboard's own KPI row still collapses while loading.**
+      `routes/+page.svelte`'s row sits inside `{:else if data}`, so the app's
+      highest-traffic KPI row is the last one off the `pending` convention
+      ([decisions.md](decisions.md) §125/§143) — the round-28 note claiming the
+      page-level rows were all done was wrong.
+      **Durable fix:** the `pending` treatment, plus a call on the zero-invoice
+      `EmptyState` branch it collides with: while loading, whether
+      `total_invoices === 0` is unknown, so the honest gate makes a pending row
+      appear and then vanish for an empty tenant — a worse transition than
+      today's, and a design decision rather than a mechanical one.
+      **Trigger:** the next design pass on the dashboard, or on `KpiCard`.
+
+- [ ] **(c) Three surfaces the round-29 i18n sweep passed over are still
+      hardcoded English.** The `/invoices` warning-icon `aria-label`/`title` (a
+      literal `` `Warnings: …` `` wrapping backend English prose — which is why its
+      `.join(', ')` was left on the literal too: migrating the separator alone
+      half-localizes a still-English sentence), `/profile` ("Full name", "Email",
+      "Roles", "Saving..."), and `components/exceptions/AgentDashboard.svelte`'s
+      `COLUMNS` headers. Two now-dead keys also want pruning —
+      `discounts.bulk.vendorsLoading` and `discounts.bulk.noVendors`, orphaned in
+      all six locales when the shared vendor picker took over both states.
+      **Durable fix:** extract each route's copy, migrating its `.join(', ')` to
+      `formatList` in the same change so the separator and the sentence localize
+      together.
       **Trigger:** the next i18n slice.
 
-- [ ] **(c) `DiscountOfferCreate` still accepts unknown fields.** Round 28 added
-      `extra="forbid"` to `bulk-negotiate`, where a misspelled `valid_until` had
-      been silently dropped, creating an offer the optimizer can never rank. The
-      sibling create endpoint has the same hazard but **has live callers**, so
-      forbidding extras there is a breaking change needing its own caller audit.
-      Separately, `POST /api/discounts/offers` has no frontend caller either — a
-      genuinely different question, since an offer normally arrives *from* a
-      supplier, so a manual AP-side create may be a deliberate absence.
-      **Durable fix:** the caller audit, then `extra="forbid"`; and a product call
-      on whether AP creates offers by hand.
-      **Trigger:** the next `/discounts` slice.
+- [ ] **(c) ⚠️ PRODUCT REVIEW NEEDED (issue #328) — does AP create early-pay
+      offers by hand?** `POST /api/discounts/offers` has no frontend caller. Unlike
+      `bulk-negotiate`, that may be *correct*: an offer normally arrives **from**
+      the supplier — the portal's own accept/decline surface, or the
+      `financing_adapters` marketplace — so a manual AP-side create may be a
+      deliberate absence rather than an unwired feature. Re-filed on its own
+      because §150 closed the schema half beside it and a closed entry is the wrong
+      place to keep a live question.
+      **Durable fix:** the product call, then either a `/discounts` create surface
+      or the endpoint's removal.
+      **Trigger:** the #328 product review.
 
 ## (a) Blocked on external credentials, accounts, or hardware
 

@@ -12,9 +12,14 @@ test.describe('/admin', () => {
 
 	test('lists the seeded users', async ({ page, tenantAdmin }) => {
 		await expect(page.getByRole('heading', { name: 'Users & Roles' })).toBeVisible();
-		await expect(page.locator('table tbody tr').first()).toBeVisible();
-		// 4 users in seed per tenant.
-		expect(await page.locator('table tbody tr').count()).toBeGreaterThanOrEqual(4);
+		// 4 users in seed per tenant. `count()` does not auto-wait and the first
+		// row painting is not the list having arrived, so assert the count
+		// through a retrying matcher rather than reading it once — this read
+		// caught a mid-render table at 1 row on a loaded CI shard.
+		await expect(page.locator('table tbody tr')).not.toHaveCount(0);
+		await expect
+			.poll(async () => page.locator('table tbody tr').count())
+			.toBeGreaterThanOrEqual(4);
 
 		// Each row's email cell should match what the seed uses.
 		const emails = await page.locator('table tbody td.email-cell').allTextContents();

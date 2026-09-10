@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { beforeNavigate } from '$app/navigation';
+	import { beforeNavigate, goto } from '$app/navigation';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
@@ -79,7 +80,28 @@
 
 	const id = $derived($page.params.id ?? '');
 
+	/**
+	 * The same redirect guard the `/workflows` list carries, for the same
+	 * reason — see the long note there.
+	 *
+	 * Guarding only the list would have left a hole a bookmark walks straight
+	 * through: `GET /api/workflows/{id}` is `get_current_user`, so a non-admin
+	 * typing this URL got the drag-and-drop builder in full, with an editable
+	 * canvas, a step palette and a Save that 403s — the worst version of the
+	 * dead end, since the work is lost rather than merely refused. This route
+	 * also fires `adminStore.fetchUsers()` for the approver picker, which is
+	 * admin-only (`GET /api/admin/users`), so a non-admin's picker was silently
+	 * empty on top of it.
+	 */
+	const userLoaded = $derived(auth.user !== null);
+	const allowed = $derived(auth.isAdmin);
+
 	$effect(() => {
+		if (userLoaded && !allowed) goto('/');
+	});
+
+	$effect(() => {
+		if (!userLoaded || !allowed) return;
 		if (id) loadWorkflow(id);
 		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
 		// its own handling, but nothing awaits here — the store's `errored` flag is

@@ -32,7 +32,12 @@ test.describe('/purchase-orders', () => {
 		const stem = firstPoNumber!.trim().slice(0, -1); // drop the last char to keep it a substring
 
 		const filtered = page.waitForResponse(
-			(r) => r.url().includes('/api/purchase-orders') && r.url().includes('search=')
+			// Pathname-exact: `/api/purchase-orders/counts` carries the same
+			// `search=` and can answer first, which resolves this wait while the
+			// table still holds the unfiltered result.
+			(r) =>
+				new URL(r.url()).pathname.endsWith('/api/purchase-orders') &&
+				r.url().includes('search=')
 		);
 		await page.getByPlaceholder('Search PO number...').fill(stem);
 		await filtered;
@@ -43,7 +48,13 @@ test.describe('/purchase-orders', () => {
 	});
 
 	test('clicking a row opens the detail modal with line items', async ({ page }) => {
-		await page.locator('table tbody tr').first().click();
+		// Wait for a DATA row, not just any row. Clicking before the list has
+		// landed hits whatever placeholder the table is showing, and the modal
+		// then never opens — the failure reads as "the modal is missing" rather
+		// than "there was nothing to click".
+		const firstRow = page.locator('table tbody tr').filter({ has: page.locator('td.mono') }).first();
+		await expect(firstRow).toBeVisible();
+		await firstRow.click();
 
 		const modal = page.locator('div.modal[role="dialog"][aria-label="Purchase order"]');
 		await expect(modal).toBeVisible({ timeout: 5_000 });

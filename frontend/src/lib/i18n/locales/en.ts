@@ -667,6 +667,31 @@ export const en = {
 	'vendors.invite.sent.email': 'Email',
 	'vendors.invite.sent.url': 'Portal URL',
 	'vendors.invite.sent.done': 'Done',
+	// --- Shared vendor picker (`ui/VendorPicker.svelte`) ---
+	// The count line is load-bearing, not decoration: this control shows one
+	// server-filtered PAGE of the matching vendors, and the user must never be
+	// left believing a subset is the whole set.
+	'vendors.picker.loading': 'Loading vendors…',
+	'vendors.picker.loadFailed':
+		'Vendors couldn’t be loaded. That is not the same as this tenant having none — try again.',
+	'vendors.picker.noVendors': 'No vendors to choose from yet',
+	'vendors.picker.noMatches': 'No vendors match “{query}”',
+	'vendors.picker.showingAll': 'All matches shown ({total})',
+	'vendors.picker.showingPartial': 'Showing {shown} of {total} matches — type to narrow',
+	'vendors.picker.refineHint': 'Not all matches are listed',
+	'vendors.picker.loadMore': 'Load more',
+	// A failed NEXT page is not a failed list: the page already on screen is
+	// still valid, so the count line keeps saying what it is showing and only
+	// the footer reports what could not be added to it.
+	'vendors.picker.loadMoreFailed': 'Couldn’t load more.',
+	'vendors.picker.clearAria': 'Clear the selected vendor',
+	'vendors.picker.listAria': 'Vendors',
+	// A row whose API shape carries no vendor NAME (only `Catalog`, today) can
+	// hand the picker an id it cannot label. Say that out loud: the old native
+	// `<select>` fell back to rendering its empty first option, which read as
+	// "no vendor" while the form still held one.
+	'vendors.picker.unresolvedSelection':
+		'A vendor is already selected, but its name isn’t available on this screen. Picking one here replaces it.',
 	'vendors.changeRequests.navLabel': 'Bank Changes',
 	'vendors.changeRequests.title': 'Bank & Tax Change Approvals',
 	'vendors.changeRequests.intro':
@@ -719,6 +744,72 @@ export const en = {
 	'vendors.changeRequests.toast.approveFailed': 'Approve failed',
 	'vendors.changeRequests.toast.rejectFailed': 'Reject failed',
 	'vendors.changeRequests.toast.loadFailed': 'Failed to load the change-request queue',
+
+	// Screening review queue (routes/vendors/screening/+page.svelte). The shared
+	// screening LABEL MAPS live above under `vendors.screening.*`; this block is
+	// the route's own copy, so it sits under `.queue.*` and can't collide with
+	// them (`vendors.screening.blocked` is the badge, not this page's cell).
+	'vendors.screening.queue.title': 'Screening Review Queue',
+	'vendors.screening.queue.refresh': 'Refresh',
+	'vendors.screening.queue.refreshing': 'Refreshing…',
+	'vendors.screening.queue.kpi.matches': 'Sanctions matches',
+	'vendors.screening.queue.kpi.needsReview': 'Needs review',
+	'vendors.screening.queue.kpi.blocked': 'Payments blocked',
+	'vendors.screening.queue.kpi.unavailable': 'Count unavailable',
+	'vendors.screening.queue.kpi.blockedScope': 'All vendors, not just this queue',
+	'vendors.screening.queue.search.placeholder': 'Search vendor or matched list…',
+	'vendors.screening.queue.search.aria': 'Search screening review queue',
+	'vendors.screening.queue.col.matchedList': 'Matched list',
+	'vendors.screening.queue.col.provider': 'Provider',
+	'vendors.screening.queue.col.riskScore': 'Risk score',
+	'vendors.screening.queue.col.lastScreened': 'Last screened',
+	'vendors.screening.queue.empty.errored': 'Could not load the review queue.',
+	'vendors.screening.queue.empty.filtered': 'No vendors match your search.',
+	'vendors.screening.queue.empty.clean': 'No vendors are awaiting screening review. 🎉',
+	'vendors.screening.queue.row.open': 'Review screening for {vendor}',
+	'vendors.screening.queue.row.review': 'Review',
+	'vendors.screening.queue.modal.aria': 'Vendor screening review',
+	'vendors.screening.queue.modal.screeningStatus': 'Screening status',
+	'vendors.screening.queue.modal.riskLevel': 'Risk level',
+	// Composed, not concatenated: the parentheses around a risk score are
+	// half-width here and full-width in Japanese, so the shape is the
+	// translator's to choose (the rule `vendors.risk.pill` already states).
+	'vendors.screening.queue.modal.riskWithScore': '{level} ({score})',
+	'vendors.screening.queue.modal.categories': 'Hit categories',
+	'vendors.screening.queue.modal.payments': 'Payments',
+	'vendors.screening.queue.modal.paymentsBlocked': 'Blocked',
+	'vendors.screening.queue.modal.paymentsAllowed': 'Allowed',
+	'vendors.screening.queue.action.rescreen': 'Re-screen now',
+	'vendors.screening.queue.action.rescreening': 'Re-screening…',
+	'vendors.screening.queue.action.block': 'Block payments',
+	'vendors.screening.queue.action.unblock': 'Unblock payments',
+	'vendors.screening.queue.action.working': 'Working…',
+	'vendors.screening.queue.reason.placeholder': 'Reason (optional)',
+	'vendors.screening.queue.reason.aria': 'Block reason',
+	// Straight apostrophe deliberately: `tests-e2e/vendors/screening-review-queue.spec.ts`
+	// matches /don't have permission/i, which a typographic ’ would not satisfy.
+	'vendors.screening.queue.noPermissionNote':
+		"You don't have permission to block or re-screen this vendor.",
+	'vendors.screening.queue.history.title': 'Screening history',
+	'vendors.screening.queue.history.error': 'Could not load the screening history.',
+	'vendors.screening.queue.history.retry': 'Retry',
+	'vendors.screening.queue.history.empty': 'No screening history yet.',
+	'vendors.screening.queue.history.score': 'score {score}',
+	'vendors.screening.queue.close': 'Close',
+	'vendors.screening.queue.toast.loadFailed': 'Failed to load the screening review queue',
+	'vendors.screening.queue.toast.historyFailed': 'Failed to load screening history',
+	'vendors.screening.queue.toast.blocked': 'Payments blocked',
+	'vendors.screening.queue.toast.unblocked': 'Payments unblocked',
+	'vendors.screening.queue.toast.actionFailed': 'Action failed',
+	'vendors.screening.queue.toast.rescreened': 'Vendor re-screened',
+	'vendors.screening.queue.toast.rescreenFailed': 'Re-screen failed',
+	// `SanctionsCheck.result` — the per-screen verdict on the history timeline.
+	// A THIRD vocabulary from `vendors.screening.status.*`: the vendor-level
+	// status collapses `review_required` to `review`, so the two maps are not
+	// interchangeable. See `types/vendor.ts::SANCTIONS_RESULT_LABEL_KEYS`.
+	'vendors.screening.result.clear': 'Clear',
+	'vendors.screening.result.reviewRequired': 'Review required',
+	'vendors.screening.result.match': 'Match',
 
 	// Exceptions (routes/exceptions/+page.svelte)
 	'exceptions.title': 'Exceptions',

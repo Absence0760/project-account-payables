@@ -860,6 +860,65 @@ export async function loadMoreUntilRow(page: Page, row: Locator): Promise<void> 
 	}
 }
 
+/**
+ * Choose a vendor in the shared `ui/VendorPicker` combobox.
+ *
+ * Every vendor-choosing surface (`/catalogs`, `ContractModal`,
+ * `RecurringModal`, `VendorStatementReconModal`, `BulkNegotiationModal`) used
+ * to render a native `<select>`, so specs drove it with `selectOption`. The
+ * picker is a WAI-ARIA combobox over a SERVER-searched list, which is what
+ * makes a vendor past the first page reachable at all — so the spec has to
+ * type, exactly as a user does. `selectOption` on it fails as "element is not
+ * a <select>", which is the honest failure for a spec that was never updated.
+ *
+ * `input` is the combobox itself. Reach it with `vendorPicker(scope)` rather
+ * than `getByLabel('Vendor')`: the picker renders a clear button named "Clear
+ * the selected vendor", so a substring label match resolves to two elements
+ * and fails strict mode. Filtering by the `combobox` role is what makes it
+ * unambiguous, and it is honest about the control being a combobox now.
+ * `name` is matched as a SUBSTRING of the option's accessible name, because an
+ * option renders `<name> <code>` when the vendor carries a code.
+ */
+/**
+ * Matches the vendor LIST response, and only it.
+ *
+ * `/api/vendors/counts` and `/api/vendors/ids` sit under the same prefix and
+ * carry the same `search=` / `status=` query, and either can answer first — so
+ * a substring match on `/api/vendors` resolves while the table still holds the
+ * PREVIOUS result, and whatever the spec reads next is stale. Comparing the
+ * pathname exactly is what makes the wait mean "the list has been re-fetched".
+ *
+ * `carrying` is an optional literal the URL must also contain, e.g.
+ * `'search=Office'` or `'page=2'`.
+ */
+export function isVendorListResponse(url: string, carrying?: string): boolean {
+	if (!new URL(url).pathname.endsWith('/api/vendors')) return false;
+	return carrying ? url.includes(carrying) : true;
+}
+
+/**
+ * The shared `ui/VendorPicker`'s combobox input, within `scope` (a dialog, a
+ * page, a form). Filtering by role excludes the picker's own clear button,
+ * whose accessible name also contains the field label — the strict-mode
+ * collision that `getByLabel('Vendor')` walks into.
+ */
+export function vendorPicker(scope: Page | Locator, name = 'Vendor'): Locator {
+	return scope.getByRole('combobox', { name });
+}
+
+export async function selectVendorInPicker(input: Locator, name: string): Promise<void> {
+	await input.click();
+	// Typing IS the reach mechanism: the popup holds one server-filtered page,
+	// so a fixture vendor sorted past it is only ever found by searching.
+	await input.fill(name);
+	// Auto-waits through the search debounce and the request behind it.
+	await input.page().getByRole('option', { name }).first().click();
+	// The combobox commits by writing the chosen vendor's label into the box;
+	// asserting it here means a caller's next step can't run against a field
+	// that is still holding the raw search term.
+	await expect(input).toHaveValue(new RegExp(escapeRegExp(name)));
+}
+
 /** The backend origin. Specs that hit `${API_BASE}/api/...` directly import
  *  this instead of redeclaring `process.env.PUBLIC_API_URL ?? …`; it is defined
  *  in `fixtures/env.ts` alongside the web origin, so a worktree configures both

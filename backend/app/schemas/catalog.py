@@ -115,6 +115,13 @@ class CatalogResponse(BaseModel):
     name: str
     catalog_type: str
     vendor_id: str | None
+    # The supplier's NAME, resolved server-side, exactly as ``ContractResponse``
+    # / ``RecurringTemplateResponse`` / the vendor-statement responses already
+    # carry it. Catalog was the one row shape that shipped only the id, which
+    # left the frontend's shared vendor picker holding an id it had no way to
+    # label: the edit form rendered "a vendor is selected, name unavailable"
+    # instead of the supplier. Nullable because ``vendor_id`` is.
+    vendor_name: str | None = None
     punchout_url: str | None
     is_active: bool
     is_preferred: bool

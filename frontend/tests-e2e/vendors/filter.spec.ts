@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { expect, test , isVendorListResponse} from '../fixtures/helpers';
 
 /**
  * /vendors status-chip filtering. Seed has at least one vendor in
@@ -19,7 +19,7 @@ test.describe('/vendors status filter (acme admin)', () => {
 		const beforeRows = await page.locator('table tbody tr').count();
 
 		const filtered = page.waitForResponse(
-			(r) => r.url().includes('/api/vendors') && r.url().includes('status=unverified')
+			(r) => isVendorListResponse(r.url(), 'status=unverified')
 		);
 		await page.locator('.filter-chip', { hasText: /^Unverified/ }).click();
 		await filtered;
@@ -40,7 +40,7 @@ test.describe('/vendors status filter (acme admin)', () => {
 
 	test('Active chip narrows to vendors in active status', async ({ page }) => {
 		const filtered = page.waitForResponse(
-			(r) => r.url().includes('/api/vendors') && r.url().includes('status=active')
+			(r) => isVendorListResponse(r.url(), 'status=active')
 		);
 		await page.locator('.filter-chip', { hasText: /^Active$/ }).click();
 		await filtered;
@@ -58,7 +58,7 @@ test.describe('/vendors status filter (acme admin)', () => {
 
 	test('Rejected chip narrows to rejected vendors', async ({ page }) => {
 		const filtered = page.waitForResponse(
-			(r) => r.url().includes('/api/vendors') && r.url().includes('status=rejected')
+			(r) => isVendorListResponse(r.url(), 'status=rejected')
 		);
 		await page.locator('.filter-chip', { hasText: /^Rejected$/ }).click();
 		await filtered;
@@ -71,13 +71,13 @@ test.describe('/vendors status filter (acme admin)', () => {
 	test('All chip restores the unfiltered list', async ({ page }) => {
 		// Narrow first — wait for the filtered fetch.
 		const narrowed = page.waitForResponse(
-			(r) => r.url().includes('/api/vendors') && r.url().includes('status=unverified')
+			(r) => isVendorListResponse(r.url(), 'status=unverified')
 		);
 		await page.locator('.filter-chip', { hasText: /^Unverified/ }).click();
 		await narrowed;
 
 		const restored = page.waitForResponse(
-			(r) => r.url().includes('/api/vendors') && !r.url().includes('status=')
+			(r) => isVendorListResponse(r.url()) && !r.url().includes('status=')
 		);
 		await page.locator('.filter-chip', { hasText: /^All\s/ }).click();
 		await restored;

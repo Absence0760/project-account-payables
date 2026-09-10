@@ -132,10 +132,19 @@ async function expectRowPending(row: Locator, count: number): Promise<void> {
 
 	// The accessibility tree itself — the thing axe cannot judge. The dash is
 	// out of it entirely; "Loading…" is in it once per card.
+	//
+	// Asserted on the VALUE nodes rather than by searching the row's whole aria
+	// snapshot for the dash character. Two of `/audit`'s five cards carry a
+	// `sub` line with a legitimate em dash ("Digest no longer re-derives —
+	// investigate"), so a substring search flags prose that has nothing to do
+	// with a placeholder. What the row is actually promising is narrower and
+	// exactly checkable: while pending, no card's value node is in the
+	// accessibility tree at all.
+	await expect(
+		row.locator('.kpi-value:not([aria-hidden="true"])'),
+		'a pending card must not announce its placeholder dash'
+	).toHaveCount(0);
 	const announced = await row.ariaSnapshot();
-	expect(announced, 'a pending card must not announce its placeholder dash').not.toContain(
-		NO_FIGURE
-	);
 	expect(announced.match(new RegExp(LOADING, 'g')) ?? []).toHaveLength(count);
 }
 
@@ -449,5 +458,220 @@ test.describe('accessibility — KPI pending affordance (WCAG 4.1.2 / 1.3.1)', (
 		await expect(row.locator('.kpi.highlight-green')).toHaveCount(1);
 
 		await expectNoA11yViolations(page);
+	});
+
+	// --- panel-scoped rows ------------------------------------------------
+	//
+	// The four above are PAGE-level rows: one row, one headline fetch, the
+	// page's own loading flag. The rows below sit inside a PANEL's own
+	// error/loading/data chain — a different loading chain, which is exactly why
+	// they were missed when the convention landed and why they need their own
+	// cases rather than being assumed covered by a route scan.
+	//
+	// Three shapes, and each is represented once rather than exhaustively:
+	//
+	//   (a) an on-mount panel fetch                → /admin/health, /adaptive,
+	//                                                 /admin/access-review, /cfo's
+	//                                                 CfoMetrics
+	//   (b) a row hoisted OUT of a branch chain    → /billing
+	//   (c) a row the user TRIGGERS                → /audit
+	//
+	// `/expenses`' Reports summary, `ForecastVariancePanel`,
+	// `AgentDashboard` and `BudgetModal`'s spend rollup are (a) and (c) again
+	// with no new mechanism — each needs a report opened, a form submitted or a
+	// modal driven first, so a case for each would add setup rather than
+	// signal. If one of those grows a mechanism of its own, add it here.
+
+	test('/admin/health panel row: pending announces a load, and withholds its verdict', async ({
+		page
+	}) => {
+		const held = holdEndpoint(page, '/api/health/sweeps');
+		await held.install();
+
+		try {
+			await page.goto('/admin/health');
+			const row = page.getByTestId('sweep-health-summary');
+			await expect(row.locator('.kpi').first()).toBeVisible();
+
+			// This is the assertion the panel rows exist for. "Overall" is tinted
+			// green when the sweeps are healthy and red otherwise — an
+			// unconditional verdict, so before the fix the row's only protection
+			// from painting "everything is fine" over an unanswered question was
+			// not existing yet.
+			await expectRowPending(row, 4);
+			await expectNoA11yViolations(page);
+
+			held.release();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value');
+			await expectRowSettled(row, 4);
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
+	});
+
+	test('/adaptive threshold panel row: pending announces a load, settled announces figures', async ({
+		page
+	}) => {
+		const held = holdEndpoint(page, '/api/adaptive/threshold-recommendation');
+		await held.install();
+
+		try {
+			await page.goto('/adaptive');
+			// The threshold row lives behind its own tab — `/adaptive` opens on
+			// Suggestions, so without this the row is never in the DOM and the
+			// assertion below fails as "element(s) not found" rather than as a
+			// collapsed row, which is the opposite of what this case is for.
+			await page.getByRole('tab', { name: 'Auto-approve threshold' }).click();
+			const row = page.getByTestId('adaptive-threshold-card');
+			await expect(row.locator('.kpi').first()).toBeVisible();
+
+			await expectRowPending(row, 4);
+			await expectNoA11yViolations(page);
+
+			held.release();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value', {
+				timeout: 15_000
+			});
+			await expectRowSettled(row, 4);
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
+	});
+
+	test('/admin/access-review panel row: pending announces a load, settled announces figures', async ({
+		page
+	}) => {
+		const held = holdEndpoint(page, '/api/access-reviews');
+		await held.install();
+
+		try {
+			await page.goto('/admin/access-review');
+			const row = page.locator('.kpi-row').first();
+			await expect(row.locator('.kpi').first()).toBeVisible();
+
+			// Dormant carries a red verdict on a SOX access control: "0 dormant
+			// privileged users" is the reassuring answer, and it must not be drawn
+			// before anyone has counted.
+			await expectRowPending(row, 4);
+			await expectNoA11yViolations(page);
+
+			held.release();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value');
+			await expectRowSettled(row, 4);
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
+	});
+
+	test("/cfo's CFO-metrics panel row: pending announces a load, settled announces figures", async ({
+		page
+	}) => {
+		// A SECOND panel on a route this spec already covers at page level, and
+		// the two are independent: the forecast row settles off
+		// `/api/analytics/cashflow_*` while this one waits on `/api/analytics/cfo`.
+		// Holding only the latter is what proves the panel row has its own
+		// loading chain rather than riding the page's.
+		const held = holdEndpoint(page, '/api/analytics/cfo');
+		await held.install();
+
+		try {
+			await page.goto('/cfo');
+			const section = page.getByTestId('cfo-metrics-section');
+			const row = section.locator('.kpi-row');
+			await expect(row.locator('.kpi').first()).toBeVisible({ timeout: 15_000 });
+
+			await expectRowPending(row, 4);
+
+			held.release();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value', {
+				timeout: 15_000
+			});
+			await expectRowSettled(row, 4);
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
+	});
+
+	// --- /billing (shape b: hoisted out of a branch chain) ----------------
+
+	test('/billing usage row survives the branch chain it used to live inside', async ({ page }) => {
+		// The row used to be TWO copies, one per branch of a chain gated on the
+		// subscription response — so it could not simply take `pending`: which
+		// copy owns the row is decided by `hasSubscription`, and while the
+		// response is out there is no answer. This asserts the single hoisted
+		// row is on screen and busy while that question is unanswered, which is
+		// the whole of the structural fix.
+		const held = holdEndpoint(page, '/api/billing/subscription');
+		await held.install();
+
+		try {
+			await page.goto('/billing');
+			const row = page.locator('.kpi-row').first();
+			await expect(row.locator('.kpi').first()).toBeVisible();
+
+			// Two cards, not the empty-state's rebate-augmented row: `rebateGroups`
+			// is empty while the response is out, so the count is the shared pair.
+			await expectRowPending(row, 2);
+			await expectNoA11yViolations(page);
+
+			held.release();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value', {
+				timeout: 15_000
+			});
+			// The SETTLED count is not a literal, unlike every other case in this
+			// spec: an org with no subscription gets one extra card per rebate
+			// currency, and whether the worker's tenant has accrued any is seed
+			// state this test does not own (`billing.spec.ts` avoids counting here
+			// for the same reason). Reading it after the row has provably settled
+			// is deterministic, and the count was never what this asserts — the
+			// absence of `aria-busy`, the hidden dash and the loading text is.
+			await expectRowSettled(row, await row.locator('.kpi').count());
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
+	});
+
+	// --- /audit (shape c: the user triggers the fetch) --------------------
+
+	test('/audit verification row appears on the CLICK, not on the answer', async ({ page }) => {
+		// The one panel row that stays gated, deliberately. The read is audited
+		// (`audit.viewed`), so nothing is fetched on mount and five dashes before
+		// anyone pressed Run would claim a figure is coming for a question nobody
+		// asked. `report || verifyLoading` is the gate: absent, then pending on
+		// the click, then settled.
+		const held = holdEndpoint(page, '/api/audit/verify-signatures');
+		await held.install();
+
+		try {
+			await page.goto('/audit');
+			await expect(
+				page.getByRole('heading', { name: 'Approval-signature verification' })
+			).toBeVisible();
+
+			// Nothing asked yet — and this absence assertion is non-vacuous
+			// because the heading above already proved the page rendered.
+			await expect(page.getByTestId('verify-counts')).toHaveCount(0);
+
+			await page.getByTestId('run-verification').click();
+
+			const row = page.getByTestId('verify-counts');
+			await expect(row.locator('.kpi').first()).toBeVisible();
+			await expectRowPending(row, 5);
+			await expectNoA11yViolations(page);
+
+			held.release();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value', {
+				timeout: 15_000
+			});
+			await expectRowSettled(row, 5);
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
 	});
 });

@@ -438,6 +438,12 @@ async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
                     status=status,
                     variance_tolerance_pct=Decimal("5.00"),
                     notes="Seed demo recurring template.",
+                    # The employee whose standing instruction this is. The sweep
+                    # has no live actor, so `generate_one` falls back to this
+                    # when stamping the generated invoice's `uploaded_by_id` —
+                    # seeding it keeps the demo data on the post-0096 shape and
+                    # makes segregation of duties actually demonstrable locally.
+                    created_by_user_id=actor_id,
                 )
             )
         )

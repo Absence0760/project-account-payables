@@ -5,6 +5,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import VendorPicker from '$lib/components/ui/VendorPicker.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { normalizeMoneyInput } from '$lib/utils/moneyInput';
@@ -13,20 +14,17 @@
 		updateCatalog,
 		createCatalogItem,
 		deleteCatalogItem,
-		type GlAccountOption,
-		type VendorOption
+		type GlAccountOption
 	} from '$lib/api/catalogs';
 
 	let {
 		catalog,
-		vendors,
 		glAccounts,
 		onclose,
 		onsaved
 	}: {
 		// null → create mode; a Catalog → detail/edit mode.
 		catalog: Catalog | null;
-		vendors: VendorOption[];
 		glAccounts: GlAccountOption[];
 		onclose: () => void;
 		onsaved: (c: Catalog) => void;
@@ -177,15 +175,13 @@
 					{/each}
 				</select>
 			</label>
-			<label>
-				<span>{m('catalogs.modal.field.vendor')}</span>
-				<select bind:value={vendor_id} disabled={!canEdit}>
-					<option value="">{m('catalogs.modal.field.vendorSelect')}</option>
-					{#each vendors as v (v.id)}
-						<option value={v.id}>{v.name}</option>
-					{/each}
-				</select>
-			</label>
+			<VendorPicker
+				bind:value={vendor_id}
+				label={m('catalogs.modal.field.vendor')}
+				placeholder={m('catalogs.modal.field.vendorSelect')}
+				selectedLabel={catalog?.vendor_name ?? null}
+				disabled={!canEdit}
+			/>
 			{#if catalog_type === 'punchout'}
 				<label>
 					<span>{m('catalogs.modal.field.punchoutUrl')}</span>
@@ -316,12 +312,12 @@
 						aria-label={m('catalogs.modal.add.categoryAria')}
 						bind:value={newCategory}
 					/>
-					<select bind:value={newVendorId} aria-label={m('catalogs.modal.add.vendorAria')}>
-						<option value="">{m('catalogs.modal.add.vendorPlaceholder')}</option>
-						{#each vendors as v (v.id)}
-							<option value={v.id}>{v.name}</option>
-						{/each}
-					</select>
+					<VendorPicker
+						bind:value={newVendorId}
+						ariaLabel={m('catalogs.modal.add.vendorAria')}
+						placeholder={m('catalogs.modal.add.vendorPlaceholder')}
+						compact
+					/>
 					<select bind:value={newGlId} aria-label={m('catalogs.modal.add.glAria')}>
 						<option value="">{m('catalogs.modal.add.glPlaceholder')}</option>
 						{#each glAccounts as g (g.id)}

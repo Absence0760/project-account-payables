@@ -304,33 +304,125 @@
 </script>
 
 <PageHeader title={m('billing.title')}>
-	{#if loading}
-		<p class="state" data-testid="billing-loading">{m('billing.loading')}</p>
-	{:else if error}
+	{#if error}
 		<div class="state error" data-testid="billing-error" role="alert">
 			<p>{error}</p>
 			<button type="button" class="btn" onclick={load}>{m('billing.retry')}</button>
 		</div>
-	{:else if !hasSubscription}
-		<!-- Friendly empty state — the org has no live subscription yet. -->
-		<div class="empty" data-testid="billing-empty">
-			<h2>{m('billing.empty.heading')}</h2>
-			<p>{m('billing.empty.body')}</p>
-			<a class="btn primary" href="mailto:billing@example.com">{m('billing.empty.contactSales')}</a>
+	{:else}
+		{#if loading}
+			<p class="state" data-testid="billing-loading">{m('billing.loading')}</p>
+		{:else if !hasSubscription}
+			<!-- Friendly empty state — the org has no live subscription yet. -->
+			<div class="empty" data-testid="billing-empty">
+				<h2>{m('billing.empty.heading')}</h2>
+				<p>{m('billing.empty.body')}</p>
+				<a class="btn primary" href="mailto:billing@example.com"
+					>{m('billing.empty.contactSales')}</a
+				>
+			</div>
+		{:else if plan && subscription}
+			<!-- Active subscription detail. -->
+			<section class="plan-card" aria-label={m('billing.plan.aria')} data-testid="billing-plan">
+				<div class="plan-head">
+					<div>
+						<span class="eyebrow">{m('billing.plan.current')}</span>
+						<h2 class="plan-name">{plan.name}</h2>
+					</div>
+					<SubscriptionBadge status={subscription.status} />
+				</div>
 
-			<section class="usage-section" aria-label={m('billing.usage.aria')}>
-				<h3>{m('billing.usage.heading')} <span class="period">({data?.period ?? '—'})</span></h3>
-				<div class="kpi-row">
-					<KpiCard value={asCount(data?.usage.extractions)} label={m('billing.usage.extractions')} />
-					<KpiCard
-						value={asCount(data?.usage.extractions_platform)}
-						label={m('billing.usage.billableExtractions')}
-					/>
-					<!-- One card PER CURRENCY. The meter used to be a single
-					     cross-currency sum rendered with no currency at all, so a
-					     tenant accruing EUR rebates read them as dollars. No
-					     rebates → no card, rather than a $0.00 in a currency the
-					     page picked. -->
+				<div class="plan-meta">
+					<div class="meta-item">
+						<span class="meta-label">{m('billing.plan.price')}</span>
+						<span class="meta-value">
+							<Money amount={plan.monthly_price} currency={plan.currency} />
+							<span class="per">{m('billing.plan.perMonth')}</span>
+						</span>
+					</div>
+					<div class="meta-item">
+						<span class="meta-label">{m('billing.plan.period')}</span>
+						<span class="meta-value">{periodWindow}</span>
+					</div>
+					{#if subscription.status === 'trialing'}
+						<div class="meta-item">
+							<span class="meta-label">{m('billing.plan.trialEnds')}</span>
+							<span class="meta-value">{formatDate(subscription.trial_end)}</span>
+						</div>
+					{/if}
+					<div class="meta-item">
+						<span class="meta-label">{m('billing.plan.managedBy')}</span>
+						<span class="meta-value">
+							{subscription.externally_managed ? data?.provider ?? m('billing.plan.provider') : m('billing.plan.selfServe')}
+						</span>
+					</div>
+				</div>
+
+				{#if entitlementFlags.length > 0}
+					<div class="entitlements">
+						<span class="meta-label">{m('billing.plan.included')}</span>
+						<ul>
+							{#each entitlementFlags as flag (flag)}
+								<li>{flag.replace(/_/g, ' ')}</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
+
+				<div class="actions">
+					<button
+						type="button"
+						class="btn"
+						onclick={openChangePlan}
+						data-testid="billing-change-plan"
+					>
+						{m('billing.plan.changePlan')}
+					</button>
+					<a class="link" href="mailto:billing@example.com">{m('billing.plan.changeContact')}</a>
+				</div>
+			</section>
+		{/if}
+
+		<!-- Usage meters — ONE section, rendered on every non-error state rather
+		     than a copy inside each branch of the chain above.
+
+		     It used to be two, both gated on `{#if loading}` having already
+		     resolved, so the meters collapsed to nothing while the subscription
+		     was in flight (`docs/decisions.md` §125 — a KPI row is never gated on
+		     its own response). They could not simply each take `pending`: which
+		     branch owns the row is decided by `hasSubscription`, and while the
+		     response is out there is no answer to that — the row has to live
+		     outside the question. Two copies also could not BOTH be brought onto
+		     the convention without a third for the loading state.
+
+		     `asCount` coerces a missing count to `'0'`, so the guard is on `data`
+		     rather than on the field: a `'0'` is a figure as far as `KpiCard` is
+		     concerned, and `pending` would have had nothing to do. Every settled
+		     figure is unchanged.
+
+		     The two presentations the branches carried are preserved exactly: an
+		     org with no subscription gets its per-currency rebate cards IN the
+		     row, one with a plan gets the note below it. -->
+		<section class="usage-section" aria-label={m('billing.usage.aria')}>
+			<h3>{m('billing.usage.heading')} <span class="period">({data?.period ?? '—'})</span></h3>
+			<div class="kpi-row">
+				<KpiCard
+					value={data ? asCount(data.usage.extractions) : null}
+					label={m('billing.usage.extractions')}
+					pending={loading}
+				/>
+				<KpiCard
+					value={data ? asCount(data.usage.extractions_platform) : null}
+					label={m('billing.usage.billableExtractions')}
+					pending={loading}
+				/>
+				<!-- One card PER CURRENCY. The meter used to be a single
+				     cross-currency sum rendered with no currency at all, so a
+				     tenant accruing EUR rebates read them as dollars. No
+				     rebates → no card, rather than a $0.00 in a currency the
+				     page picked. `rebateGroups` is empty while `data` is null,
+				     so these appear with the response and never as a dash. -->
+				{#if !hasSubscription}
 					{#each rebateGroups as group (group.currency)}
 						<KpiCard
 							value={formatMoney(group.total, { currency: group.currency })}
@@ -340,80 +432,9 @@
 							highlight="green"
 						/>
 					{/each}
-				</div>
-			</section>
-		</div>
-	{:else if plan && subscription}
-		<!-- Active subscription detail. -->
-		<section class="plan-card" aria-label={m('billing.plan.aria')} data-testid="billing-plan">
-			<div class="plan-head">
-				<div>
-					<span class="eyebrow">{m('billing.plan.current')}</span>
-					<h2 class="plan-name">{plan.name}</h2>
-				</div>
-				<SubscriptionBadge status={subscription.status} />
-			</div>
-
-			<div class="plan-meta">
-				<div class="meta-item">
-					<span class="meta-label">{m('billing.plan.price')}</span>
-					<span class="meta-value">
-						<Money amount={plan.monthly_price} currency={plan.currency} />
-						<span class="per">{m('billing.plan.perMonth')}</span>
-					</span>
-				</div>
-				<div class="meta-item">
-					<span class="meta-label">{m('billing.plan.period')}</span>
-					<span class="meta-value">{periodWindow}</span>
-				</div>
-				{#if subscription.status === 'trialing'}
-					<div class="meta-item">
-						<span class="meta-label">{m('billing.plan.trialEnds')}</span>
-						<span class="meta-value">{formatDate(subscription.trial_end)}</span>
-					</div>
 				{/if}
-				<div class="meta-item">
-					<span class="meta-label">{m('billing.plan.managedBy')}</span>
-					<span class="meta-value">
-						{subscription.externally_managed ? data?.provider ?? m('billing.plan.provider') : m('billing.plan.selfServe')}
-					</span>
-				</div>
 			</div>
-
-			{#if entitlementFlags.length > 0}
-				<div class="entitlements">
-					<span class="meta-label">{m('billing.plan.included')}</span>
-					<ul>
-						{#each entitlementFlags as flag (flag)}
-							<li>{flag.replace(/_/g, ' ')}</li>
-						{/each}
-					</ul>
-				</div>
-			{/if}
-
-			<div class="actions">
-				<button
-					type="button"
-					class="btn"
-					onclick={openChangePlan}
-					data-testid="billing-change-plan"
-				>
-					{m('billing.plan.changePlan')}
-				</button>
-				<a class="link" href="mailto:billing@example.com">{m('billing.plan.changeContact')}</a>
-			</div>
-		</section>
-
-		<section class="usage-section" aria-label={m('billing.usage.aria')}>
-			<h3>{m('billing.usage.heading')} <span class="period">({data?.period ?? '—'})</span></h3>
-			<div class="kpi-row">
-				<KpiCard value={asCount(data?.usage.extractions)} label={m('billing.usage.extractions')} />
-				<KpiCard
-					value={asCount(data?.usage.extractions_platform)}
-					label={m('billing.usage.billableExtractions')}
-				/>
-			</div>
-			{#if rebateGroups.length > 0}
+			{#if hasSubscription && rebateGroups.length > 0}
 				<p class="note">
 					{m('billing.usage.cardRebatesNote')}
 					{#each rebateGroups as group, i (group.currency)}{i > 0

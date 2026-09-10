@@ -21,32 +21,60 @@ import type { ImportResult } from '$lib/types/csvImport';
 
 // --- Vendor picker options ---
 
-/** Vendor option from `GET /api/vendors` — picker value is the uuid `id`. */
+/**
+ * Vendor option from `GET /api/vendors` — picker value is the uuid `id`.
+ *
+ * The CANONICAL type. `ContractModal`, `RecurringModal` and
+ * `VendorStatementReconModal` each re-declared their own structurally-identical
+ * copy; they now import this one, so a field added here (as `code` was) reaches
+ * every picker instead of three of five.
+ */
 export interface VendorOption {
 	id: string;
 	name: string;
 	code?: string | null;
 }
 
+/** One page of vendor options plus the size of the whole matching set. */
+export interface VendorOptionPage {
+	items: VendorOption[];
+	total: number;
+}
+
 /**
- * Vendor picker options. `/api/vendors` returns a paginated envelope and is
- * gated to admin/ap_manager/cfo — an ap_clerk gets a 403, so we unwrap the
- * envelope and degrade to an empty list rather than failing the whole page.
+ * One page of vendor picker options, filtered SERVER-side.
+ *
+ * This replaces a `listVendors()` that asked for `page_size=100` and rendered
+ * page 1. Two surfaces used it and three others walked every page on mount; all
+ * five fed a native `<select>`, which has no search — so on a tenant past the
+ * cap the remaining vendors were simply unreachable, everywhere, with nothing
+ * on screen saying so. `search=` is the reach mechanism (it matches name / code
+ * / email in `_vendor_list_filters`), and `total` is what lets the picker say
+ * out loud that it is showing a subset.
+ *
+ * Deliberately does NOT swallow its errors the way `listVendors` did. Degrading
+ * a 403 (`/api/vendors` is admin/ap_manager/cfo — an `ap_clerk` gets one) to an
+ * empty array presents "you may not see vendors" as "this tenant has none",
+ * which is the same class of silent-subset bug this whole change is about. The
+ * picker catches it and says so.
  *
  * Lives here, beside the rest of the vendor surface, rather than in
- * `api/catalogs.ts` where it was first written: four modals and two pages now
- * want a vendor picker, and a `/discounts` page reaching into the catalogs
- * module for a generic vendor list is the wrong dependency (root `CLAUDE.md`
- * guard rail 10). `api/catalogs.ts` re-exports both symbols so its existing
- * importers are unchanged.
+ * `api/catalogs.ts` where it was first written: five surfaces now want a vendor
+ * picker, and a `/discounts` page reaching into the catalogs module for a
+ * generic vendor list is the wrong dependency (root `CLAUDE.md` guard rail 10).
  */
-export async function listVendors(): Promise<VendorOption[]> {
-	try {
-		const res = await api.get<{ items: VendorOption[] }>('/api/vendors?page_size=100');
-		return res.items ?? [];
-	} catch {
-		return [];
-	}
+export async function searchVendorOptions(
+	params: { search?: string; page?: number; page_size?: number } = {}
+): Promise<VendorOptionPage> {
+	const qs = new URLSearchParams();
+	const search = params.search?.trim();
+	if (search) qs.set('search', search);
+	qs.set('page', String(params.page ?? 1));
+	qs.set('page_size', String(params.page_size ?? 25));
+	const res = await api.get<{ items: VendorOption[]; total: number }>(
+		`/api/vendors?${qs.toString()}`
+	);
+	return { items: res.items ?? [], total: res.total ?? 0 };
 }
 
 // --- List / select-all-matching / sort ---

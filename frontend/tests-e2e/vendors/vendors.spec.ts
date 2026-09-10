@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { expect, test , isVendorListResponse} from '../fixtures/helpers';
 
 /**
  * /vendors — list view + status filtering. Seed creates 10 acme
@@ -26,9 +26,15 @@ test.describe('/vendors (acme admin)', () => {
 
 	test('search input filters the visible vendor list', async ({ page }) => {
 		const search = page.getByPlaceholder('Search vendors...');
-		// `count()` does not auto-wait, and this baseline is what the searched
-		// count is compared against — so anchor on the unfiltered list being on
-		// screen first rather than on a quiet network.
+		// The baseline is what the searched count is compared against, so it has
+		// to be a SETTLED measurement. `count()` does not auto-wait, and the
+		// first row painting is not the list having arrived — reading it there
+		// yielded 1 against a ten-vendor seed, a floor the filtered count could
+		// only exceed. Anchor on the list response itself, then on the row it
+		// produced.
+		const initialList = page.waitForResponse((r) => isVendorListResponse(r.url()));
+		await page.goto('/vendors');
+		await initialList;
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 		const beforeRows = await page.locator('table tbody tr').count();
 
@@ -38,7 +44,7 @@ test.describe('/vendors (acme admin)', () => {
 		// keeps the network "active". Wait specifically for the search
 		// response to come back.
 		const searchResponse = page.waitForResponse(
-			(res) => res.url().includes('/api/vendors') && res.url().includes('search=Office')
+			(res) => isVendorListResponse(res.url(), 'search=Office')
 		);
 		await search.fill('Office');
 		await searchResponse;

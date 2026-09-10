@@ -15,9 +15,11 @@ from app.api.deps import (
     ROLE_AP_MANAGER,
     ROLE_CFO,
     get_org_id,
+    require_permission,
     require_roles,
 )
 from app.api.pagination import PaginationParams, pagination_params
+from app.api.permissions import PERM_PAYMENT_VOID
 from app.config import settings
 from app.models.invoice import Invoice
 from app.models.organization import Organization
@@ -720,8 +722,34 @@ async def cancel_card(
     card_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # The gate of the operation this DUPLICATES, not the card router's own.
+    # See the docstring — this is the one migrated route that deliberately does
+    # NOT reproduce the prior system-role matrix.
+    user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
 ):
+    """Cancel an unused virtual card at the provider, then in our DB.
+
+    **`payment.void`, and this NARROWS `ap_manager` on purpose.** Every other
+    route migrated from `require_roles` to `require_permission` reproduces the
+    prior admin/ap_manager/cfo matrix exactly for the four system roles. This one
+    cannot, because the mismatch IS the defect: the gate was
+    `require_roles(ADMIN, AP_MANAGER, CFO)` while the two operations that also
+    close a card — `POST /api/payments/{id}/void` and its completion
+    `POST /api/payments/{id}/void/retry-card-cancel` — both gate on
+    `payment.void`, which the default `ap_manager` does not hold. So an
+    `ap_manager` could not reverse a card payment but could kill the card behind
+    it here, through the wider of two doors onto the same effect. `docs/decisions.md`
+    §132 already recorded the rule for the sibling route ("not the card router's
+    bare roles, which would hand an `ap_manager` in a duty-split org the half of
+    the reversal the org withheld"); this applies it to the door that was left
+    open. Net effect on the four system roles: `admin` and `cfo` keep it,
+    `ap_manager` loses it, `ap_clerk` never had it.
+
+    Nothing in the UI regresses — the route is deliberately unwired
+    (`docs/decisions.md` §96): a standalone Cancel is reachable on a LIVE payment,
+    where it would kill the card while that payment and its invoice still claim
+    money is in flight. The supported remedy sits ON the void.
+    """
     result = await db.execute(select(VirtualCard).where(VirtualCard.id == card_id))
     card = result.scalar_one_or_none()
     if not card:

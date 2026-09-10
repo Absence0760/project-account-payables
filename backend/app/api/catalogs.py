@@ -138,13 +138,39 @@ def _item_to_response(i: CatalogItem) -> CatalogItemResponse:
     )
 
 
-def _to_response(c: Catalog, *, with_items: bool = False) -> CatalogResponse:
+async def _vendor_names(db: AsyncSession, vendor_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Supplier names for a page of catalogs, in ONE query.
+
+    A per-row lookup is index-only and cheap on the database, which is exactly
+    why it would never surface as a slow query — the cost is a network round
+    trip per row, and only asking once removes it (the same reasoning as the
+    invoice tallies on ``GET /api/vendors``). Callers pass the ids they already
+    have; an empty list issues no query at all.
+    """
+    unique = {vid for vid in vendor_ids if vid}
+    if not unique:
+        return {}
+    rows = (await db.execute(select(Vendor.id, Vendor.name).where(Vendor.id.in_(unique)))).all()
+    return {vid: name for vid, name in rows}
+
+
+async def _vendor_name(db: AsyncSession, vendor_id: uuid.UUID | None) -> str | None:
+    """The single-catalog form of :func:`_vendor_names`."""
+    if not vendor_id:
+        return None
+    return (await _vendor_names(db, [vendor_id])).get(vendor_id)
+
+
+def _to_response(
+    c: Catalog, *, with_items: bool = False, vendor_name: str | None = None
+) -> CatalogResponse:
     items = sorted(c.items, key=lambda x: x.name or "") if with_items else []
     return CatalogResponse(
         id=str(c.id),
         name=c.name,
         catalog_type=str(c.catalog_type),
         vendor_id=str(c.vendor_id) if c.vendor_id else None,
+        vendor_name=vendor_name,
         punchout_url=c.punchout_url,
         is_active=c.is_active,
         is_preferred=c.is_preferred,
@@ -247,8 +273,9 @@ async def list_catalogs(
         .limit(pagination.limit)
     )
     rows = (await db.execute(paged)).scalars().all()
+    names = await _vendor_names(db, [c.vendor_id for c in rows])
     return CatalogListResponse(
-        items=[_to_response(c) for c in rows],
+        items=[_to_response(c, vendor_name=names.get(c.vendor_id)) for c in rows],
         total=total,
         page=pagination.page,
         page_size=pagination.page_size,
@@ -294,7 +321,7 @@ async def create_catalog(
     )
     await db.commit()
     fresh = await _get_catalog_or_404(db, catalog.id)
-    return _to_response(fresh, with_items=True)
+    return _to_response(fresh, with_items=True, vendor_name=await _vendor_name(db, fresh.vendor_id))
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +663,10 @@ async def get_catalog(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
 ):
-    return _to_response(await _get_catalog_or_404(db, catalog_id), with_items=True)
+    catalog = await _get_catalog_or_404(db, catalog_id)
+    return _to_response(
+        catalog, with_items=True, vendor_name=await _vendor_name(db, catalog.vendor_id)
+    )
 
 
 @router.patch("/{catalog_id}", response_model=CatalogResponse)
@@ -675,7 +705,7 @@ async def update_catalog(
         )
     await db.commit()
     fresh = await _get_catalog_or_404(db, catalog.id)
-    return _to_response(fresh, with_items=True)
+    return _to_response(fresh, with_items=True, vendor_name=await _vendor_name(db, fresh.vendor_id))
 
 
 @router.delete("/{catalog_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -3,8 +3,9 @@ import {
 	authedTenantHeaders,
 	deleteInvoicesWhere,
 	expect,
+	selectVendorInPicker,
 	tenantPsql,
-	test
+	test, vendorPicker
 } from '../fixtures/helpers';
 
 interface Vendor {
@@ -104,10 +105,11 @@ test.describe('/credit-memos', () => {
 			const modal = page.locator('div.modal[role="dialog"][aria-label="New credit memo"]');
 			await expect(modal).toBeVisible();
 
-			await modal.locator('input[type="text"]').fill(memoNumber);
-			// By label, not by tag: the form carries a Currency select too, so a
-			// bare `select` is a strict-mode violation.
-			await modal.getByLabel('Vendor').selectOption(vendor.id);
+			// By label, not by tag: the vendor picker is an `input[type="text"]`
+			// too (a searchable combobox, not a `<select>`), so a bare tag
+			// locator is a strict-mode violation on both fields.
+			await modal.getByLabel('Memo Number').fill(memoNumber);
+			await selectVendorInPicker(vendorPicker(modal), vendor.name);
 			await modal.locator('input[type="number"]').fill('250.50');
 			await modal.locator('textarea').fill('e2e: returned defective monitors');
 

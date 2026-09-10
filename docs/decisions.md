@@ -5280,3 +5280,263 @@ offer the optimizer can never rank while it stands against the vendor's whole op
 it was, so an offer could be stamped to one entity while pointing at another's supplier, and
 an out-of-entity vendor answered 409 — confirming the id exists — where a missing one
 answered 404.
+
+## 141. A sweep-generated recurring invoice names the template's author; pre-existing templates are never backfilled
+
+`approval_chain.violates_segregation` returns False — no breach — when `Invoice.uploaded_by_id`
+is NULL, reading NULL as "no employee created this row". Four paths produced NULL and three
+earn it: email intake and inbound PEPPOL are system ingestion, and the supplier portal's actor
+is a tenant-scoped `VendorUser` who holds no employee JWT and can never reach an approval
+endpoint. The recurring sweep was the fourth and did not belong there. Nobody *runs* the sweep,
+but an employee *authored* the template, and that is the person segregation has to exclude — so
+the author could approve the invoice their own standing instruction raised, exempt exactly as a
+legacy pre-`uploaded_by_id` row. Reproduced before the fix: the approve call returns 200,
+`status: approved`.
+
+Migration 0096 adds `recurring_invoice_templates.created_by_user_id` (tenant-scoped, nullable,
+no FK — `users` is control-plane while the table is tenant-local, the same placement as
+`invoices.uploaded_by_id` and `vendor_users.provisioned_by_user_id`). `POST /api/recurring`
+stamps it; `generate_one` stamps `actor_id or template.created_by_user_id` — the live actor when
+there is one (generate-now), the author when there is not (the sweep). Precedence runs that way
+round deliberately: falling back *past* a live actor would exempt the person who clicked.
+
+Three calls inside it:
+
+1. **The audit row keeps `actor_id = None` for the sweep.** The two columns answer different
+   questions: *who performed this action* is nobody, *whose instruction created this payable* is
+   the author. Only the second is a segregation input; copying the author into the audit trail
+   would record a person as having acted when they did not.
+
+2. **Existing rows stay NULL — no backfill.** There is no honest author to recover for a template
+   written before the column, and every available proxy is a guess. Stamping the org's admin, or
+   the approver of the template's first generated invoice, manufactures either a *refusal* (a real
+   approver newly blocked on evidence nobody produced) or an *absolution* (a fabricated name
+   standing in the trail as the responsible employee). A fraud control's inputs must be observed,
+   not inferred. Those templates keep the legacy NULL reading they have always had — a shrinking
+   set that ages out as templates are re-created, not a standing hole. Failing CLOSED on NULL
+   instead was re-rejected for the same reason as before: it strands three legitimate ingestion
+   channels.
+
+3. **The revision id is shorter than the column it adds.** `alembic_version.version_num` is
+   `VARCHAR(32)` and `0096_recurring_template_created_by` is 34 characters, which aborts
+   `alembic upgrade head` before applying anything (0086 shipped exactly that). The revision is
+   `0096_recurring_template_creator` (31), and the filename matches it so the two cannot drift —
+   the trap 0094 set when its filename and revision id diverged.
+
+**Residual:** the column records the author, not the last editor, so someone who PATCHes another's
+template can still approve what it generates. Closing that needs segregation to key on a set of
+implicated actors rather than one column.
+
+## 142. Three doors onto one effect, and the widest is the only one that matters
+
+`POST /api/cards/{id}/cancel` gated on `require_roles(ADMIN, AP_MANAGER, CFO)` while the two other
+routes that close the same virtual card — `POST /api/payments/{id}/void` and its completion
+`POST /api/payments/{id}/void/retry-card-cancel` — gate on `payment.void`. The default `ap_manager`
+holds `payment.execute`, not `payment.void`: initiating money and reversing it are the two halves
+of the split the granular layer exists to make splittable. So an `ap_manager` could not reverse a
+card payment but could kill the card behind a live one, and the SoD split was undone by whichever
+door was left widest.
+
+§132 stated the rule for the retry route in exactly these words — "not the card router's bare
+roles, which would hand an `ap_manager` in a duty-split org the half of the reversal the org
+withheld" — and then left the card router's bare roles in place. A rule applied to the new path
+but not the old one is not a rule; it is a preference the next reader has to re-derive.
+
+**It breaks the standing requirement, and breaking it is the fix.** Every other route migrated
+from `require_roles` to `require_permission` reproduces the prior admin/ap_manager/cfo matrix
+exactly for the four system roles — that is what makes the layer additive. This one cannot,
+because closing the gap and preserving the matrix are the same sentence read in opposite
+directions. `ap_manager` loses the route. The matrix-preserving alternative,
+`require_permission(payment.void, payment.execute)`, reproduces the old outcome perfectly and
+closes nothing, since the `ap_manager` at issue holds `payment.execute`.
+
+So the narrowing is *stated*, not shipped quietly: on the route's docstring, in `permissions.py`'s
+matrix comment (where "reproduces the matrix exactly" would otherwise read as unconditional), in
+`require_permission`'s own docstring, in both feature docs, and as an explicit four-role table in
+`test_sod_endpoint_wiring.py::test_card_cancel_narrows_ap_manager_by_design`. A future "restore the
+old matrix" edit now has to argue with a named expectation rather than silently widen a
+money-adjacent control. A second test, `test_every_card_closing_route_gates_on_payment_void`, holds
+all three doors to one gate — §96's "a capability with a second, divergent path is worse than one
+with none" is usually read as being about *state*, and it is just as true of the gate.
+
+Nothing in the UI regresses. §96 left this route deliberately unwired, because a standalone Cancel
+is reachable on a LIVE payment where it would kill the card while that payment and its invoice
+still claim money is in flight. The gate was therefore only ever reachable by a direct API call —
+precisely the caller a permission layer exists to bound.
+
+## 143. A row the user *asks for* is gated; a row the page *owns* is not
+
+§125 settled that a KPI row renders on every state and announces a missing figure rather than
+drawing one. Extending it to the twelve panel-scoped rows surfaced a case §125 did not have: three
+of these rows report the result of something a person **runs**, not something the page fetches.
+`/audit`'s signature sweep is triggered by a button and its read writes an `audit.viewed` row;
+`ForecastVariancePanel` posts a forecast the backend deliberately never persists. Rendering those
+unconditionally would put five dashes on screen for a question nobody asked — a card announcing
+that a figure is on its way when nothing is coming, which is §34's failure pointed the other way.
+
+So the rule splits on who owns the request. A row whose fetch the page fires renders
+unconditionally. A row whose fetch a person fires is gated on `answer || in-flight` — absent before
+the click, pending from the click, settled after. Both halves of the convention survive: the row
+never collapses *while its own answer is in flight*, which is the whole of §125, and it never
+claims an answer is coming when none was requested.
+
+Rejected: gating the page-owned rows the same way, keyed on their loading flag. It reads as the
+smaller change but reintroduces exactly what §125 removed — a second mechanism for the same fact,
+so a reader learns the convention twice.
+
+The other thing this round settled is that **the tint was doing load-bearing work nobody had
+noticed**. Six of these rows carry an unconditional `highlight` — `/admin/health`'s Overall,
+`/admin/access-review`'s Dormant, `/audit`'s Invalid, `AgentDashboard`'s Resolution rate,
+`BudgetModal`'s Remaining. `KpiCard` already withholds a tint from a missing figure, so the only
+thing that had ever stopped those painting a green "all clear" over an unanswered question was the
+row not existing yet. Hoisting the row without §125's tint rule would have shipped a SOX access
+control, an operational health check and a tamper check each asserting the reassuring answer while
+still asking — the `/bank-reconciliation` case §125 calls the sharpest one, now on three controls
+at once.
+
+`/billing` needed a structural answer rather than a prop. Its usage meter was two copies of one
+row, one per branch of a chain gated on the subscription response, so neither could take
+`pending`: which copy owns the row is decided by `hasSubscription`, and while the response is out
+there is no answer to that. The row had to move outside the question it was nested inside. A third
+copy for the loading state was rejected for the obvious reason.
+
+## 144. A redirect guard reproduces the nav's gate, and says so
+
+`/workflows` and `/workflows/[id]` had no redirect guard, so a non-admin who typed either URL
+reached the full editing surface — New Workflow, Import, per-row Delete, the bulk bar, and on the
+builder an editable canvas and a Save — every control 403ing on click. The builder is the worse
+dead end: a canvas edit is *lost* on the refusal rather than merely refused.
+
+The guard added is the one four sibling routes already use, but it differs from all of them in
+what it is parity WITH. Those routes' reads are role-gated, so their guard mirrors the backend.
+Here every read is `get_current_user` — list, detail, templates, versions, diff, simulate,
+export — and only the mutations are `require_roles(ROLE_ADMIN)`. The guard therefore mirrors
+**`nav.ts`**, not the API.
+
+That distinction is deliberately kept visible rather than smoothed over, because the open question
+is whether the nav should be widened to match those role-open reads instead. Redirecting reproduces
+exactly the access the nav already grants, so it settles nothing and takes nothing away; if the
+call goes the other way the fix is to widen `allowed` and add the read-only mode `/organization`
+carries, not to delete the guard. The e2e spec asserts the API read still returns **200** while the
+mutation 403s — the one sibling spec that cannot assert 403 on both halves — precisely so a later
+reader does not take a quiet 403 assertion as evidence the product call had been made.
+
+Guarding only the list was rejected: `GET /api/workflows/{id}` is role-open, so a bookmark walks
+straight past a list-only guard into the builder. The three toolbar actions are gated on the same
+flag as the redirect rather than left to the redirect alone, matching `/admin/health`'s actions
+snippet: unlike the table (whose fetch is gated, so it has no rows) and the builder (hidden behind
+`{#if !workflow}`), they depend on no loaded data, so nothing else would stop them painting for the
+frame before navigation completes.
+
+## 145. The vendor picker is one server-searched combobox, not six `<select>`s
+
+Six surfaces each rendered a native `<select>` over a client-side vendor list: two asked for
+`page_size=100` and rendered page 1, four walked every page on mount. A `<select>` has no search,
+so past the cap the remaining vendors were unreachable everywhere, with nothing on screen saying
+the list was a subset. Filtering a truncated client page was rejected — it cannot reach what was
+never fetched; so was raising `page_size`, which only moves the cliff (the server caps it at
+`MAX_PAGE_SIZE`). `ui/VendorPicker` filters through `GET /api/vendors?search=` and states its
+coverage: "showing 25 of 137", and a load failure reads as a load failure rather than an empty
+tenant — `listVendors()` swallowed its errors, so an `ap_clerk`'s 403 on the
+admin/ap_manager/cfo-gated list rendered as "this tenant has no vendors". A failed *next* page is a
+third answer again: the page that landed stays valid and reported, and only the footer says what
+could not be added. All six landed together on purpose — the entry that raised this named
+"half-fixing it in one modal leaves five wrong" as the reason it had gone untaken.
+
+## 146. The picker binds Escape with `onkeydowncapture`, and that is not stylistic
+
+`ui/Modal` traps focus via `actions/focusTrap`, which registers a real `keydown` listener on the
+dialog box, while Svelte 5 delegates a plain `onkeydown` to one listener at the app root. Real
+bubbling reaches the dialog first, so a bubble-phase handler in a descendant runs only after the
+trap has already seen Escape and closed the modal — `stopPropagation()` there is too late to
+matter. A capture listener is attached to the element directly and fires in the target phase,
+before the bubble phase reaches any ancestor. Any nested control that needs to absorb a key the
+trap also handles has the same constraint; `tests-e2e/vendors/vendor-picker.spec.ts` pins the
+popup-then-dialog Escape order so the binding cannot be "tidied" back.
+
+## 147. `Catalog` carries `vendor_name`, because an id alone cannot be labelled
+
+`Contract`, `RecurringInvoiceTemplate` and the vendor-statement responses all ship the supplier's
+name beside its id; `CatalogResponse` shipped only the id. That is fine while a client holds the
+whole vendor list and wrong the moment it does not — the shared picker needs a label for a vendor
+that may sit on any page. Resolving it client-side was rejected twice over:
+`GET /api/vendors/{id}` writes a SOX access-audit row per modal open, turning the trail into
+machine noise; and paging until found is the `fetchAllPages` anti-pattern this change removed. It
+is derived, not stored (no migration), and the list resolves a page in one grouped query — the
+per-row form is index-only and cheap on the database, which is exactly why it never surfaces as a
+slow query, since the cost is a round trip per row.
+
+## 148. List punctuation is locale data, and only prose gets it
+
+`', '` is an English punctuation rule wearing a string literal's clothes, and the tree had
+nineteen of them. Japanese enumerates with the ideographic comma `、` and no space; German and
+Spanish join the final pair with a word. A translated sentence with an ASCII-comma list spliced in
+read as half-localized in three of the six shipped locales — loudest inside a screen-reader
+announcement, where the separator is what produces the pause. `utils/list.ts::formatList` is the
+one owner, sited beside `money.ts` and `time.ts` and reading the same active-locale holder, so the
+picker moves list punctuation at the same moment it moves decimal separators.
+`Intl.ListFormat`'s `conjunction` at `narrow` width is the plain shape: character-identical to the
+literal in en/fr/pt-BR, ideographic in ja, and each of de/es' own final-pair word. `unit` was
+**rejected** — the CLDR unit list is for quantities, and its Japanese form is space-separated with
+no comma at all, the opposite of the fix. A missing `Intl.ListFormat` or a malformed locale tag
+degrades to `', '` rather than throwing, memoized so a failing environment pays the throw once.
+
+**What was NOT migrated is the load-bearing half.** The line drawn is *prose, not translation*: a
+fragment a human reads as a sentence goes through the helper, whether `m()`-produced or spliced
+into an `m()` sentence. A value re-split on `,` by its own input, a machine payload, and a bare
+identifier cell keep the literal — swapping in a locale-dependent separator there is a correctness
+bug, not a translation fix, and a routing-rule set typed in Japanese would collapse to one entry on
+save. Banning the literal outright was rejected for that reason. `listJoinAudit.test.ts` records
+the classification per file with its reason, so a new `.join(', ')` must be classified rather than
+defaulting to English.
+
+## 149. A screening verdict is a third vocabulary, not the vendor status
+
+`/vendors/screening`'s history badge derived its label as `result.replace(/_/g, ' ')` under a
+`text-transform: capitalize` — an English-only derivation printing `Review Required` inside an
+otherwise-translated modal, sitting directly above the control that blocks a supplier's payments,
+and one `capitalize` would have title-cased mid-phrase in German or French. The obvious fix —
+reuse `SCREENING_STATUS_LABEL_KEYS` — does not work: `vendor_screening._STATUS_MAP` collapses
+`review_required` to `review` before stamping `Vendor.screening_status`, so the vendor-level map
+has no member that could label a history row, and reusing it would render a blank badge on the one
+verdict a compliance reviewer most needs to read. `SANCTIONS_RESULT_LABEL_KEYS` is therefore its
+own total map over `clear | review_required | match`, drift-guarded against the backend's own
+literal set, with the tolerant `…LabelKey() → null → de-underscored raw` fallback the category map
+established — a widened adapter degrades to raw text, never a dropped verdict.
+
+## 150. Forbidding extras on a surface with callers is a caller audit first, and the audit is the deliverable
+
+Round 28 put `extra="forbid"` on `BulkNegotiationRequest` and deliberately left its sibling
+`DiscountOfferCreate` open: `bulk-negotiate` shipped caller-less, while `POST /api/discounts/offers`
+has live callers, and tightening a schema in use is a breaking change. The honest way to make one
+is to enumerate who breaks *before* deciding, not after.
+
+The enumeration: 37 pytest call sites, 5 Playwright call sites, zero frontend client functions
+(`api/discounts.ts` has no `createOffer`), zero mobile callers, and `scripts/seed_extras.py` builds
+`DiscountOffer` ORM rows directly rather than going through the schema at all. Union of every key
+sent: `{scope, invoice_id, vendor_id, tiers, base_amount, currency, valid_from}` — a strict subset
+of the declared fields. Nobody breaks, so the guard lands.
+
+The hazard closed is the bulk one plus a quieter second. A dropped `valid_until` leaves an offer
+with no end date, hence no net due date, hence unrankable by the optimizer and standing
+indefinitely. A dropped `currency` stamps the offer from the invoice or the org rather than what
+the caller asserted — precisely the divergence `discount_capture` refuses to capture against — so
+the savings are never realised and nothing says why.
+
+**A grep result rots, so the audit ships as a test.**
+`test_create_offer_accepts_every_field_its_live_callers_send` re-asserts that union in the suite.
+Without it the audit is a claim in a commit message, and the next field rename discovers the
+breakage as a 422 in an e2e spec — or in a deployed caller.
+
+**The nested tiers stay permissive, on both schemas.** `DiscountTier` is also a *response* model:
+`DiscountOfferResponse.tiers` and `.accepted_tier` are hydrated from the `discount_offers.tiers`
+JSONB. Forbidding there would turn a stored row carrying an unexpected key into a 500 on read — a
+worse failure than the silent drop, and on the wrong side of the boundary. `extra="forbid"` is a
+rule about what a *request* may assert, not about what a table may hold.
+
+**One thing this deliberately did not decide.** `POST /api/discounts/offers` has no frontend caller
+either. Unlike `bulk-negotiate`, that may be *correct*: an early-pay offer normally arrives **from**
+the supplier — the portal's own accept/decline surface, or the `financing_adapters` marketplace —
+so a manual AP-side create may be a deliberate absence rather than an unwired feature. Whether AP
+should raise offers by hand is a product call and stays open; the schema guard presumes neither
+answer.
