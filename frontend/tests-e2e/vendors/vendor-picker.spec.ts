@@ -171,7 +171,11 @@ test.describe('shared vendor picker — reaching past the first page', () => {
 			const countLine = page.locator('.vendor-picker p[aria-live="polite"]');
 
 			await picker.click();
-			await expect(countLine).not.toBeEmpty();
+			// The line passes through "Loading vendors…" on its way to the count,
+			// and `not.toBeEmpty()` is satisfied by that transient text — so the
+			// baseline captured was a loading message the re-opened popup could
+			// never match. Wait for it to settle before reading it.
+			await expect(countLine).not.toHaveText('Loading vendors…');
 			const unfiltered = await countLine.textContent();
 
 			// Committing closes the popup, which empties the count line — so the
