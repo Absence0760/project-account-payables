@@ -70,12 +70,18 @@ function cleanup() {
 	}
 	for (const predicate of predicates) {
 		// Resubmit creates a workflow instance + step FK-referencing the invoice,
-		// so clear those before the invoices themselves.
+		// so clear those before the invoices themselves — and clear them in ONE
+		// transaction. As two psql calls the backend could insert a step for an
+		// in-flight resubmit in the gap between them, and the instance delete
+		// then failed the FK on a row that had not existed when the step delete
+		// ran.
 		const scope = `SELECT id FROM invoices WHERE ${predicate}`;
 		tenantPsql(
-			`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id IN (${scope}))`
+			`BEGIN; ` +
+				`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id IN (${scope})); ` +
+				`DELETE FROM workflow_instances WHERE invoice_id IN (${scope}); ` +
+				`COMMIT;`
 		);
-		tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id IN (${scope})`);
 		tenantPsql(`DELETE FROM exceptions WHERE invoice_id IN (${scope})`);
 		deleteInvoicesWhere(predicate);
 	}
