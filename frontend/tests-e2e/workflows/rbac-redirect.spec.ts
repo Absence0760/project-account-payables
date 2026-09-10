@@ -62,6 +62,16 @@ test.describe('/workflows RBAC (ap_clerk — not authorized)', () => {
 		await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('Workflows');
 		await expect(page.getByRole('button', { name: '+ New Workflow' })).toHaveCount(0);
 		await expect(page.getByRole('button', { name: 'New from template' })).toHaveCount(0);
+
+		// NOTE on what this does NOT cover. These assert the state after the
+		// redirect settles. The frame BEFORE it — where the three toolbar
+		// buttons would otherwise paint, since they depend on no loaded data —
+		// is closed by the `{#if userLoaded && allowed}` gate on the actions
+		// snippet, not by an assertion here: catching a single pre-navigation
+		// frame deterministically needs either a sleep or a race, both of which
+		// this repo forbids outright (root CLAUDE.md § Fix bugs at the source).
+		// The table needs no such gate (its fetch is gated, so it has no rows)
+		// and neither does the builder (hidden behind `{#if !workflow}`).
 	});
 
 	test('a clerk typing a builder URL is redirected too', async ({ page, tenantClerk }) => {

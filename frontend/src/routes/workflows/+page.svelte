@@ -228,9 +228,18 @@
 
 <PageHeader title={m('workflows.list.title')}>
 	{#snippet actions()}
-		<button class="btn-toolbar" onclick={() => (showTemplates = true)}>{m('workflows.list.newFromTemplate')}</button>
-		<button class="btn-toolbar" onclick={() => (showImport = true)}>{m('workflows.list.import')}</button>
-		<button class="btn-create" onclick={() => (showCreate = true)}>{m('workflows.list.newWorkflow')}</button>
+		<!-- Gated on the same flag the redirect reads, matching `/admin/health`'s
+		     actions snippet. The redirect alone would leave these three on screen
+		     for the frame before navigation completes — and unlike the table (whose
+		     fetch is gated, so it has no rows) and the builder (hidden behind
+		     `{#if !workflow}`), they depend on no loaded data, so nothing else
+		     would suppress them. A control that cannot work should never be
+		     painted, however briefly. -->
+		{#if userLoaded && allowed}
+			<button class="btn-toolbar" onclick={() => (showTemplates = true)}>{m('workflows.list.newFromTemplate')}</button>
+			<button class="btn-toolbar" onclick={() => (showImport = true)}>{m('workflows.list.import')}</button>
+			<button class="btn-create" onclick={() => (showCreate = true)}>{m('workflows.list.newWorkflow')}</button>
+		{/if}
 	{/snippet}
 
 	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
