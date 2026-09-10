@@ -44,9 +44,15 @@
 
 	let saving = $state(false);
 
-	// Spend rollup loaded lazily in detail mode.
+	// Spend rollup loaded lazily in detail mode. Seeded from `budget` rather
+	// than `false`: the `$effect` below fires the fetch, and an effect runs
+	// AFTER the first render, so a `false` seed spent one frame rendering the
+	// rollup row as `unavailable` (a dash that means "did not arrive") before
+	// flipping to pending. In detail mode the fetch is certain, so say so from
+	// the first paint. Create mode has no budget and no fetch.
 	let spend = $state<BudgetSpend | null>(null);
-	let spendLoading = $state(false);
+	/* eslint-disable-next-line svelte/state-referenced-locally -- modal receives a snapshot */
+	let spendLoading = $state(budget !== null);
 
 	$effect(() => {
 		if (budget) loadSpend(budget.id);
@@ -126,21 +132,41 @@
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		{#if !isCreate}
-			<!-- Spend rollup (computed on read) -->
+			<!-- Spend rollup (computed on read) — the KPI row renders on EVERY
+			     state, never gated on the response (`docs/decisions.md` §125). It
+			     used to sit inside `{#if spend}` and collapse while the rollup was
+			     in flight, which in a modal is the worst version of the problem:
+			     the dialog's own height changes under the reader as the row pops
+			     in, moving the fields below it.
+
+			     The Remaining card's tint is a verdict — GREEN unless the balance
+			     is negative — so a collapsed row was the only thing stopping "in
+			     budget" being painted before anyone had totalled the spend.
+			     `KpiCard` withholds the tint while there is no figure, so the
+			     `spend &&` guards here are only keeping the expressions from
+			     dereferencing a null. The bar + detail lines below stay gated:
+			     they render a percentage-width geometry and a set of amounts,
+			     neither of which has a "no figure yet" form. -->
+			<div class="kpi-row">
+				<KpiCard
+					value={spend ? `${spend.utilization_pct.toFixed(1)}%` : null}
+					label={m('budgets.modal.kpi.utilization')}
+					highlight={spend && spend.utilization_pct >= 100 ? 'red' : null}
+					pending={spendLoading}
+				/>
+				<KpiCard
+					value={spend ? formatMoney(spend.committed, { currency: spend.currency }) : null}
+					label={m('budgets.modal.kpi.committed')}
+					pending={spendLoading}
+				/>
+				<KpiCard
+					value={spend ? formatMoney(spend.remaining, { currency: spend.currency }) : null}
+					label={m('budgets.modal.kpi.remaining')}
+					highlight={spend ? (isNegativeAmount(spend.remaining) ? 'red' : 'green') : null}
+					pending={spendLoading}
+				/>
+			</div>
 			{#if spend}
-				<div class="kpi-row">
-					<KpiCard
-						value={`${spend.utilization_pct.toFixed(1)}%`}
-						label={m('budgets.modal.kpi.utilization')}
-						highlight={spend.utilization_pct >= 100 ? 'red' : null}
-					/>
-					<KpiCard value={formatMoney(spend.committed, { currency: spend.currency })} label={m('budgets.modal.kpi.committed')} />
-					<KpiCard
-						value={formatMoney(spend.remaining, { currency: spend.currency })}
-						label={m('budgets.modal.kpi.remaining')}
-						highlight={isNegativeAmount(spend.remaining) ? 'red' : 'green'}
-					/>
-				</div>
 				<div class="util-bar" aria-label={m('budgets.modal.utilizationAria', { percent: spend.utilization_pct.toFixed(1) })}>
 					<div class="util-fill {utilClass}" style={`width: ${Math.min(spend.utilization_pct, 100)}%`}></div>
 				</div>

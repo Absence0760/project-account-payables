@@ -223,15 +223,39 @@
 </script>
 
 <div class="agent-dash" data-testid="agent-dashboard">
-	{#if stats}
-		<div class="kpi-row">
-			<KpiCard value={stats.total_decisions} label="Decisions made" />
-			<KpiCard value={pct(stats.resolution_rate)} label="Resolution rate" highlight="green" />
-			<KpiCard value={pct(stats.escalation_rate)} label="Escalation rate" />
-			<KpiCard value={stats.auto_resolved} label="Auto-resolved" />
-			<KpiCard value={stats.escalated} label="Escalated" />
-		</div>
+	<!-- KPI row — rendered on EVERY state, never gated on the response
+	     (`docs/decisions.md` §125). It used to sit inside `{#if stats}` and
+	     collapse while the stats request was in flight; the green "Resolution
+	     rate" tint made that worse than a shape change, since `highlight` was
+	     unconditional and the card would have painted a verdict on a figure
+	     nobody had computed the moment it appeared. `KpiCard` withholds the tint
+	     while there is no figure.
 
+	     `load()` toasts on failure and leaves `stats` null, so a failed read is
+	     an `unavailable` row — dashes, not busy — beside the toast that says
+	     why, rather than a section that silently isn't there. -->
+	<div class="kpi-row">
+		<KpiCard
+			value={stats ? stats.total_decisions : null}
+			label="Decisions made"
+			pending={loading}
+		/>
+		<KpiCard
+			value={stats ? pct(stats.resolution_rate) : null}
+			label="Resolution rate"
+			highlight="green"
+			pending={loading}
+		/>
+		<KpiCard
+			value={stats ? pct(stats.escalation_rate) : null}
+			label="Escalation rate"
+			pending={loading}
+		/>
+		<KpiCard value={stats ? stats.auto_resolved : null} label="Auto-resolved" pending={loading} />
+		<KpiCard value={stats ? stats.escalated : null} label="Escalated" pending={loading} />
+	</div>
+
+	{#if stats}
 		<!-- Accuracy is a placeholder pending a human-overturn signal — never
 		     fabricate a number; show the explicit deferred state. -->
 		<div class="accuracy-card" data-testid="agent-accuracy">

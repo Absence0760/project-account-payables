@@ -88,36 +88,61 @@
 
 <div class="chart-card" data-testid="cfo-metrics-section">
 	<h2>{m('cfoMetrics.heading')}</h2>
+	<!-- KPI row — rendered on EVERY state, never gated on the response
+	     (`docs/decisions.md` §125). It used to sit inside `{:else if data}` and
+	     collapse while the metrics request was in flight; the horizon control
+	     (30/90/180/365) re-fires that request, so the row also blanked on every
+	     horizon change instead of holding the figures until the newer answer
+	     landed. `pending` is only consulted for a MISSING value, which is what
+	     fixes both.
+
+	     The cash-conversion-cycle card already had two reasons for a dash — the
+	     backend reports `null` when the cycle is not computable — so it now has
+	     three, and only the `sub` line distinguishes them: `KpiCard` deliberately
+	     draws pending and unavailable identically. -->
+	<div class="kpi-row">
+		<KpiCard
+			value={data ? `${data.dpo_current.toFixed(1)}d` : null}
+			label={m('cfoMetrics.kpi.dpo')}
+			pending={loading}
+		/>
+		<!-- `null`, not a hand-written dash: `KpiCard` owns the glyph, so there is
+		     one spelling of "no figure" and `kpiValue.test.ts` pins it. Passing the
+		     dash as a value also rendered `data-kpi-state="value"`, which is a claim
+		     that a figure exists. -->
+		<KpiCard
+			value={data && data.cash_conversion_cycle !== null
+				? `${data.cash_conversion_cycle.toFixed(1)}d`
+				: null}
+			label={m('cfoMetrics.kpi.ccc')}
+			sub={data && data.cash_conversion_cycle === null
+				? m('cfoMetrics.kpi.cccUnavailable')
+				: null}
+			pending={loading}
+		/>
+		<KpiCard
+			value={data
+				? fmtIn(
+						data.reporting_accounts_payable_balance.total_amount,
+						data.reporting_accounts_payable_balance.reporting_currency
+					)
+				: null}
+			label={m('cfoMetrics.kpi.apBalance')}
+			pending={loading}
+		/>
+		<KpiCard
+			value={data ? `${data.rebate_yield.yield_pct.toFixed(2)}%` : null}
+			label={m('cfoMetrics.kpi.rebateYield')}
+			highlight={data && data.rebate_yield.yield_pct > 0 ? 'green' : null}
+			pending={loading}
+		/>
+	</div>
+
 	{#if error}
 		<p class="cfm-error" role="alert">{error}</p>
 	{:else if loading && !data}
 		<p class="empty">{m('cfoMetrics.loading')}</p>
 	{:else if data}
-		<div class="kpi-row">
-			<KpiCard value={`${data.dpo_current.toFixed(1)}d`} label={m('cfoMetrics.kpi.dpo')} />
-			<!-- `null`, not a hand-written dash: `KpiCard` owns the glyph, so there is
-			     one spelling of "no figure" and `kpiValue.test.ts` pins it. Passing the
-			     dash as a value also rendered `data-kpi-state="value"`, which is a claim
-			     that a figure exists. -->
-			<KpiCard
-				value={data.cash_conversion_cycle !== null ? `${data.cash_conversion_cycle.toFixed(1)}d` : null}
-				label={m('cfoMetrics.kpi.ccc')}
-				sub={data.cash_conversion_cycle === null ? m('cfoMetrics.kpi.cccUnavailable') : null}
-			/>
-			<KpiCard
-				value={fmtIn(
-					data.reporting_accounts_payable_balance.total_amount,
-					data.reporting_accounts_payable_balance.reporting_currency
-				)}
-				label={m('cfoMetrics.kpi.apBalance')}
-			/>
-			<KpiCard
-				value={`${data.rebate_yield.yield_pct.toFixed(2)}%`}
-				label={m('cfoMetrics.kpi.rebateYield')}
-				highlight={data.rebate_yield.yield_pct > 0 ? 'green' : null}
-			/>
-		</div>
-
 		{#if data.reporting_accounts_payable_balance.unconverted_count > 0}
 			<p class="cfm-skipped" role="alert" data-testid="unconverted-ap-balance">
 				{m('cfoMetrics.apBalance.unconverted', {
