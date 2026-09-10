@@ -421,3 +421,62 @@ python scripts/create_tenant.py \
 ```
 
 This creates the database, tables, org record, and admin user in one step.
+
+## Model inventory (control plane vs tenant)
+
+Which table lives in which database, and the notable columns on each.
+Extracted from `backend/CLAUDE.md` to keep that file cheap to load.
+
+`CONTROL_TABLES` in the models package is the enforced list — a coverage
+gate fails if a model is added without being classified.
+
+**Two-database pattern:**
+
+1. **Control plane** (`feohledger`) — shared across all tenants
+   - `Organization` — id, name, slug, db_name, settings (JSONB), plan
+   - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, notification_prefs (JSONB — per-user email/in-app channel prefs, user-global), device_tokens (JSONB — one mobile push token per platform, registration only, no push-sending adapter yet; migration 0078), organization_id
+   - `Role` — name (admin, ap_manager, ap_clerk, cfo)
+   - `UserRole` — junction table
+   - `WebAuthnCredential` — registered passkey (credential_id, public_key, sign_count, transports) per `user_id`; the WebAuthn second factor (migration 0063)
+   - `AssistantUsage` — billing: per-org/month assistant token meter. The
+     *only* usage meter that is control-plane; `ExtractionUsage` and
+     `CardRebate` read like control-plane data but are tenant-local (see
+     the tenant list below and `docs/decisions.md` §57)
+
+2. **Tenant DBs** (`feoh_<slug>`) — isolated per customer
+   - `Entity` — legal entity / subsidiary within the tenant (name, slug, currency, is_default, is_active). Business tables carry a nullable `entity_id` FK (`EntityMixin`); every tenant has one `is_default` Entity. Multi-entity Phase 2 (reads/writes scoped by the `X-Entity-ID` header) — see `../docs/multi-entity.md`
+   - `Invoice` — invoice_number, vendor_name, amount, status (12 states), file_key, warnings (JSONB), po_match (JSONB), meta (JSONB — holds `audit_summary`)
+   - `InvoiceLineItem` — invoice_id, item_code, description, quantity, unit_price, total, gl_account
+   - `InvoiceExtractionResult` — invoice_id, method, confidence, raw_result (JSONB)
+   - `Vendor` — name, code, tax_id, status (active/unverified/inactive/rejected), source (manual/erp_sync/ai_extracted)
+   - `PurchaseOrder` — po_number, vendor_id, total, status
+   - `POLineItem` — po_id, description, quantity, unit_price, total
+   - `GoodsReceipt` — gr_number, po_id, received_date, status
+   - `GRLineItem` — gr_id, description, quantity_received
+   - `QualityInspection` — inspection_number, po_id, gr_id, result (pass/fail/partial), accepted_quantity, rejected_quantity, deviation_notes — the 4-way match leg (see `docs/po-matching.md`)
+   - `GLAccount` — code, name, account_type, parent_code, erp_account_id
+   - `PaymentRun` — status, total_amount, initiated_by, executed_at
+   - `PaymentSchedule` — invoice_id, due_date, discount_date, discount_percent
+   - `Payment` — invoice_id, payment_run_id, amount, method (`String(50)`, not a DB enum — `ach`/`wire`/`check`/`virtual_card`, the international rails `sepa`/`international_ach`/`international_wire`, and the UK domestic rails `bacs`/`faster_payments`/`chaps`; classified on both the 1099 and geography axes in `services/payment_methods.py`), status, `retry_of_payment_id` (self-FK, migration 0080 — `/runs/{id}/retry-failed` books a NEW attempt row pointing at the failed one it replaces and never mutates that row, because `correlation_id` is the PROCESSOR's idempotency key; run rollups count the latest attempt per invoice via `payment_runs.active_run_payments`. See `docs/payments.md` § Why a payment failed, and retrying it), `settled_amount` / `settled_currency` (migration 0083 — what the PROCESSOR says it moved, beside `amount` which is what AP AUTHORIZED. NULL is meaningful and is not zero: no rail ever reported a figure, which `payment_settlement.settlement_coverage` reads as "nothing indicates a shortfall" and fails OPEN, so an amount-free rail can't hold every invoice it settles. See `docs/payments.md` § Settlement-amount verification)
+   - `VirtualCard` — invoice_id, card_provider (lithic/nium), provider_card_id, amount_limit, status
+   - `CardRebate` — virtual_card_id, amount, rate, status (`pending`/`confirmed`/`paid_out`), period. Not in `CONTROL_TABLES` — fanned to every tenant DB like the rest, despite living in `app/models/virtual_card.py` alongside `VirtualCard`
+   - `WorkflowDefinition` — name, steps_config (JSONB), is_active, is_default
+   - `WorkflowInstance` — definition_id, invoice_id, current_step, state, steps_config_snapshot (JSONB)
+   - `WorkflowStep` — instance_id, step_number, step_type, assigned_to, action, completed_at
+   - `WorkflowExperiment` — A/B test of two workflow-rule configs (`config_a`/`config_b` JSONB) on one `workflow_definition_id`; `split_a_pct`, `primary_metric`, `min_sample_per_variant`, `status` (draft/running/concluded), `assignments` (JSONB `{invoice_id: "A"|"B"}`). Assigned at invoice creation (deterministic stable hash, freezes the variant config onto the instance snapshot); migration 0064. See `docs/adaptive-workflows.md` § A/B testing
+   - `AuditLog` — actor_id, action, entity_type, entity_id, details (JSONB)
+   - `Exception` — invoice_id, exception_type, severity, status (open/resolved/escalated/dismissed)
+   - `CreditMemo` — vendor_id, original_invoice_id, amount, status (open/applied/voided)
+   - `BankStatement` / `BankTransaction` — uploaded statement + parsed transactions for reconciliation
+   - `SanctionsCheck` — append-only KYC / sanctions screening trail per vendor
+   - `ScheduledReport` — recurring CFO report definition (cron, recipients, format)
+   - `InvoiceEmbedding` — vector embedding per invoice for RAG / duplicate detection
+   - `VendorExtractionPrior` — accumulated vendor field priors that bias the next extraction
+   - `VendorUser` — supplier-portal credentials scoped to a single Vendor. `provisioned_by_user_id` (migration 0095) records the control-plane `User` who last minted a password for it (invite, or admin reset — the only two routes that hand an AP actor a working supplier credential). It is a segregation-of-duties record, not bookkeeping: see `VendorChangeRequest` below
+   - `VendorChangeRequest` — staged supplier-portal change to a vendor's `bank_details` / `tax_id`, pending AP approval (migration 0022; fraud-prevention gate — see `docs/supplier-portal.md`). Carries TWO requester columns, and `approve_change_request` refuses when either equals the approver: `requested_by_user_id` (AP-initiated, migration 0066) and `requester_provisioned_by_user_id` (migration 0095) — the submitting portal identity's `provisioned_by_user_id`, **frozen at staging** so deleting that portal user afterwards can't erase the evidence. Without the second column every portal-submitted request short-circuited the check on a NULL, and one `ap_manager` could invite a portal user, sign in as it, stage a bank redirect, approve it and pay it
+   - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
+   - `Notification` — in-app notification center rows (recipient_user_id, event_type, entity_id, title/body, read_at). See `docs/notifications.md`
+   - `PeppolTransmission` — one row per PEPPOL transmission (direction=outbound|inbound). Outbound idempotency: partial unique index `uq_peppol_one_live_per_invoice_direction` on `(invoice_id, direction) WHERE status <> 'failed'`. Inbound dedupe: partial unique index `uq_peppol_message_id` on `message_id WHERE message_id IS NOT NULL`. See `docs/peppol.md`
+   - `Contract` — vendor contract / CLM spine. contract_number, contract_type (purchase/service/subscription/lease/sla/msa/sow/other), status (draft/active/expired/terminated/cancelled), vendor_id, money (`Numeric` total_value / spend_limit + not_to_exceed), lifecycle dates, renewal config (auto_renew, renewal_notice_days, renewal_alert_sent_at), terms (JSONB), file_key. Spend link is `Invoice.contract_id`. See `docs/contracts.md`
+   - `ContractLineItem` — contract_id, line_number, item_code, description, quantity, unit_price, total, gl_account
+
