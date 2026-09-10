@@ -32,7 +32,6 @@
 		declineDiscountOffer,
 		optimizeDiscounts
 	} from '$lib/api/discounts';
-	import { listVendors, type VendorOption } from '$lib/api/vendors';
 	import { DISCOUNT_STATUS_TONES } from '$lib/types/discounts';
 	import type {
 		DiscountDashboard,
@@ -329,28 +328,14 @@
 	}
 
 	// --- Vendor-wide negotiation (`POST /api/discounts/bulk-negotiate`) ---
+	// No vendor list is fetched here. `ui/VendorPicker` inside the modal asks
+	// the server for one page at a time and filters with `search=`, so the
+	// proposal form reaches every supplier instead of the first 100 — and a
+	// reader who never opens it pays for nothing.
 	let showNegotiate = $state(false);
-	let vendors = $state<VendorOption[]>([]);
-	let vendorsLoading = $state(false);
-	let vendorsLoaded = $state(false);
-
-	/** Vendors are fetched on FIRST open, not on page load: every reader of this
-	 *  page pays for the KPI + offers requests, and only an admin/ap_manager who
-	 *  actually opens the proposal form needs the vendor list. */
-	async function ensureVendors() {
-		if (vendorsLoaded || vendorsLoading) return;
-		vendorsLoading = true;
-		try {
-			vendors = await listVendors();
-			vendorsLoaded = true;
-		} finally {
-			vendorsLoading = false;
-		}
-	}
 
 	function openNegotiate() {
 		showNegotiate = true;
-		void ensureVendors();
 	}
 
 	/** A proposal landed. Re-read both surfaces from the server rather than
@@ -781,12 +766,7 @@
      on every proposal — a stale vendor + tier set carried over from a previous
      one is the wrong default for an offer against a different supplier. -->
 {#if showNegotiate}
-	<BulkNegotiationModal
-		{vendors}
-		{vendorsLoading}
-		onclose={() => (showNegotiate = false)}
-		oncreated={onNegotiated}
-	/>
+	<BulkNegotiationModal onclose={() => (showNegotiate = false)} oncreated={onNegotiated} />
 {/if}
 
 <style>

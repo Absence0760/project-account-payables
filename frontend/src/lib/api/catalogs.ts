@@ -32,9 +32,9 @@ export interface GlAccountOption {
 }
 
 // The vendor picker's option type + loader live with the rest of the vendor
-// surface in `api/vendors.ts`; re-exported here because `CatalogModal` and the
-// `/catalogs` page already import them from this module.
-export { listVendors, type VendorOption } from './vendors';
+// surface in `api/vendors.ts`, and `ui/VendorPicker.svelte` is now the only
+// caller — a catalog surface no longer fetches vendors itself, so there is
+// nothing left for this module to re-export.
 
 export function listCatalogs(params: CatalogListParams = {}): Promise<CatalogListResponse> {
 	const qs = new URLSearchParams();

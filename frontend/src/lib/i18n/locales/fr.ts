@@ -617,6 +617,21 @@ export const messages = {
 	'vendors.invite.sent.email': 'E-mail',
 	'vendors.invite.sent.url': 'URL du portail',
 	'vendors.invite.sent.done': 'Terminé',
+	'vendors.picker.loading': 'Chargement des fournisseurs…',
+	'vendors.picker.loadFailed':
+		'Impossible de charger les fournisseurs. Cela ne signifie pas que ce locataire n’en a aucun — réessayez.',
+	'vendors.picker.noVendors': 'Aucun fournisseur disponible pour l’instant',
+	'vendors.picker.noMatches': 'Aucun fournisseur ne correspond à « {query} »',
+	'vendors.picker.showingAll': 'Tous les résultats affichés ({total})',
+	'vendors.picker.showingPartial':
+		'Affichage de {shown} sur {total} résultats — saisissez pour affiner',
+	'vendors.picker.refineHint': 'Tous les résultats ne sont pas listés',
+	'vendors.picker.loadMore': 'Charger plus',
+	'vendors.picker.loadMoreFailed': 'Impossible d’en charger davantage.',
+	'vendors.picker.clearAria': 'Effacer le fournisseur sélectionné',
+	'vendors.picker.listAria': 'Fournisseurs',
+	'vendors.picker.unresolvedSelection':
+		'Un fournisseur est déjà sélectionné, mais son nom n’est pas disponible sur cet écran. En choisir un ici le remplacera.',
 	'vendors.changeRequests.navLabel': 'Changements bancaires',
 	'vendors.changeRequests.title': 'Validations des changements bancaires et fiscaux',
 	'vendors.changeRequests.intro':

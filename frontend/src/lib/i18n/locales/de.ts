@@ -618,6 +618,21 @@ export const messages = {
 	'vendors.invite.sent.email': 'E-Mail',
 	'vendors.invite.sent.url': 'Portal-URL',
 	'vendors.invite.sent.done': 'Fertig',
+	'vendors.picker.loading': 'Lieferanten werden geladen…',
+	'vendors.picker.loadFailed':
+		'Lieferanten konnten nicht geladen werden. Das bedeutet nicht, dass dieser Mandant keine hat — bitte erneut versuchen.',
+	'vendors.picker.noVendors': 'Noch keine Lieferanten zur Auswahl',
+	'vendors.picker.noMatches': 'Keine Lieferanten passen zu „{query}“',
+	'vendors.picker.showingAll': 'Alle Treffer angezeigt ({total})',
+	'vendors.picker.showingPartial':
+		'{shown} von {total} Treffern angezeigt — tippen, um einzugrenzen',
+	'vendors.picker.refineHint': 'Es sind nicht alle Treffer aufgelistet',
+	'vendors.picker.loadMore': 'Mehr laden',
+	'vendors.picker.loadMoreFailed': 'Weitere konnten nicht geladen werden.',
+	'vendors.picker.clearAria': 'Ausgewählten Lieferanten entfernen',
+	'vendors.picker.listAria': 'Lieferanten',
+	'vendors.picker.unresolvedSelection':
+		'Es ist bereits ein Lieferant ausgewählt, dessen Name auf dieser Seite jedoch nicht verfügbar ist. Eine Auswahl hier ersetzt ihn.',
 	'vendors.changeRequests.navLabel': 'Bankänderungen',
 	'vendors.changeRequests.title': 'Freigaben für Bank- und Steuerdaten',
 	'vendors.changeRequests.intro':

@@ -615,6 +615,20 @@ export const messages = {
 	'vendors.invite.sent.email': 'メール',
 	'vendors.invite.sent.url': 'ポータル URL',
 	'vendors.invite.sent.done': '完了',
+	'vendors.picker.loading': '取引先を読み込み中…',
+	'vendors.picker.loadFailed':
+		'取引先を読み込めませんでした。このテナントに取引先が存在しないという意味ではありません — 再試行してください。',
+	'vendors.picker.noVendors': '選択できる取引先がまだありません',
+	'vendors.picker.noMatches': '「{query}」に一致する取引先はありません',
+	'vendors.picker.showingAll': '一致するすべてを表示中（{total}件）',
+	'vendors.picker.showingPartial': '{total}件中{shown}件を表示中 — 入力して絞り込み',
+	'vendors.picker.refineHint': 'すべての一致が表示されているわけではありません',
+	'vendors.picker.loadMore': 'さらに読み込む',
+	'vendors.picker.loadMoreFailed': 'これ以上読み込めませんでした。',
+	'vendors.picker.clearAria': '選択した取引先をクリア',
+	'vendors.picker.listAria': '取引先',
+	'vendors.picker.unresolvedSelection':
+		'取引先はすでに選択されていますが、この画面では名称を取得できません。ここで選ぶと置き換わります。',
 	'vendors.changeRequests.navLabel': '銀行情報変更',
 	'vendors.changeRequests.title': '銀行・税務情報の変更承認',
 	'vendors.changeRequests.intro':

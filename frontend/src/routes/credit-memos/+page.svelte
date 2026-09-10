@@ -9,6 +9,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import VendorPicker from '$lib/components/ui/VendorPicker.svelte';
 	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -73,11 +74,6 @@
 		created_at: string;
 	}
 
-	interface Vendor {
-		id: string;
-		name: string;
-	}
-
 	interface Invoice {
 		id: string;
 		invoice_number: string;
@@ -86,7 +82,6 @@
 	}
 
 	let memos = $state<CreditMemo[]>([]);
-	let vendors = $state<Vendor[]>([]);
 	let invoices = $state<Invoice[]>([]);
 	let loading = $state(true);
 	let statusFilter = $state<string>('all');
@@ -169,7 +164,7 @@
 	});
 
 	async function loadAll() {
-		await Promise.all([loadMemos(), loadVendors(), loadInvoices()]);
+		await Promise.all([loadMemos(), loadInvoices()]);
 	}
 
 	async function loadMemos(opts: { append?: boolean; nextPage?: number } = {}) {
@@ -213,25 +208,19 @@
 
 	let hasMore = $derived(memos.length < total);
 
-	// Both of these feed a `<select>`, so the options ARE the set of valid
-	// choices — a truncated fetch is not a shorter list, it is a supplier or an
-	// invoice the operator cannot reach (a native `<select>` has no search).
-	// A bare `api.get('/api/vendors')` returns the server's DEFAULT_PAGE_SIZE of
-	// 20; the acme demo tenant alone has ~39 active vendors, so creating a memo
-	// against most of its suppliers was impossible, and the Apply modal could
-	// not see the invoice you wanted to credit. `fetchAllPages` walks the
-	// envelope's own `total` — raising `page_size` would not do, since the
-	// server caps it at MAX_PAGE_SIZE.
-	async function loadVendors() {
-		try {
-			vendors = await fetchAllPages<Vendor>((page, pageSize) =>
-				api.get<PagedResponse<Vendor>>(`/api/vendors?page=${page}&page_size=${pageSize}`)
-			);
-		} catch {
-			/* non-critical for the list view */
-		}
-	}
-
+	// The vendor list is no longer fetched here: `ui/VendorPicker` searches it
+	// server-side, so the create modal reaches every supplier without this page
+	// walking one request per 100 of them on mount.
+	//
+	// The INVOICE list still is, and for the reason the vendor one used to be:
+	// its options ARE the set of valid choices, so a truncated fetch is not a
+	// shorter list — it is the invoice the operator wants to credit, missing,
+	// with no search inside a native `<select>` to reach it. A bare
+	// `api.get('/api/invoices')` returns the server's DEFAULT_PAGE_SIZE of 20,
+	// and raising `page_size` only moves the cliff (the server caps it at
+	// MAX_PAGE_SIZE), so `fetchAllPages` walks the envelope's own `total`.
+	// Giving it the picker's treatment needs an invoice-shaped combobox of its
+	// own — tracked separately rather than half-done here.
 	async function loadInvoices() {
 		try {
 			invoices = await fetchAllPages<Invoice>((page, pageSize) =>
@@ -409,15 +398,13 @@
 			<span>{m('creditMemos.createModal.memoNumber')} <em class="required">*</em></span>
 			<input type="text" bind:value={newMemoNumber} required />
 		</label>
-		<label>
-			<span>{m('creditMemos.createModal.vendor')} <em class="required">*</em></span>
-			<select bind:value={newVendorId} required>
-				<option value="">{m('creditMemos.createModal.selectVendor')}</option>
-				{#each vendors as v}
-					<option value={v.id}>{v.name}</option>
-				{/each}
-			</select>
-		</label>
+		<VendorPicker
+			bind:value={newVendorId}
+			label={m('creditMemos.createModal.vendor')}
+			placeholder={m('creditMemos.createModal.selectVendor')}
+			required
+			disabled={!canMutate}
+		/>
 		<label>
 			<span>{m('creditMemos.createModal.amount')} <em class="required">*</em></span>
 			<input type="number" min="0.01" step="0.01" bind:value={newAmount} required />
