@@ -92,6 +92,9 @@ const REMOVED_LITERALS = [
 	"You don't have permission to block or re-screen this vendor.</p>",
 	'<h3>Screening history</h3>',
 	'No screening history yet.</p>',
+	// A bare text node, not a quoted literal — so neither the attribute rule nor
+	// the rest of this list would catch a revert of just this one interpolation.
+	'· score ',
 	"'Failed to load the screening review queue'",
 	"'Failed to load screening history'",
 	"'Vendor re-screened'",
