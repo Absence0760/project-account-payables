@@ -668,8 +668,7 @@
 							{h.check_type} · {h.provider}
 							{#if h.matched_list}· {h.matched_list}{/if}
 							{#if h.categories.length}· {formatCategories(h.categories)}{/if}
-							{#if h.risk_score}·
-								{m('vendors.screening.queue.history.score', { score: h.risk_score })}{/if}
+							{#if h.risk_score}· {m('vendors.screening.queue.history.score', { score: h.risk_score })}{/if}
 						</span>
 						<span class="history-date">{formatDate(h.checked_at, '—', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
 					</li>
