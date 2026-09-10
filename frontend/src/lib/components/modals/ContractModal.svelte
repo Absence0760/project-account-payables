@@ -14,6 +14,7 @@
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import VendorPicker from '$lib/components/ui/VendorPicker.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { MoneyAmount } from '$lib/utils/money';
@@ -30,20 +31,13 @@
 		createPoFromContract
 	} from '$lib/api/contracts';
 
-	interface VendorOption {
-		id: string;
-		name: string;
-	}
-
 	let {
 		contract,
-		vendors,
 		onclose,
 		onsaved
 	}: {
 		// null → create mode; a Contract → detail/edit mode.
 		contract: Contract | null;
-		vendors: VendorOption[];
 		onclose: () => void;
 		onsaved: (c: Contract) => void;
 	} = $props();
@@ -349,15 +343,14 @@
 				<span>{m('contracts.modal.field.contractNumber')} <em class="required">*</em></span>
 				<input type="text" bind:value={contract_number} required disabled={!canEdit} />
 			</label>
-			<label>
-				<span>{m('contracts.modal.field.vendor')} <em class="required">*</em></span>
-				<select bind:value={vendor_id} required disabled={!canEdit || !isCreate}>
-					<option value="">{m('contracts.modal.field.vendorSelect')}</option>
-					{#each vendors as v (v.id)}
-						<option value={v.id}>{v.name}</option>
-					{/each}
-				</select>
-			</label>
+			<VendorPicker
+				bind:value={vendor_id}
+				label={m('contracts.modal.field.vendor')}
+				placeholder={m('contracts.modal.field.vendorSelect')}
+				selectedLabel={contract?.vendor_name ?? null}
+				required
+				disabled={!canEdit || !isCreate}
+			/>
 			<label class="full-width">
 				<span>{m('contracts.modal.field.title')}</span>
 				<input type="text" bind:value={title} disabled={!canEdit} />

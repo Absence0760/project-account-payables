@@ -7,9 +7,7 @@
 		deleteCatalog as apiDeleteCatalog,
 		guidedBuying,
 		listGlAccounts,
-		listVendors,
-		type GlAccountOption,
-		type VendorOption
+		type GlAccountOption
 	} from '$lib/api/catalogs';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -73,7 +71,9 @@
 	let punchoutCatalog = $state<Catalog | null>(null);
 
 	// --- Lookups (shared with the modal) ---
-	let vendors = $state<VendorOption[]>([]);
+	// Vendors are NOT fetched here any more: `ui/VendorPicker` inside the modal
+	// searches them server-side, so the page no longer pays for a vendor list
+	// on every load — nor caps one at the first 100 rows.
 	let glAccounts = $state<GlAccountOption[]>([]);
 
 	// --- Guided buying panel ---
@@ -154,10 +154,9 @@
 		return () => clearTimeout(searchTimer);
 	});
 
-	// Initial lookups (vendors + GL accounts) — once.
+	// Initial lookup (GL accounts) — once.
 	$effect(() => {
 		(async () => {
-			vendors = await listVendors();
 			try {
 				glAccounts = await listGlAccounts();
 			} catch {
@@ -372,7 +371,6 @@
 {#if showCreate}
 	<CatalogModal
 		catalog={null}
-		{vendors}
 		{glAccounts}
 		onclose={() => (showCreate = false)}
 		onsaved={onSaved}
@@ -382,7 +380,6 @@
 {#if editing}
 	<CatalogModal
 		catalog={editing}
-		{vendors}
 		{glAccounts}
 		onclose={() => (editing = null)}
 		onsaved={onSaved}

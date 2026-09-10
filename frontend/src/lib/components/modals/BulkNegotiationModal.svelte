@@ -33,6 +33,7 @@
 	import { m } from '$lib/i18n/store.svelte';
 	import { scaleMoney } from '$lib/utils/money';
 	import { bulkNegotiateDiscount } from '$lib/api/discounts';
+	import VendorPicker from '$lib/components/ui/VendorPicker.svelte';
 	import type { VendorOption } from '$lib/api/vendors';
 	import type { DiscountOffer } from '$lib/types/discounts';
 	import {
@@ -43,15 +44,9 @@
 	} from '$lib/types/discounts';
 
 	let {
-		vendors,
-		vendorsLoading = false,
 		onclose,
 		oncreated
 	}: {
-		vendors: VendorOption[];
-		/** Vendors are fetched on first open; until they land the picker says so
-		 *  rather than presenting an empty list as "this tenant has no vendors". */
-		vendorsLoading?: boolean;
 		onclose: () => void;
 		oncreated: (offer: DiscountOffer) => void;
 	} = $props();
@@ -76,7 +71,11 @@
 	let formError = $state<string | null>(null);
 	let created = $state<DiscountOffer | null>(null);
 
-	const selectedVendor = $derived(vendors.find((v) => v.id === vendorId) ?? null);
+	/** The option the picker committed, kept for the confirm + success copy —
+	 *  which names the supplier the offer is about. The picker is the only thing
+	 *  that has it now: the page no longer loads a vendor list to look it up in,
+	 *  and a lookup over a truncated one is exactly what was wrong before. */
+	let selectedVendor = $state<VendorOption | null>(null);
 
 	function addTier() {
 		tiers = [...tiers, { days: '', percent: '' }];
@@ -210,25 +209,18 @@
 			<p class="modal-hint">{m('discounts.bulk.intro')}</p>
 
 			<div class="form-grid">
-				<label>
-					<span>{m('discounts.bulk.vendor')} <em class="required">*</em></span>
-					<select
-						bind:value={vendorId}
-						onchange={onEdit}
-						required
-						disabled={!canPropose || vendorsLoading}
-						data-testid="bulk-negotiate-vendor"
-					>
-						<option value="">
-							{vendorsLoading
-								? m('discounts.bulk.vendorsLoading')
-								: m('discounts.bulk.selectVendor')}
-						</option>
-						{#each vendors as v (v.id)}
-							<option value={v.id}>{v.name}</option>
-						{/each}
-					</select>
-				</label>
+				<VendorPicker
+					bind:value={vendorId}
+					label={m('discounts.bulk.vendor')}
+					placeholder={m('discounts.bulk.selectVendor')}
+					required
+					disabled={!canPropose}
+					testid="bulk-negotiate-vendor"
+					onselect={(option) => {
+						selectedVendor = option;
+						onEdit();
+					}}
+				/>
 				<label>
 					<span>{m('discounts.bulk.validUntil')}</span>
 					<input
@@ -249,12 +241,6 @@
 			{#if !validUntil}
 				<p class="bulk-note" data-testid="bulk-negotiate-no-horizon">
 					{m('discounts.bulk.noValidUntil')}
-				</p>
-			{/if}
-
-			{#if !vendorsLoading && vendors.length === 0}
-				<p class="bulk-note" data-testid="bulk-negotiate-no-vendors">
-					{m('discounts.bulk.noVendors')}
 				</p>
 			{/if}
 

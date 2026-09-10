@@ -9,9 +9,8 @@
 		skipReasonKey
 	} from '$lib/types/recurring';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { appendUnique, fetchAllPages, type PagedResponse } from '$lib/utils/pagination';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
-	import { api } from '$lib/api';
 	import {
 		listRecurring,
 		getRecurringSummary,
@@ -74,15 +73,9 @@
 
 	const PAGE_SIZE = 20;
 
-	interface VendorOption {
-		id: string;
-		name: string;
-	}
-
 	// URL-backed filter state (mirrors the contracts page convention).
 	let search = $state($page.url.searchParams.get('search') ?? '');
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
-	let vendors = $state<VendorOption[]>([]);
 
 	let templates = $state<RecurringTemplate[]>([]);
 	let total = $state(0);
@@ -205,26 +198,15 @@
 
 	$effect(() => {
 		orgCurrency.ensureLoaded();
-		loadVendors();
 	});
 
-	// These options ARE the set of valid choices, so a truncated fetch is not a
-	// shorter list — it is a supplier the operator cannot pick, with no search
-	// inside a native `<select>` to reach it. A bare `api.get('/api/vendors')`
-	// returns the server's DEFAULT_PAGE_SIZE of 20; the acme demo tenant alone
-	// has ~39 active vendors. Raising `page_size` only moves the cliff (the
-	// server caps it at MAX_PAGE_SIZE), so walk the envelope's own `total`.
-	async function loadVendors() {
-		try {
-			vendors = await fetchAllPages<VendorOption>((page, pageSize) =>
-				api.get<PagedResponse<VendorOption>>(
-					`/api/vendors?page=${page}&page_size=${pageSize}`
-				)
-			);
-		} catch {
-			/* non-critical for the list view */
-		}
-	}
+	// No vendor fetch here any more. These options ARE the set of valid choices,
+	// so a truncated list is not a shorter list — it is a supplier the operator
+	// cannot pick. Walking every page on mount was the previous answer, and it
+	// cost one request per 100 suppliers on a page that may never open the
+	// modal. `ui/VendorPicker` inside `RecurringModal` searches them server-side
+	// instead, so a vendor on page 40 is one query away and nothing is fetched
+	// until the form is opened.
 
 	// Deep-link: `/recurring?id=<uuid>` opens that template's detail modal.
 	let deepLinkLoaded = $state<string | null>(null);
@@ -536,11 +518,11 @@
 </PageHeader>
 
 {#if showCreate}
-	<RecurringModal template={null} {vendors} onclose={closeModal} onsaved={onSaved} />
+	<RecurringModal template={null} onclose={closeModal} onsaved={onSaved} />
 {/if}
 
 {#if editing}
-	<RecurringModal template={editing} {vendors} onclose={closeModal} onsaved={onSaved} />
+	<RecurringModal template={editing} onclose={closeModal} onsaved={onSaved} />
 {/if}
 
 <style>

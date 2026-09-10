@@ -30,20 +30,20 @@
 		"types": ["node"]
 	},
 	"include": ["./tests-e2e/**/*.ts"],
-	// SHRINK-ONLY. Every entry is a file that does not typecheck today and the
-	// fix is a one-line annotation, not a design question — they are listed
-	// rather than fixed only because another concurrent session owns the file.
-	// Never add a file here to get a red check green: fix the annotation.
-	//
-	//  - entities/switcher.spec.ts — `createEntity(page, …)` has no `Page`
-	//    annotation, so `page.evaluate`'s argument destructure infers `any`
-	//    (TS7006/TS7031 ×4). Identical to the fix already applied to
-	//    `cfo/by-entity.spec.ts`: `import type { Page } from '@playwright/test'`
-	//    and annotate the parameter.
+	// EMPTY, AND IT STAYS EMPTY. This tree typechecks whole. The list is kept
+	// (rather than the key deleted) because its only job now is to carry the
+	// rule: never add a file here to get a red check green — the fix for a type
+	// error under `tests-e2e/` is the annotation, not an exemption. The one entry
+	// this ever held was `entities/switcher.spec.ts`, whose `createEntity(page, …)`
+	// lacked a `Page` annotation so `page.evaluate`'s argument destructure inferred
+	// `any` (TS7006/TS7031 ×4); it was listed rather than fixed only because another
+	// concurrent session owned the file at the time. It now carries the same
+	// `import type { Page } from '@playwright/test'` as `cfo/by-entity.spec.ts`.
 	//
 	// `exclude` only drops ROOT files — a file another spec imports is still
-	// checked — so this list can only ever hold leaf specs. `fixtures/helpers.ts`
-	// is imported by every spec and is why `@types/node` is a real devDependency
-	// rather than something this config could have excluded its way around.
-	"exclude": ["./tests-e2e/entities/switcher.spec.ts"]
+	// checked — so this list could only ever have held leaf specs.
+	// `fixtures/helpers.ts` is imported by every spec and is why `@types/node` is
+	// a real devDependency rather than something this config could have excluded
+	// its way around.
+	"exclude": []
 }

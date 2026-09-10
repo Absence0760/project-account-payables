@@ -667,6 +667,31 @@ export const en = {
 	'vendors.invite.sent.email': 'Email',
 	'vendors.invite.sent.url': 'Portal URL',
 	'vendors.invite.sent.done': 'Done',
+	// --- Shared vendor picker (`ui/VendorPicker.svelte`) ---
+	// The count line is load-bearing, not decoration: this control shows one
+	// server-filtered PAGE of the matching vendors, and the user must never be
+	// left believing a subset is the whole set.
+	'vendors.picker.loading': 'Loading vendors…',
+	'vendors.picker.loadFailed':
+		'Vendors couldn’t be loaded. That is not the same as this tenant having none — try again.',
+	'vendors.picker.noVendors': 'No vendors to choose from yet',
+	'vendors.picker.noMatches': 'No vendors match “{query}”',
+	'vendors.picker.showingAll': 'All matches shown ({total})',
+	'vendors.picker.showingPartial': 'Showing {shown} of {total} matches — type to narrow',
+	'vendors.picker.refineHint': 'Not all matches are listed',
+	'vendors.picker.loadMore': 'Load more',
+	// A failed NEXT page is not a failed list: the page already on screen is
+	// still valid, so the count line keeps saying what it is showing and only
+	// the footer reports what could not be added to it.
+	'vendors.picker.loadMoreFailed': 'Couldn’t load more.',
+	'vendors.picker.clearAria': 'Clear the selected vendor',
+	'vendors.picker.listAria': 'Vendors',
+	// A row whose API shape carries no vendor NAME (only `Catalog`, today) can
+	// hand the picker an id it cannot label. Say that out loud: the old native
+	// `<select>` fell back to rendering its empty first option, which read as
+	// "no vendor" while the form still held one.
+	'vendors.picker.unresolvedSelection':
+		'A vendor is already selected, but its name isn’t available on this screen. Picking one here replaces it.',
 	'vendors.changeRequests.navLabel': 'Bank Changes',
 	'vendors.changeRequests.title': 'Bank & Tax Change Approvals',
 	'vendors.changeRequests.intro':

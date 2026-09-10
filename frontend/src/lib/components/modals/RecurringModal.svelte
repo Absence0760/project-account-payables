@@ -16,6 +16,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
+	import VendorPicker from '$lib/components/ui/VendorPicker.svelte';
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
@@ -32,20 +33,13 @@
 		getGeneratedHistory
 	} from '$lib/api/recurring';
 
-	interface VendorOption {
-		id: string;
-		name: string;
-	}
-
 	let {
 		template,
-		vendors,
 		onclose,
 		onsaved
 	}: {
 		// null → create mode; a RecurringTemplate → detail/edit mode.
 		template: RecurringTemplate | null;
-		vendors: VendorOption[];
 		onclose: () => void;
 		onsaved: (t: RecurringTemplate) => void;
 	} = $props();
@@ -238,15 +232,13 @@
 				<span>{m('recurring.modal.field.name')} <em class="required">*</em></span>
 				<input type="text" bind:value={name} required disabled={!canEdit} />
 			</label>
-			<label>
-				<span>{m('recurring.modal.field.vendor')}</span>
-				<select bind:value={vendor_id} disabled={!canEdit}>
-					<option value="">{m('recurring.modal.field.noVendor')}</option>
-					{#each vendors as v (v.id)}
-						<option value={v.id}>{v.name}</option>
-					{/each}
-				</select>
-			</label>
+			<VendorPicker
+				bind:value={vendor_id}
+				label={m('recurring.modal.field.vendor')}
+				placeholder={m('recurring.modal.field.noVendor')}
+				selectedLabel={template?.vendor_name ?? null}
+				disabled={!canEdit}
+			/>
 			<label>
 				<span>{m('recurring.modal.field.amount')}</span>
 				<input

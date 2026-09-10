@@ -52,6 +52,11 @@ export interface Catalog {
 	name: string;
 	catalog_type: string;
 	vendor_id: string | null;
+	/** The supplier's NAME, resolved server-side — the same field `Contract` /
+	 *  `RecurringTemplate` / `Reconciliation` already carry. `ui/VendorPicker`
+	 *  needs it as `selectedLabel`: the chosen vendor can sit on any page of the
+	 *  tenant's set, so an id alone leaves the edit form unable to name it. */
+	vendor_name: string | null;
 	punchout_url: string | null;
 	is_active: boolean;
 	is_preferred: boolean;

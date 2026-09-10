@@ -9,7 +9,6 @@
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import { contractStore } from '$lib/stores/contracts.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { api } from '$lib/api';
 	import {
 		getContract,
 		getContractIds,
@@ -31,11 +30,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { pruneSelection } from '$lib/utils/selection';
 	import { toggleSort, type SortOrder } from '$lib/utils/sort';
-	import {
-		fetchAllPages,
-		type MatchingIdsResponse,
-		type PagedResponse
-	} from '$lib/utils/pagination';
+	import { type MatchingIdsResponse } from '$lib/utils/pagination';
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
@@ -57,15 +52,9 @@
 		...CONTRACT_STATUSES.map((s) => ({ key: s, label: statusLabel(s) }))
 	]);
 
-	interface VendorOption {
-		id: string;
-		name: string;
-	}
-
 	// URL-backed filter state (mirrors the invoices page convention).
 	let search = $state($page.url.searchParams.get('search') ?? '');
 	let statusFilter = $state<string>($page.url.searchParams.get('status') ?? 'all');
-	let vendors = $state<VendorOption[]>([]);
 
 	// Modal state: null = create; a Contract = detail/edit.
 	// Three states, not two: a failed load must not read as "nothing matched".
@@ -281,27 +270,13 @@
 		contractStore.fetch(buildParams()).catch(() => {}); // noqa: raw-fetch-in-component — store method, routes through api client
 	});
 
-	$effect(() => {
-		loadVendors();
-	});
-
-	// These options ARE the set of valid choices, so a truncated fetch is not a
-	// shorter list — it is a supplier the operator cannot pick, with no search
-	// inside a native `<select>` to reach it. A bare `api.get('/api/vendors')`
-	// returns the server's DEFAULT_PAGE_SIZE of 20; the acme demo tenant alone
-	// has ~39 active vendors. Raising `page_size` only moves the cliff (the
-	// server caps it at MAX_PAGE_SIZE), so walk the envelope's own `total`.
-	async function loadVendors() {
-		try {
-			vendors = await fetchAllPages<VendorOption>((page, pageSize) =>
-				api.get<PagedResponse<VendorOption>>(
-					`/api/vendors?page=${page}&page_size=${pageSize}`
-				)
-			);
-		} catch {
-			/* non-critical for the list view */
-		}
-	}
+	// No vendor fetch here any more. These options ARE the set of valid choices,
+	// so a truncated list is not a shorter list — it is a supplier the operator
+	// cannot pick. Walking every page on mount was the previous answer, and it
+	// cost one request per 100 suppliers on a page that may never open the
+	// modal. `ui/VendorPicker` inside `ContractModal` searches them server-side
+	// instead, so a vendor on page 40 is one query away and nothing is fetched
+	// until the form is opened.
 
 	// Deep-link: `/contracts?id=<uuid>` opens that contract's detail modal.
 	let deepLinkLoaded = $state<string | null>(null);
@@ -472,11 +447,11 @@
 </PageHeader>
 
 {#if showCreate}
-	<ContractModal contract={null} {vendors} onclose={closeModal} onsaved={onSaved} />
+	<ContractModal contract={null} onclose={closeModal} onsaved={onSaved} />
 {/if}
 
 {#if editing}
-	<ContractModal contract={editing} {vendors} onclose={closeModal} onsaved={onSaved} />
+	<ContractModal contract={editing} onclose={closeModal} onsaved={onSaved} />
 {/if}
 
 <style>

@@ -616,6 +616,21 @@ export const messages = {
 	'vendors.invite.sent.email': 'Correo electrónico',
 	'vendors.invite.sent.url': 'URL del portal',
 	'vendors.invite.sent.done': 'Listo',
+	'vendors.picker.loading': 'Cargando proveedores…',
+	'vendors.picker.loadFailed':
+		'No se pudieron cargar los proveedores. Eso no significa que este inquilino no tenga ninguno: inténtalo de nuevo.',
+	'vendors.picker.noVendors': 'Aún no hay proveedores para elegir',
+	'vendors.picker.noMatches': 'Ningún proveedor coincide con «{query}»',
+	'vendors.picker.showingAll': 'Todas las coincidencias mostradas ({total})',
+	'vendors.picker.showingPartial':
+		'Mostrando {shown} de {total} coincidencias: escribe para acotar',
+	'vendors.picker.refineHint': 'No se listan todas las coincidencias',
+	'vendors.picker.loadMore': 'Cargar más',
+	'vendors.picker.loadMoreFailed': 'No se pudieron cargar más.',
+	'vendors.picker.clearAria': 'Borrar el proveedor seleccionado',
+	'vendors.picker.listAria': 'Proveedores',
+	'vendors.picker.unresolvedSelection':
+		'Ya hay un proveedor seleccionado, pero su nombre no está disponible en esta pantalla. Elegir uno aquí lo reemplaza.',
 	'vendors.changeRequests.navLabel': 'Cambios bancarios',
 	'vendors.changeRequests.title': 'Aprobaciones de cambios bancarios y fiscales',
 	'vendors.changeRequests.intro':

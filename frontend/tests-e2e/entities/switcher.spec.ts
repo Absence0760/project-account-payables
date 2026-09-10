@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { API_BASE, expect, tenantPsql, test } from '../fixtures/helpers';
 
 /** Both tests provision a second entity to make the switcher appear; these are
@@ -33,7 +34,7 @@ const SLUG_PREFIXES = ['e2e-sub', 'e2e-esc'];
 const API = API_BASE;
 
 /** Create an entity through the backend API using the page's stored auth. */
-async function createEntity(page, name: string, slug: string): Promise<string> {
+async function createEntity(page: Page, name: string, slug: string): Promise<string> {
 	return page.evaluate(
 		async ({ api, name, slug }) => {
 			const token = localStorage.getItem('auth_token');
