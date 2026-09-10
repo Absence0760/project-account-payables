@@ -226,7 +226,11 @@ def require_permission(*needed: str):
     Backward-compatible: ``ROLE_DEFAULT_PERMISSIONS`` reproduces the current RBAC
     matrix exactly, so on a route migrated from ``require_roles(...)`` to
     ``require_permission(...)`` the four system roles behave identically — only a
-    deliberately-configured custom role changes the outcome.
+    deliberately-configured custom role changes the outcome. The single
+    deliberate exception is ``POST /api/cards/{id}/cancel``, where the prior role
+    gate was WIDER than the ``payment.void`` gate on the void it duplicates; that
+    narrowing is the fix, and it is documented on the route and in
+    ``app/api/permissions.py``.
 
     "Any-of," like ``require_roles``. Permission names are validated against the
     catalog at import time so a typo is a startup ``ValueError``, not a silent

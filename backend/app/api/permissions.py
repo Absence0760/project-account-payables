@@ -108,6 +108,18 @@ PERMISSION_LABELS: dict[str, str] = {
 #
 # ap_clerk holds NONE of the sensitive permissions — exactly as today (a clerk
 # can upload + enter data but cannot approve or pay).
+#
+# ONE ROUTE DELIBERATELY DOES NOT REPRODUCE ITS PRIOR MATRIX.
+# `POST /api/cards/{id}/cancel` was `require_roles(ADMIN, AP_MANAGER, CFO)` and
+# is now `require_permission(payment.void)`, so `ap_manager` LOSES it. That is
+# the point rather than a regression: closing a card is the card half of a
+# reversal, `POST /api/payments/{id}/void` and
+# `POST /api/payments/{id}/void/retry-card-cancel` both gate it on
+# `payment.void`, and the card router's wider role gate was the one door onto
+# that effect an `ap_manager` denied `payment.void` could still walk through.
+# Recorded here because "the map reproduces the matrix exactly" is otherwise
+# read as unconditional; it holds for every route but this one, and the reason
+# lives on the route's own docstring. See `docs/decisions.md` §96 / §132.
 # ---------------------------------------------------------------------------
 
 ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {

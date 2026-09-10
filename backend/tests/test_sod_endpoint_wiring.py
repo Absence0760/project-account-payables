@@ -39,7 +39,13 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.api.deps import require_permission
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_CLERK,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    require_permission,
+)
 from app.api.permissions import (
     ALL_PERMISSIONS,
     PERM_INVOICE_APPROVE,
@@ -50,6 +56,7 @@ from app.api.permissions import (
     PERM_VENDOR_BANK_CHANGE_APPROVE,
     PERM_VENDOR_BLOCK,
     PERM_VENDOR_MANAGE,
+    ROLE_DEFAULT_PERMISSIONS,
 )
 from app.main import app
 from tests.permission_gates import permission_checkers, permission_gate_sets
@@ -204,6 +211,14 @@ CASES = [
     # `require_roles(ADMIN, AP_MANAGER, CFO)`: an org that split the duties and
     # withheld `payment.void` from `ap_manager` must not find this reachable.
     ("/api/payments/{payment_id}/void/retry-card-cancel", "POST", _VOID),
+    # `POST /api/cards/{id}/cancel` is the third door onto "close this card", and
+    # it was the widest: `require_roles(ADMIN, AP_MANAGER, CFO)` while both of the
+    # routes above gate the same effect on `payment.void`. It is the ONE migrated
+    # route that deliberately does NOT reproduce its prior system-role matrix —
+    # `ap_manager` loses it, which is the fix, not a regression. Pinned by
+    # `test_card_cancel_narrows_ap_manager_by_design` below so the narrowing is a
+    # stated fact rather than a side effect nobody wrote down.
+    ("/api/cards/{card_id}/cancel", "POST", _VOID),
     # `compliance/dismiss` gives up on a held payment and flips it to `failed`.
     # Its sibling `/release` gates on `payment.execute`: the two halves of the
     # compliance-hold exit are deliberately on opposite sides of the split.
@@ -309,6 +324,78 @@ async def test_holder_allowed_nonholder_denied(path, method, expected):
     with pytest.raises(HTTPException) as exc:
         await _call_checker(route, _user_with(set()))
     assert exc.value.status_code == 403
+
+
+# --- the one deliberate departure from the prior system-role matrix ------------
+
+_CARD_CANCEL = ("/api/cards/{card_id}/cancel", "POST")
+
+# Every route that closes a virtual card. They must agree, because a card closed
+# through the widest of them leaves the ledger in whatever state that door's
+# caller was allowed to reach.
+_CARD_CLOSING_ROUTES = [
+    _CARD_CANCEL,
+    ("/api/payments/{payment_id}/void", "POST"),
+    ("/api/payments/{payment_id}/void/retry-card-cancel", "POST"),
+]
+
+
+def _system_role_user(role_name: str):
+    """A user holding exactly one SYSTEM role, resolved through the real map."""
+    return _user_with(set(ROLE_DEFAULT_PERMISSIONS[role_name]))
+
+
+async def _allows(route, user) -> bool:
+    try:
+        await _call_checker(route, user)
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        return False
+    return True
+
+
+@pytest.mark.asyncio
+async def test_card_cancel_narrows_ap_manager_by_design():
+    """`POST /api/cards/{id}/cancel` no longer admits `ap_manager`, on purpose.
+
+    This is the ONE route migrated off `require_roles` that does not reproduce
+    its prior admin/ap_manager/cfo matrix — and the mismatch was the defect. The
+    gate was wider than the `payment.void` gate on the two operations that close
+    the same card (`/payments/{id}/void` and its `retry-card-cancel` completion),
+    so an `ap_manager` who could not reverse a card payment could still kill the
+    card behind a live one. `docs/decisions.md` §132 stated the rule for the
+    sibling route; this applies it to the door that was left open.
+
+    Asserted as an explicit four-role table rather than left implied, so a future
+    "restore the old matrix" edit has to argue with a named expectation instead
+    of quietly widening a money-adjacent control.
+    """
+    route = _find_route(*_CARD_CANCEL)
+
+    assert await _allows(route, _system_role_user(ROLE_ADMIN))
+    assert await _allows(route, _system_role_user(ROLE_CFO))
+    # The deliberate change. `ap_manager` holds `payment.execute`, not
+    # `payment.void` — initiating money and reversing it are the two halves of
+    # the split, and closing a card sits on the reversal half.
+    assert not await _allows(route, _system_role_user(ROLE_AP_MANAGER))
+    # Unchanged: a clerk never held any sensitive permission.
+    assert not await _allows(route, _system_role_user(ROLE_AP_CLERK))
+
+
+@pytest.mark.asyncio
+async def test_every_card_closing_route_gates_on_payment_void():
+    """The three doors onto "close this card" gate identically.
+
+    A capability with a second, divergent path is worse than one with none
+    (`docs/decisions.md` §96). That argument is usually about *state*; it is just
+    as true of the gate, and a wider third door is how the SoD split gets
+    silently undone.
+    """
+    for path, method in _CARD_CLOSING_ROUTES:
+        route = _find_route(path, method)
+        assert _permission_checkers(route) == [_VOID], (
+            f"{method} {path} closes a card but does not gate on payment.void"
+        )
 
 
 def test_every_permission_gated_route_is_pinned():
