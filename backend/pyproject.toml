@@ -13,19 +13,19 @@ dependencies = [
     "uvicorn[standard]>=0.52.4,<1",
     "sqlalchemy[asyncio]>=2.0.52,<3",
     "asyncpg>=0.31.0,<1",
-    "alembic>=1.19.1,<2",
+    "alembic>=1.19.2,<2",
     "pydantic>=2.13.5,<3",
     # >=2.14.2 fixes GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource follows
     # symlinks outside secrets_dir).
     "pydantic-settings>=2.15.0,<3",
     "python-multipart>=0.0.32,<1",
-    "boto3>=1.43.88,<2",
+    "boto3>=1.43.89,<2",
     "passlib[bcrypt]>=1.7.4,<2",
     # bcrypt held at 4.x: passlib 1.7.4 reads `bcrypt.__about__.__version__`
     # which was removed in bcrypt 5.0, and 5.0's strict >72-byte handling
     # collides with passlib's bcrypt-detection probe. Lift only when passlib
     # ships a fix or the codebase migrates off passlib for bcrypt_sha256.
-    "bcrypt>=4.0,<4.1",
+    "bcrypt>=5.0.0,<5.1",
     "redis>=8.1.0,<9",
     "python-jose[cryptography]>=3.5.0,<4",
     "httpx>=0.28.1,<1",
