@@ -14,6 +14,7 @@
 	import Badge, { type BadgeTone } from '$lib/components/ui/Badge.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { formatDate } from '$lib/utils/time';
+	import { formatList } from '$lib/utils/list';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
@@ -1875,7 +1876,7 @@
 							{#if appliedSuggestionFields.length > 0}
 								<p class="coding-suggestion-applied" data-testid="coding-suggestion-applied">
 									{m('invoices.modal.suggestions.appliedNotSaved', {
-										fields: appliedSuggestionFields.map(suggestionFieldLabel).join(', '),
+										fields: formatList(appliedSuggestionFields.map(suggestionFieldLabel)),
 									})}
 								</p>
 							{/if}
@@ -2079,7 +2080,7 @@
 					{/if}
 
 					{#if canSubmitStatus && missingFields.length > 0}
-						<div class="validation-hint">{m('invoices.modal.requiredHint', { fields: missingFields.join(', ') })}</div>
+						<div class="validation-hint">{m('invoices.modal.requiredHint', { fields: formatList(missingFields) })}</div>
 					{/if}
 
 					{#if invoice.approved_by || invoice.rejected_by || invoice.assigned_to}

@@ -9,6 +9,7 @@
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { formatDate } from '$lib/utils/time';
+	import { formatList } from '$lib/utils/list';
 	import { pruneSelection } from '$lib/utils/selection';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -156,7 +157,7 @@
 			if (f.references.open_invoice_assignments) parts.push(m('admin.users.fail.openInvoices', { n: f.references.open_invoice_assignments }));
 			if (f.references.pending_approval_steps) parts.push(m('admin.users.fail.pendingApprovals', { n: f.references.pending_approval_steps }));
 			if (f.references.active_workflow_approver_in) parts.push(m('admin.users.fail.activeWorkflows', { n: f.references.active_workflow_approver_in }));
-			return m('admin.users.fail.referenced', { parts: parts.join(', ') });
+			return m('admin.users.fail.referenced', { parts: formatList(parts) });
 		}
 		return m('admin.users.fail.blocked');
 	}

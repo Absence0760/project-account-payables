@@ -34,6 +34,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
+	import { formatList } from '$lib/utils/list';
 	import { untrack } from 'svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -63,7 +64,7 @@
 	const formatCategories = (categories: string[] | null | undefined) => {
 		const parts = screeningCategoryLabels(categories);
 		if (!parts.length) return '—';
-		return parts.map((p) => (p.key ? m(p.key) : p.fallback)).join(', ');
+		return formatList(parts.map((p) => (p.key ? m(p.key) : p.fallback)));
 	};
 	const canRescreen = $derived(auth.isManager);
 
