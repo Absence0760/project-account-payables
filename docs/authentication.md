@@ -813,9 +813,9 @@ signed-in employee stamps the column —
 | `POST /api/invoices/import-csv` (CSV import) | the caller |
 | `POST /api/recurring/{id}/generate-now` | the caller |
 | `POST /api/invoices/{id}/route-intercompany` (the mirror payable) | the routing actor |
+| the recurring-invoice background sweep | `RecurringInvoiceTemplate.created_by_user_id` — the employee who authored the template (NULL only for a template predating migration 0096) |
 | email intake, inbound PEPPOL | NULL — system ingestion, no human |
 | supplier-portal submit, portal PO flip | NULL — the actor is a tenant-scoped `VendorUser`, who holds no employee JWT and can never reach an approval endpoint |
-| the recurring-invoice background sweep | NULL — nobody ran it |
 
 The CSV importer was the hole: the route had the user and the audit row used
 it, but the `Invoice(...)` constructor never passed it, so the importer could
@@ -823,18 +823,34 @@ approve what they had just imported while the same person doing the same thing
 through `POST /api/invoices` got a 403.
 
 Making the NULL case fail CLOSED was considered and rejected — it would render
-every email-intake, PEPPOL, portal-submitted and sweep-generated invoice
-permanently unapprovable, an outage across four ingestion channels rather than
-a control. `backend/tests/test_invoice_uploader_stamping.py` enforces the
-invariant instead: a new construction site must pass `uploaded_by_id`
-explicitly, and passing a literal `None` must be declared with the reason there
-is no employee actor. See `docs/decisions.md`.
+every email-intake, PEPPOL and portal-submitted invoice permanently
+unapprovable, an outage across three ingestion channels rather than a control.
+`backend/tests/test_invoice_uploader_stamping.py` enforces the invariant
+instead: a new construction site must pass `uploaded_by_id` explicitly, and
+passing a literal `None` must be declared with the reason there is no employee
+actor. See `docs/decisions.md`.
 
-One residual gap is known and narrower: a **sweep-generated** recurring invoice
-has an employee author (whoever created the template) that we have nowhere to
-record — `RecurringInvoiceTemplate` carries no creator column. Until one is
-added, such an invoice is exempt from segregation exactly as a legacy
-pre-`uploaded_by_id` row is.
+#### The recurring sweep was on that list and did not belong
+
+It was the one row where NULL was *wrong* rather than merely permissive. Nobody
+**runs** the sweep, but an employee **authored** the template, and that is the
+person segregation has to exclude — so the template's author could approve the
+invoice their own standing instruction raised, exempt exactly as a legacy
+pre-`uploaded_by_id` row is. The other three channels have no control-plane user
+in the picture at all; this one did, and we simply had nowhere to put them.
+
+Migration 0096 added `recurring_invoice_templates.created_by_user_id`, stamped
+by `POST /api/recurring`, and `recurring_invoices.generate_one` now stamps
+`actor_id or template.created_by_user_id` — the live actor when there is one
+(generate-now), the author when there is not (the sweep). The **audit** row
+keeps `actor_id` honest (`None` for the sweep): *who acted* is nobody, *whose
+instruction created this payable* is the author, and only the second is a
+segregation input.
+
+Templates created before that migration are deliberately **not** backfilled.
+There is no honest author to recover, and guessing one manufactures either a
+refusal or an absolution. Those keep the legacy NULL reading — a shrinking set,
+not a standing hole.
 
 ### Approve and reject are not always the same role set
 
