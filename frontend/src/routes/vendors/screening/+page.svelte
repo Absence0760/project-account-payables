@@ -20,6 +20,7 @@
 	import {
 		screeningStatusLabelKey,
 		riskLevelLabelKey,
+		sanctionsResultLabelKey,
 		screeningCategoryLabels
 	} from '$lib/types/vendor';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -34,6 +35,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
+	import { formatList } from '$lib/utils/list';
 	import { untrack } from 'svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -56,6 +58,23 @@
 		return key ? m(key) : level;
 	};
 
+	// The per-screen verdict on the history timeline. Same tolerant shape as the
+	// two above: a verdict this build has no wording for renders de-underscored
+	// rather than blank — a dropped verdict is the one outcome a compliance
+	// reviewer must never get.
+	const resultLabel = (result: string) => {
+		const key = sanctionsResultLabelKey(result);
+		return key ? m(key) : result.replace(/_/g, ' ');
+	};
+
+	// Composed through a key rather than concatenated: Japanese parenthesises
+	// with full-width （）, and `vendors.risk.pill` already established that a
+	// translated level never gets an English wrapper glued onto it.
+	const riskWithScore = (level: string, score: string | null) =>
+		score
+			? m('vendors.screening.queue.modal.riskWithScore', { level: riskLabel(level), score })
+			: riskLabel(level);
+
 	// Hit categories read as one phrase beside the (translated) verdict and risk
 	// level, so they are resolved the same way: a known kind through its key, an
 	// unrecognised one through its de-underscored raw label — never dropped,
@@ -63,7 +82,7 @@
 	const formatCategories = (categories: string[] | null | undefined) => {
 		const parts = screeningCategoryLabels(categories);
 		if (!parts.length) return '—';
-		return parts.map((p) => (p.key ? m(p.key) : p.fallback)).join(', ');
+		return formatList(parts.map((p) => (p.key ? m(p.key) : p.fallback)));
 	};
 	const canRescreen = $derived(auth.isManager);
 
@@ -116,15 +135,22 @@
 		selected !== null && historyVendorId === selected.vendor_id
 	);
 
-	const COLUMNS = [
-		{ label: 'Vendor' },
-		{ label: 'Screening' },
-		{ label: 'Matched list' },
-		{ label: 'Provider' },
-		{ label: 'Risk score' },
-		{ label: 'Last screened' },
+	// `$derived`, not a module constant: reading `m()` here is what makes the
+	// headers re-render when the locale picker moves (the convention the sibling
+	// `/vendors/change-requests` route established).
+	// The first two REUSE the `/vendors` list's own column keys rather than
+	// minting near-duplicates: it is the same column, and a second key would let
+	// the two pages drift apart in translation (they already had — the French
+	// list says "Contrôle").
+	const COLUMNS = $derived([
+		{ label: m('vendors.col.vendor') },
+		{ label: m('vendors.col.screening') },
+		{ label: m('vendors.screening.queue.col.matchedList') },
+		{ label: m('vendors.screening.queue.col.provider') },
+		{ label: m('vendors.screening.queue.col.riskScore') },
+		{ label: m('vendors.screening.queue.col.lastScreened') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	$effect(() => {
 		loadQueue();
@@ -243,7 +269,7 @@
 			// edit still failed, and no newer load is coming to report it.
 			if (!fetchSequence.isCurrentRequest(token)) return;
 			loadError = true;
-			toast('Failed to load the screening review queue', 'error');
+			toast(m('vendors.screening.queue.toast.loadFailed'), 'error');
 		} finally {
 			if (fetchSequence.isCurrentRequest(token)) {
 				loading = false;
@@ -285,7 +311,7 @@
 			history = [];
 			historyVendorId = vendorId;
 			historyError = true;
-			toast('Failed to load screening history', 'error');
+			toast(m('vendors.screening.queue.toast.historyFailed'), 'error');
 		} finally {
 			if (historySequence.isCurrentRequest(token)) historyLoading = false;
 		}
@@ -349,13 +375,20 @@
 			// The tally is whole-set, so it can't be adjusted locally — a vendor
 			// outside this queue may have been blocked meanwhile. Re-ask.
 			loadCounts();
-			toast(updated.payments_blocked ? 'Payments blocked' : 'Payments unblocked', 'success');
+			toast(
+				m(
+					updated.payments_blocked
+						? 'vendors.screening.queue.toast.blocked'
+						: 'vendors.screening.queue.toast.unblocked'
+				),
+				'success'
+			);
 			// Only clear the field the user is actually looking at — a reason
 			// typed for a vendor opened meanwhile is not this action's to wipe.
 			if (selected?.vendor_id === target.vendor_id) blockReason = '';
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
-			toast(e?.detail ?? e?.message ?? 'Action failed', 'error');
+			toast(e?.detail ?? e?.message ?? m('vendors.screening.queue.toast.actionFailed'), 'error');
 		} finally {
 			if (busy?.vendorId === target.vendor_id) busy = null;
 		}
@@ -370,21 +403,21 @@
 			applyVendorUpdate(updated);
 			// A `match` verdict auto-blocks the vendor, so the tally can move.
 			loadCounts();
-			toast('Vendor re-screened', 'success');
+			toast(m('vendors.screening.queue.toast.rescreened'), 'success');
 			// Refresh the history so the new screen appears at the top — for the
 			// vendor that was re-screened, through the sequencer, so it can't
 			// overwrite the timeline of a vendor opened meanwhile.
 			await loadHistory(target.vendor_id);
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
-			toast(e?.detail ?? e?.message ?? 'Re-screen failed', 'error');
+			toast(e?.detail ?? e?.message ?? m('vendors.screening.queue.toast.rescreenFailed'), 'error');
 		} finally {
 			if (busy?.vendorId === target.vendor_id) busy = null;
 		}
 	}
 </script>
 
-<PageHeader title="Screening Review Queue">
+<PageHeader title={m('vendors.screening.queue.title')}>
 	{#snippet actions()}
 		<button
 			class="btn-outline"
@@ -394,7 +427,9 @@
 			}}
 			disabled={loading}
 		>
-			{loading ? 'Refreshing…' : 'Refresh'}
+			{loading
+				? m('vendors.screening.queue.refreshing')
+				: m('vendors.screening.queue.refresh')}
 		</button>
 	{/snippet}
 
@@ -406,28 +441,30 @@
 		     em-dash says "we don't know" instead of a page-scoped undercount. -->
 		<KpiCard
 			value={matchCount ?? '—'}
-			label="Sanctions matches"
+			label={m('vendors.screening.queue.kpi.matches')}
 			highlight={matchCount !== null && matchCount > 0 ? 'red' : null}
-			sub={matchCount === null ? 'Count unavailable' : null}
+			sub={matchCount === null ? m('vendors.screening.queue.kpi.unavailable') : null}
 		/>
 		<KpiCard
 			value={reviewCount ?? '—'}
-			label="Needs review"
+			label={m('vendors.screening.queue.kpi.needsReview')}
 			highlight={reviewCount !== null && reviewCount > 0 ? 'red' : null}
-			sub={reviewCount === null ? 'Count unavailable' : null}
+			sub={reviewCount === null ? m('vendors.screening.queue.kpi.unavailable') : null}
 		/>
 		<KpiCard
 			value={blockedTotal ?? '—'}
-			label="Payments blocked"
-			sub={blockedTotal === null ? 'Count unavailable' : 'All vendors, not just this queue'}
+			label={m('vendors.screening.queue.kpi.blocked')}
+			sub={blockedTotal === null
+				? m('vendors.screening.queue.kpi.unavailable')
+				: m('vendors.screening.queue.kpi.blockedScope')}
 		/>
 	</div>
 
 	<div class="filter-row">
 		<SearchBox
 			bind:value={search}
-			placeholder="Search vendor or matched list…"
-			ariaLabel="Search screening review queue"
+			placeholder={m('vendors.screening.queue.search.placeholder')}
+			ariaLabel={m('vendors.screening.queue.search.aria')}
 		/>
 	</div>
 
@@ -435,12 +472,12 @@
 		columns={COLUMNS}
 		isEmpty={items.length === 0}
 		empty={loading
-			? 'Loading…'
+			? m('common.loading')
 			: loadError
-				? 'Could not load the review queue.'
+				? m('vendors.screening.queue.empty.errored')
 				: search.trim()
-					? 'No vendors match your search.'
-					: 'No vendors are awaiting screening review. 🎉'}
+					? m('vendors.screening.queue.empty.filtered')
+					: m('vendors.screening.queue.empty.clean')}
 	>
 		{#snippet body()}
 			{#each items as it (it.vendor_id)}
@@ -451,7 +488,10 @@
 					}}
 				>
 					<td class="vendor-name">
-						<RowLink onclick={() => openDetail(it)} ariaLabel={`Review screening for ${it.vendor_name}`}>
+						<RowLink
+							onclick={() => openDetail(it)}
+							ariaLabel={m('vendors.screening.queue.row.open', { vendor: it.vendor_name })}
+						>
 							{it.vendor_name}
 						</RowLink>
 					</td>
@@ -468,7 +508,9 @@
 					<td class="mono">{it.risk_score ?? '—'}</td>
 					<td class="muted">{formatDate(it.last_screened_at)}</td>
 					<td class="actions">
-						<RowAction onclick={() => openDetail(it)}>Review</RowAction>
+						<RowAction onclick={() => openDetail(it)}>
+							{m('vendors.screening.queue.row.review')}
+						</RowAction>
 					</td>
 				</tr>
 			{/each}
@@ -495,7 +537,7 @@
 
 <Modal
 	open={selected !== null}
-	ariaLabel="Vendor screening review"
+	ariaLabel={m('vendors.screening.queue.modal.aria')}
 	width="md"
 	onclose={closeDetail}
 >
@@ -513,32 +555,38 @@
 
 		<dl class="meta">
 			<div>
-				<dt>Screening status</dt>
+				<dt>{m('vendors.screening.queue.modal.screeningStatus')}</dt>
 				<dd>{screeningLabel(selected.screening_status)}</dd>
 			</div>
 			<div>
-				<dt>Risk level</dt>
-				<dd>{riskLabel(selected.risk_level)}{selected.risk_score ? ` (${selected.risk_score})` : ''}</dd>
+				<dt>{m('vendors.screening.queue.modal.riskLevel')}</dt>
+				<dd>{riskWithScore(selected.risk_level, selected.risk_score)}</dd>
 			</div>
+			<!-- Three of these `<dt>`s label the same field as a table column
+			     above, so they read the column's key rather than a duplicate. -->
 			<div>
-				<dt>Matched list</dt>
+				<dt>{m('vendors.screening.queue.col.matchedList')}</dt>
 				<dd>{selected.latest_matched_list ?? '—'}</dd>
 			</div>
 			<div>
-				<dt>Hit categories</dt>
+				<dt>{m('vendors.screening.queue.modal.categories')}</dt>
 				<dd>{formatCategories(selected.latest_categories)}</dd>
 			</div>
 			<div>
-				<dt>Provider</dt>
+				<dt>{m('vendors.screening.queue.col.provider')}</dt>
 				<dd>{selected.latest_provider ?? '—'}</dd>
 			</div>
 			<div>
-				<dt>Last screened</dt>
+				<dt>{m('vendors.screening.queue.col.lastScreened')}</dt>
 				<dd>{formatDate(selected.last_screened_at)}</dd>
 			</div>
 			<div>
-				<dt>Payments</dt>
-				<dd>{selected.payments_blocked ? 'Blocked' : 'Allowed'}</dd>
+				<dt>{m('vendors.screening.queue.modal.payments')}</dt>
+				<dd>
+					{selected.payments_blocked
+						? m('vendors.screening.queue.modal.paymentsBlocked')
+						: m('vendors.screening.queue.modal.paymentsAllowed')}
+				</dd>
 			</div>
 		</dl>
 
@@ -548,7 +596,9 @@
 			<div class="review-actions" data-testid="screening-actions" data-vendor-id={selected.vendor_id}>
 				{#if canRescreen}
 					<button class="btn-outline" onclick={rescreen} disabled={selectedBusy !== null}>
-						{selectedBusy === 'rescreen' ? 'Re-screening…' : 'Re-screen now'}
+						{selectedBusy === 'rescreen'
+							? m('vendors.screening.queue.action.rescreening')
+							: m('vendors.screening.queue.action.rescreen')}
 					</button>
 				{/if}
 				{#if canBlock}
@@ -557,8 +607,8 @@
 							class="reason-input"
 							type="text"
 							maxlength="255"
-							placeholder="Reason (optional)"
-							aria-label="Block reason"
+							placeholder={m('vendors.screening.queue.reason.placeholder')}
+							aria-label={m('vendors.screening.queue.reason.aria')}
 							bind:value={blockReason}
 						/>
 					{/if}
@@ -569,18 +619,20 @@
 						disabled={selectedBusy !== null}
 					>
 						{#if selectedBusy === 'block'}
-							Working…
+							{m('vendors.screening.queue.action.working')}
 						{:else}
-							{selected.payments_blocked ? 'Unblock payments' : 'Block payments'}
+							{selected.payments_blocked
+								? m('vendors.screening.queue.action.unblock')
+								: m('vendors.screening.queue.action.block')}
 						{/if}
 					</button>
 				{/if}
 			</div>
 		{:else}
-			<p class="no-perm-note">You don't have permission to block or re-screen this vendor.</p>
+			<p class="no-perm-note">{m('vendors.screening.queue.noPermissionNote')}</p>
 		{/if}
 
-		<h3>Screening history</h3>
+		<h3>{m('vendors.screening.queue.history.title')}</h3>
 		<!-- Three states, not two, and the order is load-bearing. "No screening
 		     history yet." is a claim that this vendor has never been screened,
 		     sitting directly above the Block/Unblock control whose decision rests
@@ -592,29 +644,31 @@
 		     read as an answer about it either. -->
 		{#if historyError}
 			<p class="history-error" role="alert" data-testid="screening-history-error">
-				Could not load the screening history.
+				{m('vendors.screening.queue.history.error')}
 				<button
 					type="button"
 					class="btn-retry"
 					onclick={() => selected && loadHistory(selected.vendor_id)}
 				>
-					Retry
+					{m('vendors.screening.queue.history.retry')}
 				</button>
 			</p>
 		{:else if historyLoading || !historyIsForSelected}
-			<p class="muted" data-testid="screening-history-loading">Loading…</p>
+			<p class="muted" data-testid="screening-history-loading">{m('common.loading')}</p>
 		{:else if history.length === 0}
-			<p class="muted" data-testid="screening-history-empty">No screening history yet.</p>
+			<p class="muted" data-testid="screening-history-empty">
+				{m('vendors.screening.queue.history.empty')}
+			</p>
 		{:else}
 			<ul class="history" data-testid="screening-history" data-vendor-id={historyVendorId}>
 				{#each history as h (h.id)}
 					<li>
-						<span class="history-result {h.result}">{h.result.replace(/_/g, ' ')}</span>
+						<span class="history-result {h.result}">{resultLabel(h.result)}</span>
 						<span class="history-meta">
 							{h.check_type} · {h.provider}
 							{#if h.matched_list}· {h.matched_list}{/if}
 							{#if h.categories.length}· {formatCategories(h.categories)}{/if}
-							{#if h.risk_score}· score {h.risk_score}{/if}
+							{#if h.risk_score}· {m('vendors.screening.queue.history.score', { score: h.risk_score })}{/if}
 						</span>
 						<span class="history-date">{formatDate(h.checked_at, '—', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
 					</li>
@@ -623,7 +677,9 @@
 		{/if}
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={closeDetail}>Close</button>
+			<button type="button" class="btn-cancel" onclick={closeDetail}>
+				{m('vendors.screening.queue.close')}
+			</button>
 		</div>
 	{/if}
 </Modal>
@@ -792,7 +848,10 @@
 	.history-result {
 		font-size: 0.72rem;
 		font-weight: 600;
-		text-transform: capitalize;
+		/* No `text-transform: capitalize` — it existed to dress up the raw
+		   `review_required` this badge used to print, and the label is properly
+		   cased at the source now. Left in, it would title-case a translated
+		   phrase mid-sentence ("Prüfung Erforderlich"). */
 		padding: 2px 8px;
 		border-radius: 10px;
 		background: var(--bg);

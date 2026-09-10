@@ -13,6 +13,7 @@
 		type MoneyAmount
 	} from '$lib/utils/money';
 	import { formatDate } from '$lib/utils/time';
+	import { formatList } from '$lib/utils/list';
 	import { partialLabels, totalUnconverted } from '$lib/utils/dashboardPartials';
 	import type { DashboardData } from '$lib/types/analytics';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
@@ -284,7 +285,7 @@
 						{m('dashboard.vendorSpend.unconverted', {
 							n: vendorSpendUnconverted,
 							currency: data.reporting.reporting_currency,
-							vendors: vendorSpendPartialNames.join(', ')
+							vendors: formatList(vendorSpendPartialNames)
 						})}
 					</p>
 				{/if}
@@ -453,7 +454,7 @@
 							{m('dashboard.trend.unconverted', {
 								n: trendUnconverted,
 								currency: data.reporting.reporting_currency,
-								months: trendPartialMonths.join(', ')
+								months: formatList(trendPartialMonths)
 							})}
 						</p>
 					{/if}
