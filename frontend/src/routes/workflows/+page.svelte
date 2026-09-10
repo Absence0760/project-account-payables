@@ -22,6 +22,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { pruneSelection } from '$lib/utils/selection';
 	import { goto } from '$app/navigation';
+	import { auth } from '$lib/stores/auth.svelte';
 	import TemplateLibraryModal from '$lib/components/workflow-mgmt/TemplateLibraryModal.svelte';
 	import VersionHistoryModal from '$lib/components/workflow-mgmt/VersionHistoryModal.svelte';
 	import SimulationModal from '$lib/components/workflow-mgmt/SimulationModal.svelte';
@@ -43,7 +44,44 @@
 	let selectedIds = $state<Set<string>>(new Set());
 	let bulkDeleting = $state(false);
 
+	/**
+	 * RBAC: redirect a non-admin instead of stranding them on this page.
+	 *
+	 * The gate matched here is the **nav's**, not the backend's, and the two
+	 * genuinely differ: `$lib/nav.ts` gates the Workflows row to
+	 * `roles: ['admin']`, while every READ under `/api/workflows` is
+	 * `get_current_user` (list, detail, templates, versions, diff, simulate,
+	 * export) and only the mutations are `require_roles(ROLE_ADMIN)`. So a
+	 * non-admin could not see the row but could type the URL — and this page
+	 * ships no read-only mode, so what they reached was a fully-editable
+	 * surface: New Workflow, From Template, Import, per-row Delete and the bulk
+	 * bar all rendered, every one of them 403ing on click. A dead end that looks
+	 * like a working page.
+	 *
+	 * Whether the nav should instead be WIDENED to match those role-open reads
+	 * is a live product question (`docs/followups.md`), and this deliberately
+	 * does not settle it: redirecting reproduces the access the nav already
+	 * grants, so nothing a role could reach before it can't now. If the call
+	 * goes the other way, the fix is to widen `allowed` here and add the
+	 * read-only mode `/organization` carries — not to delete the guard and go
+	 * back to a page of buttons that cannot work.
+	 *
+	 * `userLoaded` gates the redirect so we don't bounce before `/me` lands —
+	 * the same shape as `/admin/api-keys`, `/admin/webhooks`, `/admin/health`
+	 * and `/admin/access-review`.
+	 */
+	const userLoaded = $derived(auth.user !== null);
+	const allowed = $derived(auth.isAdmin);
+
 	$effect(() => {
+		if (userLoaded && !allowed) goto('/');
+	});
+
+	$effect(() => {
+		// Gated on `allowed` for the same reason the load is on `/admin/health`:
+		// a user who is being redirected away should not fire the page's reads on
+		// the way out.
+		if (!userLoaded || !allowed) return;
 		// Fire-and-forget: the store loaders re-throw so an awaiting caller keeps
 		// its own handling, but nothing awaits here — the store's `errored` flag is
 		// what the UI renders. Swallow so a failed load isn't an unhandled rejection.
