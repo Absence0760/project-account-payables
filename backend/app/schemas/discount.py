@@ -74,10 +74,36 @@ class DiscountOfferCreate(BaseModel):
     surfaced as a 500 instead of the 422 a bad request deserves. A valid uuid
     string still coerces, so no caller changes.
 
-    Deliberately NOT `extra="forbid"` — unlike the caller-less
-    `BulkNegotiationRequest`, this endpoint has live callers, and tightening
-    what they may send is a separate, breaking decision.
+    `extra="forbid"`, for the reason its sibling `BulkNegotiationRequest`
+    carries it: a silently-dropped key buys an offer nobody asked for. Drop
+    `valid_until` and the offer has no end date, so the optimizer cannot rank it
+    and it stands indefinitely; drop `currency` and it is stamped from the
+    invoice or the org instead of what the caller asserted, which is the exact
+    divergence `discount_capture` refuses to capture against (§ Currency is
+    checked before amount). 422 is the honest answer to a field we did not
+    understand.
+
+    This was held back one round because — unlike `BulkNegotiationRequest`, which
+    shipped caller-less — this endpoint has live callers, and forbidding extras
+    on a surface in use is a breaking change owed a caller audit first. That
+    audit is done: 37 pytest call sites, 5 Playwright call sites, no frontend
+    client function (`api/discounts.ts` covers list/accept/decline/optimize/
+    bulk-negotiate/roi/dashboard and has no `createOffer`), no mobile caller, and
+    `scripts/seed_extras.py` builds `DiscountOffer` ORM rows directly rather than
+    going through this schema. The union of every key any of them sends is
+    `{scope, invoice_id, vendor_id, tiers, base_amount, currency, valid_from}` —
+    a strict subset of the fields declared below, so nothing breaks.
+
+    The nested `DiscountTier` objects stay permissive, deliberately and
+    consistently with `BulkNegotiationRequest`: `DiscountTier` is also a
+    *response* model (`DiscountOfferResponse.tiers` / `.accepted_tier` are built
+    from the `discount_offers.tiers` JSONB), so forbidding there would turn a
+    stored row carrying an unexpected key into a 500 on read — a strictly worse
+    failure than the one being prevented, and on the wrong side of the request /
+    response boundary.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     scope: OfferScope = OfferScope.invoice
     invoice_id: UUID | None = None

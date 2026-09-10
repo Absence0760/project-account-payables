@@ -164,6 +164,111 @@ async def test_create_offer_422s_a_malformed_id(realdb):
     assert by_vendor.status_code == 422, by_vendor.text
 
 
+async def test_create_offer_refuses_an_unknown_key(realdb):
+    """`extra="forbid"` on `DiscountOfferCreate` — the sibling of the
+    `bulk-negotiate` guard, applied to the surface that has live callers.
+
+    Dropped in silence, a misspelled `valid_until` yields an offer with no end
+    date: it has no net due date, so the optimizer cannot rank it and it stands
+    against the invoice indefinitely. A misspelled `currency` is worse in a
+    quieter way — the offer is stamped from the invoice or the org instead of
+    what the caller asserted, which is exactly the divergence `discount_capture`
+    refuses to capture against, so the savings are never realised and nothing
+    says why.
+
+    Forbidding extras here was held back a round because this endpoint, unlike
+    `bulk-negotiate`, has live callers. The audit that unblocked it is written up
+    on `DiscountOfferCreate`'s docstring; this test is what keeps the guard from
+    being quietly reverted the next time a caller sends something new.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id, amount="1000.00")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        typo = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": invoice_id,
+                "tiers": _tiers(),
+                "validUntil": _FUTURE,  # camelCase typo
+            },
+        )
+    assert typo.status_code == 422, typo.text
+
+    # The refusal is total, not partial — no half-built offer left behind.
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(DiscountOffer).where(DiscountOffer.invoice_id == uuid.UUID(invoice_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+    # And the correctly-spelled key still works, so the guard didn't widen into
+    # the declared surface.
+    async with realdb.client(key="a", role="ap_manager") as c:
+        ok = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": invoice_id,
+                "tiers": _tiers(),
+                "valid_until": _FUTURE,
+            },
+        )
+    assert ok.status_code == 201, ok.text
+    assert ok.json()["valid_until"] == _FUTURE
+
+
+async def test_create_offer_accepts_every_field_its_live_callers_send(realdb):
+    """The caller audit, as an executable assertion.
+
+    `extra="forbid"` is only safe because every caller sends a subset of the
+    declared fields. That was established by grepping the tree once; a grep
+    result rots. The union of keys the 42 audited call sites send is
+    `{scope, invoice_id, vendor_id, tiers, base_amount, currency, valid_from}`,
+    and both shapes are exercised here so a future field rename or removal fails
+    HERE — loudly, in the backend suite — rather than as a 422 in an e2e spec or,
+    worse, in a deployed caller.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id, amount="1000.00")
+    vendor_id = await _add_vendor(mk, org_id, name="Audited Caller Supply")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # The invoice-scoped shape (the pytest + Playwright majority).
+        invoice_scoped = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "invoice",
+                "invoice_id": invoice_id,
+                "tiers": _tiers(),
+                "currency": "USD",
+                "valid_from": utc_today().isoformat(),
+            },
+        )
+        # The vendor-scoped shape (`test_discount_currency_resolution`).
+        vendor_scoped = await c.post(
+            "/api/discounts/offers",
+            json={
+                "scope": "vendor",
+                "vendor_id": vendor_id,
+                "base_amount": "1000.00",
+                "currency": "USD",
+                "tiers": _tiers(),
+            },
+        )
+    assert invoice_scoped.status_code == 201, invoice_scoped.text
+    assert vendor_scoped.status_code == 201, vendor_scoped.text
+
+
 async def test_accept_offer_picks_best_tier_and_audits(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
