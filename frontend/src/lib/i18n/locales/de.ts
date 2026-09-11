@@ -79,6 +79,8 @@ export const messages = {
 	'common.saving': 'Wird gespeichert …',
 	'common.cancel': 'Abbrechen',
 	'common.loading': 'Wird geladen …',
+	'common.tryAgain': 'Erneut versuchen',
+	'common.retrying': 'Wird erneut versucht…',
 	'common.loadFailed': 'Diese Liste konnte nicht geladen werden. Zum erneuten Versuch aktualisieren.',
 	'common.amountInvalid': 'Geben Sie den Betrag als einfache Zahl ein, z. B. 1200 oder 1200.50',
 
@@ -98,6 +100,106 @@ export const messages = {
 	'profile.notifications.event.cashShortfallProjected': 'Prognostizierte Liquiditätslücke',
 	'profile.notifications.inAppFor': 'In-App-Benachrichtigungen für „{event}“',
 	'profile.notifications.emailFor': 'E-Mail-Benachrichtigungen für „{event}“',
+
+	'profile.account.heading': 'Konto',
+	'profile.account.fullName': 'Vollständiger Name',
+	'profile.account.email': 'E-Mail',
+	'profile.account.roles': 'Rollen',
+	'profile.account.updated': 'Profil aktualisiert',
+	'profile.account.updateFailed': 'Profil konnte nicht aktualisiert werden',
+
+	'profile.password.heading': 'Passwort',
+	'profile.password.hint':
+		'Verwenden Sie ein starkes, nur für dieses Konto genutztes Passwort. Nach dem Speichern bleiben Sie auf diesem Gerät angemeldet; andere Sitzungen bleiben bis zu ihrem Ablauf gültig.',
+	'profile.password.current': 'Aktuelles Passwort',
+	'profile.password.new': 'Neues Passwort',
+	'profile.password.confirm': 'Neues Passwort bestätigen',
+	'profile.password.submit': 'Passwort ändern',
+	'profile.password.mismatch': 'Die Passwörter stimmen nicht überein',
+	'profile.password.updated': 'Passwort aktualisiert',
+	'profile.password.updateFailed': 'Passwort konnte nicht aktualisiert werden',
+
+	'profile.mfa.heading': 'Zwei-Faktor-Authentifizierung',
+	'profile.mfa.hint':
+		'Ergänzt die Anmeldung um einen zweiten Schritt über eine Authenticator-App (Google Authenticator, 1Password, Authy usw.). Wenn Sie keinen Zugriff auf Ihren Authenticator haben, kann ein Einmalcode an Ihr Konto gesendet werden.',
+	'profile.mfa.enabled': 'Aktiviert',
+	'profile.mfa.notConfigured': 'Nicht eingerichtet',
+	'profile.mfa.requiredNoDisable':
+		'Ihre Organisation verlangt MFA, daher ist das Deaktivieren nicht möglich.',
+	'profile.mfa.requiredEnroll': 'Ihre Organisation verlangt MFA — bitte jetzt einrichten.',
+	'profile.mfa.disablePassword': 'Passwort eingeben, um MFA zu deaktivieren',
+	'profile.mfa.confirmWithPasskey': 'Mit einem Passkey bestätigen',
+	'profile.mfa.disable': 'Zwei-Faktor deaktivieren',
+	'profile.mfa.disabling': 'Wird deaktiviert…',
+	'profile.mfa.setUp': 'Zwei-Faktor einrichten',
+	'profile.mfa.step1Label': 'Schritt 1.',
+	'profile.mfa.step1Text': 'Scannen Sie diesen QR-Code mit Ihrer Authenticator-App.',
+	'profile.mfa.qrAlt': 'MFA-QR-Code',
+	'profile.mfa.manualSecret': 'Scannen nicht möglich? Geheimnis manuell eingeben',
+	'profile.mfa.step2Label': 'Schritt 2.',
+	'profile.mfa.step2Text': 'Geben Sie den 6-stelligen Code aus Ihrer App ein',
+	'profile.mfa.verifyAndEnable': 'Prüfen und aktivieren',
+	'profile.mfa.verifying': 'Wird geprüft…',
+	'profile.mfa.enrollFailed': 'Einrichtung konnte nicht gestartet werden',
+	'profile.mfa.verifyFailed': 'Überprüfung fehlgeschlagen',
+	'profile.mfa.enabledToast': 'Zwei-Faktor-Authentifizierung aktiviert',
+	'profile.mfa.disabledToast': 'Zwei-Faktor-Authentifizierung deaktiviert',
+	'profile.mfa.disableFailed': 'Deaktivieren fehlgeschlagen',
+
+	'profile.passkeys.heading': 'Passkeys',
+	'profile.passkeys.hint':
+		'Melden Sie sich mit einem Passkey an — Touch ID, Face ID, Windows Hello oder ein Hardware-Sicherheitsschlüssel — statt einen Code zu tippen. Passkeys sind ein zweiter Faktor neben (oder anstelle) einer Authenticator-App.',
+	'profile.passkeys.unsupported': 'Dieser Browser unterstützt keine Passkeys.',
+	'profile.passkeys.stepUpPassword':
+		'Passwort bestätigen, um einen Passkey hinzuzufügen oder zu entfernen',
+	'profile.passkeys.stepUpBlankHint':
+		'Lassen Sie das Feld leer, um stattdessen mit einem Ihrer vorhandenen Passkeys zu bestätigen — die einzige Möglichkeit, wenn Sie sich per SSO anmelden und kein Passwort haben.',
+	'profile.passkeys.lastUsed': 'Zuletzt verwendet {date}',
+	'profile.passkeys.neverUsed': 'Nie verwendet',
+	'profile.passkeys.remove': 'Entfernen',
+	'profile.passkeys.loadFailed':
+		'Ihre Passkeys konnten nicht geladen werden, daher können wir nicht sagen, welche registriert sind.',
+	'profile.passkeys.none': 'Noch keine Passkeys',
+	'profile.passkeys.nameLabel': 'Passkey-Name (optional)',
+	'profile.passkeys.namePlaceholder': 'z. B. MacBook Touch ID',
+	'profile.passkeys.add': 'Passkey hinzufügen',
+	'profile.passkeys.waiting': 'Warten auf Passkey…',
+	'profile.passkeys.added': 'Passkey hinzugefügt',
+	'profile.passkeys.addFailed': 'Passkey konnte nicht hinzugefügt werden',
+	'profile.passkeys.removed': 'Passkey entfernt',
+	'profile.passkeys.removeFailed': 'Passkey konnte nicht entfernt werden',
+
+	'profile.sessions.heading': 'Angemeldete Geräte',
+	'profile.sessions.hint':
+		'Alle Browser und Apps, die derzeit bei Ihrem Konto angemeldet sind. Wenn Sie eines nicht erkennen — oder sich auf einem Gerät angemeldet haben, das Sie nicht mehr besitzen — melden Sie es hier ab. Es verliert sofort seine Gültigkeit.',
+	'profile.sessions.loadFailed':
+		'Ihre Sitzungen konnten nicht geladen werden, daher können wir nicht sagen, was derzeit angemeldet ist.',
+	'profile.sessions.unknownDevice': 'Unbekanntes Gerät',
+	'profile.sessions.thisDevice': 'Dieses Gerät',
+	'profile.sessions.signedIn': 'Angemeldet {date}',
+	'profile.sessions.signOut': 'Abmelden',
+	'profile.sessions.confirmSignOut': 'Abmelden bestätigen',
+	'profile.sessions.signOutOthers': 'Überall sonst abmelden',
+	'profile.sessions.confirmSignOutOthers':
+		'Bestätigen — {n, plural, one {# andere Sitzung} other {# andere Sitzungen}} abmelden',
+	'profile.sessions.none': 'Es sind keine weiteren Sitzungen angemeldet.',
+	'profile.sessions.revoked': 'Gerät abgemeldet',
+	'profile.sessions.revokeFailed': 'Gerät konnte nicht abgemeldet werden',
+	'profile.sessions.revokedOthers':
+		'{n, plural, one {# andere Sitzung} other {# andere Sitzungen}} abgemeldet',
+	'profile.sessions.revokeOthersFailed': 'Andere Sitzungen konnten nicht abgemeldet werden',
+
+	'profile.notifications.heading': 'Benachrichtigungen',
+	'profile.notifications.hint':
+		'Wählen Sie, welche Ereignisse Sie erreichen und auf welchem Weg. Alles, was eingeschaltet bleibt, wird zugestellt — jedes Ereignis ist aktiv, bis Sie es abschalten. In-App-Benachrichtigungen erscheinen im Benachrichtigungscenter; E-Mails gehen an {email}.',
+	'profile.notifications.yourAddress': 'Ihre Adresse',
+	'profile.notifications.colEvent': 'Ereignis',
+	'profile.notifications.colInApp': 'In-App',
+	'profile.notifications.colEmail': 'E-Mail',
+	'profile.notifications.loadFailed':
+		'Benachrichtigungseinstellungen konnten nicht geladen werden.',
+	'profile.notifications.updateFailed':
+		'Benachrichtigungseinstellungen konnten nicht aktualisiert werden',
 
 	// Common shared across list/detail surfaces
 	'common.all': 'Alle',
@@ -217,6 +319,9 @@ export const messages = {
 	'invoices.status.failed': 'Fehlgeschlagen',
 	'invoices.selectAllAria': 'Alle Rechnungen auf dieser Seite auswählen',
 	'invoices.systemManagedTitle': 'Nicht auswählbar — {status} wird vom System verwaltet',
+	'invoices.warningsAria': 'Warnungen: {warnings}',
+	'invoices.priorsTitle':
+		'Extraktions-Vorgaben: {cache, plural, one {# Lieferanten-Cache-Feld} other {# Lieferanten-Cache-Felder}}, {rag, plural, one {# RAG-Nachbar} other {# RAG-Nachbarn}}',
 	'invoices.empty': 'Keine Rechnungen entsprechen Ihren Filtern.',
 	'invoices.empty.errored': 'Rechnungen konnten nicht geladen werden. Bitte erneut versuchen.',
 	'invoices.empty.fresh': 'Noch keine Rechnungen. Laden Sie eine hoch, erstellen Sie eine manuell oder importieren Sie eine CSV, um Ihre offenen Verbindlichkeiten zu laden.',
@@ -784,6 +889,85 @@ export const messages = {
 	'exceptions.bulkModal.title': '{n, plural, one {# Ausnahme lösen} other {# Ausnahmen lösen}}',
 	'exceptions.bulkModal.hint': 'Alle ausgewählten Zeilen erhalten dieselbe Lösungsnotiz. Zeilen, die sich bereits in einem Endzustand befinden, werden serverseitig stillschweigend übersprungen.',
 	'exceptions.bulkModal.notePlaceholder': 'Auf jede ausgewählte Zeile angewendet',
+
+	'exceptions.type.duplicate': 'Doppelte Rechnung',
+	'exceptions.type.poMismatch': 'Bestellabweichung',
+	'exceptions.type.fraudFlag': 'Betrugshinweis',
+	'exceptions.type.extractionFailed': 'Extraktion fehlgeschlagen',
+	'exceptions.type.unverifiedVendor': 'Nicht verifizierter Lieferant',
+	'exceptions.type.reviewRejected': 'Abgelehnt',
+	'exceptions.type.amountExceeded': 'Betrag überschritten',
+	'exceptions.type.missingData': 'Fehlende Daten',
+	'exceptions.type.qualityHold': 'Qualitätssperre',
+	'exceptions.type.priceVariance': 'Preisabweichung',
+	'exceptions.type.contractNoncompliant': 'Vertragswidrig',
+	'exceptions.type.erpReconciliation': 'ERP-Abstimmung',
+	'exceptions.type.lineTotalMismatch': 'Positionssummen-Abweichung',
+	'exceptions.type.paymentComplianceHold': 'Compliance-Sperre',
+	'exceptions.type.paymentReconciliation': 'Zahlungsabstimmung',
+
+	'exceptions.agents.loading': 'Agentenaktivität wird geladen…',
+	'exceptions.agents.loadFailed': 'Agentenaktivität konnte nicht geladen werden',
+	'exceptions.agents.logLoadFailed': 'Entscheidungsprotokoll konnte nicht geladen werden',
+	'exceptions.agents.kpi.decisions': 'Getroffene Entscheidungen',
+	'exceptions.agents.kpi.resolutionRate': 'Lösungsquote',
+	'exceptions.agents.kpi.escalationRate': 'Eskalationsquote',
+	'exceptions.agents.action.autoResolved': 'Automatisch gelöst',
+	'exceptions.agents.action.escalated': 'Eskaliert',
+	'exceptions.agents.action.noAction': 'Keine Aktion',
+	'exceptions.agents.autonomy.conservative': 'Konservativ',
+	'exceptions.agents.autonomy.balanced': 'Ausgewogen',
+	'exceptions.agents.autonomy.aggressive': 'Aggressiv',
+	'exceptions.agents.accuracy.label': 'Genauigkeit',
+	'exceptions.agents.accuracy.notMeasured': 'Noch nicht gemessen',
+	'exceptions.agents.accuracy.note':
+		'Für die Genauigkeit ist ein Signal über menschliche Korrekturen nötig (wurde eine automatische Lösung später zurückgenommen?). Dieses Signal wird noch nicht erfasst, daher wird kein Wert angezeigt statt eines erfundenen.',
+	'exceptions.agents.run.heading': 'Agent ausführen',
+	'exceptions.agents.run.refresh': 'Aktualisieren',
+	'exceptions.agents.run.refreshing': 'Wird aktualisiert…',
+	'exceptions.agents.run.note':
+		'Eine Ausführung bewertet eine Ausnahme und wendet die Korrektur über denselben auditierten Weg an, den auch ein Mensch nutzen würde — sofern die Konfidenz die Autonomieschwelle dieser Organisation erreicht. Darunter wird stattdessen an einen Menschen eskaliert. In beiden Fällen wird genau eine Entscheidung im Protokoll unten festgehalten.',
+	'exceptions.agents.run.empty.loading': 'Offene Ausnahmen werden geladen…',
+	'exceptions.agents.run.empty.errored':
+		'Die offenen Ausnahmen konnten nicht geladen werden. Versuchen Sie „Aktualisieren“.',
+	'exceptions.agents.run.empty.none':
+		'Keine offenen oder eskalierten Ausnahmen, auf die ein Agent angewendet werden kann.',
+	'exceptions.agents.run.action': 'Agent ausführen',
+	'exceptions.agents.run.running': 'Wird ausgeführt…',
+	'exceptions.agents.run.aria': 'Agent auf Ausnahme „{type}“ ausführen',
+	'exceptions.agents.run.ariaWithInvoice':
+		'Agent auf Ausnahme „{type}“ für Rechnung {invoice} ausführen',
+	'exceptions.agents.run.blockedTitle':
+		'Zu dieser Ausnahme gehört keine Rechnung, daher hat ein Agent nichts, worauf er wirken könnte — nur manuelle Prüfung.',
+	'exceptions.agents.run.blockedAria':
+		'Auf dieser Ausnahme „{type}“ kann kein Agent ausgeführt werden: Es gibt keine Rechnung',
+	'exceptions.agents.run.failed': 'Die Ausführung des Agenten ist fehlgeschlagen.',
+	'exceptions.agents.log.heading': 'Letzte Entscheidungen',
+	'exceptions.agents.log.filterAria': 'Agentenentscheidungen nach Aktion filtern',
+	'exceptions.agents.log.empty':
+		'Noch keine Agentenentscheidungen. Führen Sie einen Agenten auf einer Ausnahme aus, um dieses Protokoll zu füllen.',
+	'exceptions.agents.col.when': 'Wann',
+	'exceptions.agents.col.resolver': 'Resolver',
+	'exceptions.agents.col.exception': 'Ausnahme',
+	'exceptions.agents.col.action': 'Aktion',
+	'exceptions.agents.col.confidence': 'Konfidenz',
+	'exceptions.agents.col.autonomy': 'Autonomie',
+	'exceptions.agents.col.change': 'Änderung',
+	'exceptions.agents.col.raised': 'Ausgelöst',
+	'exceptions.agents.loadMore': 'Mehr laden ({shown} von {total})',
+	'exceptions.agents.showingAll':
+		'{total, plural, one {Alle # Entscheidung wird angezeigt} other {Alle # Entscheidungen werden angezeigt}}',
+	'exceptions.agents.modal.aria': 'Einen Ausnahme-Agenten ausführen',
+	'exceptions.agents.modal.titleRun': 'Einen Agenten auf diese Ausnahme anwenden',
+	'exceptions.agents.modal.titleDecision': 'Agentenentscheidung',
+	'exceptions.agents.modal.warning':
+		'Der Agent kann diese Rechnung verändern. Er wendet eine Korrektur nur an, wenn seine Konfidenz die Autonomieschwelle erreicht; andernfalls eskaliert er an einen Menschen. Beide Ergebnisse werden protokolliert.',
+	'exceptions.agents.modal.nowStatus': 'Ausnahme ist jetzt',
+	'exceptions.agents.modal.escalatedNote':
+		'Die Konfidenz des Agenten hat die Autonomieschwelle dieser Organisation nicht erreicht, daher hat er die Ausnahme an einen Menschen eskaliert, ohne etwas zu ändern. Das ist ein normales, protokolliertes Ergebnis — die Entscheidung steht im Protokoll unten.',
+	'exceptions.agents.modal.noActionNote':
+		'Der Agent hat nichts gefunden, was er bei dieser Ausnahme sicher ändern könnte. Es wurde nichts verändert; die Entscheidung ist im Protokoll unten festgehalten.',
+	'exceptions.agents.modal.close': 'Schließen',
 
 	// Notifications
 	'notifications.title': 'Benachrichtigungen',
@@ -4203,7 +4387,6 @@ export const messages = {
 	'discounts.bulk.errorTitle': 'Angebot nicht erstellt',
 	'discounts.bulk.intro': 'Ein Dauerangebot für alle offenen Rechnungen dieses Lieferanten. Der Bezugsbetrag ist der offene Saldo des Lieferanten, den der Server beim Vorschlagen summiert — er wird angezeigt, sobald das Angebot besteht. Es wird nichts gezahlt: Das Angebot erhält den Status „Angeboten“ und muss weiterhin angenommen und finanziert werden.',
 	'discounts.bulk.noValidUntil': 'Ohne Enddatum verfällt das Angebot nie von selbst und der Optimierer kann es nicht bewerten — es fehlt der Zeithorizont für eine Jahresrendite.',
-	'discounts.bulk.noVendors': 'Es stehen keine Lieferanten für Verhandlungen zur Verfügung.',
 	'discounts.bulk.notes': 'Notizen (optional)',
 	'discounts.bulk.open': 'Lieferantenangebot vorschlagen',
 	'discounts.bulk.percentAria': 'Stufe {n} — Skontoprozentsatz',
@@ -4219,7 +4402,6 @@ export const messages = {
 	'discounts.bulk.title': 'Lieferantenweiten Skonto vorschlagen',
 	'discounts.bulk.validUntil': 'Gültig bis',
 	'discounts.bulk.vendor': 'Lieferant',
-	'discounts.bulk.vendorsLoading': 'Lieferanten werden geladen…',
 	'discounts.chip.missed': 'Verpasst',
 	'discounts.col.base': 'Basis',
 	'discounts.col.bestDiscount': 'Bester Skonto',
