@@ -427,16 +427,30 @@ picks up the wrong project and reports `Total: 0 tests in 0 files`.
 
 ## Web vs Mobile feature parity
 
-The mobile app (`mobile/`) covers core approval workflows. These web features are **not yet on mobile**:
+The mobile app (`mobile/`) is deliberately a **subset**, focused on the
+approve-on-the-go path rather than mirroring every web page. **The authoritative
+per-surface table — what mobile ships, what is web-only, and what is deliberately
+out of scope — is `mobile/docs/feature-status.md`**; do not maintain a second
+list here, because this one went stale (it claimed vendors, exceptions, workflows,
+org settings, admin, the payment queue, invoice editing, bulk ops and the audit
+timeline were web-only long after each had shipped on mobile).
 
-- Invoice editing, file upload (PDF), PDF viewer, audit timeline
-- Advanced search, bulk operations, export
-- Vendors, exceptions, workflows, organization settings, admin
-- Payment queue and payment runs
+The parity *direction*, which is what belongs here:
 
-Mobile has features **not on web**: camera OCR, push notifications, offline mode, biometric login, swipe-to-approve.
+- **A mobile surface mirrors the backend gate of the routes it calls**, per entry,
+  not per nav group — a row shown to a role the API refuses is a guaranteed 403 on
+  first paint, and a row hidden from a role the API admits is a dead end.
+- **Money and statistics cross the wire as exact strings and are rendered
+  verbatim.** The device never does float arithmetic on currency; every total is
+  server-computed.
+- **What stays on the web is a judgment about the decision, not the screen
+  size**: configuration surfaces (ERP/payment/SSO secrets, the no-code workflow
+  builder, QMS sync), and the money-path *control* surfaces whose refusals need
+  room to explain themselves (the adaptive routing / auto-approve-threshold
+  applies). Read-first on mobile is a valid shipped state for such a feature.
 
-See `mobile/CLAUDE.md` for the full mobile feature list and `docs/roadmap.md` Priority 8 for the parity roadmap.
+Mobile has features **not on web**: camera OCR, push notifications, offline mode,
+biometric login, swipe-to-approve.
 
 ## Deployment
 

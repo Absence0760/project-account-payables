@@ -160,6 +160,8 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Payments | `GET /api/payments` |
 | Vendors | `GET /api/vendors` (status/search filters), `POST /api/vendors/{id}/verify`, `POST /api/vendors/{id}/reject`, `POST /api/vendors/sync-erp` (mutations admin/ap_manager) |
 | Pay (queue) | `GET /api/payments/queue`, `GET /api/payments/summary`, `GET /api/payments/runs/`, `POST /api/payments/runs` (create draft), `POST /api/payments/runs/{id}/execute`, `POST /api/payments/runs/{id}/cancel` (admin/ap_manager/cfo), `POST /api/payments/runs/{id}/approve` (CFO sign-off — **cfo role only**, mirroring the backend `require_roles(ROLE_CFO)`) |
+| Quality Inspections | `GET /api/inspections` (`result` / `gr_id` filters, paginated — reads are role-open), `GET /api/inspections/{id}`, `POST /api/inspections` (record — admin/ap_manager), plus `GET /api/goods-receipts` for the record form's receipt picker. `POST /inspections/sync` (QMS pull) is deliberately web-only |
+| Adaptive Workflows | `GET /api/adaptive/approval-patterns`, `GET /api/adaptive/anomalies`, `GET /api/adaptive/suggestions`, `POST /api/adaptive/suggestions/{id}/dismiss` (admin/ap_manager). The two `/apply` paths and `GET /feedback` are deliberately web-only |
 | Settings | Uses cached auth state |
 
 ## Role-based UI
@@ -178,9 +180,21 @@ Bottom navigation adapts based on user roles (same as web frontend):
 | Payments | Admin, AP Manager, CFO |
 | Settings | All roles |
 
+The **Settings list is the hub for everything that is not a bottom-nav tab**, and
+its sections are gated **per entry, against each surface's own backend gate** —
+never once for the whole group. **Settings → Procurement → Quality Inspections**
+is open to every role, because `GET /api/inspections` and its detail are
+`get_current_user` and a clerk chasing a quality hold is exactly who needs to
+read a failed inspection (the *record* affordance inside the screen is the thing
+gated to admin/ap_manager). **Settings → Administration** renders whenever any of
+its children does: the three admin surfaces on `isOrgAdmin`, **Adaptive
+Workflows** on `canViewAdaptive` (admin/ap_manager/cfo — the backend's
+`_READ_ROLES`). A group-level admin gate could express only one of those and hid
+adaptive from two roles the API admits.
+
 The **admin surfaces** (User Management + Organization Settings + the read-only
-Workflows viewer) are not bottom-nav tabs — they live under a **Settings →
-Administration** section that renders only for admins (`AuthStore.isOrgAdmin`),
+Workflows viewer) are not bottom-nav tabs — they live under that **Settings →
+Administration** section and each renders only for admins (`AuthStore.isOrgAdmin`),
 mirroring the backend `require_roles(ROLE_ADMIN)` on `/api/admin/*` + `PATCH
 /api/organization` and the web nav `roles: ['admin']` on `/workflows` (the
 `/api/workflows` reads themselves are open to any authed role, so the Workflows
@@ -284,7 +298,17 @@ AA via `.shade900`), the invoice list tile in **selection mode** (exposes a
 the export / status / delete actions, contrast), the read-only `WorkflowsScreen`
 (loaded list meets tap-target + label + contrast; the inactive row merges into
 one announcement carrying "Inactive" so the status badge isn't an unlabelled
-colour cue), and the two admin screens — `AdminUsersScreen` (a
+colour cue), the quality-inspection surface (every `InspectionResultBadge` tint — pass /
+fail / partial / unknown — plus its `Result: <outcome>` announcement; the
+`InspectionsScreen` loaded list, whose rows merge into one announcement carrying
+the outcome and, for an unlinked row, "Not linked"; the `InspectionDetailScreen`
+loaded detail, where the consequence note and the amber no-match-will-read-this
+callout both render `brown.shade800` over a pale tint because a true orange
+fails), the `AdaptiveScreen` (the suggestions tab — status badge + muted
+rationale/confidence, one merged announcement per card carrying the status; the
+patterns tab, whose unconverted-approvals disclosure uses the same amber-reading
+brown; the anomalies tab, covering both severity tints), and the two admin
+screens — `AdminUsersScreen` (a
 deactivated row merges into one announcement carrying "inactive" so the Inactive
 badge isn't an unlabelled colour cue; the in-app-bar Material `SearchBar` is a
 24px framework field exempt from the whole-screen tap-target sweep, same as the
