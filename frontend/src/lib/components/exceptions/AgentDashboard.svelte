@@ -15,15 +15,18 @@
 		runExceptionAgent
 	} from '$lib/api/exceptionAgents';
 	import {
-		ACTION_LABELS,
+		agentActionLabelKey,
+		autonomyLevelLabelKey,
 		type AgentStats,
 		type AgentDecision,
 		type AgentCandidateException,
 		type AgentResolveResult
 	} from '$lib/types/exceptionAgents';
+	import { exceptionTypeFallback, exceptionTypeLabelKey } from '$lib/types/exception';
 	import { appendUnique } from '$lib/utils/pagination';
 	import { createRequestSequencer } from '$lib/utils/requestSequence';
 	import { formatDate } from '$lib/utils/time';
+	import { m } from '$lib/i18n/store.svelte';
 
 	const PAGE_SIZE = 20;
 
@@ -78,7 +81,7 @@
 			const [s] = await Promise.all([getAgentStats(), loadDecisions(), loadCandidates()]);
 			stats = s;
 		} catch {
-			toast('Failed to load agent activity', 'error');
+			toast(m('exceptions.agents.loadFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -140,7 +143,7 @@
 			// a race with a concurrent run) and 422 (invoice-less exception) each
 			// carry the actionable half of the refusal, and the operator needs it
 			// while the dialog is still open.
-			runError = err instanceof Error ? err.message : 'The agent run failed.';
+			runError = err instanceof Error ? err.message : m('exceptions.agents.run.failed');
 		} finally {
 			runBusy = false;
 		}
@@ -164,7 +167,7 @@
 		} catch {
 			// `isCurrentRequest`, not `canCommit`: only the newest request reports.
 			if (!decisionsSequence.isCurrentRequest(token)) return;
-			if (!opts.append) toast('Failed to load decision log', 'error');
+			if (!opts.append) toast(m('exceptions.agents.logLoadFailed'), 'error');
 		} finally {
 			if (decisionsSequence.isCurrentRequest(token)) loadingMore = false;
 		}
@@ -195,31 +198,66 @@
 			.join(', ');
 	}
 
-	const COLUMNS = [
-		{ label: 'When' },
-		{ label: 'Resolver' },
-		{ label: 'Exception' },
-		{ label: 'Action' },
-		{ label: 'Confidence', class: 'right' },
-		{ label: 'Autonomy' },
-		{ label: 'Change' }
-	];
+	/** An agent action's label, falling back to the raw value for an action this
+	 *  build has no wording for (`action_taken` is a plain `String(20)`). */
+	function actionLabel(action: string): string {
+		const key = agentActionLabelKey(action);
+		return key ? m(key) : action;
+	}
 
-	const RUN_COLUMNS = [
-		{ label: 'Raised' },
-		{ label: 'Exception' },
-		{ label: 'Invoice' },
-		{ label: 'Vendor' },
-		{ label: 'Status' },
+	/** An autonomy level's label. The log row and the run dialog both printed the
+	 *  raw lowercase wire value; an unknown level still does, rather than blank. */
+	function autonomyLabel(level: string): string {
+		const key = autonomyLevelLabelKey(level);
+		return key ? m(key) : level;
+	}
+
+	/**
+	 * An exception type's label.
+	 *
+	 * The decision log has only `exception_type` on the wire and rendered it as
+	 * `replace(/_/g, ' ')` — `po mismatch`: an English-only derivation, and a
+	 * DIFFERENT wording from the queue's own `PO Mismatch` one tab away. The
+	 * runnable queue does carry the server's `type_label`, so that is the fallback
+	 * where it exists; otherwise the de-underscored raw key, never an empty cell
+	 * (`types/exception.ts` states the rule).
+	 */
+	function typeLabel(type: string, serverLabel?: string | null): string {
+		const key = exceptionTypeLabelKey(type);
+		if (key) return m(key);
+		return serverLabel || exceptionTypeFallback(type);
+	}
+
+	// `$derived`, not `const`: these read `m()`, so a locale switch has to rebuild
+	// them or the headers stay in the language the panel happened to mount in.
+	const COLUMNS = $derived([
+		{ label: m('exceptions.agents.col.when') },
+		{ label: m('exceptions.agents.col.resolver') },
+		{ label: m('exceptions.agents.col.exception') },
+		{ label: m('exceptions.agents.col.action') },
+		{ label: m('exceptions.agents.col.confidence'), class: 'right' },
+		{ label: m('exceptions.agents.col.autonomy') },
+		{ label: m('exceptions.agents.col.change') }
+	]);
+
+	const RUN_COLUMNS = $derived([
+		{ label: m('exceptions.agents.col.raised') },
+		{ label: m('exceptions.agents.col.exception') },
+		{ label: m('exceptions.col.invoice') },
+		{ label: m('exceptions.col.vendor') },
+		{ label: m('exceptions.col.status') },
 		{ label: '' }
-	];
+	]);
 
-	const ACTION_CHIPS = [
-		{ key: null, label: 'All' },
-		{ key: 'auto_resolved', label: 'Auto-resolved' },
-		{ key: 'escalated', label: 'Escalated' },
-		{ key: 'no_action', label: 'No action' }
-	];
+	// The three action chips ARE the three action labels, so they read the same
+	// keys the badge does — a chip saying one thing and the rows it filters
+	// another is the drift one shared map removes.
+	const ACTION_CHIPS = $derived([
+		{ key: null, label: m('common.all') },
+		{ key: 'auto_resolved', label: m('exceptions.agents.action.autoResolved') },
+		{ key: 'escalated', label: m('exceptions.agents.action.escalated') },
+		{ key: 'no_action', label: m('exceptions.agents.action.noAction') }
+	]);
 </script>
 
 <div class="agent-dash" data-testid="agent-dashboard">
@@ -237,22 +275,32 @@
 	<div class="kpi-row">
 		<KpiCard
 			value={stats ? stats.total_decisions : null}
-			label="Decisions made"
+			label={m('exceptions.agents.kpi.decisions')}
 			pending={loading}
 		/>
 		<KpiCard
 			value={stats ? pct(stats.resolution_rate) : null}
-			label="Resolution rate"
+			label={m('exceptions.agents.kpi.resolutionRate')}
 			highlight="green"
 			pending={loading}
 		/>
 		<KpiCard
 			value={stats ? pct(stats.escalation_rate) : null}
-			label="Escalation rate"
+			label={m('exceptions.agents.kpi.escalationRate')}
 			pending={loading}
 		/>
-		<KpiCard value={stats ? stats.auto_resolved : null} label="Auto-resolved" pending={loading} />
-		<KpiCard value={stats ? stats.escalated : null} label="Escalated" pending={loading} />
+		<!-- The two count cards carry the ACTION labels rather than labels of their
+		     own: the card, the filter chip and the row badge name one action. -->
+		<KpiCard
+			value={stats ? stats.auto_resolved : null}
+			label={m('exceptions.agents.action.autoResolved')}
+			pending={loading}
+		/>
+		<KpiCard
+			value={stats ? stats.escalated : null}
+			label={m('exceptions.agents.action.escalated')}
+			pending={loading}
+		/>
 	</div>
 
 	{#if stats}
@@ -260,56 +308,51 @@
 		     fabricate a number; show the explicit deferred state. -->
 		<div class="accuracy-card" data-testid="agent-accuracy">
 			<div class="accuracy-head">
-				<span class="accuracy-label">Accuracy</span>
+				<span class="accuracy-label">{m('exceptions.agents.accuracy.label')}</span>
 				<span class="accuracy-value">
-					{stats.accuracy === null ? 'Not yet measured' : pct(stats.accuracy)}
+					{stats.accuracy === null
+						? m('exceptions.agents.accuracy.notMeasured')
+						: pct(stats.accuracy)}
 				</span>
 			</div>
 			{#if stats.accuracy === null}
-				<p class="accuracy-note">
-					Accuracy needs a human-overturn signal (was an auto-resolution later
-					reversed?). That signal is not tracked yet, so no accuracy figure is
-					shown rather than a fabricated one.
-				</p>
+				<p class="accuracy-note">{m('exceptions.agents.accuracy.note')}</p>
 			{/if}
 		</div>
 	{:else if loading}
-		<p class="dash-loading">Loading agent activity…</p>
+		<p class="dash-loading">{m('exceptions.agents.loading')}</p>
 	{/if}
 
 	<section class="log-section" data-testid="agent-run-panel">
 		<header class="log-head">
-			<h2>Run an agent</h2>
+			<h2>{m('exceptions.agents.run.heading')}</h2>
 			<button class="filter-chip" onclick={loadCandidates} disabled={candidatesLoading}>
-				{candidatesLoading ? 'Refreshing…' : 'Refresh'}
+				{candidatesLoading
+					? m('exceptions.agents.run.refreshing')
+					: m('exceptions.agents.run.refresh')}
 			</button>
 		</header>
 		<!-- What a run actually does, said before the button rather than after
 		     it. The coordinator applies a fix only when the resolver's confidence
 		     clears the org's autonomy threshold; otherwise it hands the exception
 		     to a human. Both paths record one append-only decision. -->
-		<p class="run-note">
-			Running an agent evaluates one exception and, when its confidence clears this
-			organization's autonomy threshold, applies the fix through the same audited path
-			a person would use. Below that threshold it escalates to a human instead. Either
-			way it records one decision in the log below.
-		</p>
+		<p class="run-note">{m('exceptions.agents.run.note')}</p>
 
 		<DataTable
 			columns={RUN_COLUMNS}
 			isEmpty={candidates.length === 0}
 			empty={candidatesLoading
-				? 'Loading open exceptions…'
+				? m('exceptions.agents.run.empty.loading')
 				: candidatesErrored
-					? 'Could not load the open exceptions. Try Refresh.'
-					: 'No open or escalated exceptions to run an agent on.'}
+					? m('exceptions.agents.run.empty.errored')
+					: m('exceptions.agents.run.empty.none')}
 			colspan={6}
 		>
 			{#snippet body()}
 				{#each candidates as exc (exc.id)}
 					<tr>
 						<td class="muted-cell" title={exc.created_at}>{formatDate(exc.created_at)}</td>
-						<td>{exc.type_label}</td>
+						<td>{typeLabel(exc.exception_type, exc.type_label)}</td>
 						<td class="mono">{exc.invoice_number ?? '—'}</td>
 						<td class="muted-cell">{exc.vendor_name ?? '—'}</td>
 						<td class="muted-cell">{exc.status}</td>
@@ -317,10 +360,17 @@
 							{#if isRunnable(exc)}
 								<RowAction
 									variant="accent"
-									ariaLabel={`Run agent on ${exc.type_label} exception${exc.invoice_number ? ` for invoice ${exc.invoice_number}` : ''}`}
+									ariaLabel={exc.invoice_number
+										? m('exceptions.agents.run.ariaWithInvoice', {
+												type: typeLabel(exc.exception_type, exc.type_label),
+												invoice: exc.invoice_number
+											})
+										: m('exceptions.agents.run.aria', {
+												type: typeLabel(exc.exception_type, exc.type_label)
+											})}
 									onclick={() => openRun(exc)}
 								>
-									Run agent
+									{m('exceptions.agents.run.action')}
 								</RowAction>
 							{:else}
 								<!-- Disabled with the reason attached, not omitted: an
@@ -328,10 +378,12 @@
 								     backend 422s it. A missing button explains nothing. -->
 								<RowAction
 									disabled
-									title="This exception has no invoice, so an agent has nothing to act on — human triage only."
-									ariaLabel={`Cannot run an agent on this ${exc.type_label} exception: it has no invoice`}
+									title={m('exceptions.agents.run.blockedTitle')}
+									ariaLabel={m('exceptions.agents.run.blockedAria', {
+										type: typeLabel(exc.exception_type, exc.type_label)
+									})}
 								>
-									Run agent
+									{m('exceptions.agents.run.action')}
 								</RowAction>
 							{/if}
 						</td>
@@ -343,8 +395,8 @@
 
 	<section class="log-section" data-testid="agent-decision-log">
 		<header class="log-head">
-			<h2>Recent decisions</h2>
-			<nav class="filters" aria-label="Filter agent decisions by action">
+			<h2>{m('exceptions.agents.log.heading')}</h2>
+			<nav class="filters" aria-label={m('exceptions.agents.log.filterAria')}>
 				{#each ACTION_CHIPS as chip (chip.key ?? 'all')}
 					<button
 						class="filter-chip"
@@ -361,7 +413,7 @@
 		<DataTable
 			columns={COLUMNS}
 			isEmpty={decisions.length === 0 && !loading}
-			empty="No agent decisions yet. Run an agent on an exception to populate this log."
+			empty={m('exceptions.agents.log.empty')}
 			colspan={7}
 		>
 			{#snippet body()}
@@ -369,17 +421,17 @@
 					<tr>
 						<td class="muted-cell" title={d.created_at}>{formatDate(d.created_at)}</td>
 						<td class="mono">{d.agent_type}</td>
-						<td class="muted-cell">{d.exception_type.replace(/_/g, ' ')}</td>
+						<td class="muted-cell">{typeLabel(d.exception_type)}</td>
 						<td>
 							<span
 								class="action-badge"
 								style="background:{ACTION_COLORS[d.action_taken] ?? '#888'}1f;color:{ACTION_COLORS[d.action_taken] ?? '#888'}"
 							>
-								{ACTION_LABELS[d.action_taken] ?? d.action_taken}
+								{actionLabel(d.action_taken)}
 							</span>
 						</td>
 						<td class="mono right">{(d.confidence * 100).toFixed(0)}%</td>
-						<td class="muted-cell">{d.autonomy_level}</td>
+						<td class="muted-cell">{autonomyLabel(d.autonomy_level)}</td>
 						<td class="muted-cell change-cell" title={d.rationale ?? ''}>{changeSummary(d)}</td>
 					</tr>
 				{/each}
@@ -389,12 +441,14 @@
 		{#if hasMore}
 			<div class="load-more-row">
 				<button class="btn-load-more" onclick={loadMore} disabled={loadingMore}>
-					{loadingMore ? 'Loading…' : `Load more (${decisions.length} of ${total})`}
+					{loadingMore
+						? m('common.loading')
+						: m('exceptions.agents.loadMore', { shown: decisions.length, total })}
 				</button>
 			</div>
 		{:else if total > 0}
 			<div class="load-more-row">
-				<span class="load-more-end">Showing all {total} decision{total === 1 ? '' : 's'}</span>
+				<span class="load-more-end">{m('exceptions.agents.showingAll', { total })}</span>
 			</div>
 		{/if}
 	</section>
@@ -406,13 +460,15 @@
      `no_action` are outcomes of a successful run, not failures. -->
 <Modal
 	open={runTarget !== null}
-	ariaLabel="Run an exception agent"
-	title={runOutcome ? 'Agent decision' : 'Run an agent on this exception'}
+	ariaLabel={m('exceptions.agents.modal.aria')}
+	title={runOutcome
+		? m('exceptions.agents.modal.titleDecision')
+		: m('exceptions.agents.modal.titleRun')}
 	onclose={closeRun}
 >
 	{#if runTarget}
 		<p class="modal-hint">
-			<strong>{runTarget.type_label}</strong>
+			<strong>{typeLabel(runTarget.exception_type, runTarget.type_label)}</strong>
 			{#if runTarget.invoice_number}· <span class="mono">{runTarget.invoice_number}</span>{/if}
 			{#if runTarget.vendor_name}· {runTarget.vendor_name}{/if}
 		</p>
@@ -427,38 +483,39 @@
 					data-testid="agent-run-action"
 					style="background:{ACTION_COLORS[runOutcome.decision.action_taken] ?? '#888'}1f;color:{ACTION_COLORS[runOutcome.decision.action_taken] ?? '#888'}"
 				>
-					{ACTION_LABELS[runOutcome.decision.action_taken] ?? runOutcome.decision.action_taken}
+					{actionLabel(runOutcome.decision.action_taken)}
 				</span>
+				<!-- The status stays the raw wire value, the same call the /exceptions
+				     queue's own badge makes: it is data, not copy, and keying the
+				     lifecycle vocabulary is one slice together with that badge (it is
+				     filed in docs/followups.md). Only the frame is translated. -->
 				<span class="run-outcome-status" data-testid="agent-run-status">
-					Exception is now <strong>{runOutcome.exception.status}</strong>
+					{m('exceptions.agents.modal.nowStatus')} <strong>{runOutcome.exception.status}</strong>
 				</span>
 			</div>
 
 			{#if runOutcome.decision.action_taken === 'escalated'}
 				<p class="run-note" data-testid="agent-run-escalated-note">
-					The agent's confidence did not clear this organization's autonomy threshold,
-					so it escalated the exception to a human instead of changing anything. That
-					is a normal, recorded outcome — the decision is in the log below.
+					{m('exceptions.agents.modal.escalatedNote')}
 				</p>
 			{:else if runOutcome.decision.action_taken === 'no_action'}
 				<p class="run-note" data-testid="agent-run-no-action-note">
-					The agent found nothing it could safely change on this exception. Nothing was
-					modified; the decision is recorded in the log below.
+					{m('exceptions.agents.modal.noActionNote')}
 				</p>
 			{/if}
 
 			<dl class="run-facts" data-testid="agent-run-facts">
 				<div>
-					<dt>Resolver</dt>
+					<dt>{m('exceptions.agents.col.resolver')}</dt>
 					<dd class="mono">{runOutcome.decision.agent_type}</dd>
 				</div>
 				<div>
-					<dt>Confidence</dt>
+					<dt>{m('exceptions.agents.col.confidence')}</dt>
 					<dd class="mono">{(runOutcome.decision.confidence * 100).toFixed(0)}%</dd>
 				</div>
 				<div>
-					<dt>Autonomy</dt>
-					<dd>{runOutcome.decision.autonomy_level}</dd>
+					<dt>{m('exceptions.agents.col.autonomy')}</dt>
+					<dd>{autonomyLabel(runOutcome.decision.autonomy_level)}</dd>
 				</div>
 			</dl>
 
@@ -474,19 +531,21 @@
 			{/if}
 
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={closeRun}>Close</button>
+				<button type="button" class="btn-cancel" onclick={closeRun}>
+					{m('exceptions.agents.modal.close')}
+				</button>
 			</div>
 		{:else}
 			<p class="modal-warn" data-testid="agent-run-warning">
-				The agent may change this invoice. It applies a fix only when its confidence
-				clears the autonomy threshold; otherwise it escalates to a human. Both outcomes
-				are recorded.
+				{m('exceptions.agents.modal.warning')}
 			</p>
 			{#if runError}
 				<p class="state error" role="alert" data-testid="agent-run-error">{runError}</p>
 			{/if}
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={closeRun}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={closeRun}>
+					{m('common.cancel')}
+				</button>
 				<button
 					type="button"
 					class="btn-primary"
@@ -494,7 +553,9 @@
 					disabled={runBusy}
 					onclick={commitRun}
 				>
-					{runBusy ? 'Running…' : 'Run agent'}
+					{runBusy
+						? m('exceptions.agents.run.running')
+						: m('exceptions.agents.run.action')}
 				</button>
 			</div>
 		{/if}
