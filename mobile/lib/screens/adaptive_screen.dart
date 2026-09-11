@@ -107,6 +107,11 @@ class _AdaptiveScreenState extends State<AdaptiveScreen>
           onRefresh: store.fetchSuggestions,
           child: ListView(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            // A short list (one card, or an empty state) is not scrollable
+            // on its own, and a RefreshIndicator it cannot overscroll is a
+            // gesture that silently does nothing — exactly when "has
+            // anything changed yet?" is the question being asked.
+            physics: const AlwaysScrollableScrollPhysics(),
             children: [
               _note(l.adaptiveAdvisoryNote),
               const SizedBox(height: 12),
@@ -285,6 +290,11 @@ class _AdaptiveScreenState extends State<AdaptiveScreen>
           onRefresh: store.fetchPatterns,
           child: ListView(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            // A short list (one card, or an empty state) is not scrollable
+            // on its own, and a RefreshIndicator it cannot overscroll is a
+            // gesture that silently does nothing — exactly when "has
+            // anything changed yet?" is the question being asked.
+            physics: const AlwaysScrollableScrollPhysics(),
             children: [
               _note(l.adaptivePatternsLookback(data.lookbackDays)),
               const SizedBox(height: 16),
@@ -419,6 +429,11 @@ class _AdaptiveScreenState extends State<AdaptiveScreen>
           onRefresh: store.fetchAnomalies,
           child: ListView(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            // A short list (one card, or an empty state) is not scrollable
+            // on its own, and a RefreshIndicator it cannot overscroll is a
+            // gesture that silently does nothing — exactly when "has
+            // anything changed yet?" is the question being asked.
+            physics: const AlwaysScrollableScrollPhysics(),
             children: [
               _note(l.adaptiveAnomaliesIntro),
               const SizedBox(height: 8),

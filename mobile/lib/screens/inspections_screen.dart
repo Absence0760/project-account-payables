@@ -124,6 +124,9 @@ class _InspectionsScreenState extends State<InspectionsScreen> {
                 return RefreshIndicator(
                   onRefresh: store.fetch,
                   child: ListView.separated(
+                    // See the note in adaptive_screen: a one-row list cannot be
+                    // overscrolled, so pull-to-refresh would do nothing.
+                    physics: const AlwaysScrollableScrollPhysics(),
                     itemCount: store.inspections.length,
                     separatorBuilder: (_, _) => const Divider(height: 1),
                     itemBuilder: (context, index) {

@@ -102,6 +102,9 @@ class _InspectionDetailScreenState extends State<InspectionDetailScreen> {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
+        // See the note in adaptive_screen: a short detail does not scroll, and a
+        // RefreshIndicator that cannot be overscrolled is an inert gesture.
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
         children: [
           Row(
