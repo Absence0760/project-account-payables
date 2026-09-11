@@ -1923,7 +1923,18 @@
 			     otherwise carry two vocabularies for one fact — a hint here, silence
 			     there. Widening the projection to fill the fields was rejected
 			     outright: that is the credential leak `org_settings_view` exists to
-			     close. decisions §153. -->
+			     close.
+
+			     ONE exception inside these six, recorded so nobody reads the hint as
+			     a stronger claim than it is: the allow-list does admit
+			     `erp.integration_method`, so the ERP panel's routing-mode select
+			     alone could honestly be shown. It is not, because the panel is the
+			     unit and the field beside it (ERP system) plus every credential below
+			     are absent — one live select among fourteen missing ones would be a
+			     THIRD treatment for the same fact, and this page has just finished
+			     getting down to one. That key's declared non-admin consumer is the
+			     workflow builder's ERP hint, which still reads it.
+			     decisions §153. -->
 			<section class="card">
 				<h2>{m('org.section.extraction')}</h2>
 				<p class="card-hint">{m('org.extraction.hint')}</p>
