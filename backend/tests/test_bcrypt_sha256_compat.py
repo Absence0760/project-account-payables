@@ -199,6 +199,35 @@ def test_a_long_password_truncates_on_the_legacy_scheme_and_not_on_ours():
     assert pwd_context.verify(LONG_B, v2_long_a) is False, "the pre-hash is gone"
 
 
+def test_a_nul_byte_never_authenticates_against_a_legacy_hash_of_its_prefix():
+    """Raw bcrypt reads NUL as end-of-string — a second truncation, at any length.
+
+    `"correctpw1\\0anything"` is what bcrypt sees as `"correctpw1"`, so without
+    this refusal the legacy arm would accept it. passlib rejected NUL-bearing
+    secrets outright (`NullPasswordError`) and so do we. The v2 path is immune by
+    construction: the secret goes through HMAC and the base64 key it produces can
+    never contain a NUL.
+
+    The refusal is deliberately NOT an early return — see
+    `_verify_legacy_bcrypt`. A fast answer on a secret the attacker chooses comes
+    back only when the account exists, which is the enumeration oracle again.
+    """
+    legacy = dict(PASSLIB_LEGACY_BCRYPT)["correctpw1"]
+    assert pwd_context.verify("correctpw1", legacy) is True
+    assert pwd_context.verify("correctpw1\x00anything", legacy) is False
+
+    # Inside the first 72 bytes it is refused; past them it is irrelevant, because
+    # bcrypt never saw it when the hash was written either — so a legitimate long
+    # password with a NUL in its tail keeps working.
+    legacy_long = dict(PASSLIB_LEGACY_BCRYPT)[LONG_A]
+    assert pwd_context.verify(LONG_A[:50] + "\x00" + LONG_A[51:], legacy_long) is False
+    assert pwd_context.verify(LONG_A + "\x00tail", legacy_long) is True
+
+    # And the v2 path hashes a NUL-bearing secret perfectly happily.
+    v2_nul = dict(PASSLIB_V2)["null\x00inside"]
+    assert pwd_context.verify("null\x00inside", v2_nul) is True
+
+
 # --------------------------------------------------------------------------
 # Our own output: same format, same scheme, fresh salt each time
 # --------------------------------------------------------------------------

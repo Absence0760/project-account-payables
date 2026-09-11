@@ -208,13 +208,15 @@ class _BcryptSha256Context:
         accounts out of their own credential. `checkpw` does its own
         constant-time comparison.
         """
-        raw = secret.encode("utf-8")
-        if b"\x00" in raw:
-            # Raw bcrypt reads a NUL as end-of-string, so `"ab\0anything"` would
-            # authenticate against a hash of `"ab"`. passlib refused these
-            # outright; keep refusing them rather than inherit the shortcut.
-            return False
-        return bcrypt.checkpw(raw[:_BCRYPT_SECRET_BYTES], hashed.encode("ascii"))
+        raw = secret.encode("utf-8")[:_BCRYPT_SECRET_BYTES]
+        # Raw bcrypt reads a NUL as end-of-string, so a match on `"ab\0anything"`
+        # proves only that `"ab"` matched. passlib refused NUL-bearing secrets
+        # outright; keep refusing them rather than inherit the shortcut — but
+        # refuse AFTER paying the same cost, because a fast refusal on a secret
+        # the attacker chooses is an account-enumeration oracle (the fast answer
+        # only comes back when the account exists). A NUL past byte 72 is
+        # irrelevant: bcrypt never saw it when the hash was written either.
+        return bcrypt.checkpw(raw, hashed.encode("ascii")) and b"\x00" not in raw
 
     def identify(self, hashed: str) -> str | None:
         """Name the scheme `hashed` was written with, or None if unrecognised."""
