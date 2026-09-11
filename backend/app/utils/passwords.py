@@ -1,14 +1,34 @@
 """Password generation, complexity checks, and the shared hash context.
 
 The hash context lives here (not duplicated in every router that hashes
-passwords) so we get one consistent algorithm choice across the
-codebase. `bcrypt_sha256` pre-hashes the input with SHA-256 before
-running bcrypt, which side-steps bcrypt's 72-byte truncation — a user
-who picks a 100-char password is fully protected by the suffix. The
-legacy `bcrypt` scheme is kept in the schemes list so existing
-`$2b$...` hashes still verify; new hashes are emitted as
-`$bcrypt-sha256$...` and the deprecated="auto" policy will re-hash on
-verify when a user with a legacy hash next logs in.
+passwords) so we get one consistent algorithm choice across the codebase. The
+scheme is **`bcrypt_sha256`**: the password is pre-hashed with HMAC-SHA256
+before bcrypt sees it, which side-steps bcrypt's 72-byte truncation — a user
+who picks a 100-char password is fully protected by the suffix, where raw
+bcrypt would let any two passwords sharing the first 72 bytes verify against
+each other's hash. Legacy `$2b$...` hashes (written before the upgrade in
+c6a91396) still verify, so nobody is locked out; `needs_update` reports which
+stored hashes are on an older scheme.
+
+**We implement `bcrypt_sha256` directly rather than through passlib.** passlib
+owned this module until 2026-09 and pinned us to bcrypt 4.0.1: it reads
+`bcrypt.__about__.__version__` (deleted in bcrypt 5.0) and its backend probe
+hashes a >72-byte secret (a hard `ValueError` from bcrypt 4.1 on), so any bcrypt
+newer than 4.0 broke at *import* time. passlib has been 1.7.4 since 2020, so
+waiting for a fix was not a plan with a date on it. The digest is byte-for-byte
+what passlib emitted — `tests/test_bcrypt_sha256_compat.py` pins it against
+hashes passlib itself produced — so every stored credential keeps verifying.
+The format is passlib's, written out here because we own it now:
+
+    $bcrypt-sha256$v=2,t=2b,r=12$<22-char salt>$<31-char checksum>
+    v=2   HMAC-SHA256(key=salt_ascii, msg=password_utf8) -> base64 -> bcrypt
+    v=1   sha256(password_utf8) -> base64 -> bcrypt   (pre-1.7.3, read-only)
+
+v1 is accepted on verify and never written: keying the pre-hash off the salt is
+what stops a stolen `sha256(password)` lookup table being replayed against our
+column. `t` is the bcrypt variant (`2b`; v1 hashes may carry `2a`), `r` the
+bcrypt cost, and the 22-character salt enters the HMAC as its *encoded* ASCII
+text, not as the raw bytes it decodes to.
 
 **bcrypt is deliberately slow, so it never runs on the event loop.** A single
 `pwd_context.verify` is ~200 ms of pure CPU at the configured cost — that is the
@@ -23,26 +43,203 @@ dummy verification pay the same thread hop and the same bcrypt cost.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import re
 import secrets
 import string
 
-from passlib.context import CryptContext
+import bcrypt
 
 # Minimum constraints for a user-chosen password. The auto-generated
 # temporary password (generate_temp_password) is constructed to satisfy
 # these deterministically — see that function.
 MIN_LENGTH = 12
 
-pwd_context = CryptContext(
-    schemes=["bcrypt_sha256", "bcrypt"],
-    deprecated=["bcrypt"],
-    default="bcrypt_sha256",
+#: bcrypt cost for newly written hashes. 12 is what passlib defaulted to and
+#: what every hash in the column already carries, so this is a continuation
+#: rather than a choice: lowering it silently weakens every password set after.
+DEFAULT_ROUNDS = 12
+
+#: Upper bound on a secret we will feed to the hasher, matching passlib's
+#: `MAX_PASSWORD_SIZE`. No legitimate credential is anywhere near it (the
+#: request schemas cap passwords far below), so it exists only so an absurd
+#: request body cannot buy unbounded hashing work.
+MAX_SECRET_BYTES = 4096
+
+#: What bcrypt itself consumes. Raw bcrypt ignores everything past this, and
+#: from 4.1 on it raises instead of ignoring — see `_verify_legacy_bcrypt`.
+_BCRYPT_SECRET_BYTES = 72
+
+_PREFIX = "$bcrypt-sha256$"
+_B64 = r"[./A-Za-z0-9]"  # bcrypt's base64 alphabet, used for the salt + checksum
+
+# Current (v2) format. The writer does not zero-pad `r`, but a padded value
+# decodes to the same cost, so it is accepted rather than called malformed.
+_V2_RE = re.compile(
+    rf"^\$bcrypt-sha256\$v=2,t=(?P<ident>2b),r=(?P<rounds>\d{{1,2}})"
+    rf"\$(?P<salt>{_B64}{{22}})\$(?P<checksum>{_B64}{{31}})$"
 )
+# Pre-1.7.3 (v1) format: plain sha256 pre-hash, and `2a` was still allowed.
+_V1_RE = re.compile(
+    rf"^\$bcrypt-sha256\$(?P<ident>2[ab]),(?P<rounds>\d{{1,2}})"
+    rf"\$(?P<salt>{_B64}{{22}})\$(?P<checksum>{_B64}{{31}})$"
+)
+# A raw bcrypt hash, the scheme this codebase wrote before c6a91396. Matched
+# BEFORE handing anything to `bcrypt.checkpw`, which is not merely strict about
+# the shape: a too-short salt panics out of its Rust extension as a
+# `BaseException` no `except ValueError` can catch. `2x` is excluded
+# deliberately — crypt_blowfish's buggy 8-bit variant, which passlib also
+# refused and which nothing here ever wrote.
+_BCRYPT_RE = re.compile(rf"^\$2[aby]\$\d{{2}}\${_B64}{{53}}$")
 
 _UPPER = re.compile(r"[A-Z]")
 _LOWER = re.compile(r"[a-z]")
 _DIGIT = re.compile(r"[0-9]")
+
+
+def _prehash(secret: str, salt: str, version: int) -> bytes:
+    """Reduce `secret` to the fixed-length key bcrypt actually hashes.
+
+    base64 (44 bytes), not hex (64): bcrypt is documented not to mix entropy
+    evenly past byte 55, so the key has to stay under that. The encoding also
+    guarantees no NUL byte, which bcrypt would read as end-of-string.
+    """
+    raw = secret.encode("utf-8")
+    if version == 1:
+        digest = hashlib.sha256(raw).digest()
+    else:
+        digest = hmac.new(salt.encode("ascii"), raw, hashlib.sha256).digest()
+    return base64.b64encode(digest)
+
+
+def _bcrypt_checksum(key: bytes, ident: str, rounds: int, salt: str) -> str:
+    """Run bcrypt over `key` with an explicit salt, returning just the digest."""
+    config = f"${ident}${rounds:02d}${salt}".encode("ascii")
+    result = bcrypt.hashpw(key, config)
+    if not result.startswith(config) or len(result) != len(config) + 31:
+        raise RuntimeError("bcrypt returned a hash in an unexpected shape")
+    return result[-31:].decode("ascii")
+
+
+class _BcryptSha256Context:
+    """The codebase's single password hash context.
+
+    Deliberately shaped like the `passlib.context.CryptContext` it replaced —
+    `hash` / `verify` / `identify` / `needs_update` — because that is the API
+    every call site, test and drift guard already speaks, and because the
+    scheme-selection policy (which schemes verify, which one gets written)
+    belongs in exactly one object. A second hash context anywhere is the defect
+    `.claude/hooks/security-patterns.sh` rule `bcrypt-truncation` exists to
+    catch.
+    """
+
+    #: The scheme new hashes are written with.
+    scheme = "bcrypt_sha256"
+    #: Schemes we still verify but never write — `needs_update` reports these.
+    deprecated_schemes = ("bcrypt_sha256_v1", "bcrypt")
+
+    def __init__(self, rounds: int = DEFAULT_ROUNDS) -> None:
+        self.rounds = rounds
+
+    def hash(self, secret: str) -> str:
+        """Hash `secret` as a v2 `bcrypt_sha256` string."""
+        if len(secret.encode("utf-8")) > MAX_SECRET_BYTES:
+            raise ValueError(f"password exceeds {MAX_SECRET_BYTES} bytes")
+        # bcrypt's own salt generator: 16 random bytes in bcrypt's base64, so
+        # the 22nd character's four unused bits are always zero — the property
+        # passlib spent a `repair_unused` pass enforcing, and the one that keeps
+        # independent bcrypt implementations agreeing on the digest.
+        salt = bcrypt.gensalt(self.rounds, prefix=b"2b").decode("ascii")[-22:]
+        checksum = _bcrypt_checksum(_prehash(secret, salt, 2), "2b", self.rounds, salt)
+        return f"{_PREFIX}v=2,t=2b,r={self.rounds}${salt}${checksum}"
+
+    def verify(self, secret: str, hashed: str) -> bool:
+        """Check `secret` against `hashed`.
+
+        Returns False — never raises — on an empty, malformed or
+        unknown-scheme hash. Several call sites hand this whatever sits in the
+        `hashed_password` column, including rows written by a scheme we no
+        longer emit, and a raise there would be a 500 on the login path instead
+        of a clean refusal.
+        """
+        if not isinstance(hashed, str) or not hashed:
+            return False
+        if len(secret.encode("utf-8")) > MAX_SECRET_BYTES:
+            # Not a credential anyone could have set. Refuse rather than pay to
+            # hash it; `hash` raises on the same input, so nothing stored can
+            # only be reachable this way.
+            return False
+        try:
+            if hashed.startswith(_PREFIX):
+                return self._verify_bcrypt_sha256(secret, hashed)
+            if _BCRYPT_RE.match(hashed):
+                return self._verify_legacy_bcrypt(secret, hashed)
+        except ValueError:
+            # bcrypt raises ValueError on a cost outside 4..31, which the shape
+            # regex deliberately does not police — the cost is bcrypt's to judge.
+            return False
+        return False
+
+    def _verify_bcrypt_sha256(self, secret: str, hashed: str) -> bool:
+        match = _V2_RE.match(hashed)
+        version = 2
+        if match is None:
+            match = _V1_RE.match(hashed)
+            version = 1
+        if match is None:
+            return False
+        salt = match.group("salt")
+        key = _prehash(secret, salt, version)
+        computed = _bcrypt_checksum(key, match.group("ident"), int(match.group("rounds")), salt)
+        return hmac.compare_digest(computed, match.group("checksum"))
+
+    def _verify_legacy_bcrypt(self, secret: str, hashed: str) -> bool:
+        """Verify a raw `$2b$` hash from before the `bcrypt_sha256` upgrade.
+
+        The truncation here is the whole reason the scheme was replaced, but it
+        is also exactly what bcrypt 4.0 did internally, so reproducing it is
+        what keeps a pre-upgrade password working: bcrypt 4.1+ raises on a
+        >72-byte secret rather than ignoring the tail, which would lock those
+        accounts out of their own credential. `checkpw` does its own
+        constant-time comparison.
+        """
+        raw = secret.encode("utf-8")
+        if b"\x00" in raw:
+            # Raw bcrypt reads a NUL as end-of-string, so `"ab\0anything"` would
+            # authenticate against a hash of `"ab"`. passlib refused these
+            # outright; keep refusing them rather than inherit the shortcut.
+            return False
+        return bcrypt.checkpw(raw[:_BCRYPT_SECRET_BYTES], hashed.encode("ascii"))
+
+    def identify(self, hashed: str) -> str | None:
+        """Name the scheme `hashed` was written with, or None if unrecognised."""
+        if not isinstance(hashed, str) or not hashed:
+            return None
+        if hashed.startswith(_PREFIX):
+            if _V2_RE.match(hashed):
+                return "bcrypt_sha256"
+            if _V1_RE.match(hashed):
+                return "bcrypt_sha256_v1"
+            return None
+        if _BCRYPT_RE.match(hashed):
+            return "bcrypt"
+        return None
+
+    def needs_update(self, hashed: str) -> bool:
+        """True when `hashed` is on a scheme we no longer write.
+
+        Only meaningful after a successful `verify` — the answer for an
+        unrecognised string is "replace it", but nothing can verify against one
+        to get there. No call site consults this yet: re-hashing a legacy
+        credential on its owner's next successful login is tracked in
+        `docs/followups.md`.
+        """
+        return self.identify(hashed) != self.scheme
+
+
+pwd_context = _BcryptSha256Context()
 
 # A bcrypt_sha256 hash of a fixed throwaway secret, computed once at import.
 # Used to equalize login timing — see `dummy_verify`.
