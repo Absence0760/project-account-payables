@@ -815,11 +815,25 @@ a silent default. `frontend/src/lib/types/workflow.test.ts` is the drift guard
 on the default; `frontend/tests-e2e/workflows/segregation-default.spec.ts`
 covers the persisted value and the toggle round-trip.
 
+#### The rule is a set, not a column
+
+`violates_segregation` refuses an approval by the invoice's `uploaded_by_id`
+**or** by anyone in `Invoice.segregation_actor_ids` — every *other* control-plane
+user whose act shaped the payable's terms. One column can only name one person,
+and a recurring template has two roles that shape what it raises: the employee
+who authored the standing instruction, and anyone who later repointed its vendor
+or amount. Migration 0097 added the set; see § *A recurring template's editor is
+implicated too* below.
+
+Nothing else writes the set. Every other creation path has a single actor, so the
+column stays NULL and the reading below is unchanged.
+
 #### The other way SoD can be silently off: a NULL uploader
 
 The flag is one of two ways `violates_segregation` returns False. The other is
-`Invoice.uploaded_by_id IS NULL`, which the check reads as **"no employee
-created this row"** and therefore nobody who could self-approve.
+`Invoice.uploaded_by_id IS NULL` **with an empty `segregation_actor_ids`**, which
+the check reads as **"no employee created this row"** and therefore nobody who
+could self-approve.
 
 That is fail-open, and it holds only because of an invariant enforced outside
 the function: every path under `app/` that creates an invoice on behalf of a
@@ -870,6 +884,61 @@ Templates created before that migration are deliberately **not** backfilled.
 There is no honest author to recover, and guessing one manufactures either a
 refusal or an absolution. Those keep the legacy NULL reading — a shrinking set,
 not a standing hole.
+
+#### A recurring template's editor is implicated too
+
+Recording the author closed half of it. An `ap_manager` who PATCHes *someone
+else's* template — repointing the vendor and the amount — shapes every payable it
+goes on to raise as completely as whoever wrote it, was recorded nowhere on the
+invoice, and could still approve it. Stamping the editor into
+`created_by_user_id` instead would only have moved the exemption to the author:
+**no single column holds both people**, so the predicate and every path feeding
+it had to change together.
+
+Migration 0097 adds two nullable JSONB sets of control-plane user ids, both
+tenant-scoped:
+
+| Column | Written by | Holds |
+|---|---|---|
+| `recurring_invoice_templates.material_editor_ids` | `PATCH /api/recurring/{id}` | everyone who changed a **material** field — a term of the generated payable |
+| `invoices.segregation_actor_ids` | `recurring_invoices.generate_one` | the template's author ∪ its material editors, minus whoever already landed in `uploaded_by_id` |
+
+"Material" is defined once, in
+`backend/app/models/recurring_invoice.MATERIAL_EDIT_FIELDS`: vendor, amount,
+currency, the four GL-coding dimensions, PO number, payment terms, the cadence /
+day / start / end schedule, and the owning entity. `COSMETIC_EDIT_FIELDS` holds
+the rest — `name`, `description`, `notes`, and `variance_tolerance_pct` (a
+detection band for *arrived* vendor invoices, which never touches the invoice
+this template generates). The two sets must between them cover every field on
+`RecurringTemplateUpdate`, and
+`backend/tests/test_recurring_invoices.py::test_every_patchable_template_field_is_classified`
+fails until a newly added field is classified — an unclassified field would
+default to "cosmetic" and silently widen the exemption.
+
+The append is idempotent (a set, not a log), never overwrites the author, and is
+keyed off what *actually changed*, so re-saving a form with its existing values
+implicates nobody. The pause / resume / end endpoints implicate nobody either:
+they change whether the instruction is live, not what it instructs.
+
+Edits made **before** that migration implicate nobody, for the same reason
+authors are not backfilled — `updated_at` records *that* someone edited, never
+who, and inferring an editor manufactures either a refusal or an absolution.
+
+`check_segregation` is reused for expense reports, requisitions and expense
+pre-approvals through a `SimpleNamespace` attribute shim, so one rule and one
+403 string serve every "decider ≠ requester" surface. Those three pass
+`segregation_actor_ids=None` explicitly — none of those tables records who
+*edited* a row, so there is no second actor to name — rather than relying on the
+predicate's `getattr` default, which exists only so a future subject that forgets
+cannot raise `AttributeError` on the approval path.
+
+The inter-company mirror (`POST /api/invoices/{id}/route-intercompany`)
+deliberately does **not** inherit the source invoice's set. Its segregation
+subject has always been its own creator, the routing actor; propagating the set
+while still not propagating `uploaded_by_id` would block a source *editor* there
+while leaving the source *uploader* free. Whether shaping a payable under one
+entity should bar you from signing its mirror under another is an entity-scope
+question — tracked in [followups.md](followups.md).
 
 ### Approve and reject are not always the same role set
 
@@ -1654,6 +1723,6 @@ broken by renaming the real one.
 
 ### Not in this pass
 
-- **Segregation of duties (SoD)** — *Done.* The classic AP invariant ("approver ≠ creator") ships as `services/approval_chain.check_segregation`, enforced in `services/review.approve_invoice` and default-ON (`require_segregation: true`). It keys on `Invoice.uploaded_by_id`, so its correctness depends on every employee-facing creation path recording the creator — see § Segregation of duties on a workflow's approval step above, and its "NULL uploader" subsection for what NULL means and which paths legitimately produce it.
+- **Segregation of duties (SoD)** — *Done.* The classic AP invariant ("approver ≠ creator") ships as `services/approval_chain.check_segregation`, enforced in `services/review.approve_invoice` and default-ON (`require_segregation: true`). It keys on `Invoice.uploaded_by_id` **plus** `Invoice.segregation_actor_ids` (a recurring template's author and its material editors), so its correctness depends on every employee-facing creation path recording the creator — see § Segregation of duties on a workflow's approval step above, and its "NULL uploader" subsection for what NULL means and which paths legitimately produce it.
 - **Per-org custom roles with teeth** — *Done.* Custom roles now grant access via the granular permission layer (`roles.permissions` + `require_permission`) — see § Granular permissions / segregation of duties above. A custom role granted, say, only `invoice.approve` can approve invoices but is 403'd on payment execution. Permission CRUD itself stays admin-only on purpose.
 - **Audit log of denied requests** — denials are logged via Python `logging.warning` for now, not persisted to the `audit_log` table. If oncall wants to query historical denials, surface them via centralized log shipping (planned under SOC 2 readiness).
