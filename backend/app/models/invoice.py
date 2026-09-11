@@ -107,6 +107,25 @@ class Invoice(Base, EntityMixin, TimestampMixin):
     approved_by: Mapped[str | None] = mapped_column(String(255))
     rejected_by: Mapped[str | None] = mapped_column(String(255))
     uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Control-plane user ids (stringified UUIDs) implicated in this payable's
+    # terms BESIDES the one in `uploaded_by_id`.
+    # `approval_chain.violates_segregation` refuses an approval by anyone named
+    # here exactly as it refuses the uploader, so segregation of duties keys on
+    # a SET of people rather than a single column.
+    #
+    # One column could only ever name one person, and a payable can be shaped by
+    # more than one: a recurring template's author writes the standing
+    # instruction, and anyone who later repoints its vendor or amount shapes the
+    # payable just as much (see `recurring_invoice_templates.material_editor_ids`
+    # and `recurring_invoices.implicated_actor_ids`). `generate_one` is the only
+    # writer today; every other creation path has no second actor to name and
+    # leaves this NULL.
+    #
+    # NULL / empty means "nobody beyond the uploader", which is why it does not
+    # disturb the fail-open NULL-uploader reading the three actor-less ingestion
+    # channels (email intake, inbound PEPPOL, supplier-portal submit) depend on.
+    # Strings, not UUIDs: this is JSONB, and a uuid has no JSON representation.
+    segregation_actor_ids: Mapped[list | None] = mapped_column(JSONB)
     assigned_to_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     assigned_to: Mapped[str | None] = mapped_column(String(255))
     # Budget-dimension attributes. Procurement budgets attribute realised

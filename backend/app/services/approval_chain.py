@@ -41,21 +41,41 @@ def violates_segregation(
     that need to disable it (e.g. single-operator accounts) must set
     ``require_segregation: false`` explicitly on the approval step config.
 
-    Returns False (no breach) when:
-    - require_segregation is explicitly set to False in the approval config
-    - uploaded_by_id is NULL — the invoice has **no employee creator**
+    The rule is **approver ∉ the set of actors implicated in this payable**, not
+    "approver ≠ one column". Two inputs make up that set:
 
-    That second branch reads fail-open, and is only sound because of an
-    invariant enforced elsewhere: every path under ``app/`` that constructs an
-    ``Invoice`` on behalf of a signed-in employee stamps ``uploaded_by_id``
-    with that user (manual create, file upload, CSV import, the inter-company
-    mirror). The paths that leave it NULL have no control-plane user to record
-    at all — email intake and inbound PEPPOL (system ingestion), and
-    supplier-portal submit / PO flip (the actor is a tenant-scoped
-    ``VendorUser``, who holds no employee JWT and can never reach an approval
-    endpoint). So NULL provably means "not created by anyone who could approve
-    it", and self-approval is impossible by construction rather than by this
-    check.
+    * ``Invoice.uploaded_by_id`` — the one actor who caused this row to exist.
+    * ``Invoice.segregation_actor_ids`` — every *other* control-plane user whose
+      act shaped the payable's terms. A recurring template has two such roles:
+      the employee who authored the standing instruction, and anyone who later
+      made a **material** edit to it (vendor, amount, currency, GL coding,
+      schedule — ``recurring_invoice.MATERIAL_EDIT_FIELDS``).
+      ``recurring_invoices.implicated_actor_ids`` computes it and ``generate_one``
+      stamps it; no other creation path has a second actor to name.
+
+    A single column could only ever hold one of those. Stamping the editor
+    *instead* of the author would have moved the exemption rather than closed
+    it — which is why the set, and every path feeding it, changed together.
+
+    Returns False (no breach) when:
+
+    * ``require_segregation`` is explicitly ``False`` in the approval config;
+    * the actor is neither the uploader nor in the implicated set — including
+      the case where ``uploaded_by_id`` is NULL **and** the set is empty, which
+      means the invoice has **no employee creator at all**.
+
+    That last branch reads fail-open, and is only sound because of an invariant
+    enforced elsewhere: every path under ``app/`` that constructs an ``Invoice``
+    on behalf of a signed-in employee stamps ``uploaded_by_id`` with that user
+    (manual create, file upload, CSV import, the inter-company mirror). The
+    paths that leave it NULL have no control-plane user to record at all —
+    email intake and inbound PEPPOL (system ingestion), and supplier-portal
+    submit / PO flip (the actor is a tenant-scoped ``VendorUser``, who holds no
+    employee JWT and can never reach an approval endpoint). So NULL provably
+    means "not created by anyone who could approve it", and self-approval is
+    impossible by construction rather than by this check. None of those three
+    writes ``segregation_actor_ids`` either, so widening the rule to a set left
+    their reading untouched.
 
     The recurring sweep used to be on that list and no longer is, because it
     never belonged there: nobody *ran* it, but an employee *authored* the
@@ -64,8 +84,9 @@ def violates_segregation(
     ``recurring_invoices.generate_one`` falls back to it, so a sweep-generated
     invoice now names its author. Templates predating that column still
     generate NULL — deliberately not backfilled, since there is no honest
-    author to recover — so that residue is a shrinking legacy set, the same
-    kind as a pre-``uploaded_by_id`` row, not an open channel.
+    author to recover — but a *material editor* of such a template still lands
+    in the implicated set, so the legacy residue is an un-named author, not an
+    un-named editor.
 
     Failing CLOSED on NULL instead was considered and rejected: it would make
     every email-intake, PEPPOL and portal-submitted invoice permanently
@@ -77,15 +98,31 @@ def violates_segregation(
     site neither stamps the column nor is declared to have no employee actor.
     See ``docs/decisions.md``.
 
+    ``segregation_actor_ids`` is read with ``getattr``, because the subject is
+    not always an ``Invoice``: expense reports, requisitions and expense
+    pre-approvals reuse this rule through ``check_segregation`` with a
+    ``SimpleNamespace`` attribute shim, so the 403 wording and the opt-out stay
+    shared. Those shims pass the attribute explicitly as ``None`` — none of
+    those three tables records who edited a row, so there is no second actor to
+    name — and the ``getattr`` default is what keeps a *future* subject that
+    forgets from raising ``AttributeError`` on the approval path, where the cost
+    of a 500 is an outage on the control rather than a bypass of it.
+
     The pure predicate is shared by ``check_segregation`` (which raises) and by
     the amount-floor auto-approve path (which degrades to human review rather
     than 403 a legitimate submission) so both honour one definition of the rule.
     """
     if approval_config.get("require_segregation", True) is False:
         return False
-    if invoice.uploaded_by_id is None:
-        return False
-    return invoice.uploaded_by_id == actor_id
+    # The explicit NULL guard is not redundant: it keeps a ``None`` actor from
+    # matching a NULL uploader and reading as a breach.
+    if invoice.uploaded_by_id is not None and invoice.uploaded_by_id == actor_id:
+        return True
+    # Stringified both sides: the column is JSONB (strings once round-tripped
+    # through Postgres) but an in-memory row built by a service may still hold
+    # UUID objects, and the rule must not depend on which it is looking at.
+    implicated = getattr(invoice, "segregation_actor_ids", None) or []
+    return str(actor_id) in {str(x) for x in implicated}
 
 
 def check_segregation(
@@ -93,12 +130,19 @@ def check_segregation(
     actor_id: uuid.UUID,
     approval_config: dict,
 ) -> None:
-    """Raise 403 if the approver is the same user who uploaded the invoice."""
+    """Raise 403 if the approver is implicated in the invoice they are approving.
+
+    The raising half of :func:`violates_segregation`. ``invoice`` need not be an
+    ``Invoice``: expense reports, requisitions and expense pre-approvals pass a
+    ``SimpleNamespace`` shim carrying the same two attributes, so one rule and
+    one 403 string serve every "decider ≠ requester" surface.
+    """
     if violates_segregation(invoice, actor_id, approval_config):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "Segregation of duties: the user who uploaded this invoice cannot also approve it."
+                "Segregation of duties: a user involved in creating this invoice "
+                "cannot also approve it."
             ),
         )
 
