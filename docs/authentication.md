@@ -1520,6 +1520,8 @@ Failed checks return `403 Forbidden` with `{"detail": "Your role does not permit
 
 The matrix below is the source of truth — it mirrors the per-route `roles` gates in `frontend/src/lib/nav.ts` (which drives sidebar + section-tab visibility) and the `!isClerkOnly` / `isManager` / `isCfo` checks in invoice + workflow components. Roles are non-exclusive: a user may hold any combination.
 
+It describes the **endpoints**, and in two places the nav is deliberately narrower than the read it gates: `/workflows` and `/organization` are `admin`-only sidebar rows whose reads are open to any authenticated user. Both routes are therefore reachable by typed URL — `/workflows` redirects (it is an editing surface whose every control would 403, `docs/decisions.md` §144) while `/organization` renders read-only and says which panels it cannot fill (§153). A row that is narrower than its endpoint is a product call, not drift; a row that is *wider* is the defect to look for.
+
 | Endpoint area | Read | Write |
 |---|---|---|
 | `/admin/*` (user CRUD, role list) | admin | admin |
