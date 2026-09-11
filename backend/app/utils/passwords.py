@@ -62,10 +62,18 @@ MIN_LENGTH = 12
 #: rather than a choice: lowering it silently weakens every password set after.
 DEFAULT_ROUNDS = 12
 
-#: Upper bound on a secret we will feed to the hasher, matching passlib's
-#: `MAX_PASSWORD_SIZE`. No legitimate credential is anywhere near it (the
-#: request schemas cap passwords far below), so it exists only so an absurd
-#: request body cannot buy unbounded hashing work.
+#: Upper bound on a secret we will *write* a hash for, matching passlib's
+#: `MAX_PASSWORD_SIZE`. Unreachable from any route — every password-setting
+#: schema caps the field at 128 characters — so this is a programming-error
+#: guard, not input validation.
+#:
+#: It deliberately does NOT apply to `verify`. Refusing an oversized secret
+#: there would return in microseconds where a wrong password costs ~200 ms of
+#: bcrypt, and `LoginRequest.password` has no maximum: an attacker could post a
+#: 5 KB password and read "this account exists" off the fast refusal, which is
+#: the enumeration oracle `dummy_verify` exists to close. (passlib leaked the
+#: same fact more loudly — it raised, so the oversized case was a 500 against a
+#: 401.) Verification cost therefore stays uniform in the hash, not the input.
 MAX_SECRET_BYTES = 4096
 
 #: What bcrypt itself consumes. Raw bcrypt ignores everything past this, and
@@ -165,11 +173,6 @@ class _BcryptSha256Context:
         of a clean refusal.
         """
         if not isinstance(hashed, str) or not hashed:
-            return False
-        if len(secret.encode("utf-8")) > MAX_SECRET_BYTES:
-            # Not a credential anyone could have set. Refuse rather than pay to
-            # hash it; `hash` raises on the same input, so nothing stored can
-            # only be reachable this way.
             return False
         try:
             if hashed.startswith(_PREFIX):
