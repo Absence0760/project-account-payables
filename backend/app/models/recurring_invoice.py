@@ -40,6 +40,75 @@ STATUS_PAUSED = "paused"
 STATUS_ENDED = "ended"
 STATUSES = (STATUS_ACTIVE, STATUS_PAUSED, STATUS_ENDED)
 
+# ---------------------------------------------------------------------------
+# Which template edits implicate their editor in segregation of duties.
+#
+# A template is a standing instruction to create payables, so whoever shapes the
+# instruction has shaped every payable it raises — and must not also approve one.
+# ``created_by_user_id`` records the author; ``material_editor_ids`` records
+# everyone who later changed a term of the payable. ``api/recurring``'s
+# ``update_template`` appends the actor when, and only when, a field in
+# MATERIAL_EDIT_FIELDS actually changes value.
+#
+# "Material" means *a term of the generated payable*: who is paid, how much, in
+# what currency, against which budget line or PO, and on what schedule.
+# Everything else is a label on the template.
+#
+# Deliberately excluded, and why:
+#   * ``name`` / ``description`` / ``notes`` — prose. Renaming "Acme rent" does
+#     not change a cent of what gets raised, and implicating a typo-fixer spends
+#     the control's credibility for nothing.
+#   * ``variance_tolerance_pct`` — a detection band for *arrived* vendor invoices
+#     that deviate from ``amount``. It never touches the invoice this template
+#     generates, and an arrived invoice carries its own uploader.
+#   * the pause / resume / end lifecycle endpoints — they change whether the
+#     instruction is live, not what it instructs. Resuming someone else's
+#     template does not choose its vendor or its amount, so the second pair of
+#     eyes the control wants is still a real one.
+#
+# ``entity_id`` is listed even though ``RecurringTemplateUpdate`` cannot
+# currently reach it: it decides which legal entity owes the payable, which is an
+# approval scope, so the day a PATCH can move it the set already covers it.
+#
+# The two sets must between them cover every PATCHable field. A new money- or
+# schedule-shaped field that nobody classified would default to "cosmetic" and
+# silently widen the exemption, so ``tests/test_recurring_invoices.py`` fails
+# until a new ``RecurringTemplateUpdate`` field lands in exactly one of them.
+MATERIAL_EDIT_FIELDS: frozenset[str] = frozenset(
+    {
+        # Who gets paid. (``vendor_name`` is denormalised from ``vendor_id`` by
+        # the router and never independently edited, so only the id is listed.)
+        "vendor_id",
+        # How much, and in what.
+        "amount",
+        "currency",
+        # Budget attribution + the 3-way-match target.
+        "gl_account",
+        "cost_center",
+        "department",
+        "project",
+        "po_number",
+        # When money leaves, and therefore the early-pay discount window.
+        "payment_terms",
+        # How often a payable is raised, and from / until when.
+        "cadence",
+        "day_of_period",
+        "start_date",
+        "end_date",
+        # Which legal entity owes it.
+        "entity_id",
+    }
+)
+
+COSMETIC_EDIT_FIELDS: frozenset[str] = frozenset(
+    {
+        "name",
+        "description",
+        "notes",
+        "variance_tolerance_pct",
+    }
+)
+
 
 class RecurringInvoiceTemplate(Base, EntityMixin, TimestampMixin):
     __tablename__ = "recurring_invoice_templates"
@@ -124,3 +193,25 @@ class RecurringInvoiceTemplate(Base, EntityMixin, TimestampMixin):
     # honest author to recover, and inventing one would manufacture either a
     # refusal or an absolution. Such rows keep the legacy NULL reading.
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    # Every control-plane ``User`` who has made a MATERIAL edit to this template
+    # (see ``MATERIAL_EDIT_FIELDS`` above) — a set, stored as a sorted JSONB
+    # array of stringified UUIDs. Same no-ForeignKey placement as
+    # ``created_by_user_id``, for the same reason: ``users`` is control-plane.
+    #
+    # ``created_by_user_id`` closed the sweep's exemption for the *author* and
+    # left it open for the editor: an ap_manager who repoints someone else's
+    # template at a different vendor and amount has shaped the payable
+    # completely, was recorded nowhere on it, and could still approve what it
+    # generated. Stamping the editor into ``created_by_user_id`` instead would
+    # only have moved the exemption to the author — no single column holds both,
+    # which is why segregation now keys on a set
+    # (``approval_chain.violates_segregation``) and ``generate_one`` stamps
+    # author ∪ editors onto ``Invoice.segregation_actor_ids``.
+    #
+    # Nullable and never backfilled, for decisions §141's reason: there is no
+    # honest editor to recover for an edit made before the column existed, and
+    # every available proxy (the last updater, the org admin) manufactures
+    # either a refusal or an absolution. ``updated_at`` records *that* someone
+    # edited, never who.
+    material_editor_ids: Mapped[list | None] = mapped_column(JSONB)

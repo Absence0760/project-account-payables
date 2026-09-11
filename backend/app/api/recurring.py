@@ -386,6 +386,20 @@ async def update_template(
     if template.status == STATUS_ACTIVE and (_SCHEDULE_FIELDS & set(changed)):
         _seed_next_run_on(template, after=max(utc_today(), template.start_date))
 
+    # Segregation of duties: whoever changed a TERM of the payable (vendor,
+    # amount, currency, GL coding, schedule — `MATERIAL_EDIT_FIELDS`) has shaped
+    # every invoice this template goes on to raise, as completely as its author
+    # did, and must not also approve one. `generate_one` carries the set onto
+    # `Invoice.segregation_actor_ids`.
+    #
+    # Keyed off `changed`, so a PATCH that re-sends a field with its existing
+    # value implicates nobody — an idempotent save is not an edit. Cosmetic
+    # fields (`name`, `notes`, …) are excluded on purpose: implicating a
+    # typo-fixer costs the control its credibility and closes no hole.
+    material = svc.material_edit_fields(changed)
+    if material:
+        svc.record_material_editor(template, user.id)
+
     # This edit is how an operator fixes a template the sweep couldn't generate
     # from; once the reason no longer holds, the skip marker is stale and its
     # count must not carry into a future miss. Still-missing fields keep it.
@@ -401,7 +415,10 @@ async def update_template(
             action="recurring_template.updated",
             entity_type="recurring_invoice_template",
             entity_id=template.id,
-            details={"changed": sorted(changed)},
+            # `material` says WHY the editor joined the template's implicated-actor
+            # set — without it the trail shows a wider segregation block on the
+            # generated invoices with nothing explaining which edit earned it.
+            details={"changed": sorted(changed), "material": sorted(material)},
         )
     await db.commit()
     await db.refresh(template)

@@ -82,6 +82,16 @@ async def route_intercompany_invoice(
         # one person who caused a live liability to exist under another entity
         # could also sign it off.
         uploaded_by_id=actor_id,
+        # The source invoice's implicated-actor set is deliberately NOT copied
+        # across the entity boundary. This mirror's segregation subject has
+        # always been its own creator — the routing actor — not the source's, and
+        # propagating only the set while still not propagating
+        # `uploaded_by_id` would make a source *editor* blocked here while the
+        # source *uploader* stays free, which is the inconsistent half of either
+        # choice. Whether shaping a payable under one entity should bar you from
+        # signing its mirror under another is an entity-scope question, not a
+        # recurring-template one; see docs/followups.md.
+        segregation_actor_ids=None,
         invoice_number=f"IC-{invoice.invoice_number}",
         vendor_name=invoice.vendor_name,
         amount=invoice.amount,

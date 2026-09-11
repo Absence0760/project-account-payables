@@ -76,6 +76,7 @@ from app.models.organization import Organization
 from app.models.recurring_invoice import (
     CADENCE_ANNUAL,
     CADENCE_QUARTERLY,
+    MATERIAL_EDIT_FIELDS,
     STATUS_ACTIVE,
     STATUS_PAUSED,
     RecurringInvoiceTemplate,
@@ -204,6 +205,72 @@ def clear_generation_skip_if_resolved(template: RecurringInvoiceTemplate) -> Non
     """
     if not_generatable_reason(template) is None:
         clear_generation_skip(template)
+
+
+# --------------------------------------------------------------------------- #
+# Who is implicated in a payable this template raises
+# --------------------------------------------------------------------------- #
+#
+# Segregation of duties keys on a SET of actors, not one column
+# (``approval_chain.violates_segregation``). For a recurring payable that set is
+# the template's author plus everyone who later changed a term of it: an
+# ap_manager who repoints someone else's template at a different vendor and
+# amount has shaped the payable as completely as whoever wrote it, and before
+# ``material_editor_ids`` existed they were recorded nowhere on it and could
+# approve what it generated. Recording the editor in ``created_by_user_id``
+# instead would merely have moved the exemption to the author.
+
+
+def material_edit_fields(changed: list[str] | set[str]) -> set[str]:
+    """The subset of ``changed`` that alters a term of the generated payable.
+
+    One definition, in ``models/recurring_invoice.MATERIAL_EDIT_FIELDS``, so the
+    router cannot drift from the model's documented classification.
+    """
+    return MATERIAL_EDIT_FIELDS & set(changed)
+
+
+def record_material_editor(template: RecurringInvoiceTemplate, user_id: uuid.UUID) -> None:
+    """Add ``user_id`` to the template's material-editor set. Idempotent.
+
+    A set, not an append-only log: "who is implicated" is a membership question,
+    and a list that grew a duplicate on every edit would make the column's size
+    a function of how often one person edited. Sorted so the stored JSON is
+    stable and diffable.
+
+    Reassigns a **new list** rather than mutating in place. The column is plain
+    ``JSONB`` (no ``MutableList``), so SQLAlchemy's dirty check compares object
+    identity against the load-time baseline — an ``append`` on the existing list
+    is invisible to the flush and the edit would silently not persist. Same trap
+    as the ``copy.deepcopy`` in ``approval_chain.advance_approval_chain``.
+    """
+    existing = {str(x) for x in (template.material_editor_ids or [])}
+    if str(user_id) in existing:
+        return
+    template.material_editor_ids = sorted(existing | {str(user_id)})
+
+
+def implicated_actor_ids(
+    template: RecurringInvoiceTemplate,
+    *,
+    uploader_id: uuid.UUID | None,
+) -> list[str] | None:
+    """The actors to stamp on ``Invoice.segregation_actor_ids`` — author ∪ editors.
+
+    ``uploader_id`` is whoever is about to land in ``Invoice.uploaded_by_id``, and
+    is removed: the predicate already refuses them via that column, and naming a
+    person twice tells a later reader the two columns disagree about something.
+
+    Returns ``None`` rather than ``[]`` when nobody is left, so the stored shape
+    for "no additional implicated actor" is the same NULL every other creation
+    path writes, and "empty set" never has to be distinguished from "no set".
+    """
+    ids = {str(x) for x in (template.material_editor_ids or [])}
+    if template.created_by_user_id is not None:
+        ids.add(str(template.created_by_user_id))
+    if uploader_id is not None:
+        ids.discard(str(uploader_id))
+    return sorted(ids) or None
 
 
 # --------------------------------------------------------------------------- #
@@ -409,6 +476,14 @@ async def generate_one(
     payable* is the template's author, and it is the second that segregation of
     duties must key on.
 
+    One column names one person, and a template can be shaped by several, so
+    ``Invoice.segregation_actor_ids`` carries the rest — author ∪ material
+    editors, minus whoever already landed in ``uploaded_by_id``
+    (:func:`implicated_actor_ids`). ``violates_segregation`` refuses an approval
+    by anyone in that set, which is what stops an ap_manager who repointed
+    someone else's template at a different vendor and amount from approving the
+    invoice it then generated.
+
     Idempotent: a concurrent / retried call for an already-generated period
     hits the partial unique index, the INSERT raises ``IntegrityError`` inside
     a savepoint, and we return the already-existing invoice (no duplicate, no
@@ -435,6 +510,11 @@ async def generate_one(
 
     period_key = period_key_for(template.cadence, run_on)
     correlation_id = uuid.uuid4()
+
+    # Resolved once, so the two segregation columns below cannot disagree about
+    # who the uploader is — `implicated_actor_ids` subtracts exactly the id that
+    # lands in `uploaded_by_id`.
+    uploader_id = actor_id or template.created_by_user_id
 
     invoice = Invoice(
         organization_id=template.organization_id,
@@ -471,7 +551,16 @@ async def generate_one(
         # one manufactures either a refusal or an absolution. Such an invoice
         # keeps the legacy exemption, exactly as a pre-`uploaded_by_id` row
         # does — a shrinking set, not a standing hole.
-        uploaded_by_id=actor_id or template.created_by_user_id,
+        uploaded_by_id=uploader_id,
+        # …and everyone ELSE the payable's terms are attributable to: the author
+        # when a live actor displaced them above, plus every material editor of
+        # the template (`material_editor_ids`). One column can only name one
+        # person; `violates_segregation` refuses anyone in this set exactly as it
+        # refuses the uploader, so repointing someone else's template at a new
+        # vendor and amount no longer leaves the editor free to approve the
+        # result. `None` when the set is empty — the same NULL every other
+        # creation path writes.
+        segregation_actor_ids=implicated_actor_ids(template, uploader_id=uploader_id),
     )
     try:
         # Savepoint so a unique-violation rolls back ONLY this generation — the
