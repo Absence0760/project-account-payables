@@ -3091,6 +3091,624 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Assigned to {name}'**
   String exceptionDetailAssignedTo(String name);
+
+  /// No description provided for @settingsProcurement.
+  ///
+  /// In en, this message translates to:
+  /// **'Procurement'**
+  String get settingsProcurement;
+
+  /// No description provided for @settingsInspections.
+  ///
+  /// In en, this message translates to:
+  /// **'Quality Inspections'**
+  String get settingsInspections;
+
+  /// No description provided for @settingsInspectionsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Record and review 4-way match inspections'**
+  String get settingsInspectionsHint;
+
+  /// No description provided for @settingsAdministration.
+  ///
+  /// In en, this message translates to:
+  /// **'Administration'**
+  String get settingsAdministration;
+
+  /// No description provided for @settingsAdminUsers.
+  ///
+  /// In en, this message translates to:
+  /// **'User Management'**
+  String get settingsAdminUsers;
+
+  /// No description provided for @settingsAdminUsersHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Roles, activate / deactivate users'**
+  String get settingsAdminUsersHint;
+
+  /// No description provided for @settingsAdminOrg.
+  ///
+  /// In en, this message translates to:
+  /// **'Organization Settings'**
+  String get settingsAdminOrg;
+
+  /// No description provided for @settingsAdminOrgHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Company profile, invoice defaults'**
+  String get settingsAdminOrgHint;
+
+  /// No description provided for @settingsAdminWorkflows.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflows'**
+  String get settingsAdminWorkflows;
+
+  /// No description provided for @settingsAdminWorkflowsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'View workflow definitions and steps'**
+  String get settingsAdminWorkflowsHint;
+
+  /// No description provided for @settingsAdaptive.
+  ///
+  /// In en, this message translates to:
+  /// **'Adaptive Workflows'**
+  String get settingsAdaptive;
+
+  /// No description provided for @settingsAdaptiveHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Approval patterns, anomalies, suggestions'**
+  String get settingsAdaptiveHint;
+
+  /// No description provided for @inspectionsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Quality Inspections'**
+  String get inspectionsTitle;
+
+  /// No description provided for @inspectionsRecord.
+  ///
+  /// In en, this message translates to:
+  /// **'Record inspection'**
+  String get inspectionsRecord;
+
+  /// No description provided for @inspectionsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No quality inspections recorded.'**
+  String get inspectionsEmpty;
+
+  /// No description provided for @inspectionsEmptyFiltered.
+  ///
+  /// In en, this message translates to:
+  /// **'No inspections with this outcome.'**
+  String get inspectionsEmptyFiltered;
+
+  /// No description provided for @inspectionsLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load inspections'**
+  String get inspectionsLoadError;
+
+  /// No description provided for @inspectionsResultPass.
+  ///
+  /// In en, this message translates to:
+  /// **'Pass'**
+  String get inspectionsResultPass;
+
+  /// No description provided for @inspectionsResultFail.
+  ///
+  /// In en, this message translates to:
+  /// **'Fail'**
+  String get inspectionsResultFail;
+
+  /// No description provided for @inspectionsResultPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Partial acceptance'**
+  String get inspectionsResultPartial;
+
+  /// No description provided for @inspectionsResultUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown result'**
+  String get inspectionsResultUnknown;
+
+  /// No description provided for @inspectionsResultAnnounce.
+  ///
+  /// In en, this message translates to:
+  /// **'Result: {result}'**
+  String inspectionsResultAnnounce(String result);
+
+  /// No description provided for @inspectionsNotLinked.
+  ///
+  /// In en, this message translates to:
+  /// **'Not linked'**
+  String get inspectionsNotLinked;
+
+  /// No description provided for @inspectionsNotLinkedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'This inspection is tied to no goods receipt and no purchase order, so PO matching will never read it.'**
+  String get inspectionsNotLinkedHint;
+
+  /// No description provided for @inspectionsReceiptUnnamed.
+  ///
+  /// In en, this message translates to:
+  /// **'Receipt not named'**
+  String get inspectionsReceiptUnnamed;
+
+  /// No description provided for @inspectionsHintPass.
+  ///
+  /// In en, this message translates to:
+  /// **'Goods accepted — the match is unchanged.'**
+  String get inspectionsHintPass;
+
+  /// No description provided for @inspectionsHintFail.
+  ///
+  /// In en, this message translates to:
+  /// **'Goods refused — the invoice drops to mismatch and a quality hold blocks payment.'**
+  String get inspectionsHintFail;
+
+  /// No description provided for @inspectionsHintPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Some goods accepted — the match drops to partial and the accepted quantity is flagged.'**
+  String get inspectionsHintPartial;
+
+  /// No description provided for @inspectionsHintUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'This outcome is outside the pass / fail / partial vocabulary, so its effect on the match cannot be stated.'**
+  String get inspectionsHintUnknown;
+
+  /// No description provided for @inspectionsRecorded.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspection {number} recorded'**
+  String inspectionsRecorded(String number);
+
+  /// No description provided for @inspectionsRecordFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not record the inspection: {error}'**
+  String inspectionsRecordFailed(String error);
+
+  /// No description provided for @inspectionsReceiptsLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load goods receipts: {error}'**
+  String inspectionsReceiptsLoadFailed(String error);
+
+  /// No description provided for @inspectionRecordTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Record Quality Inspection'**
+  String get inspectionRecordTitle;
+
+  /// No description provided for @inspectionRecordClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close the inspection form'**
+  String get inspectionRecordClose;
+
+  /// No description provided for @inspectionRecordReceipt.
+  ///
+  /// In en, this message translates to:
+  /// **'Goods receipt'**
+  String get inspectionRecordReceipt;
+
+  /// No description provided for @inspectionRecordReceiptHint.
+  ///
+  /// In en, this message translates to:
+  /// **'PO matching only reads an inspection through its goods receipt, so an inspection has to name the delivery it covers.'**
+  String get inspectionRecordReceiptHint;
+
+  /// No description provided for @inspectionRecordReceiptsBounded.
+  ///
+  /// In en, this message translates to:
+  /// **'Showing the {shown} most recent of {total} receipts. Record from the web app if the delivery you need is not listed.'**
+  String inspectionRecordReceiptsBounded(int shown, int total);
+
+  /// No description provided for @inspectionRecordNoReceipts.
+  ///
+  /// In en, this message translates to:
+  /// **'No goods receipts yet — an inspection covers a delivery, so there is nothing to record against.'**
+  String get inspectionRecordNoReceipts;
+
+  /// No description provided for @inspectionRecordNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspection #'**
+  String get inspectionRecordNumber;
+
+  /// No description provided for @inspectionRecordNumberRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter an inspection number'**
+  String get inspectionRecordNumberRequired;
+
+  /// No description provided for @inspectionRecordResult.
+  ///
+  /// In en, this message translates to:
+  /// **'Result'**
+  String get inspectionRecordResult;
+
+  /// No description provided for @inspectionRecordAcceptedQuantity.
+  ///
+  /// In en, this message translates to:
+  /// **'Accepted quantity'**
+  String get inspectionRecordAcceptedQuantity;
+
+  /// No description provided for @inspectionRecordRejectedQuantity.
+  ///
+  /// In en, this message translates to:
+  /// **'Rejected quantity'**
+  String get inspectionRecordRejectedQuantity;
+
+  /// No description provided for @inspectionRecordAcceptedRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Required for a partial acceptance'**
+  String get inspectionRecordAcceptedRequired;
+
+  /// No description provided for @inspectionRecordInvalidQuantity.
+  ///
+  /// In en, this message translates to:
+  /// **'Use up to 8 digits and 4 decimals'**
+  String get inspectionRecordInvalidQuantity;
+
+  /// No description provided for @inspectionRecordInspectedDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspected date'**
+  String get inspectionRecordInspectedDate;
+
+  /// No description provided for @inspectionRecordDateNotSet.
+  ///
+  /// In en, this message translates to:
+  /// **'Not set'**
+  String get inspectionRecordDateNotSet;
+
+  /// No description provided for @inspectionRecordClearDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear the inspected date'**
+  String get inspectionRecordClearDate;
+
+  /// No description provided for @inspectionRecordInspector.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspector'**
+  String get inspectionRecordInspector;
+
+  /// No description provided for @inspectionRecordNotes.
+  ///
+  /// In en, this message translates to:
+  /// **'Deviation notes'**
+  String get inspectionRecordNotes;
+
+  /// No description provided for @inspectionRecordNotesHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Quoted into the invoice’s match issue on a failed inspection, so whoever works the quality hold reads them.'**
+  String get inspectionRecordNotesHint;
+
+  /// No description provided for @inspectionRecordSubmit.
+  ///
+  /// In en, this message translates to:
+  /// **'Record inspection'**
+  String get inspectionRecordSubmit;
+
+  /// No description provided for @inspectionDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspection'**
+  String get inspectionDetailTitle;
+
+  /// No description provided for @inspectionDetailNotFound.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspection not found'**
+  String get inspectionDetailNotFound;
+
+  /// No description provided for @inspectionDetailErrorPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load the inspection: {error}'**
+  String inspectionDetailErrorPrefix(String error);
+
+  /// No description provided for @inspectionDetailFieldReceipt.
+  ///
+  /// In en, this message translates to:
+  /// **'Goods receipt'**
+  String get inspectionDetailFieldReceipt;
+
+  /// No description provided for @inspectionDetailFieldInspectedDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspected'**
+  String get inspectionDetailFieldInspectedDate;
+
+  /// No description provided for @inspectionDetailFieldInspector.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspector'**
+  String get inspectionDetailFieldInspector;
+
+  /// No description provided for @inspectionDetailFieldAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Accepted quantity'**
+  String get inspectionDetailFieldAccepted;
+
+  /// No description provided for @inspectionDetailFieldRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Rejected quantity'**
+  String get inspectionDetailFieldRejected;
+
+  /// No description provided for @inspectionDetailFieldStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get inspectionDetailFieldStatus;
+
+  /// No description provided for @inspectionDetailFieldCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Created'**
+  String get inspectionDetailFieldCreated;
+
+  /// No description provided for @inspectionDetailSectionNotes.
+  ///
+  /// In en, this message translates to:
+  /// **'Deviation notes'**
+  String get inspectionDetailSectionNotes;
+
+  /// No description provided for @adaptiveTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Adaptive Workflows'**
+  String get adaptiveTitle;
+
+  /// No description provided for @adaptiveTabSuggestions.
+  ///
+  /// In en, this message translates to:
+  /// **'Suggestions'**
+  String get adaptiveTabSuggestions;
+
+  /// No description provided for @adaptiveTabPatterns.
+  ///
+  /// In en, this message translates to:
+  /// **'Approval patterns'**
+  String get adaptiveTabPatterns;
+
+  /// No description provided for @adaptiveTabAnomalies.
+  ///
+  /// In en, this message translates to:
+  /// **'Anomalies'**
+  String get adaptiveTabAnomalies;
+
+  /// No description provided for @adaptiveAdvisoryNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Everything here is advisory. Nothing on this screen has changed a workflow — a recommendation only takes effect when someone with the right role applies it in the web app, through the same audited path a manual edit uses.'**
+  String get adaptiveAdvisoryNote;
+
+  /// No description provided for @adaptiveSuggestionsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No suggestions — not enough consistent approval history yet.'**
+  String get adaptiveSuggestionsEmpty;
+
+  /// No description provided for @adaptiveSuggestionsError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load the suggestions.'**
+  String get adaptiveSuggestionsError;
+
+  /// No description provided for @adaptiveSuggestionsShowOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Open'**
+  String get adaptiveSuggestionsShowOpen;
+
+  /// No description provided for @adaptiveSuggestionsShowAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get adaptiveSuggestionsShowAll;
+
+  /// No description provided for @adaptiveSuggestionsConfidence.
+  ///
+  /// In en, this message translates to:
+  /// **'Confidence {pct}%'**
+  String adaptiveSuggestionsConfidence(String pct);
+
+  /// No description provided for @adaptiveSuggestionsDismiss.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismiss'**
+  String get adaptiveSuggestionsDismiss;
+
+  /// No description provided for @adaptiveSuggestionsDismissTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismiss this suggestion?'**
+  String get adaptiveSuggestionsDismissTitle;
+
+  /// No description provided for @adaptiveSuggestionsDismissBody.
+  ///
+  /// In en, this message translates to:
+  /// **'It stays dismissed across recomputation, and no workflow changes either way.'**
+  String get adaptiveSuggestionsDismissBody;
+
+  /// No description provided for @adaptiveSuggestionsDismissed.
+  ///
+  /// In en, this message translates to:
+  /// **'Suggestion dismissed.'**
+  String get adaptiveSuggestionsDismissed;
+
+  /// No description provided for @adaptiveSuggestionsDismissFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not dismiss that suggestion: {error}'**
+  String adaptiveSuggestionsDismissFailed(String error);
+
+  /// No description provided for @adaptiveSuggestionStatusOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Open'**
+  String get adaptiveSuggestionStatusOpen;
+
+  /// No description provided for @adaptiveSuggestionStatusDismissed.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismissed'**
+  String get adaptiveSuggestionStatusDismissed;
+
+  /// No description provided for @adaptiveSuggestionStatusApplied.
+  ///
+  /// In en, this message translates to:
+  /// **'Applied'**
+  String get adaptiveSuggestionStatusApplied;
+
+  /// No description provided for @adaptiveSuggestionStatusStale.
+  ///
+  /// In en, this message translates to:
+  /// **'Stale'**
+  String get adaptiveSuggestionStatusStale;
+
+  /// No description provided for @adaptiveSuggestionStatusUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown status'**
+  String get adaptiveSuggestionStatusUnknown;
+
+  /// No description provided for @adaptiveSuggestionStatusAnnounce.
+  ///
+  /// In en, this message translates to:
+  /// **'Status: {status}'**
+  String adaptiveSuggestionStatusAnnounce(String status);
+
+  /// No description provided for @adaptivePatternsError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load the approval patterns.'**
+  String get adaptivePatternsError;
+
+  /// No description provided for @adaptivePatternsEmptyApprovers.
+  ///
+  /// In en, this message translates to:
+  /// **'No approval decisions in this window yet.'**
+  String get adaptivePatternsEmptyApprovers;
+
+  /// No description provided for @adaptivePatternsEmptyVendors.
+  ///
+  /// In en, this message translates to:
+  /// **'No supplier approval history in this window yet.'**
+  String get adaptivePatternsEmptyVendors;
+
+  /// No description provided for @adaptivePatternsSectionApprovers.
+  ///
+  /// In en, this message translates to:
+  /// **'By approver'**
+  String get adaptivePatternsSectionApprovers;
+
+  /// No description provided for @adaptivePatternsSectionVendors.
+  ///
+  /// In en, this message translates to:
+  /// **'By vendor'**
+  String get adaptivePatternsSectionVendors;
+
+  /// No description provided for @adaptivePatternsLookback.
+  ///
+  /// In en, this message translates to:
+  /// **'Deterministic statistics over the last {days} days of this tenant’s own approval history — no model, recomputed every time you look.'**
+  String adaptivePatternsLookback(int days);
+
+  /// No description provided for @adaptivePatternsCurrencyNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Amounts are in your organization’s reporting currency.'**
+  String get adaptivePatternsCurrencyNote;
+
+  /// No description provided for @adaptivePatternsUnknownApprover.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown approver'**
+  String get adaptivePatternsUnknownApprover;
+
+  /// No description provided for @adaptivePatternsApproverSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{approved} approved · {rejected} rejected'**
+  String adaptivePatternsApproverSummary(int approved, int rejected);
+
+  /// No description provided for @adaptivePatternsApproverTiming.
+  ///
+  /// In en, this message translates to:
+  /// **'{rate}% approval rate · median {days} days'**
+  String adaptivePatternsApproverTiming(String rate, String days);
+
+  /// No description provided for @adaptivePatternsVendorConsistency.
+  ///
+  /// In en, this message translates to:
+  /// **'{pct}% approved unedited'**
+  String adaptivePatternsVendorConsistency(String pct);
+
+  /// No description provided for @adaptivePatternsVendorMoney.
+  ///
+  /// In en, this message translates to:
+  /// **'Median {median} · average {avg}'**
+  String adaptivePatternsVendorMoney(String median, String avg);
+
+  /// No description provided for @adaptivePatternsUnconverted.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} approval could not be expressed in the reporting currency and is excluded from the amounts above — the sample still counts it} other {{count} approvals could not be expressed in the reporting currency and are excluded from the amounts above — the sample still counts them}}'**
+  String adaptivePatternsUnconverted(int count);
+
+  /// No description provided for @adaptiveAnomaliesIntro.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoices in review that sit outside their own supplier’s established pattern — on amount, on approver, or on how long they have been waiting. Read-only: flagging here raises nothing and blocks nothing.'**
+  String get adaptiveAnomaliesIntro;
+
+  /// No description provided for @adaptiveAnomaliesEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing in review is outside its supplier’s normal pattern.'**
+  String get adaptiveAnomaliesEmpty;
+
+  /// No description provided for @adaptiveAnomaliesError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load the anomaly scan.'**
+  String get adaptiveAnomaliesError;
+
+  /// No description provided for @adaptiveAnomaliesScanned.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} invoice in review scanned.} other {{count} invoices in review scanned.}}'**
+  String adaptiveAnomaliesScanned(int count);
+
+  /// No description provided for @adaptiveAnomaliesAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} {currency}'**
+  String adaptiveAnomaliesAmount(String amount, String currency);
+
+  /// No description provided for @adaptiveAnomaliesInsufficient.
+  ///
+  /// In en, this message translates to:
+  /// **'Not enough history for this supplier yet.'**
+  String get adaptiveAnomaliesInsufficient;
 }
 
 class _AppLocalizationsDelegate

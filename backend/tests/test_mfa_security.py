@@ -5,7 +5,7 @@ These tests pin the *security* contracts that protect the second factor:
 
   - Email OTP is **single-use** (verify consumes the stored hash)
   - Issuing a new OTP for the same user **invalidates** the previous one
-  - Email OTP is **rate-limited via TTL** (passlib comparator is
+  - Email OTP is **rate-limited via TTL** (the comparison is
     constant-time; TTL is short)
   - Stored OTP is **hashed**, never plaintext (a Redis dump shouldn't
     yield a usable code)

@@ -898,5 +898,243 @@
     "placeholders": {
       "name": { "type": "String" }
     }
-  }
+  },
+
+  "settingsProcurement": "Procurement",
+  "settingsInspections": "Quality Inspections",
+  "settingsInspectionsHint": "Record and review 4-way match inspections",
+  "settingsAdministration": "Administration",
+  "settingsAdminUsers": "User Management",
+  "settingsAdminUsersHint": "Roles, activate / deactivate users",
+  "settingsAdminOrg": "Organization Settings",
+  "settingsAdminOrgHint": "Company profile, invoice defaults",
+  "settingsAdminWorkflows": "Workflows",
+  "settingsAdminWorkflowsHint": "View workflow definitions and steps",
+  "settingsAdaptive": "Adaptive Workflows",
+  "settingsAdaptiveHint": "Approval patterns, anomalies, suggestions",
+  "inspectionsTitle": "Quality Inspections",
+  "inspectionsRecord": "Record inspection",
+  "inspectionsEmpty": "No quality inspections recorded.",
+  "inspectionsEmptyFiltered": "No inspections with this outcome.",
+  "inspectionsLoadError": "Could not load inspections",
+  "inspectionsResultPass": "Pass",
+  "inspectionsResultFail": "Fail",
+  "inspectionsResultPartial": "Partial acceptance",
+  "inspectionsResultUnknown": "Unknown result",
+  "inspectionsResultAnnounce": "Result: {result}",
+  "@inspectionsResultAnnounce": {
+    "placeholders": {
+      "result": {
+        "type": "String"
+      }
+    }
+  },
+  "inspectionsNotLinked": "Not linked",
+  "inspectionsNotLinkedHint": "This inspection is tied to no goods receipt and no purchase order, so PO matching will never read it.",
+  "inspectionsReceiptUnnamed": "Receipt not named",
+  "inspectionsHintPass": "Goods accepted — the match is unchanged.",
+  "inspectionsHintFail": "Goods refused — the invoice drops to mismatch and a quality hold blocks payment.",
+  "inspectionsHintPartial": "Some goods accepted — the match drops to partial and the accepted quantity is flagged.",
+  "inspectionsHintUnknown": "This outcome is outside the pass / fail / partial vocabulary, so its effect on the match cannot be stated.",
+  "inspectionsRecorded": "Inspection {number} recorded",
+  "@inspectionsRecorded": {
+    "placeholders": {
+      "number": {
+        "type": "String"
+      }
+    }
+  },
+  "inspectionsRecordFailed": "Could not record the inspection: {error}",
+  "@inspectionsRecordFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "inspectionsReceiptsLoadFailed": "Could not load goods receipts: {error}",
+  "@inspectionsReceiptsLoadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "inspectionRecordTitle": "Record Quality Inspection",
+  "inspectionRecordClose": "Close the inspection form",
+  "inspectionRecordReceipt": "Goods receipt",
+  "inspectionRecordReceiptHint": "PO matching only reads an inspection through its goods receipt, so an inspection has to name the delivery it covers.",
+  "inspectionRecordReceiptsBounded": "Showing the {shown} most recent of {total} receipts. Record from the web app if the delivery you need is not listed.",
+  "@inspectionRecordReceiptsBounded": {
+    "placeholders": {
+      "shown": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "inspectionRecordNoReceipts": "No goods receipts yet — an inspection covers a delivery, so there is nothing to record against.",
+  "inspectionRecordNumber": "Inspection #",
+  "inspectionRecordNumberRequired": "Enter an inspection number",
+  "inspectionRecordResult": "Result",
+  "inspectionRecordAcceptedQuantity": "Accepted quantity",
+  "inspectionRecordRejectedQuantity": "Rejected quantity",
+  "inspectionRecordAcceptedRequired": "Required for a partial acceptance",
+  "inspectionRecordInvalidQuantity": "Use up to 8 digits and 4 decimals",
+  "inspectionRecordInspectedDate": "Inspected date",
+  "inspectionRecordDateNotSet": "Not set",
+  "inspectionRecordClearDate": "Clear the inspected date",
+  "inspectionRecordInspector": "Inspector",
+  "inspectionRecordNotes": "Deviation notes",
+  "inspectionRecordNotesHint": "Quoted into the invoice’s match issue on a failed inspection, so whoever works the quality hold reads them.",
+  "inspectionRecordSubmit": "Record inspection",
+  "inspectionDetailTitle": "Inspection",
+  "inspectionDetailNotFound": "Inspection not found",
+  "inspectionDetailErrorPrefix": "Could not load the inspection: {error}",
+  "@inspectionDetailErrorPrefix": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "inspectionDetailFieldReceipt": "Goods receipt",
+  "inspectionDetailFieldInspectedDate": "Inspected",
+  "inspectionDetailFieldInspector": "Inspector",
+  "inspectionDetailFieldAccepted": "Accepted quantity",
+  "inspectionDetailFieldRejected": "Rejected quantity",
+  "inspectionDetailFieldStatus": "Status",
+  "inspectionDetailFieldCreated": "Created",
+  "inspectionDetailSectionNotes": "Deviation notes",
+  "adaptiveTitle": "Adaptive Workflows",
+  "adaptiveTabSuggestions": "Suggestions",
+  "adaptiveTabPatterns": "Approval patterns",
+  "adaptiveTabAnomalies": "Anomalies",
+  "adaptiveAdvisoryNote": "Everything here is advisory. Nothing on this screen has changed a workflow — a recommendation only takes effect when someone with the right role applies it in the web app, through the same audited path a manual edit uses.",
+  "adaptiveSuggestionsEmpty": "No suggestions — not enough consistent approval history yet.",
+  "adaptiveSuggestionsError": "Could not load the suggestions.",
+  "adaptiveSuggestionsShowOpen": "Open",
+  "adaptiveSuggestionsShowAll": "All",
+  "adaptiveSuggestionsConfidence": "Confidence {pct}%",
+  "@adaptiveSuggestionsConfidence": {
+    "placeholders": {
+      "pct": {
+        "type": "String"
+      }
+    }
+  },
+  "adaptiveSuggestionsDismiss": "Dismiss",
+  "adaptiveSuggestionsDismissTitle": "Dismiss this suggestion?",
+  "adaptiveSuggestionsDismissBody": "It stays dismissed across recomputation, and no workflow changes either way.",
+  "adaptiveSuggestionsDismissed": "Suggestion dismissed.",
+  "adaptiveSuggestionsDismissFailed": "Could not dismiss that suggestion: {error}",
+  "@adaptiveSuggestionsDismissFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "adaptiveSuggestionStatusOpen": "Open",
+  "adaptiveSuggestionStatusDismissed": "Dismissed",
+  "adaptiveSuggestionStatusApplied": "Applied",
+  "adaptiveSuggestionStatusStale": "Stale",
+  "adaptiveSuggestionStatusUnknown": "Unknown status",
+  "adaptiveSuggestionStatusAnnounce": "Status: {status}",
+  "@adaptiveSuggestionStatusAnnounce": {
+    "placeholders": {
+      "status": {
+        "type": "String"
+      }
+    }
+  },
+  "adaptivePatternsError": "Could not load the approval patterns.",
+  "adaptivePatternsEmptyApprovers": "No approval decisions in this window yet.",
+  "adaptivePatternsEmptyVendors": "No supplier approval history in this window yet.",
+  "adaptivePatternsSectionApprovers": "By approver",
+  "adaptivePatternsSectionVendors": "By vendor",
+  "adaptivePatternsLookback": "Deterministic statistics over the last {days} days of this tenant’s own approval history — no model, recomputed every time you look.",
+  "@adaptivePatternsLookback": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "adaptivePatternsCurrencyNote": "Amounts are in your organization’s reporting currency.",
+  "adaptivePatternsUnknownApprover": "Unknown approver",
+  "adaptivePatternsApproverSummary": "{approved} approved · {rejected} rejected",
+  "@adaptivePatternsApproverSummary": {
+    "placeholders": {
+      "approved": {
+        "type": "int"
+      },
+      "rejected": {
+        "type": "int"
+      }
+    }
+  },
+  "adaptivePatternsApproverTiming": "{rate}% approval rate · median {days} days",
+  "@adaptivePatternsApproverTiming": {
+    "placeholders": {
+      "rate": {
+        "type": "String"
+      },
+      "days": {
+        "type": "String"
+      }
+    }
+  },
+  "adaptivePatternsVendorConsistency": "{pct}% approved unedited",
+  "@adaptivePatternsVendorConsistency": {
+    "placeholders": {
+      "pct": {
+        "type": "String"
+      }
+    }
+  },
+  "adaptivePatternsVendorMoney": "Median {median} · average {avg}",
+  "@adaptivePatternsVendorMoney": {
+    "placeholders": {
+      "median": {
+        "type": "String"
+      },
+      "avg": {
+        "type": "String"
+      }
+    }
+  },
+  "adaptivePatternsUnconverted": "{count, plural, one {{count} approval could not be expressed in the reporting currency and is excluded from the amounts above — the sample still counts it} other {{count} approvals could not be expressed in the reporting currency and are excluded from the amounts above — the sample still counts them}}",
+  "@adaptivePatternsUnconverted": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "adaptiveAnomaliesIntro": "Invoices in review that sit outside their own supplier’s established pattern — on amount, on approver, or on how long they have been waiting. Read-only: flagging here raises nothing and blocks nothing.",
+  "adaptiveAnomaliesEmpty": "Nothing in review is outside its supplier’s normal pattern.",
+  "adaptiveAnomaliesError": "Could not load the anomaly scan.",
+  "adaptiveAnomaliesScanned": "{count, plural, one {{count} invoice in review scanned.} other {{count} invoices in review scanned.}}",
+  "@adaptiveAnomaliesScanned": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "adaptiveAnomaliesAmount": "{amount} {currency}",
+  "@adaptiveAnomaliesAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      },
+      "currency": {
+        "type": "String"
+      }
+    }
+  },
+  "adaptiveAnomaliesInsufficient": "Not enough history for this supplier yet."
 }

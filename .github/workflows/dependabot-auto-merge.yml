@@ -10,7 +10,9 @@ name: Dependabot auto-merge
 # proved why: bcrypt 4 → 5 silently broke passlib 1.7.4 (passlib reads
 # `bcrypt.__about__.__version__`, removed in 5.0) and every login
 # failed out of `_calc_checksum`. Auto-merging that would have shipped
-# the regression to main.
+# the regression to main. (passlib has since been dropped — the hasher
+# calls bcrypt directly, `docs/decisions.md` §151 — but the lesson is
+# why this workflow still stops at minor + patch.)
 #
 # Repository setting required: "Allow auto-merge" enabled on
 # Settings → General → Pull Requests. Without it `gh pr merge --auto`

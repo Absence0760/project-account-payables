@@ -1,10 +1,10 @@
 # Authentication
 
-JWT-based authentication using `python-jose` for token handling and `passlib` with bcrypt for password hashing. Tokens are server-side revocable via a Redis blocklist.
+JWT-based authentication using `python-jose` for token handling and `bcrypt_sha256` for password hashing. Tokens are server-side revocable via a Redis blocklist.
 
 **Hash and verify through the awaitable wrappers, never `pwd_context` directly.**
 `backend/app/utils/passwords.py` exposes `verify_password` / `hash_password` /
-`dummy_verify` as coroutines that run passlib in a worker thread via
+`dummy_verify` as coroutines that run the hash in a worker thread via
 `asyncio.to_thread`. bcrypt is deliberately ~200 ms of pure CPU per call, so an
 inline `pwd_context.verify` in a login handler occupies the event loop for that
 whole window and every other in-flight request on the worker waits behind it —
@@ -14,6 +14,53 @@ equalisation. The equalisation guarantee is unchanged: both paths take the same
 thread hop and the same bcrypt cost. `pwd_context` itself stays the single hash
 context (`bcrypt_sha256`); `backend/tests/test_password_hashing_offloaded.py`
 asserts the work leaves the loop thread and AST-scans `app/` for direct calls.
+
+### The hash scheme — `bcrypt_sha256`, implemented in-repo
+
+The password is pre-hashed with HMAC-SHA256 before bcrypt sees it, which
+side-steps bcrypt's 72-byte truncation: without the pre-hash, any two passwords
+sharing their first 72 bytes verify against each other's hash, so an attacker who
+guesses the prefix is done. Stored form:
+
+```
+$bcrypt-sha256$v=2,t=2b,r=12$<22-char salt>$<31-char checksum>
+```
+
+`v=2` is `bcrypt(base64(HMAC-SHA256(key=salt_text, msg=password)))`; `v=1` (read
+only, never written) is the pre-2017 `bcrypt(base64(sha256(password)))`, where a
+stolen `sha256(password)` lookup table could be replayed against the column.
+Plain `$2b$...` hashes written before commit c6a91396 also still verify — the
+legacy arm reproduces bcrypt 4.0's 72-byte truncation deliberately, since bcrypt
+4.1+ raises on a long secret and that would lock those accounts out of their own
+password. `pwd_context.needs_update(hash)` reports which stored hashes are on an
+older scheme.
+
+**This is our code, not passlib's.** passlib 1.7.4 has been the last release
+since 2020 and cannot import against bcrypt 4.1+ (it reads a deleted
+`__about__` attribute and probes the backend with a >72-byte secret), which
+froze the project on bcrypt 4.0.1 — a hashing library receiving no upstream
+fixes. `app/utils/passwords.py` now implements the scheme directly against
+`bcrypt`, byte-for-byte compatible, so no stored credential changed and nobody
+was asked to reset a password. `backend/tests/test_bcrypt_sha256_compat.py`
+holds hashes passlib itself produced as fixed literals and is the proof;
+`docs/decisions.md` §151 has the reasoning.
+
+**CodeQL flags the pre-hash, and the finding is a false positive.** Moving the
+scheme in-repo put the SHA-256 step where `py/weak-sensitive-data-hashing` can
+see it, so `codeql-python` reports two high-severity alerts on
+`_prehash` — "sensitive data (password) is used in a hashing algorithm (SHA256)
+that is insecure for password hashing, since it is not a computationally
+expensive hash function". The query stops at the SHA-256 call and does not model
+what consumes its output. That digest is never stored: `_prehash` returns the
+*key* handed to `bcrypt.hashpw` at `DEFAULT_ROUNDS = 12`, so the stored
+credential is bcrypt over 2^12 rounds, and the pre-hash only reduces the secret
+to a fixed length bcrypt will not truncate. The composition is strictly stronger
+than plain bcrypt and is the same one Django ships as
+`BCryptSHA256PasswordHasher`. The alerts are dismissed as false positives rather
+than worked around: contorting the dataflow to satisfy the query would change
+the digest, and the digest matching passlib's byte-for-byte is the only thing
+keeping every stored credential verifiable. If they reappear on a later run,
+re-dismiss them — do not "fix" them.
 
 ## Auth Flow
 
@@ -815,11 +862,25 @@ a silent default. `frontend/src/lib/types/workflow.test.ts` is the drift guard
 on the default; `frontend/tests-e2e/workflows/segregation-default.spec.ts`
 covers the persisted value and the toggle round-trip.
 
+#### The rule is a set, not a column
+
+`violates_segregation` refuses an approval by the invoice's `uploaded_by_id`
+**or** by anyone in `Invoice.segregation_actor_ids` — every *other* control-plane
+user whose act shaped the payable's terms. One column can only name one person,
+and a recurring template has two roles that shape what it raises: the employee
+who authored the standing instruction, and anyone who later repointed its vendor
+or amount. Migration 0097 added the set; see § *A recurring template's editor is
+implicated too* below.
+
+Nothing else writes the set. Every other creation path has a single actor, so the
+column stays NULL and the reading below is unchanged.
+
 #### The other way SoD can be silently off: a NULL uploader
 
 The flag is one of two ways `violates_segregation` returns False. The other is
-`Invoice.uploaded_by_id IS NULL`, which the check reads as **"no employee
-created this row"** and therefore nobody who could self-approve.
+`Invoice.uploaded_by_id IS NULL` **with an empty `segregation_actor_ids`**, which
+the check reads as **"no employee created this row"** and therefore nobody who
+could self-approve.
 
 That is fail-open, and it holds only because of an invariant enforced outside
 the function: every path under `app/` that creates an invoice on behalf of a
@@ -870,6 +931,61 @@ Templates created before that migration are deliberately **not** backfilled.
 There is no honest author to recover, and guessing one manufactures either a
 refusal or an absolution. Those keep the legacy NULL reading — a shrinking set,
 not a standing hole.
+
+#### A recurring template's editor is implicated too
+
+Recording the author closed half of it. An `ap_manager` who PATCHes *someone
+else's* template — repointing the vendor and the amount — shapes every payable it
+goes on to raise as completely as whoever wrote it, was recorded nowhere on the
+invoice, and could still approve it. Stamping the editor into
+`created_by_user_id` instead would only have moved the exemption to the author:
+**no single column holds both people**, so the predicate and every path feeding
+it had to change together.
+
+Migration 0097 adds two nullable JSONB sets of control-plane user ids, both
+tenant-scoped:
+
+| Column | Written by | Holds |
+|---|---|---|
+| `recurring_invoice_templates.material_editor_ids` | `PATCH /api/recurring/{id}` | everyone who changed a **material** field — a term of the generated payable |
+| `invoices.segregation_actor_ids` | `recurring_invoices.generate_one` | the template's author ∪ its material editors, minus whoever already landed in `uploaded_by_id` |
+
+"Material" is defined once, in
+`backend/app/models/recurring_invoice.MATERIAL_EDIT_FIELDS`: vendor, amount,
+currency, the four GL-coding dimensions, PO number, payment terms, the cadence /
+day / start / end schedule, and the owning entity. `COSMETIC_EDIT_FIELDS` holds
+the rest — `name`, `description`, `notes`, and `variance_tolerance_pct` (a
+detection band for *arrived* vendor invoices, which never touches the invoice
+this template generates). The two sets must between them cover every field on
+`RecurringTemplateUpdate`, and
+`backend/tests/test_recurring_invoices.py::test_every_patchable_template_field_is_classified`
+fails until a newly added field is classified — an unclassified field would
+default to "cosmetic" and silently widen the exemption.
+
+The append is idempotent (a set, not a log), never overwrites the author, and is
+keyed off what *actually changed*, so re-saving a form with its existing values
+implicates nobody. The pause / resume / end endpoints implicate nobody either:
+they change whether the instruction is live, not what it instructs.
+
+Edits made **before** that migration implicate nobody, for the same reason
+authors are not backfilled — `updated_at` records *that* someone edited, never
+who, and inferring an editor manufactures either a refusal or an absolution.
+
+`check_segregation` is reused for expense reports, requisitions and expense
+pre-approvals through a `SimpleNamespace` attribute shim, so one rule and one
+403 string serve every "decider ≠ requester" surface. Those three pass
+`segregation_actor_ids=None` explicitly — none of those tables records who
+*edited* a row, so there is no second actor to name — rather than relying on the
+predicate's `getattr` default, which exists only so a future subject that forgets
+cannot raise `AttributeError` on the approval path.
+
+The inter-company mirror (`POST /api/invoices/{id}/route-intercompany`)
+deliberately does **not** inherit the source invoice's set. Its segregation
+subject has always been its own creator, the routing actor; propagating the set
+while still not propagating `uploaded_by_id` would block a source *editor* there
+while leaving the source *uploader* free. Whether shaping a payable under one
+entity should bar you from signing its mirror under another is an entity-scope
+question — tracked in [followups.md](followups.md).
 
 ### Approve and reject are not always the same role set
 
@@ -1520,10 +1636,13 @@ Failed checks return `403 Forbidden` with `{"detail": "Your role does not permit
 
 The matrix below is the source of truth — it mirrors the per-route `roles` gates in `frontend/src/lib/nav.ts` (which drives sidebar + section-tab visibility) and the `!isClerkOnly` / `isManager` / `isCfo` checks in invoice + workflow components. Roles are non-exclusive: a user may hold any combination.
 
+It describes the **endpoints**, and in two places the nav is deliberately narrower than the read it gates: `/workflows` and `/organization` are `admin`-only sidebar rows whose reads are open to any authenticated user. Both routes are therefore reachable by typed URL — `/workflows` redirects (it is an editing surface whose every control would 403, `docs/decisions.md` §144) while `/organization` renders read-only and says which panels it cannot fill (§153). A row that is narrower than its endpoint is a product call, not drift; a row that is *wider* is the defect to look for.
+
 | Endpoint area | Read | Write |
 |---|---|---|
 | `/admin/*` (user CRUD, role list) | admin | admin |
-| `/organization` settings + tests + SCIM token | admin | admin |
+| `/organization` — `GET` settings / branding / custom-domains / data-residency | any-authenticated (**payload projected by role**) | admin |
+| `/organization` — chat notifications, email intake, fraud-rule defaults, connection tests, SCIM token | admin | admin |
 | `/workflows` (definition CUD) | any-authenticated | admin |
 | `/exceptions` (list + resolve) | admin · ap_manager | admin · ap_manager |
 | `/vendors/{id}/verify`, `/reject`, `/sync-erp` | — | admin · ap_manager |
@@ -1542,6 +1661,8 @@ The matrix below is the source of truth — it mirrors the per-route `roles` gat
 ### "Read open to all authenticated" surfaces
 
 Invoices, workflow definitions list/active-steps, GL accounts list, and POs list are readable by every authenticated user (including pure clerks). Clerks can see the work; they just can't take action on it. This matches the frontend, where the invoice list page is visible to clerks but write controls are hidden.
+
+The org settings read is open too, but its `settings` payload is **projected by role** — `backend/app/services/org_settings_view.py::NON_ADMIN_SETTINGS` is an allow-list, so a non-admin gets `company`, `invoice_defaults`, `reporting_currency`, `payments.home_currency`, `brand` and `erp.integration_method`, and never the tenant's third-party credentials (ERP client secret, processor credentials, card API key, the SSO client secret). The `/organization` page is therefore read-only for a non-admin **and says which panels it cannot fill**, rather than rendering the platform defaults its fields fall back to; widening the projection to populate them would re-open the leak that module closed (`docs/decisions.md` §153).
 
 ### Endpoints that intentionally do **not** require a JWT
 
@@ -1654,6 +1775,6 @@ broken by renaming the real one.
 
 ### Not in this pass
 
-- **Segregation of duties (SoD)** — *Done.* The classic AP invariant ("approver ≠ creator") ships as `services/approval_chain.check_segregation`, enforced in `services/review.approve_invoice` and default-ON (`require_segregation: true`). It keys on `Invoice.uploaded_by_id`, so its correctness depends on every employee-facing creation path recording the creator — see § Segregation of duties on a workflow's approval step above, and its "NULL uploader" subsection for what NULL means and which paths legitimately produce it.
+- **Segregation of duties (SoD)** — *Done.* The classic AP invariant ("approver ≠ creator") ships as `services/approval_chain.check_segregation`, enforced in `services/review.approve_invoice` and default-ON (`require_segregation: true`). It keys on `Invoice.uploaded_by_id` **plus** `Invoice.segregation_actor_ids` (a recurring template's author and its material editors), so its correctness depends on every employee-facing creation path recording the creator — see § Segregation of duties on a workflow's approval step above, and its "NULL uploader" subsection for what NULL means and which paths legitimately produce it.
 - **Per-org custom roles with teeth** — *Done.* Custom roles now grant access via the granular permission layer (`roles.permissions` + `require_permission`) — see § Granular permissions / segregation of duties above. A custom role granted, say, only `invoice.approve` can approve invoices but is 403'd on payment execution. Permission CRUD itself stays admin-only on purpose.
 - **Audit log of denied requests** — denials are logged via Python `logging.warning` for now, not persisted to the `audit_log` table. If oncall wants to query historical denials, surface them via centralized log shipping (planned under SOC 2 readiness).

@@ -50,6 +50,46 @@ Parity direction is set in `frontend/CLAUDE.md` § Web vs Mobile feature parity.
   server's own refusal sentence (409 wrong state / 403 maker-checker) surfaces
   verbatim. Approving moves no money — execution stays a separate action.
   Money is rendered as server-supplied display strings — the device never does float arithmetic on money (totals are server-computed)
+- Quality inspections (4-way matching) — `InspectionsScreen` + `InspectionStore`
+  over `GET /api/inspections` with **server-side** outcome chips (`?result=`;
+  filtering the loaded page would hide every matching row past the page
+  boundary). Tapping a row opens `InspectionDetailScreen`
+  (`GET /api/inspections/{id}`), which states what the outcome does to the
+  4-way match — a `fail` is what puts a quality hold on a payable invoice, and
+  that is not guessable from the word "Fail" — and flags a row linked to neither
+  receipt nor PO, which no match will ever read. **Recording** an inspection
+  (`POST /api/inspections`) is a form sheet: a goods-receipt picker (required,
+  because `po_matching` only reads an inspection through a receipt or a PO-level
+  row), a suggested `QI-<receipt>` number, the three-outcome segmented control
+  with the consequence of the selected outcome spelled out, quantities shown once
+  something was refused, and an inspected date / inspector / deviation notes.
+  Quantities are sent as **strings**, never parsed through a `double` — the API
+  hands them straight to `Numeric(12, 4)`. The list + detail are open to every
+  role (the backend reads are `get_current_user`); the record affordance is
+  admin / ap_manager only. Reached from **Settings → Procurement**. QMS sync is
+  deliberately web-only — it is an operator action against org-level config that
+  409s unless `settings.qms` is set. Not offline-cached: a stale pass/fail is a
+  wrong answer about whether an invoice can be paid
+- Adaptive AI workflows (read-first) — `AdaptiveScreen` + `AdaptiveStore` over
+  `GET /api/adaptive/{suggestions,approval-patterns,anomalies}`, three tabs each
+  with its own loading / error / empty state and its own request sequence (a
+  failing anomaly scan cannot blank the patterns a reader is looking at). The one
+  write is **dismiss a suggestion** (`POST /suggestions/{id}/dismiss`, behind a
+  confirm dialog, gated on admin / ap_manager = the backend `_WRITE_ROLES`; a CFO
+  reads and is not offered it). **The two apply paths are deliberately absent** —
+  `routing-suggestion/apply` reassigns a live approval and
+  `threshold-recommendation/apply` raises the org-wide auto-approve threshold,
+  which is a money-path control surface, and the latter's stale-value 409 needs a
+  real "the recommendation changed, nothing was applied" surface to land safely.
+  The Feedback tab is absent too: `GET /feedback` writes an access-audit row, so
+  it needs its own "only when asked" treatment rather than loading with the
+  others. Per-vendor amounts render **without a currency symbol** under a section
+  note (the payload does not name the reporting currency they are in); anomaly
+  rows carry their own `amount_currency` and are labelled with it; a non-zero
+  `unconverted_count` is disclosed, because those approvals are still counted in
+  the sample. Reached from **Settings → Administration**, gated on
+  admin / ap_manager / cfo (`_READ_ROLES`). Not offline-cached — a privileged
+  analytics read recomputed server-side on every call
 - Role-based bottom navigation
 - Settings (profile, tenant info, logout)
 - JWT in secure storage (iOS Keychain / Android Keystore)

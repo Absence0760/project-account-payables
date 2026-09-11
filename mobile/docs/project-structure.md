@@ -18,6 +18,9 @@ mobile/
 │   │   └── endpoints.dart       # Typed API methods (auth, invoices, dashboard, payments)
 │   ├── models/
 │   │   ├── user.dart            # User model with role helpers
+│   │   ├── adaptive.dart        # ApproverPattern / VendorPattern / ApprovalPatterns, AnomalyFlag / InvoiceAnomaly / AnomalyBatch, WorkflowSuggestion + SuggestionStatus (every statistic a string — the backend stringifies its Decimals)
+│   │   ├── goods_receipt.dart   # GoodsReceipt (read only to populate the record-inspection picker; `label` = "GR-1 → PO-9")
+│   │   ├── inspection.dart      # Inspection + InspectionResult enum (pass/fail/partial + unknown for a free-form/QMS value) + InspectionDraft (quantities sent as raw strings) + quantityToDisplay
 │   │   ├── audit_entry.dart     # AuditEntry + AuditFieldChange (invoice activity timeline; details.changes diff)
 │   │   ├── contract.dart        # Contract + ContractStatus enum (draft/active/expired/terminated/cancelled; isActionable gate on the lifecycle buttons)
 │   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states); isEditable mirrors backend IMMUTABLE_STATUSES, isFinanciallyLocked mirrors the narrower _FINANCIALLY_LOCKED_STATUSES ({approved} ∪ immutable) + kFinancialInvoiceFields / stripFinancialFields
@@ -36,6 +39,8 @@ mobile/
 │   │   ├── session.dart            # Session lifetime chokepoint — beginSession (scope + purge on change) / endSession (clear cache + reset every store)
 │   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications; registers the device token with the backend (POST /api/notifications/device-token) on acquisition + refresh; deep-links a notification tap to InvoiceDetailScreen via PushService.navigatorKey (wired into MaterialApp in main.dart)
 │   ├── stores/
+│   │   ├── adaptive_store.dart  # Adaptive read models — three independent section states + request sequences; dismiss patches the row from the response; NOT offline-cached (privileged analytics read)
+│   │   ├── inspection_store.dart # Quality inspections — list + server-side result filter, record (refetches), getById, goods-receipt options; NOT offline-cached (a stale pass/fail is a wrong answer about payability)
 │   │   ├── auth_store.dart      # Auth state — login, logout, role checks (incl. canBulkEditInvoices + isOrgAdmin gates); binds the session scope on login/restore
 │   │   ├── admin_user_store.dart # Admin user management — users + roles, set-roles / activate-deactivate (admin-only, not offline-cached)
 │   │   ├── org_settings_store.dart # Organization settings — load + save the safe subset (company + invoice defaults; admin-only, not offline-cached)
@@ -71,7 +76,10 @@ mobile/
 │   │   ├── payment_queue_screen.dart # Pay — Queue tab (select approved invoices + per-row method → Create Run) + Runs tab (execute/cancel drafts), KPI summary bar
 │   │   ├── workflows_screen.dart # Admin — read-only workflow list (name, active/default status, step count) → tap-through; reached from Settings → Administration
 │   │   ├── workflow_detail_screen.dart # Read-only workflow detail — steps (number, type, name, enabled) + per-step config summary; fetches GET /api/workflows/{id} on open
-│   │   └── settings_screen.dart  # User profile, biometric toggle, logout; Administration section (admin-only): User Management, Organization Settings, Workflows
+│   │   ├── inspections_screen.dart # Quality inspections — list + server-side outcome chips, pull-to-refresh, record-inspection FAB (admin/ap_manager); tap a row → detail
+│   │   ├── inspection_detail_screen.dart # Read-only inspection detail — fields + what the outcome does to the 4-way match + an unlinked-row warning; loading / not-found / error states
+│   │   ├── adaptive_screen.dart  # Adaptive AI workflows — Suggestions (+ dismiss) / Approval patterns / Anomalies tabs, per-tab states; read-first (no apply paths)
+│   │   └── settings_screen.dart  # User profile, biometric toggle, logout; Procurement section (all roles): Quality Inspections; Administration section (gated PER ENTRY — User Management / Organization Settings / Workflows for admins, Adaptive Workflows for admin/ap_manager/cfo)
 │   └── widgets/
 │       ├── activity_timeline.dart # Invoice audit-log timeline (action label, actor, time, per-field before→after diff); empty state; one merged Semantics label per entry
 │       ├── bulk_action_bar.dart  # Bottom bar shown in invoice multi-select mode — selected count + bulk export / status-change / delete actions (each action omitted when its callback is null; reusable shape)
@@ -80,6 +88,9 @@ mobile/
 │       ├── erp_status_panel.dart # Detail-screen ERP status — ErpInfo.fromAuditLog derives ERP reference / document id / send error from the audit log; shown for ERP-bound + ERP-failed statuses
 │       ├── invoice_file_viewer.dart # Full-screen uploaded-file viewer — images via Image.network (auth headers), PDFs fetched as bytes via ApiClient.getBytes + rendered with pdfx; isPdf/absoluteUrl helpers; loading/error/Retry states
 │       ├── invoice_edit_sheet.dart # Modal bottom-sheet edit form (vendor, invoice #, amount, PO, GL, description, due date); returns the partial diff; amount sent as string-Decimal; vendor + amount render read-only (with a lock notice) and are stripped from the diff once the invoice is financially locked
+│       ├── inspection_list_tile.dart  # Inspection row — number + outcome badge, goods receipt (or "Not linked"), inspected date; one merged Semantics label
+│       ├── inspection_result_badge.dart # Colored inspection-outcome chip (pass/fail/partial/unknown) + the shared localized `inspectionResultLabel`
+│       ├── record_inspection_sheet.dart # Modal bottom-sheet record form — receipt picker (required), suggested number, outcome segmented control + consequence, string quantities, date / inspector / notes; returns an InspectionDraft
 │       ├── contract_list_tile.dart    # Contract row with number/title, vendor, value, status
 │       ├── contract_status_badge.dart # Colored contract status chip (draft/active/expired/terminated/cancelled)
 │       ├── status_badge.dart    # Colored invoice status chip

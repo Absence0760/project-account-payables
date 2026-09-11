@@ -50,6 +50,15 @@
 		load();
 	});
 
+	// The response has LANDED and says this tenant has no invoices at all — the
+	// one state where the onboarding EmptyState replaces the KPI row rather than
+	// sitting beside it. Keyed on `data`, never on `total_invoices` alone, so it
+	// is false while the answer is still out: a row that vanished the moment the
+	// page started asking would be the collapse `docs/decisions.md` §125 exists
+	// to remove. One owner, because the markup tests it twice (the row's branch
+	// and the charts').
+	const isEmptyTenant = $derived(!!data && data.total_invoices === 0);
+
 	// Dashboard figures are tenant-wide roll-ups with no per-row currency,
 	// so they render in the org's configured default currency.
 	function fmt(amount: MoneyAmount): string {
@@ -170,14 +179,15 @@
 </script>
 
 <PageHeader title={m('dashboard.title')}>
-	{#if loading}
-		<p class="loading">{m('common.loading')}</p>
-	{:else if error}
-		<div class="dashboard-error" role="alert">
-			<p>{m('dashboard.error.loadFailed')}</p>
-			<button class="btn-primary" onclick={load}>{m('dashboard.error.retry')}</button>
-		</div>
-	{:else if data && data.total_invoices === 0}
+	<!-- The zero-invoice EmptyState is the ONE thing that REPLACES the KPI row,
+	     and it does so only once the response has LANDED — `isEmptyTenant` is
+	     false while `data` is null. So an empty tenant sees a pending row that
+	     then gives way to the empty state. That hand-off was chosen deliberately:
+	     the alternative is gating the row on `total_invoices > 0`, which is
+	     gating it on the answer, and it collapses the app's most-visited KPI row
+	     on every load of every tenant to spare the empty one a transition.
+	     `docs/decisions.md` §154. -->
+	{#if isEmptyTenant}
 		<EmptyState
 			icon="📄"
 			heading={m('emptyState.dashboard.heading')}
@@ -186,66 +196,111 @@
 			actionHref="/invoices"
 			testId="dashboard-empty-state"
 		/>
-	{:else if data}
-		<!-- KPI Cards -->
+	{:else}
+		<!-- KPI row — rendered on every other state, never gated on the response
+		     (`docs/decisions.md` §125 / §143). It used to sit inside
+		     `{:else if data}`, which made the highest-traffic KPI row in the app
+		     the last one still collapsing to nothing while its own answer was in
+		     flight.
+
+		     A FAILED load leaves the cards absent-but-not-loading — an
+		     `unavailable` row — with the error banner and its Retry directly
+		     below saying why, which is the placement /cfo uses for the same
+		     reason: five dashes are what the page knows, and the banner is why. -->
 		<div class="kpi-row">
-			<KpiCard value={data.total_invoices} label={m('dashboard.kpi.invoices')} />
-			<KpiCard value={fmt(data.reporting.total_amount)} label={m('dashboard.kpi.totalAmount')} />
-			<KpiCard value={fmt(data.total_paid_reporting)} label={m('dashboard.kpi.paid')} />
-			<KpiCard value={fmt(data.total_pending_reporting)} label={m('dashboard.kpi.pending')} />
 			<KpiCard
-				value={`${data.touchless_rate}%`}
-				label={m('dashboard.kpi.touchlessRate')}
-				highlight={data.touchless_rate >= 80 ? 'green' : null}
+				value={data?.total_invoices ?? null}
+				label={m('dashboard.kpi.invoices')}
+				pending={loading}
 			/>
-			{#if data.open_exceptions > 0}
-				<a href="/exceptions" class="kpi highlight-red kpi-link">
-					<span class="kpi-value">{data.open_exceptions}</span>
-					<span class="kpi-label">{m('dashboard.kpi.exceptions')}</span>
-				</a>
-			{/if}
-			{#if data.stale_approvals > 0}
-				<KpiCard value={data.stale_approvals} label={m('dashboard.kpi.staleApprovals')} highlight="red" />
-			{/if}
-			{#if isPositiveAmount(data.total_rebates)}
-				<KpiCard
-					value={fmt(data.total_rebates)}
-					label={m('dashboard.kpi.rebatesEarned')}
-					highlight="green"
-					sub={(data.excluded_rebate_count ?? 0) > 0
-						? m('dashboard.kpi.rebatesExcluded', {
-								n: data.excluded_rebate_count ?? 0,
-								currency: data.reporting.reporting_currency
-							})
-						: null}
-				/>
-			{/if}
-			{#if data.discount_capture.eligible_count > 0}
-				<!-- The `sub` line is the qualifier on this headline figure, and
-				     the unconverted disclosure OUTRANKS the capture rate for it:
-				     a rate is context, an unconverted count means the number
-				     above it mixes currencies. The full fold + a `role="alert"`
-				     banner live in the card below. -->
-				<KpiCard
-					value={fmtIn(
-						data.discount_capture.captured_amount_reporting,
-						data.discount_capture.reporting_currency
-					)}
-					label={m('dashboard.kpi.discountsCaptured')}
-					highlight="green"
-					sub={data.discount_capture.unconverted_count > 0
-						? m('dashboard.discount.unconvertedShort', {
-								n: data.discount_capture.unconverted_count,
-								currency: data.discount_capture.reporting_currency
-							})
-						: data.discount_capture.insufficient_data
-							? m('dashboard.discount.rateUnknown')
-							: m('dashboard.discount.rate', {
-									pct: data.discount_capture.capture_rate_pct ?? 0
-								})}
-				/>
+			<KpiCard
+				value={data ? fmt(data.reporting.total_amount) : null}
+				label={m('dashboard.kpi.totalAmount')}
+				pending={loading}
+			/>
+			<KpiCard
+				value={data ? fmt(data.total_paid_reporting) : null}
+				label={m('dashboard.kpi.paid')}
+				pending={loading}
+			/>
+			<KpiCard
+				value={data ? fmt(data.total_pending_reporting) : null}
+				label={m('dashboard.kpi.pending')}
+				pending={loading}
+			/>
+			<KpiCard
+				value={data ? `${data.touchless_rate}%` : null}
+				label={m('dashboard.kpi.touchlessRate')}
+				highlight={data && data.touchless_rate >= 80 ? 'green' : null}
+				pending={loading}
+			/>
+			<!-- The five above are the row's spine: every tenant has those
+			     figures, so a dash on each is an honest "not counted yet". The
+			     cards below exist only when there is something to report, and the
+			     response is what decides that — so they stay gated on `data`
+			     instead of taking `pending`. A pending placeholder for a card that
+			     may never render announces that a figure is coming when none is,
+			     which is the failure §143 gates the user-triggered rows on. -->
+			{#if data}
+				{#if data.open_exceptions > 0}
+					<a href="/exceptions" class="kpi highlight-red kpi-link">
+						<span class="kpi-value">{data.open_exceptions}</span>
+						<span class="kpi-label">{m('dashboard.kpi.exceptions')}</span>
+					</a>
+				{/if}
+				{#if data.stale_approvals > 0}
+					<KpiCard value={data.stale_approvals} label={m('dashboard.kpi.staleApprovals')} highlight="red" />
+				{/if}
+				{#if isPositiveAmount(data.total_rebates)}
+					<KpiCard
+						value={fmt(data.total_rebates)}
+						label={m('dashboard.kpi.rebatesEarned')}
+						highlight="green"
+						sub={(data.excluded_rebate_count ?? 0) > 0
+							? m('dashboard.kpi.rebatesExcluded', {
+									n: data.excluded_rebate_count ?? 0,
+									currency: data.reporting.reporting_currency
+								})
+							: null}
+					/>
+				{/if}
+				{#if data.discount_capture.eligible_count > 0}
+					<!-- The `sub` line is the qualifier on this headline figure, and
+					     the unconverted disclosure OUTRANKS the capture rate for it:
+					     a rate is context, an unconverted count means the number
+					     above it mixes currencies. The full fold + a `role="alert"`
+					     banner live in the card below. -->
+					<KpiCard
+						value={fmtIn(
+							data.discount_capture.captured_amount_reporting,
+							data.discount_capture.reporting_currency
+						)}
+						label={m('dashboard.kpi.discountsCaptured')}
+						highlight="green"
+						sub={data.discount_capture.unconverted_count > 0
+							? m('dashboard.discount.unconvertedShort', {
+									n: data.discount_capture.unconverted_count,
+									currency: data.discount_capture.reporting_currency
+								})
+							: data.discount_capture.insufficient_data
+								? m('dashboard.discount.rateUnknown')
+								: m('dashboard.discount.rate', {
+										pct: data.discount_capture.capture_rate_pct ?? 0
+									})}
+					/>
+				{/if}
 			{/if}
 		</div>
+	{/if}
+
+	{#if error}
+		<div class="dashboard-error" role="alert">
+			<p>{m('dashboard.error.loadFailed')}</p>
+			<button class="btn-primary" onclick={load}>{m('dashboard.error.retry')}</button>
+		</div>
+	{:else if loading}
+		<p class="loading">{m('common.loading')}</p>
+	{:else if data && !isEmptyTenant}
 
 		{#if hasUnconvertedRows}
 			<p class="dashboard-skipped" role="alert" data-testid="unconverted-rollup">

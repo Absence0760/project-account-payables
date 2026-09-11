@@ -51,25 +51,10 @@ updates:
         patterns:
           - "*"
 
-    ignore:
-      # bcrypt is pinned `>=4.0,<4.1` in backend/pyproject.toml, and that pin
-      # is load-bearing: passlib 1.7.4 probes for a historical wrap bug by
-      # hashing a >72-byte secret, which bcrypt 4.1+ rejects with a
-      # `ValueError` where 4.0 truncated. The probe runs on the FIRST hash, so
-      # the failure lands at import time and takes every module that touches
-      # `app.utils.passwords` with it — PR #392 raised the floor to 5.0 and all
-      # four backend shards died with 29 collection errors.
-      #
-      # The pyproject pin cannot prevent the PR: Dependabot reads the range and
-      # proposes raising it, and it never sees the comment explaining why the
-      # ceiling is there. Only an ignore rule stops the same red PR arriving
-      # every Monday.
-      #
-      # Lift this together with the pyproject pin, not before, and only once
-      # passlib ships a fix (still 1.7.4, unchanged since 2020) or the codebase
-      # moves off passlib for bcrypt_sha256. Tracked in docs/followups.md.
-      - dependency-name: bcrypt
-        versions: [">=4.1"]
+    # No `ignore:` list. The one entry it used to carry held bcrypt below 4.1,
+    # because passlib 1.7.4 could not import against it; dropping passlib
+    # (`docs/decisions.md` §151) lifted the pyproject pin to `>=5.0.0,<6` and
+    # this ignore with it — bcrypt updates are wanted again.
 
   - package-ecosystem: npm
     directory: /frontend

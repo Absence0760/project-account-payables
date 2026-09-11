@@ -174,7 +174,14 @@ async def _decide(
     # Reuse the invoice approval helper via a tiny attribute shim so the SoD
     # rule + 403 detail string stay shared with the invoice path.
     check_segregation(
-        SimpleNamespace(uploaded_by_id=preapproval.requester_user_id),
+        SimpleNamespace(
+            uploaded_by_id=preapproval.requester_user_id,
+            # No editor-tracking column on this table, so there is no second
+            # implicated actor to name. Stated rather than left absent: a
+            # missing attribute on a fraud control reads as an oversight, and
+            # `violates_segregation`'s getattr default would silently supply it.
+            segregation_actor_ids=None,
+        ),
         user.id,
         {"require_segregation": True},
     )

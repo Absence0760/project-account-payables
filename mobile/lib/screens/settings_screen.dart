@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import 'package:feohledger_mobile/config.dart';
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
+import 'package:feohledger_mobile/screens/adaptive_screen.dart';
 import 'package:feohledger_mobile/screens/admin_users_screen.dart';
+import 'package:feohledger_mobile/screens/inspections_screen.dart';
 import 'package:feohledger_mobile/screens/org_settings_screen.dart';
 import 'package:feohledger_mobile/screens/workflows_screen.dart';
 import 'package:feohledger_mobile/services/biometric_service.dart';
@@ -108,46 +110,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(AppConfig.apiBaseUrl),
           ),
 
-          // Administration — admin-only surfaces (user management + org
-          // settings). Both backend surfaces are admin-gated; the section is
-          // hidden entirely for non-admins.
-          if (AuthStore.instance.isOrgAdmin) ...[
+          // Procurement — quality inspections (the 4th leg of 4-way matching).
+          // NOT role-gated: `GET /api/inspections` and its detail are
+          // `get_current_user`, and a clerk chasing a quality hold is exactly
+          // who needs to read a failed inspection. The *record* affordance
+          // inside the screen is gated instead (admin / ap_manager, mirroring
+          // `POST /api/inspections`), so a clerk gets the queue and no button —
+          // the same split the web `/goods-receipts` Inspections tab makes.
+          const Divider(height: 32),
+          _sectionHeader(l.settingsProcurement),
+          ListTile(
+            leading: const Icon(Icons.fact_check_outlined),
+            title: Text(l.settingsInspections),
+            subtitle: Text(l.settingsInspectionsHint),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const InspectionsScreen()),
+            ),
+          ),
+
+          // Administration — gated PER ENTRY against each surface's own backend
+          // gate, not once for the whole group. `/api/admin/*` and
+          // `PATCH /api/organization` are admin-only, while every
+          // `/api/adaptive` read is admin / ap_manager / cfo (`_READ_ROLES`); a
+          // group-level `isOrgAdmin` gate cannot express both, and would hide
+          // the adaptive surface from the two roles the backend admits. (The
+          // same per-entry correction the web nav took — see
+          // `docs/followups.md`, round 28.) The section header renders whenever
+          // at least one of its entries does.
+          if (AuthStore.instance.isOrgAdmin ||
+              AuthStore.instance.canViewAdaptive) ...[
             const Divider(height: 32),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Text(
-                'Administration',
-                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            _sectionHeader(l.settingsAdministration),
+            if (AuthStore.instance.isOrgAdmin) ...[
+              ListTile(
+                leading: const Icon(Icons.group),
+                title: Text(l.settingsAdminUsers),
+                subtitle: Text(l.settingsAdminUsersHint),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+                ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.group),
-              title: const Text('User Management'),
-              subtitle: const Text('Roles, activate / deactivate users'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+              ListTile(
+                leading: const Icon(Icons.business_center),
+                title: Text(l.settingsAdminOrg),
+                subtitle: Text(l.settingsAdminOrgHint),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const OrgSettingsScreen()),
+                ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.business_center),
-              title: const Text('Organization Settings'),
-              subtitle: const Text('Company profile, invoice defaults'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const OrgSettingsScreen()),
+              // Read-only workflow viewer (the no-code builder stays on the web).
+              ListTile(
+                leading: const Icon(Icons.account_tree_outlined),
+                title: Text(l.settingsAdminWorkflows),
+                subtitle: Text(l.settingsAdminWorkflowsHint),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const WorkflowsScreen()),
+                ),
               ),
-            ),
-            // Read-only workflow viewer (the no-code builder stays on the web).
-            ListTile(
-              leading: const Icon(Icons.account_tree_outlined),
-              title: const Text('Workflows'),
-              subtitle: const Text('View workflow definitions and steps'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const WorkflowsScreen()),
+            ],
+            // Adaptive AI workflows — read-only on mobile plus the one advisory
+            // write (dismiss a suggestion). The two apply paths change live
+            // approval routing and the org-wide auto-approve threshold and stay
+            // on the web.
+            if (AuthStore.instance.canViewAdaptive)
+              ListTile(
+                leading: const Icon(Icons.insights_outlined),
+                title: Text(l.settingsAdaptive),
+                subtitle: Text(l.settingsAdaptiveHint),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AdaptiveScreen()),
+                ),
               ),
-            ),
           ],
 
           // Display language — a per-device choice (like the biometric toggle),
@@ -196,6 +234,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
+
+  /// A group label above a run of navigation rows (Procurement /
+  /// Administration) — the same shape the admin section has always used, pulled
+  /// out now that two sections need it.
+  Widget _sectionHeader(String label) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+    child: Text(
+      label,
+      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+    ),
+  );
 
   /// Device display-language picker. Endonyms (each language's own name) plus a
   /// "System default" option that clears the override (follow the OS locale).

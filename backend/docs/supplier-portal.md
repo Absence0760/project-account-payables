@@ -26,7 +26,7 @@ application.
 | `vendor_id`            | UUID          | FK → `vendors.id` ON DELETE CASCADE, indexed           |
 | `email`                | VARCHAR(320)  | UNIQUE — login identifier                              |
 | `full_name`            | VARCHAR(255)  |                                                        |
-| `hashed_password`      | VARCHAR(255)  | bcrypt                                                 |
+| `hashed_password`      | VARCHAR(255)  | `bcrypt_sha256`, via the shared `pwd_context`           |
 | `is_active`            | BOOLEAN       | Soft-disable without deleting                          |
 | `must_change_password` | BOOLEAN       | Set on invite; cleared on first successful change      |
 | `last_login_at`        | TIMESTAMPTZ   | Updated on each successful login                       |

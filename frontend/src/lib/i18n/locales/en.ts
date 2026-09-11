@@ -88,6 +88,8 @@ export const en = {
 	'common.saving': 'Saving…',
 	'common.cancel': 'Cancel',
 	'common.loading': 'Loading…',
+	'common.tryAgain': 'Try again',
+	'common.retrying': 'Retrying…',
 	'common.loadFailed': 'Couldn’t load this list. Refresh to try again.',
 	'common.amountInvalid': 'Enter the amount as a plain number, e.g. 1200 or 1200.50',
 
@@ -109,6 +111,108 @@ export const en = {
 	'profile.notifications.event.cashShortfallProjected': 'Projected cash shortfall',
 	'profile.notifications.inAppFor': 'In-app notifications for {event}',
 	'profile.notifications.emailFor': 'Email notifications for {event}',
+
+	// Profile → Account card (profile/+page.svelte)
+	'profile.account.heading': 'Account',
+	'profile.account.fullName': 'Full name',
+	'profile.account.email': 'Email',
+	'profile.account.roles': 'Roles',
+	'profile.account.updated': 'Profile updated',
+	'profile.account.updateFailed': 'Failed to update profile',
+
+	// Profile → Password card
+	'profile.password.heading': 'Password',
+	'profile.password.hint':
+		"Use a strong password unique to this account. After saving you'll stay signed in on this device but other sessions remain valid until they expire.",
+	'profile.password.current': 'Current password',
+	'profile.password.new': 'New password',
+	'profile.password.confirm': 'Confirm new password',
+	'profile.password.submit': 'Change password',
+	'profile.password.mismatch': 'Passwords do not match',
+	'profile.password.updated': 'Password updated',
+	'profile.password.updateFailed': 'Failed to update password',
+
+	// Profile → Two-factor authentication card
+	'profile.mfa.heading': 'Two-factor authentication',
+	'profile.mfa.hint':
+		"Adds a second step at sign-in using an authenticator app (Google Authenticator, 1Password, Authy, etc.). If you can't access your authenticator, a one-time code can be emailed to your account.",
+	'profile.mfa.enabled': 'Enabled',
+	'profile.mfa.notConfigured': 'Not configured',
+	'profile.mfa.requiredNoDisable': 'Your organization requires MFA, so disabling is not available.',
+	'profile.mfa.requiredEnroll': 'Your organization requires MFA — please enroll now.',
+	'profile.mfa.disablePassword': 'Enter your password to disable MFA',
+	'profile.mfa.confirmWithPasskey': 'Confirm with a passkey',
+	'profile.mfa.disable': 'Disable two-factor',
+	'profile.mfa.disabling': 'Disabling…',
+	'profile.mfa.setUp': 'Set up two-factor',
+	'profile.mfa.step1Label': 'Step 1.',
+	'profile.mfa.step1Text': 'Scan this QR code with your authenticator app.',
+	'profile.mfa.qrAlt': 'MFA QR code',
+	'profile.mfa.manualSecret': "Can't scan? Enter the secret manually",
+	'profile.mfa.step2Label': 'Step 2.',
+	'profile.mfa.step2Text': 'Enter the 6-digit code your app shows',
+	'profile.mfa.verifyAndEnable': 'Verify and enable',
+	'profile.mfa.verifying': 'Verifying…',
+	'profile.mfa.enrollFailed': 'Failed to start enrollment',
+	'profile.mfa.verifyFailed': 'Verification failed',
+	'profile.mfa.enabledToast': 'Two-factor authentication enabled',
+	'profile.mfa.disabledToast': 'Two-factor authentication disabled',
+	'profile.mfa.disableFailed': 'Failed to disable',
+
+	// Profile → Passkeys card
+	'profile.passkeys.heading': 'Passkeys',
+	'profile.passkeys.hint':
+		'Sign in with a passkey — Touch ID, Face ID, Windows Hello, or a hardware security key — instead of typing a code. Passkeys are a second factor alongside (or in place of) an authenticator app.',
+	'profile.passkeys.unsupported': "This browser doesn't support passkeys.",
+	'profile.passkeys.stepUpPassword': 'Confirm your password to add or remove a passkey',
+	'profile.passkeys.stepUpBlankHint':
+		'Leave this blank to confirm with one of your existing passkeys instead — the only option if you sign in with SSO and have no password.',
+	'profile.passkeys.lastUsed': 'Last used {date}',
+	'profile.passkeys.neverUsed': 'Never used',
+	'profile.passkeys.remove': 'Remove',
+	'profile.passkeys.loadFailed':
+		"Couldn't load your passkeys, so we can't say which ones are registered.",
+	'profile.passkeys.none': 'No passkeys yet',
+	'profile.passkeys.nameLabel': 'Passkey name (optional)',
+	'profile.passkeys.namePlaceholder': 'e.g. MacBook Touch ID',
+	'profile.passkeys.add': 'Add a passkey',
+	'profile.passkeys.waiting': 'Waiting for passkey…',
+	'profile.passkeys.added': 'Passkey added',
+	'profile.passkeys.addFailed': 'Failed to add passkey',
+	'profile.passkeys.removed': 'Passkey removed',
+	'profile.passkeys.removeFailed': 'Failed to remove passkey',
+
+	// Profile → Signed-in devices card
+	'profile.sessions.heading': 'Signed-in devices',
+	'profile.sessions.hint':
+		"Every browser or app currently signed in to your account. If you don't recognise one — or you signed in on a device you no longer have — sign it out here. It stops working immediately.",
+	'profile.sessions.loadFailed':
+		"Couldn't load your sessions, so we can't say what's signed in right now.",
+	'profile.sessions.unknownDevice': 'Unrecognised device',
+	'profile.sessions.thisDevice': 'This device',
+	'profile.sessions.signedIn': 'Signed in {date}',
+	'profile.sessions.signOut': 'Sign out',
+	'profile.sessions.confirmSignOut': 'Confirm sign out',
+	'profile.sessions.signOutOthers': 'Sign out everywhere else',
+	'profile.sessions.confirmSignOutOthers':
+		'Confirm — sign out {n, plural, one {# other session} other {# other sessions}}',
+	'profile.sessions.none': 'No other sessions are signed in.',
+	'profile.sessions.revoked': 'Signed that device out',
+	'profile.sessions.revokeFailed': 'Failed to sign that device out',
+	'profile.sessions.revokedOthers':
+		'Signed {n, plural, one {# other session} other {# other sessions}} out',
+	'profile.sessions.revokeOthersFailed': 'Failed to sign other sessions out',
+
+	// Profile → Notifications card
+	'profile.notifications.heading': 'Notifications',
+	'profile.notifications.hint':
+		'Choose which events reach you, and how. Anything left on is delivered — every event is on until you switch it off. In-app notifications appear in the notification center; email is sent to {email}.',
+	'profile.notifications.yourAddress': 'your address',
+	'profile.notifications.colEvent': 'Event',
+	'profile.notifications.colInApp': 'In-app',
+	'profile.notifications.colEmail': 'Email',
+	'profile.notifications.loadFailed': 'Could not load notification preferences.',
+	'profile.notifications.updateFailed': 'Failed to update notification preferences',
 
 	// Common shared across list/detail surfaces
 	'common.all': 'All',
@@ -243,6 +347,12 @@ export const en = {
 	'invoices.status.failed': 'Failed',
 	'invoices.selectAllAria': 'Select all invoices on this page',
 	'invoices.systemManagedTitle': 'Cannot select — {status} is system-managed',
+	// The warning-icon label on a row. The FRAME is translated; the findings
+	// spliced into it are the server's own English prose — see the comment at the
+	// call site in routes/invoices/+page.svelte.
+	'invoices.warningsAria': 'Warnings: {warnings}',
+	'invoices.priorsTitle':
+		'Extraction priors: {cache, plural, one {# vendor-cache field} other {# vendor-cache fields}}, {rag, plural, one {# RAG neighbor} other {# RAG neighbors}}',
 	'invoices.empty': 'No invoices match your filters.',
 	'invoices.empty.errored': 'Could not load invoices. Try again.',
 	'invoices.empty.fresh': 'No invoices yet. Upload one, create one manually, or import a CSV to load your open AP.',
@@ -849,6 +959,93 @@ export const en = {
 	'exceptions.bulkModal.hint': 'All selected rows will receive the same resolution note. Rows already in a terminal state are silently skipped server-side.',
 	'exceptions.bulkModal.notePlaceholder': 'Applied to every selected row',
 
+	// Exception-type labels ($lib/types/exception.ts::EXCEPTION_TYPE_LABEL_KEYS).
+	// Each ENGLISH value is byte-identical to
+	// `backend/app/api/exceptions.py::EXCEPTION_TYPE_LABELS`, which is what the
+	// queue still renders through the wire's `type_label`; `exception.test.ts`
+	// pins that equality so the two surfaces can't disagree in English.
+	'exceptions.type.duplicate': 'Duplicate Invoice',
+	'exceptions.type.poMismatch': 'PO Mismatch',
+	'exceptions.type.fraudFlag': 'Fraud Flag',
+	'exceptions.type.extractionFailed': 'Extraction Failed',
+	'exceptions.type.unverifiedVendor': 'Unverified Vendor',
+	'exceptions.type.reviewRejected': 'Rejected',
+	'exceptions.type.amountExceeded': 'Amount Exceeded',
+	'exceptions.type.missingData': 'Missing Data',
+	'exceptions.type.qualityHold': 'Quality Hold',
+	'exceptions.type.priceVariance': 'Price Variance',
+	'exceptions.type.contractNoncompliant': 'Contract Non-Compliant',
+	'exceptions.type.erpReconciliation': 'ERP Reconciliation',
+	'exceptions.type.lineTotalMismatch': 'Line Total Mismatch',
+	'exceptions.type.paymentComplianceHold': 'Compliance Hold',
+	'exceptions.type.paymentReconciliation': 'Payment Reconciliation',
+
+	// Exceptions → AI Agents tab (components/exceptions/AgentDashboard.svelte)
+	'exceptions.agents.loading': 'Loading agent activity…',
+	'exceptions.agents.loadFailed': 'Failed to load agent activity',
+	'exceptions.agents.logLoadFailed': 'Failed to load decision log',
+	'exceptions.agents.kpi.decisions': 'Decisions made',
+	'exceptions.agents.kpi.resolutionRate': 'Resolution rate',
+	'exceptions.agents.kpi.escalationRate': 'Escalation rate',
+	// The agent-action vocabulary — one set of keys shared by the decision badge,
+	// the filter chips and the two count KPIs
+	// ($lib/types/exceptionAgents.ts::ACTION_LABEL_KEYS).
+	'exceptions.agents.action.autoResolved': 'Auto-resolved',
+	'exceptions.agents.action.escalated': 'Escalated',
+	'exceptions.agents.action.noAction': 'No action',
+	// The org's autonomy setting (AUTONOMY_LEVEL_LABEL_KEYS). `conservative` is
+	// "off" — its confidence threshold is unreachable, so everything escalates.
+	'exceptions.agents.autonomy.conservative': 'Conservative',
+	'exceptions.agents.autonomy.balanced': 'Balanced',
+	'exceptions.agents.autonomy.aggressive': 'Aggressive',
+	'exceptions.agents.accuracy.label': 'Accuracy',
+	'exceptions.agents.accuracy.notMeasured': 'Not yet measured',
+	'exceptions.agents.accuracy.note':
+		'Accuracy needs a human-overturn signal (was an auto-resolution later reversed?). That signal is not tracked yet, so no accuracy figure is shown rather than a fabricated one.',
+	'exceptions.agents.run.heading': 'Run an agent',
+	'exceptions.agents.run.refresh': 'Refresh',
+	'exceptions.agents.run.refreshing': 'Refreshing…',
+	'exceptions.agents.run.note':
+		"Running an agent evaluates one exception and, when its confidence clears this organization's autonomy threshold, applies the fix through the same audited path a person would use. Below that threshold it escalates to a human instead. Either way it records one decision in the log below.",
+	'exceptions.agents.run.empty.loading': 'Loading open exceptions…',
+	'exceptions.agents.run.empty.errored': 'Could not load the open exceptions. Try Refresh.',
+	'exceptions.agents.run.empty.none': 'No open or escalated exceptions to run an agent on.',
+	'exceptions.agents.run.action': 'Run agent',
+	'exceptions.agents.run.running': 'Running…',
+	'exceptions.agents.run.aria': 'Run agent on {type} exception',
+	'exceptions.agents.run.ariaWithInvoice': 'Run agent on {type} exception for invoice {invoice}',
+	'exceptions.agents.run.blockedTitle':
+		'This exception has no invoice, so an agent has nothing to act on — human triage only.',
+	'exceptions.agents.run.blockedAria':
+		'Cannot run an agent on this {type} exception: it has no invoice',
+	'exceptions.agents.run.failed': 'The agent run failed.',
+	'exceptions.agents.log.heading': 'Recent decisions',
+	'exceptions.agents.log.filterAria': 'Filter agent decisions by action',
+	'exceptions.agents.log.empty':
+		'No agent decisions yet. Run an agent on an exception to populate this log.',
+	'exceptions.agents.col.when': 'When',
+	'exceptions.agents.col.resolver': 'Resolver',
+	'exceptions.agents.col.exception': 'Exception',
+	'exceptions.agents.col.action': 'Action',
+	'exceptions.agents.col.confidence': 'Confidence',
+	'exceptions.agents.col.autonomy': 'Autonomy',
+	'exceptions.agents.col.change': 'Change',
+	'exceptions.agents.col.raised': 'Raised',
+	'exceptions.agents.loadMore': 'Load more ({shown} of {total})',
+	'exceptions.agents.showingAll':
+		'{total, plural, one {Showing all # decision} other {Showing all # decisions}}',
+	'exceptions.agents.modal.aria': 'Run an exception agent',
+	'exceptions.agents.modal.titleRun': 'Run an agent on this exception',
+	'exceptions.agents.modal.titleDecision': 'Agent decision',
+	'exceptions.agents.modal.warning':
+		'The agent may change this invoice. It applies a fix only when its confidence clears the autonomy threshold; otherwise it escalates to a human. Both outcomes are recorded.',
+	'exceptions.agents.modal.nowStatus': 'Exception is now',
+	'exceptions.agents.modal.escalatedNote':
+		"The agent's confidence did not clear this organization's autonomy threshold, so it escalated the exception to a human instead of changing anything. That is a normal, recorded outcome — the decision is in the log below.",
+	'exceptions.agents.modal.noActionNote':
+		'The agent found nothing it could safely change on this exception. Nothing was modified; the decision is recorded in the log below.',
+	'exceptions.agents.modal.close': 'Close',
+
 	// Notifications (routes/notifications/+page.svelte)
 	'notifications.title': 'Notifications',
 	'notifications.markAllRead': 'Mark all read',
@@ -1230,6 +1427,8 @@ export const en = {
 	'org.chat.hint':
 		'Post approval-lifecycle events to a Slack or Microsoft Teams channel via that provider’s incoming webhook. One post per event, never per recipient — this is in addition to email and in-app notifications, not instead of them.',
 	'org.chat.loading': 'Loading chat notifications…',
+	'org.chat.adminOnly':
+		'Only an administrator can see or change the chat notification settings.',
 	'org.chat.enabled': 'Send approval events to chat',
 	'org.chat.provider': 'Provider',
 	'org.chat.events': 'Events',
@@ -1263,6 +1462,8 @@ export const en = {
 	'org.chat.webhook.toast.empty': 'Paste the incoming-webhook URL first',
 	'org.readOnly.banner':
 		'You are viewing organization settings in read-only mode. Only an administrator can change them, so every field and button here is disabled.',
+	'org.readOnly.sectionAdminOnly':
+		'Only an administrator can see this section. Its settings are not sent to other roles, so the fields here would read as platform defaults rather than this organization’s own configuration.',
 	'org.section.emailIntake': 'Email Intake',
 	'org.emailIntake.hint':
 		'Vendors email invoices straight into your AP queue. Every PDF, image or e-invoice XML attached to a message sent to your intake address becomes an invoice and goes through extraction and approval exactly like an upload — nobody has to open the app to file it.',
@@ -4350,7 +4551,6 @@ export const en = {
 	'discounts.bulk.errorTitle': 'Offer not created',
 	'discounts.bulk.intro': 'One standing offer covering every open invoice this vendor has. The amount it applies to is the vendor’s open balance, totalled by the server when you propose — it is shown once the offer exists. Nothing is paid: the offer lands as Offered and still has to be accepted and funded.',
 	'discounts.bulk.noValidUntil': 'With no end date the offer never lapses on its own and the optimizer cannot rank it — it has no horizon to annualize a return over.',
-	'discounts.bulk.noVendors': 'No vendors are available to negotiate with.',
 	'discounts.bulk.notes': 'Notes (optional)',
 	'discounts.bulk.open': 'Propose vendor offer',
 	'discounts.bulk.percentAria': 'Tier {n} — discount percent',
@@ -4366,7 +4566,6 @@ export const en = {
 	'discounts.bulk.title': 'Propose a vendor-wide discount',
 	'discounts.bulk.validUntil': 'Valid until',
 	'discounts.bulk.vendor': 'Vendor',
-	'discounts.bulk.vendorsLoading': 'Loading vendors…',
 	'discounts.chip.missed': 'Missed',
 	'discounts.col.base': 'Base',
 	'discounts.col.bestDiscount': 'Best discount',

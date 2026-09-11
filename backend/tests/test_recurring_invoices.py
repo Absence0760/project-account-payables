@@ -27,6 +27,8 @@ from app.models.recurring_invoice import (
     CADENCE_ANNUAL,
     CADENCE_MONTHLY,
     CADENCE_QUARTERLY,
+    COSMETIC_EDIT_FIELDS,
+    MATERIAL_EDIT_FIELDS,
     STATUS_ACTIVE,
     STATUS_PAUSED,
     RecurringInvoiceTemplate,
@@ -1369,3 +1371,357 @@ async def test_template_author_cannot_approve_what_the_sweep_generated(realdb):
 
     assert resp.status_code == 403, resp.text
     assert "segregation" in resp.json()["detail"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# A template's material EDITOR is implicated too, not just its author
+# --------------------------------------------------------------------------- #
+#
+# Migration 0096 closed the sweep's exemption for the template's author. It left
+# it open for the editor: an `ap_manager` who PATCHes someone else's template,
+# repointing the vendor and the amount, shapes the payable as completely as
+# whoever wrote it — and was recorded nowhere on it, so they could still approve
+# what it generated. Stamping the editor into `created_by_user_id` instead would
+# merely have moved the exemption to the author, which is why segregation now
+# keys on a SET (`Invoice.segregation_actor_ids`) and every path feeding it
+# changed together. Migration 0097.
+
+
+def test_material_edit_fields_is_the_single_classification():
+    """Pure — the router asks the model, so the two cannot drift."""
+    assert svc.material_edit_fields(["amount", "name"]) == {"amount"}
+    assert svc.material_edit_fields(["name", "notes"]) == set()
+    assert svc.material_edit_fields([]) == set()
+    # Every shape a term of the payable can take is in, and prose is out.
+    assert {"vendor_id", "currency", "gl_account", "cadence"} <= MATERIAL_EDIT_FIELDS
+    assert MATERIAL_EDIT_FIELDS.isdisjoint(COSMETIC_EDIT_FIELDS)
+
+
+def test_every_patchable_template_field_is_classified():
+    """Drift guard. An unclassified field defaults to "cosmetic", so a new
+    money- or schedule-shaped field on `RecurringTemplateUpdate` would silently
+    stop implicating the person who changed it. Fail until someone decides."""
+    from app.schemas.recurring_invoice import RecurringTemplateUpdate
+
+    patchable = set(RecurringTemplateUpdate.model_fields)
+    classified = MATERIAL_EDIT_FIELDS | COSMETIC_EDIT_FIELDS
+    unclassified = sorted(patchable - classified)
+    assert not unclassified, (
+        f"PATCHable template fields nobody classified: {unclassified} — add each to "
+        "MATERIAL_EDIT_FIELDS (it changes a term of the generated payable) or to "
+        "COSMETIC_EDIT_FIELDS (it does not), in app/models/recurring_invoice.py."
+    )
+    # The reverse: a field dropped from the schema must not linger in either set.
+    stale = sorted(classified - patchable - {"entity_id"})
+    assert not stale, f"classified fields no longer on RecurringTemplateUpdate: {stale}"
+
+
+def test_record_material_editor_is_an_idempotent_set():
+    """Pure — membership, not an append-only log, and never dropping an id."""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    t = SimpleNamespace(material_editor_ids=None)
+
+    svc.record_material_editor(t, a)
+    assert t.material_editor_ids == [str(a)]
+
+    # Same editor twice — no duplicate, and the list object is not re-grown.
+    svc.record_material_editor(t, a)
+    assert t.material_editor_ids == [str(a)]
+
+    # A second editor joins; the first is never dropped. Sorted for a stable
+    # stored shape.
+    svc.record_material_editor(t, b)
+    assert t.material_editor_ids == sorted([str(a), str(b)])
+
+
+def test_record_material_editor_reassigns_rather_than_appends():
+    """The column is plain JSONB with no MutableList, so SQLAlchemy's dirty
+    check compares object identity against the load-time baseline — an in-place
+    `append` would never reach the database."""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    original = [str(a)]
+    t = SimpleNamespace(material_editor_ids=original)
+    svc.record_material_editor(t, b)
+    assert t.material_editor_ids is not original
+    assert original == [str(a)]
+
+
+def test_implicated_actor_ids_is_author_union_editors_minus_the_uploader():
+    """Pure — the set `generate_one` stamps."""
+    author, editor, clicker = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    t = SimpleNamespace(created_by_user_id=author, material_editor_ids=[str(editor)])
+
+    # The sweep: the author lands in `uploaded_by_id`, so only the editor is left.
+    assert svc.implicated_actor_ids(t, uploader_id=author) == [str(editor)]
+
+    # generate-now by a third party: author AND editor are the additional actors.
+    assert svc.implicated_actor_ids(t, uploader_id=clicker) == sorted([str(author), str(editor)])
+
+    # The editor clicked generate-now: they are the uploader, the author remains.
+    assert svc.implicated_actor_ids(t, uploader_id=editor) == [str(author)]
+
+
+def test_implicated_actor_ids_is_none_when_nobody_is_left():
+    """`None`, not `[]` — "no additional implicated actor" must store as the same
+    NULL every other creation path writes, so empty never has to be told from
+    absent."""
+    author = uuid.uuid4()
+    assert (
+        svc.implicated_actor_ids(
+            SimpleNamespace(created_by_user_id=author, material_editor_ids=None),
+            uploader_id=author,
+        )
+        is None
+    )
+    # A pre-0096 template with no edits: nobody at all.
+    assert (
+        svc.implicated_actor_ids(
+            SimpleNamespace(created_by_user_id=None, material_editor_ids=None),
+            uploader_id=None,
+        )
+        is None
+    )
+
+
+def test_implicated_actor_ids_names_an_editor_of_a_pre_0096_template():
+    """The author of a legacy template is unrecoverable, but its editor is
+    observed. So the residual NULL is an un-named author, never an un-named
+    editor — the legacy set shrinks instead of absorbing new edits."""
+    editor = uuid.uuid4()
+    t = SimpleNamespace(created_by_user_id=None, material_editor_ids=[str(editor)])
+    assert svc.implicated_actor_ids(t, uploader_id=None) == [str(editor)]
+
+
+async def test_patch_material_field_implicates_the_editor(realdb):
+    """`PATCH /api/recurring/{id}` records whoever changed a TERM of the payable."""
+    mk = realdb.sessionmaker("a")
+    admin = realdb.info("a").users["admin"]
+    editor = realdb.info("a").users["ap_manager"]
+
+    async with realdb.client(key="a", role="admin") as c:
+        tid = (await c.post("/api/recurring", json=_create_body())).json()["id"]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.patch(f"/api/recurring/{tid}", json={"amount": 9999.0})).status_code == 200
+
+    t = await _reload(mk, uuid.UUID(tid))
+    assert t.material_editor_ids == [str(editor)]
+    # The author is untouched — appending an editor must never overwrite them.
+    assert t.created_by_user_id == admin
+
+
+async def test_patch_cosmetic_field_implicates_nobody(realdb):
+    """A rename is not an edit to the payable. Implicating a typo-fixer would
+    spend the control's credibility and close no hole."""
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        tid = (await c.post("/api/recurring", json=_create_body())).json()["id"]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(
+            f"/api/recurring/{tid}", json={"name": "Renamed", "notes": "moved desks"}
+        )
+        assert resp.status_code == 200
+
+    t = await _reload(mk, uuid.UUID(tid))
+    assert t.name == "Renamed"
+    assert not t.material_editor_ids
+
+
+async def test_patch_that_changes_nothing_implicates_nobody(realdb):
+    """An idempotent save re-sends the field it already holds. `changed` is
+    empty, so nobody is implicated — otherwise opening and saving a form would
+    cost the saver their ability to approve."""
+    mk = realdb.sessionmaker("a")
+    body = _create_body()
+
+    async with realdb.client(key="a", role="admin") as c:
+        tid = (await c.post("/api/recurring", json=body)).json()["id"]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/recurring/{tid}", json={"amount": body["amount"]})
+        assert resp.status_code == 200
+
+    assert not (await _reload(mk, uuid.UUID(tid))).material_editor_ids
+
+
+async def test_repeated_material_edits_by_one_user_do_not_duplicate(realdb):
+    """Membership, not a log."""
+    mk = realdb.sessionmaker("a")
+    editor = realdb.info("a").users["ap_manager"]
+
+    async with realdb.client(key="a", role="admin") as c:
+        tid = (await c.post("/api/recurring", json=_create_body())).json()["id"]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.patch(f"/api/recurring/{tid}", json={"amount": 11.0})).status_code == 200
+        assert (
+            await c.patch(f"/api/recurring/{tid}", json={"gl_account": "7100"})
+        ).status_code == 200
+
+    assert (await _reload(mk, uuid.UUID(tid))).material_editor_ids == [str(editor)]
+
+
+async def test_the_author_editing_their_own_template_keeps_the_author(realdb):
+    """The author joining the editor set must not erase `created_by_user_id` —
+    the two columns answer different questions and the predicate unions them."""
+    mk = realdb.sessionmaker("a")
+    admin = realdb.info("a").users["admin"]
+
+    async with realdb.client(key="a", role="admin") as c:
+        tid = (await c.post("/api/recurring", json=_create_body())).json()["id"]
+        assert (await c.patch(f"/api/recurring/{tid}", json={"currency": "EUR"})).status_code == 200
+
+    t = await _reload(mk, uuid.UUID(tid))
+    assert t.created_by_user_id == admin
+    assert t.material_editor_ids == [str(admin)]
+
+
+async def test_material_edit_is_named_on_the_audit_row(realdb):
+    """The trail has to say WHICH edit widened the segregation block, or a later
+    reader sees a wider refusal with nothing explaining it."""
+    mk = realdb.sessionmaker("a")
+
+    async with realdb.client(key="a", role="admin") as c:
+        tid = (await c.post("/api/recurring", json=_create_body())).json()["id"]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (
+            await c.patch(f"/api/recurring/{tid}", json={"amount": 77.0, "name": "Also renamed"})
+        ).status_code == 200
+
+    async with mk() as s:
+        row = (
+            await s.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "recurring_template.updated",
+                    AuditLog.entity_id == uuid.UUID(tid),
+                )
+            )
+        ).scalar_one()
+        assert row.details["changed"] == ["amount", "name"]
+        assert row.details["material"] == ["amount"]
+
+
+async def test_sweep_carries_author_and_editors_onto_the_generated_invoice(realdb):
+    """The set travels from the template to the payable it raises.
+
+    The author lands in `uploaded_by_id` (no live actor on the sweep), so the
+    editor is what `segregation_actor_ids` has to carry — nobody is named twice.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    db_name = realdb.info("a").db_name
+    author = realdb.info("a").users["admin"]
+    editor = realdb.info("a").users["ap_manager"]
+
+    tid = await _add_recurring_template(
+        mk, org_id, next_run_on=_SWEEP_TODAY, name="Edited Co", created_by=author
+    )
+    async with mk() as s:
+        t = (
+            await s.execute(
+                select(RecurringInvoiceTemplate).where(RecurringInvoiceTemplate.id == tid)
+            )
+        ).scalar_one()
+        svc.record_material_editor(t, editor)
+        await s.commit()
+
+    assert (await svc._sweep_tenant(db_name, _SWEEP_TODAY)).generated == 1
+
+    async with mk() as s:
+        inv = (
+            await s.execute(select(Invoice).where(Invoice.recurring_template_id == tid))
+        ).scalar_one()
+        assert inv.uploaded_by_id == author
+        assert inv.segregation_actor_ids == [str(editor)]
+
+
+async def test_generate_now_by_a_third_party_implicates_author_and_editor(realdb):
+    """A live actor displaces the author from `uploaded_by_id`, so BOTH the
+    author and the editor have to land in the set — otherwise clicking
+    generate-now would launder the template's own shapers out of the control."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    author = realdb.info("a").users["cfo"]
+    editor = realdb.info("a").users["admin"]
+    clicker = realdb.info("a").users["ap_manager"]
+
+    tid = await _add_recurring_template(
+        mk, org_id, next_run_on=_SWEEP_TODAY, name="Third Party Co", created_by=author
+    )
+    async with mk() as s:
+        t = (
+            await s.execute(
+                select(RecurringInvoiceTemplate).where(RecurringInvoiceTemplate.id == tid)
+            )
+        ).scalar_one()
+        svc.record_material_editor(t, editor)
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(f"/api/recurring/{tid}/generate-now")
+        assert resp.status_code == 201, resp.text
+        invoice_id = uuid.UUID(resp.json()["invoice_id"])
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one()
+        assert inv.uploaded_by_id == clicker
+        assert inv.segregation_actor_ids == sorted([str(author), str(editor)])
+
+
+async def test_a_template_editor_cannot_approve_what_the_sweep_generated(realdb):
+    """End-to-end at the API — the whole point of the set.
+
+    The admin authors the template; the ap_manager repoints its amount; the
+    background sweep raises the invoice. Before migration 0097 the ap_manager's
+    edit was recorded nowhere on the payable, so the approve returned 200. A
+    fourth party with no hand in the template still approves — the control is a
+    set of implicated people, not a lock on the queue.
+    """
+    mk = realdb.sessionmaker("a")
+    db_name = realdb.info("a").db_name
+    vendor_id = await _add_vendor(mk, realdb.info("a").org_id, name="Editor SoD Vendor")
+
+    async with realdb.client(key="a", role="admin") as c:
+        tid = (
+            await c.post(
+                "/api/recurring",
+                json=_create_body(name="Editor SoD rent", vendor_id=vendor_id, amount=600.0),
+            )
+        ).json()["id"]
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.patch(f"/api/recurring/{tid}", json={"amount": 640.0})).status_code == 200
+
+    # Point the cursor at the sweep's date and let the SWEEP raise it, so there
+    # is no live actor and the only names on the row are the template's.
+    async with mk() as s:
+        t = (
+            await s.execute(
+                select(RecurringInvoiceTemplate).where(
+                    RecurringInvoiceTemplate.id == uuid.UUID(tid)
+                )
+            )
+        ).scalar_one()
+        t.next_run_on = _SWEEP_TODAY
+        await s.commit()
+
+    assert (await svc._sweep_tenant(db_name, _SWEEP_TODAY)).generated == 1
+
+    async with mk() as s:
+        invoice_id = (
+            await s.execute(
+                select(Invoice.id).where(Invoice.recurring_template_id == uuid.UUID(tid))
+            )
+        ).scalar_one()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        refused = await c.post(f"/api/invoices/{invoice_id}/approve", json={})
+    assert refused.status_code == 403, refused.text
+    assert "segregation" in refused.json()["detail"].lower()
+
+    async with realdb.client(key="a", role="cfo") as c:
+        allowed = await c.post(f"/api/invoices/{invoice_id}/approve", json={})
+    assert allowed.status_code == 200, allowed.text

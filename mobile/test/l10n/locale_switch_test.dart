@@ -373,6 +373,69 @@ void main() {
     expect(find.text('2ステップ'), findsOneWidget); // plural (other-only)
   });
 
+  testWidgets(
+      'the inspections / adaptive batch switches with the locale',
+      (tester) async {
+    // Guards this round's extraction batch (quality inspections + adaptive
+    // workflows + the Settings navigation rows). Includes a plural
+    // (adaptiveAnomaliesScanned) and three placeholder strings
+    // (inspectionsResultAnnounce, inspectionRecordReceiptsBounded,
+    // adaptivePatternsLookback).
+    final probe = Builder(
+      builder: (context) {
+        final l = AppLocalizations.of(context);
+        return Scaffold(
+          body: Column(
+            children: [
+              Text(l.settingsInspections),
+              Text(l.settingsAdaptive),
+              Text(l.inspectionsResultPartial),
+              Text(l.inspectionsResultAnnounce('X')),
+              Text(l.inspectionRecordReceiptsBounded(2, 57)),
+              Text(l.inspectionDetailNotFound),
+              Text(l.adaptiveTabSuggestions),
+              Text(l.adaptivePatternsLookback(180)),
+              Text(l.adaptiveAnomaliesScanned(7)),
+            ],
+          ),
+        );
+      },
+    );
+
+    await LocaleStore.instance.setLocale(const Locale('en'));
+    await tester.pumpWidget(host(probe));
+    await tester.pump();
+    expect(find.text('Quality Inspections'), findsOneWidget);
+    expect(find.text('Partial acceptance'), findsOneWidget);
+    expect(find.text('Result: X'), findsOneWidget); // placeholder
+    expect(
+      find.textContaining('Showing the 2 most recent of 57 receipts'),
+      findsOneWidget,
+    ); // two placeholders
+    expect(find.text('7 invoices in review scanned.'), findsOneWidget); // plural
+
+    await LocaleStore.instance.setLocale(const Locale('de'));
+    await tester.pump();
+    expect(find.text('Qualitätsprüfungen'), findsOneWidget);
+    expect(find.text('Teilannahme'), findsOneWidget);
+    expect(find.text('Ergebnis: X'), findsOneWidget); // placeholder
+    expect(
+      find.text('7 Rechnungen in Prüfung untersucht.'),
+      findsOneWidget,
+    ); // plural
+    expect(find.text('Quality Inspections'), findsNothing);
+
+    await LocaleStore.instance.setLocale(const Locale('ja'));
+    await tester.pump();
+    expect(find.text('品質検査'), findsOneWidget);
+    expect(find.text('一部受入'), findsOneWidget);
+    // Japanese plurals carry only an `other` arm.
+    expect(
+      find.text('レビュー中の請求書 7 件をスキャンしました。'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('the choice persists and reloads via init()', (tester) async {
     await LocaleStore.instance.setLocale(const Locale('fr'));
     expect(LocaleStore.tagOf(LocaleStore.instance.locale!), 'fr');

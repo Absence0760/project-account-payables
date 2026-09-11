@@ -217,6 +217,117 @@ void main() {
     expect(find.byIcon(Icons.logout), findsOneWidget);
   });
 
+
+  // ── Navigation sections ───────────────────────────────────────────────
+  //
+  // The Settings list is the app's hub for everything that isn't a bottom-nav
+  // tab, and each row is gated against the backend gate of the surface it opens
+  // — per entry, not per section. These tests pin that mapping, because a row
+  // shown to a role the API refuses is a guaranteed 403 on first paint, and a
+  // row hidden from a role the API admits is a dead end.
+
+  /// Scroll the settings list to the bottom so every lazily-built row is in the
+  /// tree before asserting on what is and isn't there.
+  Future<void> scrollToBottom(WidgetTester tester) async {
+    for (var i = 0; i < 6; i++) {
+      await tester.drag(find.byType(ListView), const Offset(0, -300));
+      await tester.pumpAndSettle();
+    }
+  }
+
+  testWidgets('every role gets Procurement → Quality Inspections',
+      (tester) async {
+    // `GET /api/inspections` and its detail are `get_current_user`, so the entry
+    // point is not role-gated; the record affordance inside the screen is.
+    for (final roles in [['ap_clerk'], ['cfo'], ['admin']]) {
+      await _loginAs(roles: roles);
+      await tester.pumpWidget(wrap());
+      await tester.pump();
+      await scrollToBottom(tester);
+
+      expect(find.text('Procurement'), findsOneWidget, reason: '$roles');
+      expect(
+        find.widgetWithText(ListTile, 'Quality Inspections'),
+        findsOneWidget,
+        reason: '$roles',
+      );
+    }
+  });
+
+  testWidgets('an admin gets all four Administration rows', (tester) async {
+    await _loginAs(roles: ['admin']);
+
+    await tester.pumpWidget(wrap());
+    await tester.pump();
+    await scrollToBottom(tester);
+
+    expect(find.text('Administration'), findsOneWidget);
+    expect(find.widgetWithText(ListTile, 'User Management'), findsOneWidget);
+    expect(
+      find.widgetWithText(ListTile, 'Organization Settings'),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(ListTile, 'Workflows'), findsOneWidget);
+    expect(
+      find.widgetWithText(ListTile, 'Adaptive Workflows'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a manager gets Adaptive Workflows and none of the admin rows',
+      (tester) async {
+    // The half a group-level `isOrgAdmin` gate got wrong: every /api/adaptive
+    // read is admin | ap_manager | cfo, so hiding the whole section from a
+    // manager hid a surface the backend admits.
+    await _loginAs(roles: ['ap_manager']);
+
+    await tester.pumpWidget(wrap());
+    await tester.pump();
+    await scrollToBottom(tester);
+
+    expect(find.text('Administration'), findsOneWidget);
+    expect(
+      find.widgetWithText(ListTile, 'Adaptive Workflows'),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(ListTile, 'User Management'), findsNothing);
+    expect(
+      find.widgetWithText(ListTile, 'Organization Settings'),
+      findsNothing,
+    );
+  });
+
+  testWidgets('a CFO gets Adaptive Workflows too', (tester) async {
+    await _loginAs(roles: ['cfo']);
+
+    await tester.pumpWidget(wrap());
+    await tester.pump();
+    await scrollToBottom(tester);
+
+    expect(
+      find.widgetWithText(ListTile, 'Adaptive Workflows'),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(ListTile, 'User Management'), findsNothing);
+  });
+
+  testWidgets('a clerk gets no Administration section at all', (tester) async {
+    // Clerks are outside `_READ_ROLES` as well as the admin surfaces, so the
+    // section has nothing to show them.
+    await _loginAs(roles: ['ap_clerk']);
+
+    await tester.pumpWidget(wrap());
+    await tester.pump();
+    await scrollToBottom(tester);
+
+    expect(find.text('Administration'), findsNothing);
+    expect(
+      find.widgetWithText(ListTile, 'Adaptive Workflows'),
+      findsNothing,
+    );
+    expect(find.widgetWithText(ListTile, 'User Management'), findsNothing);
+  });
+
   // Sign Out ends the session and nothing more. Returning to login is the root
   // AuthGate's job (test/auth_gate_test.dart) — this screen used to rebuild the
   // whole navigator stack with `pushAndRemoveUntil(..., (_) => false)`, which
