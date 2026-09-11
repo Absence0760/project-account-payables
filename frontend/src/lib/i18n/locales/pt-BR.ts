@@ -81,6 +81,8 @@ export const messages = {
 	'common.saving': 'Salvando…',
 	'common.cancel': 'Cancelar',
 	'common.loading': 'Carregando…',
+	'common.tryAgain': 'Tentar novamente',
+	'common.retrying': 'Tentando novamente…',
 	'common.loadFailed': 'Não foi possível carregar esta lista. Atualize para tentar novamente.',
 	'common.amountInvalid': 'Informe o valor como um número simples, por exemplo 1200 ou 1200.50',
 
@@ -100,6 +102,106 @@ export const messages = {
 	'profile.notifications.event.cashShortfallProjected': 'Déficit de caixa previsto',
 	'profile.notifications.inAppFor': 'Notificações no aplicativo para “{event}”',
 	'profile.notifications.emailFor': 'Notificações por e-mail para “{event}”',
+
+	'profile.account.heading': 'Conta',
+	'profile.account.fullName': 'Nome completo',
+	'profile.account.email': 'E-mail',
+	'profile.account.roles': 'Funções',
+	'profile.account.updated': 'Perfil atualizado',
+	'profile.account.updateFailed': 'Não foi possível atualizar o perfil',
+
+	'profile.password.heading': 'Senha',
+	'profile.password.hint':
+		'Use uma senha forte e exclusiva desta conta. Depois de salvar você continua conectado neste dispositivo, mas as outras sessões seguem válidas até expirarem.',
+	'profile.password.current': 'Senha atual',
+	'profile.password.new': 'Nova senha',
+	'profile.password.confirm': 'Confirmar a nova senha',
+	'profile.password.submit': 'Alterar a senha',
+	'profile.password.mismatch': 'As senhas não coincidem',
+	'profile.password.updated': 'Senha atualizada',
+	'profile.password.updateFailed': 'Não foi possível atualizar a senha',
+
+	'profile.mfa.heading': 'Autenticação em duas etapas',
+	'profile.mfa.hint':
+		'Acrescenta uma segunda etapa no login usando um aplicativo autenticador (Google Authenticator, 1Password, Authy etc.). Se você não conseguir acessar o autenticador, um código de uso único pode ser enviado por e-mail para a sua conta.',
+	'profile.mfa.enabled': 'Ativada',
+	'profile.mfa.notConfigured': 'Não configurada',
+	'profile.mfa.requiredNoDisable':
+		'Sua organização exige MFA, portanto a desativação não está disponível.',
+	'profile.mfa.requiredEnroll': 'Sua organização exige MFA — configure agora.',
+	'profile.mfa.disablePassword': 'Digite sua senha para desativar a MFA',
+	'profile.mfa.confirmWithPasskey': 'Confirmar com uma chave de acesso',
+	'profile.mfa.disable': 'Desativar as duas etapas',
+	'profile.mfa.disabling': 'Desativando…',
+	'profile.mfa.setUp': 'Configurar as duas etapas',
+	'profile.mfa.step1Label': 'Etapa 1.',
+	'profile.mfa.step1Text': 'Escaneie este QR code com seu aplicativo autenticador.',
+	'profile.mfa.qrAlt': 'QR code da MFA',
+	'profile.mfa.manualSecret': 'Não consegue escanear? Digite o segredo manualmente',
+	'profile.mfa.step2Label': 'Etapa 2.',
+	'profile.mfa.step2Text': 'Digite o código de 6 dígitos que o aplicativo mostra',
+	'profile.mfa.verifyAndEnable': 'Verificar e ativar',
+	'profile.mfa.verifying': 'Verificando…',
+	'profile.mfa.enrollFailed': 'Não foi possível iniciar a configuração',
+	'profile.mfa.verifyFailed': 'A verificação falhou',
+	'profile.mfa.enabledToast': 'Autenticação em duas etapas ativada',
+	'profile.mfa.disabledToast': 'Autenticação em duas etapas desativada',
+	'profile.mfa.disableFailed': 'Não foi possível desativar',
+
+	'profile.passkeys.heading': 'Chaves de acesso',
+	'profile.passkeys.hint':
+		'Entre com uma chave de acesso — Touch ID, Face ID, Windows Hello ou uma chave de segurança física — em vez de digitar um código. Chaves de acesso são um segundo fator, ao lado de (ou no lugar de) um aplicativo autenticador.',
+	'profile.passkeys.unsupported': 'Este navegador não suporta chaves de acesso.',
+	'profile.passkeys.stepUpPassword':
+		'Confirme sua senha para adicionar ou remover uma chave de acesso',
+	'profile.passkeys.stepUpBlankHint':
+		'Deixe em branco para confirmar com uma das chaves de acesso que você já tem — a única opção se você entra por SSO e não tem senha.',
+	'profile.passkeys.lastUsed': 'Último uso {date}',
+	'profile.passkeys.neverUsed': 'Nunca usada',
+	'profile.passkeys.remove': 'Remover',
+	'profile.passkeys.loadFailed':
+		'Não foi possível carregar suas chaves de acesso, então não podemos dizer quais estão registradas.',
+	'profile.passkeys.none': 'Nenhuma chave de acesso ainda',
+	'profile.passkeys.nameLabel': 'Nome da chave de acesso (opcional)',
+	'profile.passkeys.namePlaceholder': 'ex.: MacBook Touch ID',
+	'profile.passkeys.add': 'Adicionar uma chave de acesso',
+	'profile.passkeys.waiting': 'Aguardando a chave de acesso…',
+	'profile.passkeys.added': 'Chave de acesso adicionada',
+	'profile.passkeys.addFailed': 'Não foi possível adicionar a chave de acesso',
+	'profile.passkeys.removed': 'Chave de acesso removida',
+	'profile.passkeys.removeFailed': 'Não foi possível remover a chave de acesso',
+
+	'profile.sessions.heading': 'Dispositivos conectados',
+	'profile.sessions.hint':
+		'Todos os navegadores e aplicativos conectados à sua conta neste momento. Se você não reconhecer algum — ou entrou em um dispositivo que não tem mais — desconecte-o aqui. Ele para de funcionar imediatamente.',
+	'profile.sessions.loadFailed':
+		'Não foi possível carregar suas sessões, então não podemos dizer o que está conectado agora.',
+	'profile.sessions.unknownDevice': 'Dispositivo não reconhecido',
+	'profile.sessions.thisDevice': 'Este dispositivo',
+	'profile.sessions.signedIn': 'Conectado em {date}',
+	'profile.sessions.signOut': 'Desconectar',
+	'profile.sessions.confirmSignOut': 'Confirmar a desconexão',
+	'profile.sessions.signOutOthers': 'Desconectar em todos os outros lugares',
+	'profile.sessions.confirmSignOutOthers':
+		'Confirmar — desconectar {n, plural, one {# outra sessão} other {# outras sessões}}',
+	'profile.sessions.none': 'Nenhuma outra sessão está conectada.',
+	'profile.sessions.revoked': 'Dispositivo desconectado',
+	'profile.sessions.revokeFailed': 'Não foi possível desconectar esse dispositivo',
+	'profile.sessions.revokedOthers':
+		'{n, plural, one {# outra sessão desconectada} other {# outras sessões desconectadas}}',
+	'profile.sessions.revokeOthersFailed': 'Não foi possível desconectar as outras sessões',
+
+	'profile.notifications.heading': 'Notificações',
+	'profile.notifications.hint':
+		'Escolha quais eventos chegam até você, e por qual canal. Tudo que ficar ativado é entregue — cada evento fica ativo até você desligá-lo. As notificações no aplicativo aparecem na central de notificações; o e-mail é enviado para {email}.',
+	'profile.notifications.yourAddress': 'seu endereço',
+	'profile.notifications.colEvent': 'Evento',
+	'profile.notifications.colInApp': 'No aplicativo',
+	'profile.notifications.colEmail': 'E-mail',
+	'profile.notifications.loadFailed':
+		'Não foi possível carregar as preferências de notificação.',
+	'profile.notifications.updateFailed':
+		'Não foi possível atualizar as preferências de notificação',
 
 	// Common shared across list/detail surfaces
 	'common.all': 'Todas',
@@ -219,6 +321,9 @@ export const messages = {
 	'invoices.status.failed': 'Falhou',
 	'invoices.selectAllAria': 'Selecionar todas as faturas desta página',
 	'invoices.systemManagedTitle': 'Não é possível selecionar — {status} é gerenciada pelo sistema',
+	'invoices.warningsAria': 'Avisos: {warnings}',
+	'invoices.priorsTitle':
+		'Dados prévios de extração: {cache, plural, one {# campo em cache do fornecedor} other {# campos em cache do fornecedor}}, {rag, plural, one {# vizinho RAG} other {# vizinhos RAG}}',
 	'invoices.empty': 'Nenhuma fatura corresponde aos seus filtros.',
 	'invoices.empty.errored': 'Não foi possível carregar as faturas. Tente novamente.',
 	'invoices.empty.fresh': 'Ainda não há faturas. Envie uma, crie uma manualmente ou importe um CSV para carregar suas contas a pagar em aberto.',
@@ -784,6 +889,85 @@ export const messages = {
 	'exceptions.bulkModal.title': '{n, plural, one {Resolver # exceção} other {Resolver # exceções}}',
 	'exceptions.bulkModal.hint': 'Todas as linhas selecionadas receberão a mesma nota de resolução. Linhas já em estado terminal são ignoradas silenciosamente no servidor.',
 	'exceptions.bulkModal.notePlaceholder': 'Aplicada a cada linha selecionada',
+
+	'exceptions.type.duplicate': 'Nota fiscal duplicada',
+	'exceptions.type.poMismatch': 'Divergência com o pedido',
+	'exceptions.type.fraudFlag': 'Indício de fraude',
+	'exceptions.type.extractionFailed': 'Falha na extração',
+	'exceptions.type.unverifiedVendor': 'Fornecedor não verificado',
+	'exceptions.type.reviewRejected': 'Rejeitada',
+	'exceptions.type.amountExceeded': 'Valor excedido',
+	'exceptions.type.missingData': 'Dados faltando',
+	'exceptions.type.qualityHold': 'Bloqueio de qualidade',
+	'exceptions.type.priceVariance': 'Divergência de preço',
+	'exceptions.type.contractNoncompliant': 'Em desacordo com o contrato',
+	'exceptions.type.erpReconciliation': 'Conciliação com o ERP',
+	'exceptions.type.lineTotalMismatch': 'Divergência no total das linhas',
+	'exceptions.type.paymentComplianceHold': 'Bloqueio de compliance',
+	'exceptions.type.paymentReconciliation': 'Conciliação de pagamentos',
+
+	'exceptions.agents.loading': 'Carregando a atividade dos agentes…',
+	'exceptions.agents.loadFailed': 'Não foi possível carregar a atividade dos agentes',
+	'exceptions.agents.logLoadFailed': 'Não foi possível carregar o registro de decisões',
+	'exceptions.agents.kpi.decisions': 'Decisões tomadas',
+	'exceptions.agents.kpi.resolutionRate': 'Taxa de resolução',
+	'exceptions.agents.kpi.escalationRate': 'Taxa de escalonamento',
+	'exceptions.agents.action.autoResolved': 'Resolvida automaticamente',
+	'exceptions.agents.action.escalated': 'Escalonada',
+	'exceptions.agents.action.noAction': 'Sem ação',
+	'exceptions.agents.autonomy.conservative': 'Conservadora',
+	'exceptions.agents.autonomy.balanced': 'Equilibrada',
+	'exceptions.agents.autonomy.aggressive': 'Agressiva',
+	'exceptions.agents.accuracy.label': 'Acurácia',
+	'exceptions.agents.accuracy.notMeasured': 'Ainda não medida',
+	'exceptions.agents.accuracy.note':
+		'A acurácia depende de um sinal de correção humana (uma resolução automática foi revertida depois?). Esse sinal ainda não é registrado, então nenhum número é exibido em vez de um número inventado.',
+	'exceptions.agents.run.heading': 'Executar um agente',
+	'exceptions.agents.run.refresh': 'Atualizar',
+	'exceptions.agents.run.refreshing': 'Atualizando…',
+	'exceptions.agents.run.note':
+		'Executar um agente avalia uma exceção e, quando a confiança dele atinge o limite de autonomia desta organização, aplica a correção pelo mesmo caminho auditado que uma pessoa usaria. Abaixo desse limite ele escalona para uma pessoa. Em qualquer um dos casos, registra uma decisão no log abaixo.',
+	'exceptions.agents.run.empty.loading': 'Carregando as exceções abertas…',
+	'exceptions.agents.run.empty.errored':
+		'Não foi possível carregar as exceções abertas. Tente “Atualizar”.',
+	'exceptions.agents.run.empty.none':
+		'Nenhuma exceção aberta ou escalonada para executar um agente.',
+	'exceptions.agents.run.action': 'Executar o agente',
+	'exceptions.agents.run.running': 'Executando…',
+	'exceptions.agents.run.aria': 'Executar o agente na exceção “{type}”',
+	'exceptions.agents.run.ariaWithInvoice':
+		'Executar o agente na exceção “{type}” da nota fiscal {invoice}',
+	'exceptions.agents.run.blockedTitle':
+		'Esta exceção não tem nota fiscal, então um agente não tem sobre o que agir — somente triagem humana.',
+	'exceptions.agents.run.blockedAria':
+		'Não é possível executar um agente nesta exceção “{type}”: ela não tem nota fiscal',
+	'exceptions.agents.run.failed': 'A execução do agente falhou.',
+	'exceptions.agents.log.heading': 'Decisões recentes',
+	'exceptions.agents.log.filterAria': 'Filtrar as decisões dos agentes por ação',
+	'exceptions.agents.log.empty':
+		'Nenhuma decisão de agente ainda. Execute um agente em uma exceção para preencher este log.',
+	'exceptions.agents.col.when': 'Quando',
+	'exceptions.agents.col.resolver': 'Resolvedor',
+	'exceptions.agents.col.exception': 'Exceção',
+	'exceptions.agents.col.action': 'Ação',
+	'exceptions.agents.col.confidence': 'Confiança',
+	'exceptions.agents.col.autonomy': 'Autonomia',
+	'exceptions.agents.col.change': 'Alteração',
+	'exceptions.agents.col.raised': 'Criada em',
+	'exceptions.agents.loadMore': 'Carregar mais ({shown} de {total})',
+	'exceptions.agents.showingAll':
+		'{total, plural, one {Exibindo # decisão} other {Exibindo todas as # decisões}}',
+	'exceptions.agents.modal.aria': 'Executar um agente de exceções',
+	'exceptions.agents.modal.titleRun': 'Executar um agente nesta exceção',
+	'exceptions.agents.modal.titleDecision': 'Decisão do agente',
+	'exceptions.agents.modal.warning':
+		'O agente pode alterar esta nota fiscal. Ele só aplica uma correção quando a confiança dele atinge o limite de autonomia; caso contrário, escalona para uma pessoa. Os dois resultados são registrados.',
+	'exceptions.agents.modal.nowStatus': 'A exceção agora está em',
+	'exceptions.agents.modal.escalatedNote':
+		'A confiança do agente não atingiu o limite de autonomia desta organização, então ele escalonou a exceção para uma pessoa sem alterar nada. Esse é um resultado normal e registrado — a decisão está no log abaixo.',
+	'exceptions.agents.modal.noActionNote':
+		'O agente não encontrou nada que pudesse alterar com segurança nesta exceção. Nada foi modificado; a decisão fica registrada no log abaixo.',
+	'exceptions.agents.modal.close': 'Fechar',
 
 	// Notifications
 	'notifications.title': 'Notificações',
@@ -4235,7 +4419,6 @@ export const messages = {
 	'discounts.bulk.errorTitle': 'Oferta não criada',
 	'discounts.bulk.intro': 'Uma oferta permanente cobrindo todas as faturas em aberto deste fornecedor. O valor de base é o saldo em aberto do fornecedor, somado pelo servidor ao propor — ele aparece assim que a oferta existe. Nada é pago: a oferta entra como Ofertada e ainda precisa ser aceita e financiada.',
 	'discounts.bulk.noValidUntil': 'Sem data final a oferta nunca expira sozinha e o otimizador não consegue classificá-la — não há horizonte para anualizar um retorno.',
-	'discounts.bulk.noVendors': 'Nenhum fornecedor disponível para negociar.',
 	'discounts.bulk.notes': 'Observações (opcional)',
 	'discounts.bulk.open': 'Propor oferta ao fornecedor',
 	'discounts.bulk.percentAria': 'Faixa {n} — percentual de desconto',
@@ -4251,7 +4434,6 @@ export const messages = {
 	'discounts.bulk.title': 'Propor um desconto para todo o fornecedor',
 	'discounts.bulk.validUntil': 'Válido até',
 	'discounts.bulk.vendor': 'Fornecedor',
-	'discounts.bulk.vendorsLoading': 'Carregando fornecedores…',
 	'discounts.chip.missed': 'Perdido',
 	'discounts.col.base': 'Base',
 	'discounts.col.bestDiscount': 'Melhor desconto',

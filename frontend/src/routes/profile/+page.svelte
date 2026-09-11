@@ -54,7 +54,7 @@
 		try {
 			await notificationStore.updatePrefs({ [event]: next });
 		} catch {
-			toast('Failed to update notification preferences', 'error');
+			toast(m('profile.notifications.updateFailed'), 'error');
 		} finally {
 			savingPrefs = false;
 		}
@@ -93,9 +93,9 @@
 		try {
 			await api.patch('/api/auth/me', { full_name: fullName.trim() });
 			await auth.fetchUser();
-			toast('Profile updated', 'success');
+			toast(m('profile.account.updated'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to update profile', 'error');
+			toast(err instanceof Error ? err.message : m('profile.account.updateFailed'), 'error');
 		} finally {
 			savingProfile = false;
 		}
@@ -104,7 +104,7 @@
 	async function changePassword() {
 		if (!currentPassword || !newPassword) return;
 		if (newPassword !== confirmPassword) {
-			toast('Passwords do not match', 'error');
+			toast(m('profile.password.mismatch'), 'error');
 			return;
 		}
 		savingPassword = true;
@@ -116,9 +116,9 @@
 			currentPassword = '';
 			newPassword = '';
 			confirmPassword = '';
-			toast('Password updated', 'success');
+			toast(m('profile.password.updated'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to update password', 'error');
+			toast(err instanceof Error ? err.message : m('profile.password.updateFailed'), 'error');
 		} finally {
 			savingPassword = false;
 		}
@@ -135,7 +135,7 @@
 			enrollment = await api.post<EnrollResponse>('/api/auth/mfa/enroll', proof);
 			verifyCode = '';
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to start enrollment', 'error');
+			toast(err instanceof Error ? err.message : m('profile.mfa.enrollFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -149,9 +149,9 @@
 			await auth.fetchUser();
 			enrollment = null;
 			verifyCode = '';
-			toast('Two-factor authentication enabled', 'success');
+			toast(m('profile.mfa.enabledToast'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Verification failed', 'error');
+			toast(err instanceof Error ? err.message : m('profile.mfa.verifyFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -169,9 +169,9 @@
 			await api.post('/api/auth/mfa/disable', proof);
 			await auth.fetchUser();
 			disablePassword = '';
-			toast('Two-factor authentication disabled', 'success');
+			toast(m('profile.mfa.disabledToast'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to disable', 'error');
+			toast(err instanceof Error ? err.message : m('profile.mfa.disableFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -267,14 +267,19 @@
 		registeringPasskey = true;
 		try {
 			const proof = await passkeyCardProof('passkey_register');
+			// `'Passkey'` stays an English literal on purpose: it is the default
+			// NAME persisted on the credential, not copy. The server stores it and
+			// every later session reads it back, so translating it would make one
+			// account's passkey list depend on which locale each device happened to
+			// be in when its key was registered.
 			await auth.registerPasskey(passkeyName.trim() || 'Passkey', proof);
 			passkeyName = '';
 			passkeyPassword = '';
 			await loadPasskeys();
-			toast('Passkey added', 'success');
+			toast(m('profile.passkeys.added'), 'success');
 		} catch (err) {
 			// A user cancelling the browser prompt throws too — show a soft message.
-			toast(err instanceof Error ? err.message : 'Failed to add passkey', 'error');
+			toast(err instanceof Error ? err.message : m('profile.passkeys.addFailed'), 'error');
 		} finally {
 			registeringPasskey = false;
 		}
@@ -287,9 +292,9 @@
 			await auth.deletePasskey(id, await passkeyCardProof('passkey_delete'));
 			passkeyPassword = '';
 			await loadPasskeys();
-			toast('Passkey removed', 'success');
+			toast(m('profile.passkeys.removed'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to remove passkey', 'error');
+			toast(err instanceof Error ? err.message : m('profile.passkeys.removeFailed'), 'error');
 		}
 	}
 
@@ -347,9 +352,9 @@
 			await auth.revokeSession(id);
 			armedSessionId = null;
 			await loadSessions();
-			toast('Signed that device out', 'success');
+			toast(m('profile.sessions.revoked'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to sign that device out', 'error');
+			toast(err instanceof Error ? err.message : m('profile.sessions.revokeFailed'), 'error');
 		} finally {
 			sessionBusy = false;
 		}
@@ -361,29 +366,28 @@
 			const revoked = await auth.revokeOtherSessions();
 			armedRevokeOthers = false;
 			await loadSessions();
-			toast(
-				revoked === 1 ? 'Signed 1 other session out' : `Signed ${revoked} other sessions out`,
-				'success',
-			);
+			toast(m('profile.sessions.revokedOthers', { n: revoked }), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to sign other sessions out', 'error');
+			toast(err instanceof Error ? err.message : m('profile.sessions.revokeOthersFailed'), 'error');
 		} finally {
 			sessionBusy = false;
 		}
 	}
 
 	function sessionLabel(s: ActiveSession): string {
-		return s.device ?? 'Unrecognised device';
+		return s.device ?? m('profile.sessions.unknownDevice');
 	}
 
 	function sessionDetail(s: ActiveSession): string {
 		const parts = [
-			`Signed in ${formatDate(s.created_at, '—', {
-				month: 'short',
-				day: 'numeric',
-				hour: 'numeric',
-				minute: '2-digit',
-			})}`,
+			m('profile.sessions.signedIn', {
+				date: formatDate(s.created_at, '—', {
+					month: 'short',
+					day: 'numeric',
+					hour: 'numeric',
+					minute: '2-digit',
+				}),
+			}),
 		];
 		if (s.ip) parts.push(s.ip);
 		if (s.method) parts.push(s.method);
@@ -403,7 +407,7 @@
 
 <div class="workspace">
 	<header class="toolbar">
-		<h1>Profile & Security</h1>
+		<h1>{m('shell.profileAndSecurity')}</h1>
 	</header>
 
 	<div class="sections">
@@ -425,7 +429,7 @@
 		</section>
 
 		<section class="card">
-			<h2>Account</h2>
+			<h2>{m('profile.account.heading')}</h2>
 			<form
 				onsubmit={(e) => {
 					e.preventDefault();
@@ -433,13 +437,13 @@
 				}}
 			>
 				<label>
-					<span>Full name</span>
+					<span>{m('profile.account.fullName')}</span>
 					<input type="text" bind:value={fullName} required autocomplete="name" />
 				</label>
 				<dl class="readonly">
-					<dt>Email</dt>
+					<dt>{m('profile.account.email')}</dt>
 					<dd>{auth.user?.email ?? '—'}</dd>
-					<dt>Roles</dt>
+					<dt>{m('profile.account.roles')}</dt>
 					<dd>{auth.user?.roles.join(', ') || '—'}</dd>
 				</dl>
 				<div class="actions">
@@ -447,19 +451,15 @@
 						type="submit"
 						disabled={savingProfile || !fullName.trim() || fullName === auth.user?.full_name}
 					>
-						{savingProfile ? 'Saving...' : 'Save'}
+						{savingProfile ? m('common.saving') : m('common.save')}
 					</button>
 				</div>
 			</form>
 		</section>
 
 		<section class="card">
-			<h2>Password</h2>
-			<p class="hint">
-				Use a strong password unique to this account. After saving you'll stay
-				signed in on this device but other sessions remain valid until they
-				expire.
-			</p>
+			<h2>{m('profile.password.heading')}</h2>
+			<p class="hint">{m('profile.password.hint')}</p>
 			<form
 				onsubmit={(e) => {
 					e.preventDefault();
@@ -467,7 +467,7 @@
 				}}
 			>
 				<label>
-					<span>Current password</span>
+					<span>{m('profile.password.current')}</span>
 					<input
 						type="password"
 						bind:value={currentPassword}
@@ -476,7 +476,7 @@
 					/>
 				</label>
 				<label>
-					<span>New password</span>
+					<span>{m('profile.password.new')}</span>
 					<input
 						type="password"
 						bind:value={newPassword}
@@ -486,7 +486,7 @@
 					/>
 				</label>
 				<label>
-					<span>Confirm new password</span>
+					<span>{m('profile.password.confirm')}</span>
 					<input
 						type="password"
 						bind:value={confirmPassword}
@@ -500,29 +500,23 @@
 						type="submit"
 						disabled={savingPassword || !currentPassword || !newPassword || newPassword !== confirmPassword}
 					>
-						{savingPassword ? 'Saving...' : 'Change password'}
+						{savingPassword ? m('common.saving') : m('profile.password.submit')}
 					</button>
 				</div>
 			</form>
 		</section>
 
 		<section class="card">
-			<h2>Two-factor authentication</h2>
-			<p class="hint">
-				Adds a second step at sign-in using an authenticator app (Google
-				Authenticator, 1Password, Authy, etc.). If you can't access your
-				authenticator, a one-time code can be emailed to your account.
-			</p>
+			<h2>{m('profile.mfa.heading')}</h2>
+			<p class="hint">{m('profile.mfa.hint')}</p>
 
 			{#if auth.user?.mfa_enabled}
 				<div class="status enabled">
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-					Enabled
+					{m('profile.mfa.enabled')}
 				</div>
 				{#if auth.user?.mfa_required_by_org}
-					<p class="hint">
-						Your organization requires MFA, so disabling is not available.
-					</p>
+					<p class="hint">{m('profile.mfa.requiredNoDisable')}</p>
 				{:else}
 					<form
 						onsubmit={(e) => {
@@ -531,7 +525,7 @@
 						}}
 					>
 						<label>
-							<span>Enter your password to disable MFA</span>
+							<span>{m('profile.mfa.disablePassword')}</span>
 							<input
 								type="password"
 								bind:value={disablePassword}
@@ -548,7 +542,7 @@
 									disabled={loading}
 									onclick={disableWithPasskey}
 								>
-									Confirm with a passkey
+									{m('profile.mfa.confirmWithPasskey')}
 								</button>
 							{/if}
 							<button
@@ -556,7 +550,7 @@
 								class="danger"
 								disabled={loading || !disablePassword}
 							>
-								{loading ? 'Disabling...' : 'Disable two-factor'}
+								{loading ? m('profile.mfa.disabling') : m('profile.mfa.disable')}
 							</button>
 						</div>
 					</form>
@@ -564,11 +558,11 @@
 			{:else if enrollment}
 				<div class="enroll">
 					<p>
-						<strong>Step 1.</strong> Scan this QR code with your authenticator app.
+						<strong>{m('profile.mfa.step1Label')}</strong> {m('profile.mfa.step1Text')}
 					</p>
-					<img src={enrollment.qr_code_data_url} alt="MFA QR code" class="qr" />
+					<img src={enrollment.qr_code_data_url} alt={m('profile.mfa.qrAlt')} class="qr" />
 					<details>
-						<summary>Can't scan? Enter the secret manually</summary>
+						<summary>{m('profile.mfa.manualSecret')}</summary>
 						<code class="secret">{enrollment.secret}</code>
 					</details>
 					<form
@@ -578,7 +572,7 @@
 						}}
 					>
 						<label>
-							<span><strong>Step 2.</strong> Enter the 6-digit code your app shows</span>
+							<span><strong>{m('profile.mfa.step2Label')}</strong> {m('profile.mfa.step2Text')}</span>
 							<input
 								type="text"
 								inputmode="numeric"
@@ -590,43 +584,37 @@
 							/>
 						</label>
 						<div class="actions">
-							<button type="button" class="secondary" onclick={cancelEnroll}>Cancel</button>
+							<button type="button" class="secondary" onclick={cancelEnroll}>{m('common.cancel')}</button>
 							<button type="submit" disabled={loading || verifyCode.length < 6}>
-								{loading ? 'Verifying...' : 'Verify and enable'}
+								{loading ? m('profile.mfa.verifying') : m('profile.mfa.verifyAndEnable')}
 							</button>
 						</div>
 					</form>
 				</div>
 			{:else}
-				<div class="status disabled">Not configured</div>
+				<div class="status disabled">{m('profile.mfa.notConfigured')}</div>
 				{#if auth.user?.mfa_required_by_org}
-					<p class="warn">
-						Your organization requires MFA — please enroll now.
-					</p>
+					<p class="warn">{m('profile.mfa.requiredEnroll')}</p>
 				{/if}
 				<button onclick={startEnroll} disabled={loading}>
-					{loading ? 'Loading...' : 'Set up two-factor'}
+					{loading ? m('common.loading') : m('profile.mfa.setUp')}
 				</button>
 			{/if}
 		</section>
 
 		<section class="card">
-			<h2>Passkeys</h2>
-			<p class="hint">
-				Sign in with a passkey — Touch ID, Face ID, Windows Hello, or a hardware
-				security key — instead of typing a code. Passkeys are a second factor
-				alongside (or in place of) an authenticator app.
-			</p>
+			<h2>{m('profile.passkeys.heading')}</h2>
+			<p class="hint">{m('profile.passkeys.hint')}</p>
 
 			{#if !webAuthnOk}
-				<div class="status disabled">This browser doesn't support passkeys.</div>
+				<div class="status disabled">{m('profile.passkeys.unsupported')}</div>
 			{:else}
 				{#if needsPasskeyStepUp}
 					<!-- One field for both operations: the backend requires a step-up
 					     to add a factor to an account that already has one, and always
 					     requires one to remove a passkey. -->
 					<label>
-						<span>Confirm your password to add or remove a passkey</span>
+						<span>{m('profile.passkeys.stepUpPassword')}</span>
 						<input
 							type="password"
 							bind:value={passkeyPassword}
@@ -634,11 +622,7 @@
 						/>
 					</label>
 					{#if hasPasskey}
-						<p class="hint">
-							Leave this blank to confirm with one of your existing passkeys
-							instead — the only option if you sign in with SSO and have no
-							password.
-						</p>
+						<p class="hint">{m('profile.passkeys.stepUpBlankHint')}</p>
 					{/if}
 				{/if}
 
@@ -650,14 +634,16 @@
 									<span class="entry-name">{pk.name}</span>
 									{#if pk.last_used_at}
 										<span class="entry-sub">
-											Last used {formatDate(pk.last_used_at, '—', {
-												year: 'numeric',
-												month: 'numeric',
-												day: 'numeric'
+											{m('profile.passkeys.lastUsed', {
+												date: formatDate(pk.last_used_at, '—', {
+													year: 'numeric',
+													month: 'numeric',
+													day: 'numeric'
+												})
 											})}
 										</span>
 									{:else}
-										<span class="entry-sub">Never used</span>
+										<span class="entry-sub">{m('profile.passkeys.neverUsed')}</span>
 									{/if}
 								</div>
 								<button
@@ -666,15 +652,13 @@
 									disabled={!canStepUp}
 									onclick={() => removePasskey(pk.id)}
 								>
-									Remove
+									{m('profile.passkeys.remove')}
 								</button>
 							</li>
 						{/each}
 					</ul>
 				{:else if passkeysError}
-					<p class="warn">
-						Couldn't load your passkeys, so we can't say which ones are registered.
-					</p>
+					<p class="warn">{m('profile.passkeys.loadFailed')}</p>
 					<div class="actions">
 						<button
 							type="button"
@@ -682,11 +666,11 @@
 							disabled={passkeysBusy}
 							onclick={retryPasskeys}
 						>
-							{passkeysBusy ? 'Retrying…' : 'Try again'}
+							{passkeysBusy ? m('common.retrying') : m('common.tryAgain')}
 						</button>
 					</div>
 				{:else if passkeysLoaded}
-					<div class="status disabled">No passkeys yet</div>
+					<div class="status disabled">{m('profile.passkeys.none')}</div>
 				{/if}
 
 				<form
@@ -696,12 +680,12 @@
 					}}
 				>
 					<label>
-						<span>Passkey name (optional)</span>
+						<span>{m('profile.passkeys.nameLabel')}</span>
 						<input
 							type="text"
 							bind:value={passkeyName}
 							maxlength="120"
-							placeholder="e.g. MacBook Touch ID"
+							placeholder={m('profile.passkeys.namePlaceholder')}
 						/>
 					</label>
 					<div class="actions">
@@ -709,7 +693,7 @@
 							type="submit"
 							disabled={registeringPasskey || !canStepUp}
 						>
-							{registeringPasskey ? 'Waiting for passkey…' : 'Add a passkey'}
+							{registeringPasskey ? m('profile.passkeys.waiting') : m('profile.passkeys.add')}
 						</button>
 					</div>
 				</form>
@@ -717,22 +701,16 @@
 		</section>
 
 		<section class="card">
-			<h2>Signed-in devices</h2>
-			<p class="hint">
-				Every browser or app currently signed in to your account. If you don't
-				recognise one — or you signed in on a device you no longer have — sign
-				it out here. It stops working immediately.
-			</p>
+			<h2>{m('profile.sessions.heading')}</h2>
+			<p class="hint">{m('profile.sessions.hint')}</p>
 
 			{#if !sessionsLoaded}
-				<p class="hint">Loading…</p>
+				<p class="hint">{m('common.loading')}</p>
 			{:else if sessionsError}
-				<p class="warn">
-					Couldn't load your sessions, so we can't say what's signed in right now.
-				</p>
+				<p class="warn">{m('profile.sessions.loadFailed')}</p>
 				<div class="actions">
 					<button type="button" class="secondary" disabled={sessionBusy} onclick={retrySessions}>
-						{sessionBusy ? 'Retrying…' : 'Try again'}
+						{sessionBusy ? m('common.retrying') : m('common.tryAgain')}
 					</button>
 				</div>
 			{:else if sessions && sessions.length > 0}
@@ -742,7 +720,7 @@
 							<div class="entry-meta">
 								<span class="entry-name">
 									{sessionLabel(s)}
-									{#if s.current}<span class="badge">This device</span>{/if}
+									{#if s.current}<span class="badge">{m('profile.sessions.thisDevice')}</span>{/if}
 								</span>
 								<span class="entry-sub">{sessionDetail(s)}</span>
 							</div>
@@ -759,7 +737,9 @@
 										}
 									}}
 								>
-									{armedSessionId === s.id ? 'Confirm sign out' : 'Sign out'}
+									{armedSessionId === s.id
+										? m('profile.sessions.confirmSignOut')
+										: m('profile.sessions.signOut')}
 								</button>
 							{/if}
 						</li>
@@ -781,35 +761,34 @@
 							}}
 						>
 							{armedRevokeOthers
-								? `Confirm — sign out ${otherSessionCount} other ${otherSessionCount === 1 ? 'session' : 'sessions'}`
-								: 'Sign out everywhere else'}
+								? m('profile.sessions.confirmSignOutOthers', { n: otherSessionCount })
+								: m('profile.sessions.signOutOthers')}
 						</button>
 					</div>
 				{/if}
 			{:else}
-				<div class="status disabled">No other sessions are signed in.</div>
+				<div class="status disabled">{m('profile.sessions.none')}</div>
 			{/if}
 		</section>
 
 		<section class="card">
-			<h2>Notifications</h2>
+			<h2>{m('profile.notifications.heading')}</h2>
 			<p class="hint">
-				Choose which events reach you, and how. Anything left on is
-				delivered — every event is on until you switch it off. In-app
-				notifications appear in the notification center; email is sent to
-				{auth.user?.email ?? 'your address'}.
+				{m('profile.notifications.hint', {
+					email: auth.user?.email ?? m('profile.notifications.yourAddress')
+				})}
 			</p>
 
 			{#if !prefsLoaded}
-				<p class="hint">Loading…</p>
+				<p class="hint">{m('common.loading')}</p>
 			{:else if notificationStore.prefs}
 				{@const prefs = normalizePrefs(notificationStore.prefs)}
 				<table class="prefs-table">
 					<thead>
 						<tr>
-							<th>Event</th>
-							<th class="center">In-app</th>
-							<th class="center">Email</th>
+							<th>{m('profile.notifications.colEvent')}</th>
+							<th class="center">{m('profile.notifications.colInApp')}</th>
+							<th class="center">{m('profile.notifications.colEmail')}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -840,7 +819,7 @@
 					</tbody>
 				</table>
 			{:else}
-				<p class="warn">Could not load notification preferences.</p>
+				<p class="warn">{m('profile.notifications.loadFailed')}</p>
 			{/if}
 		</section>
 	</div>

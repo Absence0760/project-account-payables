@@ -90,13 +90,9 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
 		count: 1,
 		why: 'family 2 — raw audit-log field names off the wire'
 	},
-	'/src/routes/invoices/+page.svelte': {
-		count: 2,
-		why: 'family 3 — backend warning messages inside a `Warnings: …` aria-label/title that is itself hardcoded English'
-	},
 	'/src/routes/profile/+page.svelte': {
 		count: 1,
-		why: 'family 2 — role slugs in a read-only definition list (the page is not extracted yet)'
+		why: 'family 2 — role slugs (`ap_manager`) in a read-only definition list; identifiers, not prose. The rest of the route IS extracted'
 	}
 };
 
@@ -149,13 +145,21 @@ describe('locale-aware list joining', () => {
 	});
 
 	it('keeps the migrated prose sites on the helper', () => {
-		// The five components the round-29 slice moved. Named explicitly so a
-		// revert is a test failure rather than a silent regression to English
+		// The components the round-29 and round-30 slices moved. Named explicitly
+		// so a revert is a test failure rather than a silent regression to English
 		// punctuation inside a translated sentence.
+		//
+		// `/invoices` is the round-30 entry, and it is the worked example of family
+		// 3 graduating: its two joins sat in ALLOWED because the `Warnings: …`
+		// sentence around them was itself hardcoded English, and migrating the
+		// separator alone would have localized the punctuation of an English
+		// sentence. Keying the frame is what let the separator follow, in the same
+		// change — which is the rule family 3 states.
 		const MIGRATED = [
 			'/src/lib/components/admin/UsersPanel.svelte',
 			'/src/lib/components/modals/InvoiceModal.svelte',
 			'/src/routes/+page.svelte',
+			'/src/routes/invoices/+page.svelte',
 			'/src/routes/vendors/screening/+page.svelte'
 		];
 		for (const path of MIGRATED) {

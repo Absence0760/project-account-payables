@@ -3,6 +3,8 @@
 // `backend/app/schemas/exception_agent.py`. Confidence is a display-only float
 // (stored exact as Numeric(5,4) server-side).
 
+import type { MessageKey } from '$lib/i18n/messages';
+
 export interface AgentDecision {
 	id: string;
 	exception_id: string;
@@ -36,11 +38,64 @@ export interface AgentStats {
 	accuracy: number | null;
 }
 
-export const ACTION_LABELS: Record<AgentDecision['action_taken'], string> = {
-	auto_resolved: 'Auto-resolved',
-	escalated: 'Escalated',
-	no_action: 'No action'
+/**
+ * The i18n key carrying each action's label — never the English string itself.
+ *
+ * The dashboard renders this badge in its decision log AND as the outcome of a
+ * run it just performed, beside a confidence figure and an autonomy level, so a
+ * hardcoded map read as a hole in an otherwise-translated panel. The same three
+ * labels are the action filter chips, which is why the chips reuse these keys
+ * rather than minting their own — a chip that says one thing and the rows it
+ * filters another is the drift a shared map removes.
+ *
+ * Vocabulary owner: `backend/app/services/exception_agents/base.py`'s
+ * `ACTION_*` constants. `exceptionAgents.test.ts` reads them.
+ */
+export const ACTION_LABEL_KEYS: Record<AgentDecision['action_taken'], MessageKey> = {
+	auto_resolved: 'exceptions.agents.action.autoResolved',
+	escalated: 'exceptions.agents.action.escalated',
+	no_action: 'exceptions.agents.action.noAction'
 };
+
+/**
+ * The message key for an action, or `null` for one this build doesn't know.
+ * `agent_decisions.action_taken` is a plain `String(20)`, so a row written by a
+ * newer coordinator can carry an action this frontend predates — the caller
+ * then renders the raw value rather than an empty badge.
+ */
+export function agentActionLabelKey(action: string): MessageKey | null {
+	return ACTION_LABEL_KEYS[action as AgentDecision['action_taken']] ?? null;
+}
+
+/**
+ * The org's autonomy setting, lowest authority first —
+ * `backend/app/services/exception_agents/autonomy.py::_THRESHOLDS`.
+ * `conservative` is "off": its threshold is unreachable, so every exception
+ * escalates.
+ */
+export const AUTONOMY_LEVELS = ['conservative', 'balanced', 'aggressive'] as const;
+
+export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
+
+/**
+ * Autonomy-level labels. Rendered in the decision-log row and in the run
+ * dialog's facts list; both printed the raw lowercase wire value before.
+ */
+export const AUTONOMY_LEVEL_LABEL_KEYS: Record<AutonomyLevel, MessageKey> = {
+	conservative: 'exceptions.agents.autonomy.conservative',
+	balanced: 'exceptions.agents.autonomy.balanced',
+	aggressive: 'exceptions.agents.autonomy.aggressive'
+};
+
+/**
+ * The message key for an autonomy level, or `null` for an unknown one.
+ * `resolve_autonomy_level` already falls back to `conservative` when it STAMPS
+ * a decision, but the column is a plain `String(20)` and historical rows are
+ * read back as written, so the accessor stays tolerant.
+ */
+export function autonomyLevelLabelKey(level: string): MessageKey | null {
+	return AUTONOMY_LEVEL_LABEL_KEYS[level as AutonomyLevel] ?? null;
+}
 
 /**
  * What `POST /api/exceptions/{id}/agent-resolve` returns — the exception's new
