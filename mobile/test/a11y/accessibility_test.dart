@@ -10,9 +10,11 @@ import 'package:feohledger_mobile/api/api_client.dart';
 import 'package:feohledger_mobile/l10n/gen/app_localizations.dart';
 import 'package:feohledger_mobile/models/audit_entry.dart';
 import 'package:feohledger_mobile/models/exception.dart';
+import 'package:feohledger_mobile/models/inspection.dart';
 import 'package:feohledger_mobile/models/invoice.dart';
 import 'package:feohledger_mobile/models/notification.dart';
 import 'package:feohledger_mobile/models/vendor.dart';
+import 'package:feohledger_mobile/screens/adaptive_screen.dart';
 import 'package:feohledger_mobile/screens/admin_users_screen.dart';
 import 'package:feohledger_mobile/screens/approvals_screen.dart';
 import 'package:feohledger_mobile/screens/cash_flow_screen.dart';
@@ -20,17 +22,21 @@ import 'package:feohledger_mobile/screens/org_settings_screen.dart';
 import 'package:feohledger_mobile/screens/payment_queue_screen.dart';
 import 'package:feohledger_mobile/screens/exception_detail_screen.dart';
 import 'package:feohledger_mobile/screens/exceptions_screen.dart';
+import 'package:feohledger_mobile/screens/inspection_detail_screen.dart';
+import 'package:feohledger_mobile/screens/inspections_screen.dart';
 import 'package:feohledger_mobile/screens/invoices_screen.dart';
 import 'package:feohledger_mobile/screens/login_screen.dart';
 import 'package:feohledger_mobile/screens/notifications_screen.dart';
 import 'package:feohledger_mobile/screens/workflows_screen.dart';
 import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/stores/adaptive_store.dart';
 import 'package:feohledger_mobile/stores/admin_user_store.dart';
 import 'package:feohledger_mobile/stores/auth_store.dart';
 import 'package:feohledger_mobile/stores/cash_flow_store.dart';
 import 'package:feohledger_mobile/stores/exception_store.dart';
 import 'package:feohledger_mobile/stores/org_settings_store.dart';
 import 'package:feohledger_mobile/stores/payment_queue_store.dart';
+import 'package:feohledger_mobile/stores/inspection_store.dart';
 import 'package:feohledger_mobile/stores/invoice_store.dart';
 import 'package:feohledger_mobile/stores/notification_store.dart';
 import 'package:feohledger_mobile/stores/workflow_store.dart';
@@ -40,6 +46,8 @@ import 'package:feohledger_mobile/widgets/bulk_action_bar.dart';
 import 'package:feohledger_mobile/widgets/erp_status_panel.dart';
 import 'package:feohledger_mobile/widgets/exception_list_tile.dart';
 import 'package:feohledger_mobile/widgets/exception_status_badge.dart';
+import 'package:feohledger_mobile/widgets/inspection_list_tile.dart';
+import 'package:feohledger_mobile/widgets/inspection_result_badge.dart';
 import 'package:feohledger_mobile/widgets/invoice_edit_sheet.dart';
 import 'package:feohledger_mobile/widgets/invoice_list_tile.dart';
 import 'package:feohledger_mobile/widgets/invoice_warnings_panel.dart';
@@ -1273,6 +1281,336 @@ void main() {
         find.bySemanticsLabel(RegExp(r'Rush Approval.*Inactive')),
         findsOneWidget,
       );
+      handle.dispose();
+    });
+  });
+
+  group('InspectionResultBadge', () {
+    // Every outcome tint has to clear AA on its own: the badge is the only
+    // place the result is stated, so a colour that fails is a colour-only cue.
+    for (final result in InspectionResult.values) {
+      testWidgets('the ${result.name} badge clears contrast', (tester) async {
+        final handle = tester.ensureSemantics();
+        await tester.pumpWidget(_host(InspectionResultBadge(result: result)));
+        await tester.pump();
+
+        await expectLater(tester, meetsGuideline(textContrastGuideline));
+        handle.dispose();
+      });
+    }
+
+    testWidgets('the badge announces the outcome as a labelled value',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(
+        _host(const InspectionResultBadge(result: InspectionResult.fail)),
+      );
+      await tester.pump();
+
+      expect(find.bySemanticsLabel('Result: Fail'), findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('InspectionsScreen', () {
+    setUp(() {
+      InspectionStore.instance.reset();
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('the loaded list meets tap-target + label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.url.path == '/api/auth/login') {
+            return http.Response(jsonEncode({'access_token': 'tok'}), 200,
+                headers: {'content-type': 'application/json'});
+          }
+          if (req.url.path.endsWith('/auth/me')) {
+            return http.Response(
+                jsonEncode({
+                  'id': 'u1',
+                  'email': 'demo@acme.com',
+                  'full_name': 'Demo User',
+                  'organization_id': 'org1',
+                  'roles': ['ap_manager'],
+                }),
+                200,
+                headers: {'content-type': 'application/json'});
+          }
+          return http.Response(
+              jsonEncode({
+                'items': [
+                  {
+                    'id': '1',
+                    'inspection_number': 'QI-FAIL',
+                    'po_id': 'po1',
+                    'gr_id': 'gr1',
+                    'gr_number': 'GR-1',
+                    'result': 'fail',
+                    'inspected_date': '2026-03-04',
+                    'inspector': 'Dana',
+                    'accepted_quantity': 0.0,
+                    'rejected_quantity': 10.0,
+                    'deviation_notes': null,
+                    'status': 'completed',
+                    'created_at': '2026-03-04T09:00:00',
+                  },
+                  {
+                    'id': '2',
+                    'inspection_number': 'QI-ORPHAN',
+                    'po_id': null,
+                    'gr_id': null,
+                    'gr_number': null,
+                    'result': 'partial',
+                    'inspected_date': null,
+                    'inspector': null,
+                    'accepted_quantity': 4.0,
+                    'rejected_quantity': null,
+                    'deviation_notes': null,
+                    'status': 'completed',
+                    'created_at': '2026-03-04T09:00:00',
+                  },
+                ],
+                'total': 2,
+                'page': 1,
+              }),
+              200,
+              headers: {'content-type': 'application/json'});
+        }),
+      );
+      await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+      await tester.pumpWidget(_screenHost(const InspectionsScreen()));
+      await _pumpUntil(tester, find.byType(InspectionListTile));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // Covers the outcome badges (darkened accent over a pale tint) and the
+      // muted row subtitles.
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+
+      // One merged announcement per row, carrying the outcome — the badge is
+      // otherwise a colour-only cue.
+      expect(
+        find.bySemanticsLabel(RegExp(r'QI-FAIL, Fail, GR-1')),
+        findsOneWidget,
+      );
+      // An unlinked row says so in the same announcement.
+      expect(
+        find.bySemanticsLabel(RegExp(r'QI-ORPHAN, Partial acceptance, Not linked')),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+  });
+
+  group('InspectionDetailScreen', () {
+    setUp(() {
+      InspectionStore.instance.reset();
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('a failed, unlinked inspection meets label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response(
+              jsonEncode({
+                'id': 'qi1',
+                'inspection_number': 'QI-ORPHAN',
+                'po_id': null,
+                'gr_id': null,
+                'gr_number': null,
+                'result': 'fail',
+                'inspected_date': '2026-03-04',
+                'inspector': 'Dana',
+                'accepted_quantity': 0.0,
+                'rejected_quantity': 12.0,
+                'deviation_notes': 'Two cartons crushed',
+                'status': 'completed',
+                'created_at': '2026-03-04T09:00:00',
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            )),
+      );
+
+      await tester.pumpWidget(
+        _screenHost(const InspectionDetailScreen(inspectionId: 'qi1')),
+      );
+      await _pumpUntil(tester, find.text('QI-ORPHAN'));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // The consequence note and the amber "no match will read this" callout
+      // both render tinted text — brown.shade800 over a pale orange, which is
+      // what clears AA where a true orange does not.
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+
+  group('AdaptiveScreen', () {
+    setUp(() {
+      AdaptiveStore.instance.reset();
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    /// Serves the three adaptive reads plus the login pair.
+    MockClient adaptiveClient() => MockClient((req) async {
+          final path = req.url.path;
+          http.Response ok(Object body) => http.Response(
+                jsonEncode(body),
+                200,
+                headers: {'content-type': 'application/json'},
+              );
+          if (path == '/api/auth/login') return ok({'access_token': 'tok'});
+          if (path.endsWith('/auth/me')) {
+            return ok({
+              'id': 'u1',
+              'email': 'demo@acme.com',
+              'full_name': 'Demo User',
+              'organization_id': 'org1',
+              'roles': ['ap_manager'],
+            });
+          }
+          if (path.endsWith('/approval-patterns')) {
+            return ok({
+              'generated_at': '2026-03-04T10:00:00',
+              'lookback_days': 180,
+              'entity_id': null,
+              'approvers': [
+                {
+                  'approver_id': 'u1',
+                  'approver_name': 'Ada Lovelace',
+                  'approved_count': 12,
+                  'rejected_count': 1,
+                  'approval_rate_pct': '92.31',
+                  'median_time_to_approve_days': '1.50',
+                  'avg_time_to_approve_days': '2.10',
+                  'sample_size': 13,
+                },
+              ],
+              'vendors': [
+                {
+                  'vendor_id': 'v1',
+                  'vendor_name': 'Acme Supplies',
+                  'approved_count': 14,
+                  'rejected_count': 0,
+                  'approval_rate_pct': '100.00',
+                  'unmodified_count': 14,
+                  'consistency_pct': '100.00',
+                  'avg_approved_amount': '1200.00',
+                  'median_approved_amount': '1150.00',
+                  'min_approved_amount': '400.00',
+                  'max_approved_amount': '1900.00',
+                  'sample_size': 14,
+                  // Non-zero, so the amber disclosure line renders too.
+                  'unconverted_count': 2,
+                },
+              ],
+            });
+          }
+          if (path.endsWith('/anomalies')) {
+            return ok({
+              'total_scanned': 7,
+              'flagged': [
+                {
+                  'invoice_id': 'inv1',
+                  'vendor_id': 'v1',
+                  'vendor_name': 'Acme Supplies',
+                  'amount': '9000.00',
+                  'amount_currency': 'EUR',
+                  'insufficient_history': false,
+                  'flags': [
+                    {
+                      'code': 'amount_outlier',
+                      'severity': 'warning',
+                      'message': 'Amount is far above the usual range.',
+                      'observed': '9000.00',
+                      'expected': '1200.00',
+                    },
+                    {
+                      'code': 'approver_unusual',
+                      'severity': 'error',
+                      'message': 'Proposed approver never approved this vendor.',
+                      'observed': 'u9',
+                      'expected': 'u1',
+                    },
+                  ],
+                },
+              ],
+            });
+          }
+          return ok({
+            'suggestions': [
+              {
+                'id': 's1',
+                'kind': 'auto_approve_threshold',
+                'vendor_id': 'v1',
+                'vendor_name': 'Acme',
+                'title': 'Vendor Acme: 14/14 invoices approved unmodified',
+                'rationale': '14 invoices approved with no corrections.',
+                'payload': {'suggested_threshold': '2000.00'},
+                'confidence_pct': '95.00',
+                'status': 'open',
+                'created_at': '2026-03-01T10:00:00',
+                'dismissed_at': null,
+              },
+            ],
+          });
+        });
+
+    testWidgets('the suggestions tab meets tap-target + label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(client: adaptiveClient());
+      await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+      await tester.pumpWidget(_screenHost(const AdaptiveScreen()));
+      await _pumpUntil(tester, find.text('Dismiss'));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // Covers the status badge (darkened accent over a pale tint) and the
+      // muted rationale / confidence text.
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+
+      // One merged announcement per card, carrying the status so the badge is
+      // not a colour-only cue.
+      expect(
+        find.bySemanticsLabel(RegExp(r'Vendor Acme.*Confidence 95.00%, Open')),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+
+    testWidgets('the patterns and anomalies tabs meet label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(client: adaptiveClient());
+      await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+      await tester.pumpWidget(_screenHost(const AdaptiveScreen()));
+      await _pumpUntil(tester, find.text('Dismiss'));
+
+      await tester.tap(find.widgetWithText(Tab, 'Approval patterns'));
+      await tester.pumpAndSettle();
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // The unconverted-approvals disclosure renders in the amber-reading
+      // brown.shade800; a true orange would fail here.
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+
+      await tester.tap(find.widgetWithText(Tab, 'Anomalies'));
+      await tester.pumpAndSettle();
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // Covers both severity tints (error red.shade900, warning brown.shade800).
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
       handle.dispose();
     });
   });
