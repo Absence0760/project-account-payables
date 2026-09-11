@@ -5540,3 +5540,432 @@ the supplier — the portal's own accept/decline surface, or the `financing_adap
 so a manual AP-side create may be a deliberate absence rather than an unwired feature. Whether AP
 should raise offers by hand is a product call and stays open; the schema guard presumes neither
 answer.
+
+## 151. An abandoned hasher is a dependency you cannot patch, so we own the algorithm instead
+
+`bcrypt` sat at `>=4.0.1,<4.1` in `backend/pyproject.toml` not because 4.0.1 was right but
+because passlib 1.7.4 could not import against anything newer: it reads
+`bcrypt.__about__.__version__`, deleted in 5.0, and `_finalize_backend_mixin` probes for a
+historical wrap bug by hashing a >72-byte secret, which bcrypt raises `ValueError` on from 4.1.
+Both fire on import, so PR #392's bump took out every module importing `app.utils.passwords` at
+collection — 29 errors across all four shards. passlib's last release was 2020. The pin was
+therefore permanent, and what it froze was the hashing library on the login path: no upstream
+fixes, ever, for the one dependency whose failure mode is "every credential in the database".
+
+The alternatives were worse in the same direction. Waiting for passlib has no date on it.
+Vendoring passlib's `handlers/bcrypt.py` inherits the same probe and the same `__about__` read.
+Re-hashing every user onto a different scheme (argon2, or raw bcrypt with our own pre-hash under a
+new prefix) cannot be done without the plaintext, so it means a forced password reset for every
+account — an enormous user-visible cost to dodge a dependency problem. Leaving the pin and
+suppressing the Dependabot PR, which is what round 29 did, buys quiet at the price of a CVE we
+would have no answer to.
+
+So `app/utils/passwords.py` implements `bcrypt_sha256` itself. **The algorithm was derived from
+the installed passlib source, not from memory or from the format string**, because it is not
+`bcrypt(sha256(password))` the way its name suggests: v2 is
+`bcrypt(base64(HMAC-SHA256(key=salt_text, msg=password)))` where the HMAC key is the salt's
+*encoded* 22-character text rather than the bytes it decodes to, base64 rather than hex because
+bcrypt does not mix entropy evenly past byte 55, and the whole thing serialised as
+`$bcrypt-sha256$v=2,t=2b,r=<cost>$<salt>$<checksum>` where `r` is unpadded in the wrapper and
+zero-padded in the bcrypt config underneath. Any one of those wrong and the code works perfectly
+against itself while disagreeing with the column — a total, silent lockout that a round-trip test
+cannot see. `tests/test_bcrypt_sha256_compat.py` is the answer: hashes **passlib itself produced**,
+pasted in as literals, never regenerated, covering v2 at both costs, v1 with each ident, and the
+plain `$2b$` rows this codebase wrote before c6a91396, over empty / unicode / NUL-bearing /
+200-character / 72-byte-prefix-colliding secrets.
+
+**`pwd_context` stays, as an object, deliberately.** The obvious shape for a rewrite is two module
+functions, and it would have meant touching every call site, the two drift guards that monkeypatch
+`pwd_context.verify`, `scripts/seed.py`, the `security-patterns.sh` rule and the root `CLAUDE.md`
+invariant — a large diff whose every line is unrelated to the thing being de-risked. Keeping the
+`hash` / `verify` / `identify` / `needs_update` surface made the behavioural change auditable in
+one file. It also keeps the real reason the object exists: scheme *policy* — which schemes verify,
+which one gets written — belongs in exactly one place, and "a second hash context is the defect"
+stays literally true.
+
+Three behaviours are decisions rather than transcription. **The legacy `$2b$` arm truncates the
+secret to 72 bytes on purpose**, because that is what bcrypt 4.0 did internally and 4.1+ raises
+instead; raising would lock a pre-upgrade user out of their own password, which is precisely the
+migration this slice exists to avoid. **A NUL byte refuses on that arm**, as passlib refused it:
+raw bcrypt reads NUL as end-of-string, so `"ab\0anything"` would otherwise authenticate against a
+hash of `"ab"`. And **the legacy hash's shape is matched before `bcrypt.checkpw` sees it**, because
+bcrypt's Rust extension does not reject a too-short salt — it panics, and `pyo3_runtime.PanicException`
+derives from `BaseException`, so no `except ValueError` in the login handler catches it. That last
+one was found by a test asserting "malformed input returns False", which is the only reason it is
+not a 500 waiting in the `hashed_password` column.
+
+**What this did not do: wire the re-hash.** The old module docstring claimed passlib's
+`deprecated="auto"` policy re-hashed a legacy credential when its owner next logged in. It never
+did — nothing in the codebase has ever called `needs_update` or `verify_and_update`, so the claim
+was false for two years. `needs_update` is implemented and tested here so the signal is real and
+correct, but consulting it means a write on the login path, on both the employee and the supplier
+surface, inside a slice whose entire value is that nothing about verification changed. It is an
+open follow-up with its own trigger instead.
+
+With passlib gone, `bcrypt` is `>=5.0.0,<6`, the `.github/dependabot.yml` ignore is lifted (the
+entry was explicit that the ignore and the pin move together or not at all), and the
+`ignore:'crypt' is deprecated` pytest filter retires with the library that needed it.
+
+## 152. Segregation of duties keys on a set of implicated actors, and the set is snapshotted at generation
+
+§141 gave a recurring template its author and had `recurring_invoices.generate_one` stamp that
+person onto the generated invoice's `uploaded_by_id`, so the employee whose standing instruction
+raised a payable could no longer approve it. Its own closing paragraph named what was left: an
+`ap_manager` who PATCHes *someone else's* template — repointing the vendor and the amount — shapes
+the payable as completely as whoever wrote it, was recorded nowhere on it, and could still approve
+what it generated. Reproduced before the fix: admin creates the template, ap_manager PATCHes the
+amount, the sweep raises the invoice, the ap_manager's approve returns 200.
+
+Stamping the editor into `created_by_user_id` instead was the cheap fix and is why §141 declined to
+take it opportunistically: **no single column holds both people**, so writing the editor there
+merely moves the exemption to the author. `approval_chain.violates_segregation` now refuses the
+invoice's `uploaded_by_id` **or** anyone in `Invoice.segregation_actor_ids`, and migration 0097 adds
+that column alongside `recurring_invoice_templates.material_editor_ids` — both tenant-scoped,
+nullable JSONB arrays of stringified control-plane user ids, no FK, the same placement as 0095 and
+0096 for the same reason (`users` is control-plane). `PATCH /api/recurring/{id}` appends the actor
+to the template's set; `generate_one` stamps author ∪ editors minus whoever already landed in
+`uploaded_by_id` (`implicated_actor_ids`).
+
+**Resolving the set live at approval time, rather than snapshotting it onto the invoice, was
+rejected on two counts.** `violates_segregation` is a pure synchronous predicate, shared by the
+raising `check_segregation` and by the amount-floor auto-approve path in `api/workflow.py`, and
+reused for expense reports, requisitions and expense pre-approvals through a `SimpleNamespace`
+attribute shim; making it async and tenant-DB-reaching would put a query on the approval path of
+four surfaces, three of which have no template to reach. The stronger reason is that a template is
+mutable. A payable's terms are frozen when it is raised — that is why
+`WorkflowInstance.steps_config_snapshot` exists — so the people those terms are attributable to must
+be frozen with them. Resolving live would let an edit made *after* generation retroactively bar
+someone from approving an invoice they had no hand in, and let a template's deletion silently
+un-bar someone who did.
+
+**"Material" is one frozenset, and it has a mandatory complement.**
+`models/recurring_invoice.MATERIAL_EDIT_FIELDS` is the single definition — vendor, amount, currency,
+the four GL-coding dimensions, PO number, payment terms, the cadence/day/start/end schedule, and
+the owning entity: a term of the generated payable, meaning who is paid, how much, in what, against
+which budget line or PO, on what schedule, and which entity owes it. The router asks the model
+(`svc.material_edit_fields`) so the two cannot drift. An allowlist alone fails in the wrong
+direction, though: a money-shaped field added later to `RecurringTemplateUpdate` would default to
+"not material" and silently widen the exemption, which is precisely the omission-reads-as-oversight
+failure §141 and `test_invoice_uploader_stamping` were written against. So `COSMETIC_EDIT_FIELDS`
+exists as its declared complement and
+`test_every_patchable_template_field_is_classified` fails until a new PATCHable field lands in
+exactly one of them. `variance_tolerance_pct` is classified cosmetic deliberately — it is a
+detection band for *arrived* vendor invoices that deviate from `amount` and never touches the
+invoice this template generates, and an arrived invoice carries its own uploader. The pause / resume
+/ end endpoints implicate nobody either: they change whether the standing instruction is live, not
+what it instructs, and resuming someone else's template chooses neither its vendor nor its amount.
+
+Four smaller calls inside it:
+
+1. **The set is membership, appended idempotently, and reassigned rather than mutated.** A list that
+   grew on every save would make the column's size a function of how often one person edited, and
+   `record_material_editor` is keyed off what *actually changed*, so re-saving a form with its
+   existing values implicates nobody — otherwise opening a template would cost the opener their
+   ability to approve. It assigns a new sorted list because the column is plain `JSONB` with no
+   `MutableList`: SQLAlchemy's dirty check compares object identity against the load-time baseline,
+   so an in-place `append` would never reach the database. Same trap as the `copy.deepcopy` in
+   `approval_chain.advance_approval_chain`.
+
+2. **Empty stores as NULL, not `[]`.** `implicated_actor_ids` returns `None` when nobody is left, so
+   "no additional implicated actor" has the same shape every other creation path writes and "empty
+   set" never has to be told from "no set" — which keeps the fail-open NULL-uploader reading the
+   three genuinely actor-less ingestion channels depend on (email intake, inbound PEPPOL,
+   supplier-portal submit / PO flip) exactly as it was. Failing closed there was re-rejected for
+   §141's reason: it is an outage across three channels, not a control.
+
+3. **The three shims state the attribute instead of inheriting a default.** The predicate reads it
+   with `getattr`, because a future subject that forgets must not raise `AttributeError` on the
+   approval path — a 500 there removes the control rather than bypassing it. But a `getattr` default
+   is how an exemption gets inherited silently, so `api/expenses.py`, `api/requisitions.py` and
+   `api/expense_preapprovals.py` each pass `segregation_actor_ids=None` with the reason (none of
+   those tables records who *edited* a row), and a new AST guard in `test_approval_chain.py` fails
+   if a shim omits it.
+
+4. **No backfill, with one refinement on §141.** `updated_at` records *that* a template was edited,
+   never who, and an older `recurring_template.updated` audit row does not say whether the fields it
+   lists were material under a classification that did not exist when it was written. The last
+   updater and the org admin are the only proxies and both manufacture either a refusal or an
+   absolution, so edits predating 0097 implicate nobody. The refinement: a *material editor* of a
+   pre-0096 template does land in the set, because that act is observed even though the authorship
+   is not — so the legacy residue is an un-named author, never an un-named editor, and it shrinks
+   rather than absorbing new edits.
+
+The inter-company mirror deliberately does **not** inherit the source invoice's set.
+`services/intercompany.py` has always made the mirror's segregation subject its own creator, the
+routing actor, rather than the source's; propagating the set while still not propagating
+`uploaded_by_id` would block a source *editor* from approving the mirror while leaving the source
+*uploader* free, which is the inconsistent half of either choice. Whether shaping a payable under
+one entity should bar you from signing its mirror under another is an entity-scope question, not a
+recurring-template one; the site states the decision in place and `docs/followups.md` carries it.
+
+The revision id is `0097_segregation_actor_set`, 26 characters. `alembic_version.version_num` is
+`VARCHAR(32)`, and the filename matches the id — 0086 shipped the overflow and 0094 shipped the
+drift, and 0096's docstring had to cite both.
+
+## 153. The read-only `/organization` keeps only what the API told that role, and says so where it was told nothing
+
+`/organization` is admin-only in the nav and read-only in the page — a derived
+`readOnly = userLoaded && !auth.isAdmin` wrapping every panel in one disabled `<fieldset>` — for
+whoever arrives by typed URL or by a bookmark that outlived their role. §144 left the mode in place
+and asked whether it should exist at all. It should: the page's reads are genuinely role-open
+(`GET /api/organization`, `…/branding/custom-domains`, `…/data-residency`), so a clerk who reaches
+it can legitimately read its company profile, invoice defaults, branding, vanity hostnames,
+residency pin and plan. What could not stand is that half of what it showed them was not their
+tenant's.
+
+**The "widen the view" branch of the entry's own durable fix is rejected outright, and stays
+rejected.** `services/org_settings_view.py::NON_ADMIN_SETTINGS` is an allow-list, and the six blocks
+behind the defaulted panels are the ERP client secret and account token, the payment processor's
+credential set and webhook secret, the card API key, the extraction provider key, plus `mfa` and
+`fraud_rules` — which are not credentials but have no non-admin consumer. Filling those fields for a
+clerk means serving them; that is the exact leak the module exists to close, and no amount of UI
+tidiness buys it back. The panels are therefore made honest from the client side only: nothing about
+what the backend serves changes in this decision.
+
+Two failures, one cause — the page asked questions it already knew the answer to, and then
+presented an initializer as an answer.
+
+**The live 403.** `GET /api/organization/chat-notifications` is `require_roles(ROLE_ADMIN)`, and
+`loadChat()` ran in the page's main mount effect, so a clerk's Chat Notifications panel rendered
+`role="alert"` "Your role does not permit this action." — by its own comment the thing that panel's
+design avoids. It moves into its own effect gated on `userLoaded && auth.isAdmin`, the shape the
+Email Intake panel beside it already uses, and the panel says `org.chat.adminOnly` instead. The
+audit that found it ran over *every* mount read rather than the one the entry named, and turned up a
+second: `…/fraud-rules/defaults` is admin-only too. It was fired and its 403 swallowed in a `catch
+{}`, so it surfaced nothing — but a request whose only possible answer is a refusal is the same
+defect with the alert suppressed, and suppressing the alert is not what makes it acceptable. Gating
+it meant splitting the fraud form's two halves by the gate they arrive behind: `fraudOverrides` rides
+the role-open org read, `fraudDefaults` comes from the admin-only route in its own effect, and
+`composeFraud()` builds (defaults ⊕ overrides) whenever the second of the two lands. A failed
+defaults load still substitutes nothing — a client-side default would render switches claiming a
+rule set nobody configured, beside a Reset with nothing true to revert to.
+
+**The defaulted panels.** With those blocks absent, every field in them fell back to its component
+initializer, and an initializer is a platform default wearing the tenant's clothes: AI Extraction
+read "Claude Vision (Anthropic) / Platform" whatever the tenant had bought, Payments read "Mock",
+Virtual Cards read disabled/US, Security read MFA-not-required, and Fraud Detection — gated on a
+`fraud` that could never be composed — disappeared. **A disabled `<fieldset>` around a wrong value is
+still a wrong value**; the existing read-only mode removed the broken *promise* of an editable form
+and left the misinformation untouched. Each of the six now replaces its **body** with one shared
+`org.readOnly.sectionAdminOnly` hint.
+
+Hiding the six outright was the other treatment on offer and was rejected on three counts. The
+heading is true — the setting exists, and for someone who cannot see it the actionable fact is who to
+ask. The Getting Started strip links to `#org-payments`, so hiding that section turns a rendered
+in-page link into a dead anchor. And the Email Intake panel had already made this call for the same
+situation: hiding would have left the page carrying two vocabularies for one fact, a hint in one
+panel and silence in five, which is §143's objection to one convention growing a second shape.
+
+One exception inside the six is recorded in the page rather than smoothed over, because the hint is
+otherwise read as a stronger claim than it is: the allow-list *does* admit `erp.integration_method`,
+so the ERP panel's routing-mode select alone could honestly be shown. It is not. The panel is the
+unit — the select beside it (ERP system) and every credential below it are absent — and one live
+control among fourteen missing ones is a third treatment for the same fact, on a page that has just
+finished getting down to one. The key's declared non-admin consumer is the workflow builder's ERP
+hint, which still reads it; nothing is lost.
+
+The criterion for which panels get the hint is worth stating because it is not "is it admin-only".
+It is **does this panel state a fact about the tenant that it cannot read**. Data Sync is admin-ish
+and its two actions are refused for a clerk, but it asserts nothing — it is two buttons and their
+descriptions — so it keeps its body and the fieldset disables it, as before. The panels with real
+projected data (Company Profile, Invoice Defaults, Branding, Custom Domains, Data Residency, Plan)
+keep their fields and their values for the same reason, inside the same disabled fieldset.
+
+The gate is the **role**, never "is this value empty". An admin's form reads its saved credentials
+back into its fields because each section saves whole, so a value-keyed gate would blank a live ERP
+or processor config on that admin's next save — the hazard `org_settings_view`'s own docstring
+records for the admin projection.
+
+`tests-e2e/organization/settings.spec.ts` carries both directions: a clerk meets no `role="alert"`
+anywhere in the settings stack, is told which six panels are admin-only and has **no field** left
+behind any of them (asserted as `select, input, textarea` → 0, because "disabled" was never the
+claim), still reads her own tenant's name and currency out of the two panels that have them, and —
+the negative control for the admin half — an admin sees no `-admin-only` hint at all and every one of
+the six keeps its controls.
+
+## 154. The dashboard's KPI row outranks the empty state while the answer is out
+
+`routes/+page.svelte`'s KPI row sat inside `{:else if data}`, so the row on the app's most-visited
+page was the last one still collapsing to nothing while its own response was in flight — the
+behaviour §125 replaced with the `pending` treatment and §143 extended to twelve panel rows, missed
+here because the round-28 note claiming the page-level rows were all done was simply wrong. It now
+renders on every state with `pending={loading}` over `null` values: the row keeps its shape,
+`aria-busy` plus screen-reader-only text announces the load rather than drawing it, and the
+touchless-rate card withholds its green tint until there is a figure to have a verdict about.
+
+The entry named a real collision and it is the whole of this decision. While loading, whether
+`total_invoices === 0` is **unknown**, so the zero-invoice onboarding `EmptyState` and the pending row
+both want the same screen. Gate the row on `total_invoices > 0` and an empty tenant is spared a
+transition at the cost of every other tenant losing the row on every load — which is the collapse the
+convention exists to remove, paid for by the one tenant that has nothing to show anyway. So the row
+wins: `isEmptyTenant` is `!!data && data.total_invoices === 0`, keyed on the response having **landed**
+rather than on the count alone, and an empty tenant sees a pending row hand over to the empty state.
+One brief honest transition, in place of the thing §125 was written against.
+
+`KpiCard` was checked rather than assumed, because §143 records the tint rule narrowly: a tint is
+withheld from a *missing* figure, not from a zero one (`tinted = figure === 'value'`). That matters
+here in the direction nobody would notice — `touchless_rate >= 80 ? 'green' : null` is a verdict
+computed from `data`, so before the fix the row's only protection from painting a green "82%
+touchless" over an unanswered question was not existing yet; with the row hoisted, the nullish value
+is what keeps the card neutral while it waits.
+
+**A card that may not exist at all stays gated on the response.** The four conditional cards —
+exceptions, stale approvals, rebates earned, discounts captured — render only when there is something
+to report, so the row's count is not fixed. Giving them `pending` would put a dash on screen
+promising a figure for a card that then vanishes, which is §143's objection to the user-triggered
+rows pointed the other way: a card announcing that an answer is coming when none is. The row's spine
+is the five figures every tenant has, and those five are what render pending.
+
+**A failed load renders the row `unavailable` — dashes, no `aria-busy`, no tint — above the error
+banner rather than instead of it.** That is /cfo's placement and for /cfo's reason: the dashes are
+what the page knows, and the banner beside its Retry is why. `dashboard/error-state.spec.ts` asserts
+that state, and its recovery assertion moved from `.kpi` being visible to `data-kpi-state="value"` —
+the row is on screen in the error state now, so mere visibility would have passed before the click
+and proved nothing.
+
+The two new cases went into `a11y/kpi-pending.spec.ts` rather than a parallel spec, as §143's did.
+The hand-off case needs a response that is both **held** and **shaped** — the seeded tenant has
+invoices, so the state under test is one its own data can never produce — and a second `page.route`
+on one path never runs, so `holdEndpoint` took an optional body instead of pairing it with
+`stubEndpoint`. The zero-invoice payload lives in `tests-e2e/dashboard/fixture.ts` as its own export,
+not as a `DashboardPatch` knob: `total_invoices` is not a free field, and a payload claiming zero
+invoices worth $6,000 is one the backend cannot produce — exactly the class of fixture that module
+exists to stop.
+
+## 155. A localized frame is worth shipping around prose we cannot yet localize
+
+The `/invoices` warning icon carried a literal `` `Warnings: ${…join(', ')}` ``, and round 29 left
+the join alone on purpose — §148's family 3: migrating a separator into a still-hardcoded English
+sentence localizes the punctuation of English. Both halves move here, in one change, which is what
+family 3 asks for. What that buys is worth stating precisely, because it is less than it looks:
+`services/invoice_warnings.py` composes each finding per row from that row's own data ("PO 4412 not
+found", "Round amount: 5000.00", a variance percentage), so the findings reach the browser as
+server English. The aria-label is now a **localized sentence around server-English findings**, not
+a translated finding — a German screen-reader user gets "Warnungen:" and then English prose, joined
+with German list punctuation. That is better than today, because the separator is what produces the
+pause between items in an announcement and the frame is what tells the user what the list IS; it is
+not the fix. The fix is a warning-code → message-key catalogue, and the repo already has the shape
+for one: `pnpm gen:einvoice-messages` generates exactly that from the backend e-invoice rule set.
+`InvoiceWarning.type` is the code it would key on, but a code is not enough by itself — four
+distinct `po_mismatch` messages and three `quality_hold` ones embed a PO number, an amount or a
+variance, so the catalogue needs parameterized messages per code, not a label per code. Too large
+to do while keying an aria-label, so it is filed rather than approximated.
+
+`/profile` was the opposite problem: the entry named four strings and the route held eighty, on the
+one page where a user changes their password and manages their second factor. Extracting it whole
+surfaced the rule that keying is not editing: every migrated string kept its glyphs, straight
+apostrophes included (`"Couldn't load your passkeys"`), because three e2e specs address those
+sentences and because a copy change hiding inside a mechanical one is a copy change nobody reviewed.
+Two literals stay English with the reason written beside them. The passkey **default name**
+(`'Passkey'`) is persisted on the credential and read back by every later session, so translating it
+would make one account's passkey list depend on which locale each device happened to be in when its
+key was registered — that is data, not copy. The roles cell keeps its raw slugs and its literal
+`', '` join: identifiers, not prose.
+
+`AgentDashboard` held a third defect, and it is §149 again in a new place. The decision log rendered
+its type cell as `exception_type.replace(/_/g, ' ')` — untranslatable by construction, and a
+*different wording* from the queue one tab away, which labels the same row `PO Mismatch` from the
+server's own map. So the taxonomy got a real map: `types/exception.ts::EXCEPTION_TYPE_LABEL_KEYS`
+over the backend's fifteen `EXCEPTION_TYPES`, whose English values are asserted **byte-identical**
+to `api/exceptions.py::EXCEPTION_TYPE_LABELS`. That equality is the load-bearing assertion, not a
+tidiness one: the queue still renders the server's `type_label`, so the two surfaces would otherwise
+be free to drift in English while only one of them was translated. Widening the map to cover the
+queue as well was rejected for this slice — it is a different file, and the tolerant accessor means
+the server label is already the fallback, so the surfaces agree in English today and the queue can
+adopt the keys whenever someone owns that file.
+
+The exception **status** deliberately did NOT get the same treatment, and the decision is the
+mirror image of the type one. The queue's badge prints the raw lowercase wire value, this panel's
+run dialog prints it too, and keying one without the other produces exactly what the type map was
+added to remove: one status wearing two names in one page. It also has an e2e consequence that the
+type map did not — three assertions match the raw lowercase `resolved` / `escalated`, and
+`toContainText` is case-sensitive, so a translated badge means editing those specs in the same
+change. Both halves together are a slice; half of it is a regression dressed as progress.
+
+Two smaller calls worth recording. The three agent-action keys are shared by the decision badge,
+the filter chips *and* the two count KPIs rather than minted three times — a chip that names an
+action differently from the rows it filters is the drift one map removes. But the decision log got
+its **own** `loadMore` key rather than borrowing `exceptions.loadMore`, even though the wording is
+identical in all six locales: `pagedListFooter.test.ts` pairs `<list>.showingAll` with
+`<list>.loadMore` per namespace, and an unmatched pair reads as "this footer claims to show
+everything with no way to load the rest" — the precise defect that guard exists to catch. Reusing
+a key there would have meant loosening the guard to accept a parent namespace, which is the wrong
+trade: one duplicated string against a weakened invariant.
+
+## 156. Bringing a surface to mobile is deciding which of its controls do NOT travel
+
+The round-22 follow-up asked for mobile screens for `/adaptive` and inspections "if either
+capability is marketed on mobile". The scope decision said build both — and the work was mostly
+deciding what to leave out, because both surfaces contain controls whose correctness depends on
+room to explain themselves.
+
+**Inspections ships whole, including the write, because a receiving dock is where the work happens.**
+`POST /api/inspections` needs an inspection number (suggested as `QI-<receipt>`), an outcome, and —
+for a partial — an accepted quantity. All three are honestly typed on a handset by the person
+holding the goods, which makes this the strongest mobile case in the backlog. The form also requires
+a field the **API does not**: `gr_id`. `po_matching` reads an inspection only through the matched
+receipt's `gr_id`, else a PO-level row whose `gr_id` IS NULL, so a row naming neither is invisible to
+the match it was recorded for. Offering that as a form option would let someone record a failed
+inspection, see it listed, and watch the invoice pay anyway — the same call `RecordInspectionModal`
+made on the web. The existing unlinked rows (the QMS sync writes them when it can resolve neither
+number) are rendered as **Not linked** with a sentence saying no match will read them, because the
+row is real and its inertness is the fact worth stating. `POST /inspections/sync` is the one
+inspection control left behind: it is an operator action against `settings.qms`, 409s without it, and
+belongs beside the configuration it depends on.
+
+**Adaptive ships read-first, and that is a finished state rather than half a feature.** The three
+read models plus `POST /suggestions/{id}/dismiss` are on the phone; the two apply paths are not.
+`routing-suggestion/apply` reassigns a live approval, and `threshold-recommendation/apply` raises the
+org-wide `auto_approve_below` that decides which invoices skip human review entirely — a money-path
+control surface. The threshold apply also carries `expected_recommended_threshold`, whose 409 is
+*the guard working*: landing it correctly needs a persistent region naming both figures with the
+recomputed recommendation underneath (`backend/docs/adaptive-workflows.md` § Frontend). A phone-sized
+version of that control is the same control with the explanation cut off, which is worse than not
+having it. The Feedback tab is absent for an unrelated reason worth recording separately:
+`GET /feedback` writes an `adaptive_feedback.viewed` access-audit row, so a surface that can reach it
+needs its own deliberate "only when asked" treatment and must not ride along with two tabs that load
+eagerly.
+
+**The outcome filter went to the server, which made this a backend change too.** The inspection list
+is paginated, so filtering the loaded page would hide every matching row past the page boundary and
+leave `total` describing a set other than the rows under it — the defect family §79/§82 keeps
+finding, and the one the approvals tab already shipped once. `GET /api/inspections` gained
+`?result=pass|fail|partial` through `_inspection_list_filters`, the one builder the rows and the
+count share. It is typed as a `Literal`, so a misspelled value is a 422 rather than an empty page
+that reads as "no failures"; the column itself stays free-form, because what constrains a synced row
+is `qms_sync.normalize_disposition`, not the DB.
+
+**The Settings hub is gated per entry, not per section.** Round 28 made exactly this correction to
+the web nav, and the mobile hub had the same shape: one `isOrgAdmin` wrapper around the whole
+Administration block. Adaptive reads are admin/ap_manager/cfo, so that wrapper would have hidden the
+surface from two of the three roles the API admits, and the inspection list is `get_current_user`, so
+gating it at all would have been a dead end for the clerk working the quality hold a `fail` raised.
+Procurement → Quality Inspections is therefore open to everyone with the record affordance gated
+inside the screen, and Administration renders whenever any child does with each row carrying its own
+check. The three admin rows were localized on the way past: they were still English literals, and
+extending a run of hardcoded strings with more hardcoded strings is how that hole stays open.
+
+**Per-vendor amounts render with no currency symbol.** They are denominated in the org's reporting
+currency and the `approval-patterns` payload does not name it. A
+`NumberFormat.currency(symbol: '$')` — what every other mobile money figure uses — would stamp
+dollars on a ZAR org's averages, which is a wrong number rather than a missing one. So the section
+says it once, the figures render as the exact strings the backend sent, and the anomaly rows (which
+*do* carry `amount_currency`, because `detect_invoice_anomaly` falls back to the billed figure) are
+labelled individually. The code **is** reachable — `org_settings_view.NON_ADMIN_SETTINGS` projects
+the top-level `reporting_currency` to every role precisely so the web `orgCurrency` store can format
+aggregates — but mobile has no equivalent store, and four mobile screens currently assert `$` from a
+module-level formatter. Building that store is the fix for all five surfaces at once and is tracked
+as a follow-up; quietly adding a fifth screen's worth of guesswork is not.
+
+**The suggestion `title` / `rationale` stay English even though the screen's chrome is localized in
+all six locales.** They are sentences `derive_suggestions` composes with the numbers *and the
+currency code* inside them, and the web page renders them verbatim for the same reason. Localizing
+them is not an ARB entry — it is moving the composition server-side behind a message key, which is
+its own change.
+
+**Neither store is offline-cached, and the inspections one is the interesting case.** Adaptive is the
+easy call — a privileged analytics read recomputed on every call, like `CashFlowStore`. Inspections
+looks like a list a warehouse on bad signal would want, and it is the one list where a stale copy is
+a wrong answer about *money*: a `fail` is what puts a quality hold on a payable invoice, so a cached
+row that predates a re-inspection tells an approver the opposite of the truth about whether that
+invoice can be paid. An honest error beats that, and the write needs the network regardless.

@@ -34,49 +34,60 @@ its `**Open:**` line or moves to the archive.
 Mirrored as GitHub issue [#321](https://github.com/Absence0760/project-account-payables/issues/321)
 for the tracker view. Keep the two reconciled when either moves.
 
-**Last reconciled:** 2026-09-10 (round 29) — five agents, each in its own git
-worktree, plus integrator verification of the merged branch. **Nine** entries
-closed and half of a tenth, four opened. **31 → 26** — by category, **16 (c)** ·
-**7 (a)** · **3 (b)**. One more **(c)** was opened the same day while clearing
-the open-PR backlog (the passlib/bcrypt pin, PR #392), taking it to **27** —
-**17 (c)** · **7 (a)** · **3 (b)**.
+**Last reconciled:** 2026-09-11 (round 30) — five agents, each in its own git
+worktree, plus integrator verification of the merged branch. **Six** entries
+closed, **eight** opened. **27 → 29** — by category, **19 (c)** · **7 (a)** ·
+**3 (b)**.
 
-**Two entries undercounted their own scope, and the pattern is now five rounds
-old.** "Seven panel-scoped KPI rows" listed nine and there were twelve — three
-more surfaces carried the identical defect with a loading flag already to hand.
-"Five consumers share the vendor picker" was six; `/credit-memos` walked every
-vendor page on mount, the same defect by a different mechanism. An entry is a
-lead, not a specification, and the count in it is the least reliable part.
+**The total went up, and that is the file working rather than failing.** Three of
+the five slices returned a defect their entry had not named, and the honest
+destination for one that cannot be fixed in the slice that found it is a new
+entry, not a closed one. Six of the eight new entries are of that kind; the other
+two are deliberate scope calls recorded so they don't read as oversights.
 
-**One entry's stated durable fix broke the rule it was written under, and
-shipping it anyway was the right call.** Moving `POST /api/cards/{id}/cancel`
-onto `require_permission` cannot reproduce the prior four-system-role matrix that
-every other such migration preserves: `ap_manager` holds `payment.execute`, not
-`payment.void`, so closing the gap and keeping the matrix are the same sentence
-read in opposite directions. The narrowing is stated in five places rather than
-shipped quietly — see [decisions.md](decisions.md) §142.
+**A docstring asserting a mechanism is not evidence of one** — the same lesson
+the `networkidle` comment taught round 29, now on the login path. The password
+module claimed passlib's `deprecated="auto"` policy re-hashed a legacy credential
+when its owner next logged in. Nothing has ever called `needs_update` or
+`verify_and_update`, so the claim was false for the two years it stood, and a
+pre-`bcrypt_sha256` row is still verifying against a raw `$2b$` hash with no
+pre-hash. The rewrite implemented the signal and deliberately left it unwired
+(§151); wiring it is now its own entry, with the DB-write-on-login cost stated.
 
-**The KPI work was not the cosmetic tidy its entry described.** Six of those rows
-carried an unconditional `highlight`, and `KpiCard` withholds a tint only from a
-*missing* figure — so the one thing that had ever stopped a SOX access review, an
-operational health check and a tamper check each painting a green "all clear"
-over a question still being asked was the row not existing yet.
+**An allowlist fails in the wrong direction, so it ships with its complement.**
+`MATERIAL_EDIT_FIELDS` decides who is implicated in a payable raised from a
+recurring template, and a money-shaped field added to the PATCH schema later
+would have defaulted to "not material" and silently widened the exemption. It
+ships with a declared `COSMETIC_EDIT_FIELDS` and a guard that fails until every
+new field lands in exactly one of them — the omission-reads-as-oversight shape
+§141 and the uploader-stamping guard already exist to prevent (§152).
+
+**Auditing the whole surface beat auditing the named defect, twice.** The
+`/organization` entry named one admin-only read whose 403 reached a clerk as a
+live alert. Checking every mount read found a second, `…/fraud-rules/defaults`,
+firing unconditionally with its refusal swallowed in a bare `catch {}` — the
+identical defect with the symptom suppressed, which is why it had never been
+reported. The same pass found `docs/authentication.md`'s permission matrix
+drifted on the exact point the entry was about: it called the organization reads
+admin-only when four of them are open to any authenticated role (§153).
+
+**An entry's count is still the least reliable part of it, for the sixth round
+running.** "`/profile` ('Full name', 'Email', 'Roles', 'Saving...')" held eighty
+strings. The same entry's claim that exactly two `discounts.bulk.*` keys had gone
+dead was right — established by grepping all thirty, not by trusting it (§155).
+
+**Bringing a surface to mobile is deciding which of its controls do not travel.**
+Inspections shipped whole, write included, because a receiving dock is the
+strongest case in the backlog for recording an outcome on a handset. Adaptive
+shipped read-first as a finished state: both apply paths reassign a live approval
+or raise the org-wide auto-approve threshold, and a phone-sized copy of a control
+with its explanation cut off is worse than its absence (§156). Opting out of the
+mobile money formatter to avoid stamping dollars on a ZAR org's averages is what
+exposed four existing screens doing exactly that.
 
 **Exception resolution stays held.** It remains the only segregation-of-duties
-item in the file and was deliberately untouched again, pending the standing "loop
-in the CISO / Security Analyst" gate on that section.
-
-**One belief cost two rounds and was retired by looking.** The `networkidle`
-sweep had preserved sites on a documented Svelte 5 form-hydration hazard. The app
-server-renders no form at all, in dev or in the built artifact, so the hazard is
-unreachable — a comment asserting a hazard is not evidence of one.
-
-**Three guards found defects on their first run**, which is the argument for
-writing the guard rather than fixing the instances in front of you: typechecking
-the e2e tree caught currency typed as `number` and money typed as a string in the
-dashboard; the uploader-stamping guard needed a second pass because its first
-version was blind to a re-export spelling; and the workflow-version teardown
-guard found a third offending spec nobody had named.
+item in the file and was deliberately untouched for the seventh round running,
+pending the standing "loop in the CISO / Security Analyst" gate on that section.
 
 ## (c) Feature work — sized and unstarted
 
@@ -728,11 +739,37 @@ a 100-row page of receipts purely to label a column.
       unknown code degrading to the raw server sentence rather than a blank row.
       See [decisions.md](decisions.md) §138.
 
-- [ ] **(c) The `/adaptive` and inspections surfaces have no mobile
-      counterpart.** Recorded so the docs stop claiming "no UI" generally when
-      what they mean is "no mobile UI".
-      **Durable fix:** mobile screens if either capability is marketed on
-      mobile. **Trigger:** a mobile scope decision.
+- [x] **DONE (round 30).** Both surfaces now exist on mobile, and the work was
+      mostly deciding which of their controls do NOT travel. **Inspections ships
+      whole**, write included — list with a **server-side** outcome filter
+      (`?result=`, added to `GET /api/inspections`; filtering the loaded page
+      would hide every matching row past the page boundary and leave `total`
+      describing a different set), a detail view that states what the outcome
+      does to the 4-way match, and a record form. The form requires a goods
+      receipt even though the API does not: `po_matching` reads an inspection
+      only through a receipt or a PO-level row, so an unlinked one would let
+      someone record a failure, see it listed, and watch the invoice pay anyway.
+      QMS sync stays on the web — it is an operator action against
+      `settings.qms` that 409s without it. **Adaptive ships read-first**, which
+      is a finished state: suggestions / patterns / anomalies plus the one safe
+      write (dismiss), with **both apply paths deliberately excluded** — they
+      reassign a live approval and raise the org-wide auto-approve threshold,
+      and the latter's stale-value 409 needs a surface that names both figures
+      to land safely. The Feedback tab is out for a different reason
+      (`GET /feedback` writes an access-audit row, so it needs its own
+      "only when asked" treatment).
+      **The doc imprecision the entry was filed for is fixed at the source:**
+      `backend/docs/adaptive-workflows.md`'s "No mobile (Flutter) surface yet"
+      is now a Mobile section that also records the exclusions, and
+      `backend/docs/po-matching.md` carries the mobile inspection surface.
+      `frontend/CLAUDE.md`'s parity list — which still claimed vendors,
+      exceptions, workflows, org settings, admin, the payment queue, invoice
+      editing, bulk ops and the audit timeline were web-only — was replaced by a
+      pointer to `mobile/docs/feature-status.md` plus the parity *direction*.
+      The Settings hub is now gated **per entry** (round 28's correction to the
+      web nav, applied here): Procurement → Quality Inspections is open to every
+      role because the reads are `get_current_user`, and Administration renders
+      whenever any child does. See [decisions.md](decisions.md) §156.
 
 ### Surfaced by the round-23 hunt (2026-09-06)
 
@@ -1246,31 +1283,29 @@ closed in the slice that found it.
       sweep the *user* runs. `tests-e2e/a11y/kpi-pending.spec.ts` extended with six
       cases rather than a parallel spec. See [decisions.md](decisions.md) §143.
 
-- [ ] **(c) `/organization` is admin-only in the nav while its read is open, and
-      the non-admin who reaches it meets one live 403 and five panels of defaults.**
-      The `/workflows` half of this entry is **closed**: round 29 gave the list and
-      the builder the redirect guard four sibling routes already use, with four e2e
-      cases, so a typed URL no longer lands a non-admin on an editing surface whose
-      every control 403s — and on the builder, loses their canvas edit
-      ([decisions.md](decisions.md) §144). What remains is `/organization`, and round
-      29 established the facts the product call needs. The non-admin read-only mode
-      is **deliberate and live** — a derived `readOnly` wrapping every panel in one
-      disabled `<fieldset>` — and four of its six mount reads are role-open and
-      render real data. But `GET /api/organization/chat-notifications` is admin-only
-      and is *not* gated on `auth.isAdmin` the way Email Intake is, so a clerk gets a
-      live `role="alert"` reading "Your role does not permit this action." — the
-      exact anti-pattern that panel's own comment says the design avoids. And
-      `services/org_settings_view.py` strips six settings blocks, so five panels show
-      platform defaults rather than the tenant's truth: Extraction reads
-      "Claude Vision / Platform" regardless, and Fraud Detection vanishes entirely.
-      Three clerk specs load the page and assert the banner; none touches either.
-      **Durable fix:** the product call — keep the read-only mode and make it honest
-      (a one-line `auth.isAdmin` gate on `loadChat()` plus a `chat.adminOnly` hint
-      mirroring `email-intake-admin-only`, and either widen the view or hide the five
-      defaulted panels), or delete it as dead code and leave the nav as it is. Half
-      of it is a defect on either answer. (`/admin?tab=roles` remains a deliberate
-      keep: role CRUD is a write surface first.)
-      **Trigger:** a product decision on who sees `/organization`.
+- [x] **DONE (round 30).** The product call went to **keep** the read-only mode and
+      make it honest; the entry's other branch — widening
+      `services/org_settings_view.py`'s projection to fill the panels — is rejected
+      outright and recorded as rejected, because those six blocks are the tenant's
+      ERP client secret, processor credentials, card API key and extraction key, and
+      filling the fields means serving them. Nothing about what the backend serves
+      changed. The 403 half: `loadChat()` moved into its own effect gated on
+      `userLoaded && auth.isAdmin` — the shape Email Intake beside it already uses —
+      and the panel renders `org.chat.adminOnly`. The audit ran over *every* mount
+      read rather than the one the entry named and found a second admin-only one,
+      `…/fraud-rules/defaults`, fired and its 403 swallowed in a bare `catch {}`;
+      gating it split the fraud form into `fraudOverrides` (the role-open org read)
+      ⊕ `fraudDefaults` (its own effect), composed by whichever lands second. The
+      defaults half: all six panels — AI Extraction, ERP, Payments, Virtual Cards,
+      Security, Fraud Detection — replace their **body** with one shared
+      `org.readOnly.sectionAdminOnly` hint, because a disabled `<fieldset>` around a
+      platform default is still a platform default. Hiding them was rejected: the
+      heading is true, Getting Started links to `#org-payments`, and the page would
+      carry two vocabularies for one fact. Data Sync deliberately keeps its body —
+      the criterion is "does this panel state a fact about the tenant it cannot
+      read", and two buttons state nothing. Four e2e cases in
+      `tests-e2e/organization/settings.spec.ts`, including the admin negative
+      control. See [decisions.md](decisions.md) §153.
 
 - [x] **DONE (round 29).** `switcher.spec.ts` annotated exactly as
       `cfo/by-entity.spec.ts` does, the exclusion deleted, and `exclude: []` kept in
@@ -1317,44 +1352,77 @@ named a durable fix that turned out to break the standing rule it was written
 under. What follows is only what genuinely could not be closed in the slice that
 found it.
 
-- [ ] **(c) A recurring template records its author but not its editor.** §141
-      closed the sweep's segregation exemption by stamping `created_by_user_id` at
-      create. An `ap_manager` who PATCHes *someone else's* template — repointing
-      the vendor and the amount — is recorded nowhere on it, so they can still
-      approve the invoice it then generates.
-      **Durable fix:** segregation keyed on a *set* of implicated actors (author
-      plus material editors) rather than the single `uploaded_by_id` column.
-      Stamping the editor instead merely moves the exemption to the author, which
-      is why it was not taken opportunistically — the predicate and every path
-      feeding it have to change together.
-      **Trigger:** the next SoD slice, or a tenant that splits template CRUD from
-      approval.
+- [x] **DONE (round 30).** Segregation now keys on a **set** —
+      `Invoice.uploaded_by_id` ∪ `Invoice.segregation_actor_ids` — and the entry was
+      right that the predicate and every path feeding it had to change together.
+      `PATCH /api/recurring/{id}` appends the actor to
+      `recurring_invoice_templates.material_editor_ids` when a **material** field
+      actually changes value; `generate_one` stamps author ∪ editors minus whoever
+      already landed in `uploaded_by_id`; `violates_segregation` refuses anyone in
+      the set. Migration 0097, unapplied locally (hand-written — the worktree cannot
+      safely run alembic against four other agents' shared databases).
+      Two things the entry did not predict. **The set had to be snapshotted onto the
+      invoice rather than resolved live** from the template: the predicate is a pure
+      sync function reused by the auto-approve path and by three non-invoice subjects
+      through an attribute shim, and — the stronger reason — a template is mutable, so
+      resolving live would let an edit made *after* generation retroactively bar
+      someone from approving an invoice they had no hand in. A payable's terms are
+      frozen when it is raised (`steps_config_snapshot`); the people those terms are
+      attributable to are frozen with them. **And an allowlist of material fields
+      fails in the wrong direction**, so `MATERIAL_EDIT_FIELDS` ships with a declared
+      complement `COSMETIC_EDIT_FIELDS` and a guard that fails until every new
+      PATCHable field is classified — otherwise a money-shaped field added later would
+      default to "not material" and silently widen the exemption.
+      No backfill, for §141's reason, with one refinement: a *material editor* of a
+      pre-0096 template does land in the set, because that act is observed even though
+      the authorship is not. The legacy residue is an un-named author, never an
+      un-named editor. See [decisions.md](decisions.md) §152.
 
-- [ ] **(c) The dashboard's own KPI row still collapses while loading.**
-      `routes/+page.svelte`'s row sits inside `{:else if data}`, so the app's
-      highest-traffic KPI row is the last one off the `pending` convention
-      ([decisions.md](decisions.md) §125/§143) — the round-28 note claiming the
-      page-level rows were all done was wrong.
-      **Durable fix:** the `pending` treatment, plus a call on the zero-invoice
-      `EmptyState` branch it collides with: while loading, whether
-      `total_invoices === 0` is unknown, so the honest gate makes a pending row
-      appear and then vanish for an empty tenant — a worse transition than
-      today's, and a design decision rather than a mechanical one.
-      **Trigger:** the next design pass on the dashboard, or on `KpiCard`.
+- [x] **DONE (round 30).** The row renders on every state with `pending={loading}`
+      over `null` values, so the app's most-visited KPI row is off its own response
+      at last. The collision the entry flagged is resolved **in favour of the row**:
+      `isEmptyTenant` is `!!data && total_invoices === 0`, keyed on the response
+      having landed rather than on the count, so an empty tenant sees a pending row
+      hand over to the `EmptyState` — one brief honest transition, against the
+      alternative of collapsing the row for every tenant on every load to spare the
+      one tenant with nothing to show. The four conditional cards (exceptions, stale
+      approvals, rebates, captured discounts) stay gated on `data` rather than taking
+      `pending`: they render only when there is something to report, so a dash there
+      would promise a figure that may never arrive — §143's objection pointed the
+      other way. `KpiCard`'s tint rule was checked, not assumed: it withholds a tint
+      from a *missing* figure only, which is what keeps the `touchless_rate >= 80`
+      verdict off a card still waiting. A failed load leaves the row `unavailable`
+      above the error banner and its Retry (/cfo's placement), and
+      `dashboard/error-state.spec.ts` re-keys its recovery assertion on
+      `data-kpi-state` because the restructure would have made "`.kpi` is visible"
+      vacuous. Two cases in `a11y/kpi-pending.spec.ts`; the hand-off one needed a
+      held *and* shaped response, so `holdEndpoint` took an optional body and the
+      zero-invoice payload became its own export in `tests-e2e/dashboard/fixture.ts`
+      (not a `DashboardPatch` knob — zero invoices worth $6,000 is a payload the
+      backend cannot produce). See [decisions.md](decisions.md) §154.
 
-- [ ] **(c) Three surfaces the round-29 i18n sweep passed over are still
-      hardcoded English.** The `/invoices` warning-icon `aria-label`/`title` (a
-      literal `` `Warnings: …` `` wrapping backend English prose — which is why its
-      `.join(', ')` was left on the literal too: migrating the separator alone
-      half-localizes a still-English sentence), `/profile` ("Full name", "Email",
-      "Roles", "Saving..."), and `components/exceptions/AgentDashboard.svelte`'s
-      `COLUMNS` headers. Two now-dead keys also want pruning —
-      `discounts.bulk.vendorsLoading` and `discounts.bulk.noVendors`, orphaned in
-      all six locales when the shared vendor picker took over both states.
-      **Durable fix:** extract each route's copy, migrating its `.join(', ')` to
-      `formatList` in the same change so the separator and the sentence localize
-      together.
-      **Trigger:** the next i18n slice.
+- [x] **DONE (round 30).** All three surfaces are keyed, with a real translation in
+      all six locales (§149's precedent, not English placeholders), and the two dead
+      keys are pruned — a grep of the whole `discounts.bulk.*` namespace confirmed
+      those two and only those two had lost their last caller. `/invoices` did both
+      halves together as the entry required: the `Warnings: …` frame became
+      `invoices.warningsAria` and the `.join(', ')` inside it moved to `formatList`,
+      so the route left `listJoinAudit`'s `ALLOWED` table for its `MIGRATED` list.
+      What that buys is less than it looks and is stated at the call site: the
+      findings are composed per row by `services/invoice_warnings.py` from that row's
+      own data, so the label is now a localized sentence AROUND server-English
+      findings. `InvoiceWarning.type` IS a code, but a label per code would lose the
+      PO number / amount / variance that four distinct `po_mismatch` messages embed —
+      so the real fix is a parameterized warning-code → message-key catalogue of the
+      kind `pnpm gen:einvoice-messages` already builds, re-filed below on its own.
+      `/profile` held eighty strings, not the four the entry named, and was extracted
+      whole; `AgentDashboard` took `RUN_COLUMNS`, `ACTION_CHIPS`, the inline states
+      and the run dialog alongside `COLUMNS`, plus three label maps — the third
+      replacing a `replace(/_/g, ' ')` that printed `po mismatch` where the queue one
+      tab away says `PO Mismatch` (§149's defect again), now drift-guarded
+      byte-for-byte against the backend's own label map. The exception lifecycle
+      `status` is the one thing left raw, deliberately, and is filed below.
+      See [decisions.md](decisions.md) §155.
 
 - [ ] **(c) ⚠️ PRODUCT REVIEW NEEDED (issue #328) — does AP create early-pay
       offers by hand?** `POST /api/discounts/offers` has no frontend caller. Unlike
@@ -1370,31 +1438,189 @@ found it.
 
 ### Surfaced while clearing the open-PR backlog (2026-09-10, PR #392)
 
-- [ ] **(c) The password hasher is pinned to an abandoned passlib, which pins
-      bcrypt to 4.0.** `backend/pyproject.toml` holds `bcrypt>=4.0,<4.1` because
-      passlib 1.7.4 does two things bcrypt 4.1+ broke: it reads
-      `bcrypt.__about__.__version__` (deleted in 5.0), and its
-      `_finalize_backend_mixin` wrap-bug probe hashes a >72-byte secret, which
-      4.1+ rejects with `ValueError` where 4.0 truncated. That probe fires on the
-      first hash, so the failure is an **import-time** one: PR #392 raised the
-      floor to 5.0 and every module importing `app.utils.passwords` failed to
-      collect — 29 collection errors across all four backend shards. passlib has
-      been 1.7.4 since 2020 with no release since, so "wait for a passlib fix" is
-      not a plan with a date on it. Meanwhile bcrypt 4.0.1 is frozen in both
-      locks and receives no upstream fixes.
-      **Durable fix:** drop passlib and call `bcrypt` directly behind the
-      existing `app/utils/passwords.py` seam, keeping the `bcrypt_sha256` scheme
-      by doing its pre-hash ourselves — base64(sha256(password)) before
-      `bcrypt.hashpw`, which is exactly what passlib's `bcrypt_sha256` computes,
-      so existing `$bcrypt-sha256$` hashes stay verifiable and nobody is forced
-      to reset a password. The seam already exists and is already the single
-      hash context (a project invariant), so the blast radius is one module plus
-      its drift guards; the risk is that the digest must match passlib's
-      byte-for-byte or every stored credential stops verifying, which is what
-      makes this a slice of its own rather than an opportunistic edit.
-      **Trigger:** a bcrypt CVE, or the next auth slice — whichever comes first.
-      `.github/dependabot.yml` ignores `bcrypt >=4.1` until then, so the red PR
-      stops arriving weekly; lift that ignore and the pyproject pin together.
+- [x] **DONE (round 30).** **(c) The password hasher is pinned to an abandoned
+      passlib, which pins bcrypt to 4.0.** `backend/app/utils/passwords.py` now
+      implements the `bcrypt_sha256` scheme itself against the `bcrypt` package —
+      HMAC-SHA256 keyed off the encoded salt text, base64 before bcrypt, passlib's
+      own `$bcrypt-sha256$v=2,t=2b,r=N$salt$checksum` serialisation — derived from
+      the installed passlib source rather than from memory. Every stored hash still
+      verifies: v2, the legacy v1 wrapper (`2a` and `2b`), and the plain `$2b$` rows
+      written before c6a91396, with the legacy arm truncating at 72 bytes on purpose
+      because bcrypt 4.1+ raises where 4.0 ignored the tail. Nobody was asked to
+      reset a password. `backend/tests/test_bcrypt_sha256_compat.py` is the proof —
+      hashes passlib itself produced, hard-coded as literals, 45 assertions green
+      under bcrypt 4.0.1 AND 5.0.0. `pyproject.toml` drops `passlib[bcrypt]` and
+      lifts bcrypt to `>=5.0.0,<6`, both hash-locks are recompiled, the
+      `.github/dependabot.yml` bcrypt ignore is removed, and the
+      `ignore:'crypt' is deprecated` pytest filter retires with it. `docs/decisions.md`
+      §151.
+
+### Surfaced by the round-30 batch (2026-09-11)
+
+Five agents closed six entries and opened these eight. Six of them are findings
+that could not honestly be folded into the slice that surfaced them; the last two
+are deliberate scope calls, recorded so an absence does not read as an oversight.
+
+- [ ] **(c) A legacy password hash is never upgraded, and the module claimed it
+      was.** `app/utils/passwords.py` carried a docstring asserting that passlib's
+      `deprecated="auto"` policy would re-hash a credential onto the current scheme
+      when its owner next logged in. It never happened: nothing in the codebase has
+      ever called `pwd_context.needs_update` or `verify_and_update`, so the claim was
+      false for the two years it stood. A user who has not changed their password
+      since commit c6a91396 (2026-05-10) is therefore still authenticating against a
+      raw `$2b$` bcrypt hash with no SHA-256 pre-hash — which, for a password longer
+      than 72 bytes, is the exact truncation weakness `bcrypt_sha256` was adopted to
+      close, and which stays open for as long as that user never resets. Round 30
+      corrected the docstring and implemented `needs_update` (total over
+      `bcrypt_sha256` / `bcrypt_sha256_v1` / `bcrypt`, tested in
+      `tests/test_bcrypt_sha256_compat.py`), but deliberately did not wire it:
+      consulting it means a DB write on the login path, on BOTH the employee
+      (`api/auth.py::login`) and the supplier-portal (`api/portal_auth.py`) surfaces,
+      inside a slice whose whole value was that nothing about verification changed.
+      **Durable fix:** after a successful `verify_password` in each login handler, when
+      `pwd_context.needs_update(user.hashed_password)` is true, re-hash the
+      just-verified plaintext and assign it. Both handlers already run under
+      `commit_before_response`, so no new commit plumbing is needed; the MFA branch
+      returns a challenge before the token is minted but AFTER the password verified,
+      so the upgrade belongs before that branch. Needs a test per surface proving a
+      `$2b$` row becomes `$bcrypt-sha256$` on one successful login and that a wrong
+      password leaves it alone.
+      **Trigger:** the next auth slice, or any evidence that pre-c6a91396 hashes
+      actually exist in a deployed database (no deployment has happened yet, so
+      today this is latent rather than live).
+
+- [ ] **(c) The inter-company mirror does not inherit the source payable's
+      implicated-actor set.** §152 made segregation key on
+      `Invoice.uploaded_by_id` ∪ `Invoice.segregation_actor_ids`, and
+      `services/intercompany.py` passes `segregation_actor_ids=None` on purpose: the
+      mirror's segregation subject has always been its own creator, the routing actor,
+      never the source invoice's. So if an `ap_manager` materially edits a recurring
+      template and a *different* employee routes the invoice it generates to a
+      counterparty entity, that editor can approve the mirror — they are on the
+      source's set, and nothing carries it across the boundary.
+      Narrow in practice: a recurring template carries no `counterparty_entity_id`
+      (the model has none and `generate_one` sets none), so routing needs a separate
+      deliberate act by an employee who becomes the mirror's uploader, and the source
+      invoice still needs its own clean approval.
+      **Durable fix:** decide the entity-scope rule, then apply it to BOTH columns at
+      once. Propagating the set while still not propagating `uploaded_by_id` is the
+      inconsistent half of either choice — it would block a source *editor* at the
+      counterparty while leaving the source *uploader* free. The question is whether
+      shaping a payable under one entity should bar you from signing its mirror under
+      another, which is a multi-entity approval-scope call (Phase 4 territory), not a
+      recurring-template one.
+      **Trigger:** the next multi-entity slice, or the first tenant that routes
+      recurring spend inter-company.
+
+- [ ] **(c) An `ap_manager` cannot reach the chart-of-accounts ERP sync from
+      anywhere.** `POST /api/gl-accounts/sync-erp` is
+      `require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)`, and its ONLY caller in the app is
+      the Data Sync panel on `/organization` — a route the nav shows to `admin`
+      alone, inside the blanket read-only `<fieldset>` that disables every control
+      for a non-admin. Its two siblings are reachable (`/purchase-orders` and
+      `/vendors` each carry their own Sync-from-ERP button gated on
+      `auth.isManager`, matching the same backend gate); GL accounts have no list
+      page at all, only picker options behind `GET /api/gl-accounts`. So the one
+      role the backend deliberately widened this write to is the one role with no
+      way to perform it. Surfaced while making the read-only mode honest (§153) and
+      left alone there on purpose: §153 is about a non-admin being told the truth,
+      and carving a control OUT of that fieldset is the opposite change — it cannot
+      be done by nesting either (a disabled `<fieldset>` cannot be re-enabled from
+      within), so the panel would have to move out of the stack.
+      **Durable fix:** give GL accounts the surface its two 3-way-match siblings
+      have — a `/gl-accounts` list page with the sync action gated on
+      `auth.isManager` — and then decide whether the `/organization` Data Sync panel
+      is still earning its place or is a duplicate of three per-entity buttons.
+      **Trigger:** the next procurement/GL slice, or the first tenant whose AP
+      manager is asked to refresh the chart of accounts.
+
+- [ ] **(c) Invoice warnings reach the browser as server English, so a localized
+      label frames un-localized prose.** Round 30 keyed the `/invoices` warning-icon
+      frame and moved its join to `formatList`, but each finding itself is composed by
+      `services/invoice_warnings.py` from the row's data — `PO 4412 not found`,
+      `Round amount: 5000.00`, a variance percentage — and is rendered verbatim both
+      there and in `InvoiceModal`'s warnings list. A non-English user gets a
+      translated frame and English findings.
+      **Durable fix:** a parameterized warning-code → message-key catalogue, the shape
+      `pnpm gen:einvoice-messages` already generates from the backend e-invoice rule
+      set (`frontend` reads the generated map, a drift guard fails on a new code).
+      `InvoiceWarning.type` is the code to key on, but a label per code is NOT enough:
+      `po_mismatch` carries four distinct messages and `quality_hold` three, each
+      embedding a PO number, an amount or a variance, so the backend must emit
+      `{code, params}` beside `message` and keep `message` as the fallback for an
+      un-keyed code.
+      **Trigger:** the next i18n slice, or the next change to `invoice_warnings.py`'s
+      message set — whichever comes first.
+
+- [ ] **(c) The exception lifecycle `status` is still the raw wire value on both
+      surfaces that render it.** `/exceptions`' queue badge prints `exc.status`
+      (`open`, `escalated`, `resolved`, `dismissed`) and the AI-agents run dialog
+      prints `runOutcome.exception.status`; the round-30 slice keyed everything around
+      them but left both raw, because keying one without the other is how one status
+      comes to wear two names in one page.
+      **Durable fix:** `EXCEPTION_STATUS_LABEL_KEYS` pointed at the `exceptions.filter.*`
+      keys the queue's own chips already use (NOT a second set of keys), a tolerant
+      accessor beside `exceptionTypeLabelKey`, and both call sites in the same change.
+      It was deliberately not added as an unused export this round.
+      **Trigger:** the next /exceptions slice. Note it is not a one-line swap —
+      `tests-e2e/exceptions/agent-resolve.spec.ts` asserts
+      `toContainText('resolved')` / `('escalated')` on `agent-run-status`, and
+      `toContainText` is case-sensitive, so three assertions move with it.
+
+- [ ] **(c) `/profile` shows raw role slugs where `/admin` shows labels.** The Account
+      card renders `auth.user.roles.join(', ')` — `admin, ap_manager` — while
+      `UsersPanel` renders the same roles through `types/admin.ts::ROLE_LABELS` as
+      `Admin, AP Manager`. The join is correctly classified family 2 in
+      `listJoinAudit.test.ts` *because* they are slugs, so the two defects are one.
+      **Durable fix:** `ROLE_LABEL_KEYS` over the four system roles with a tolerant
+      accessor (custom roles keep falling back to their stored name, which is tenant
+      data and must not be translated), then use it on both surfaces and migrate
+      /profile's join to `formatList` — at which point the route leaves `ALLOWED`
+      entirely. `ROLE_LABELS` is currently documented as staying data-driven English,
+      so that note in `frontend/docs/i18n.md` moves with it.
+      **Trigger:** the next i18n slice, or the next /profile or user-management pass.
+
+- [ ] **(c) The adaptive APPLY paths and the Feedback tab have no mobile
+      counterpart, by design — but "by design" is a decision with an expiry.**
+      `POST /adaptive/routing-suggestion/apply` and
+      `POST /adaptive/threshold-recommendation/apply` were deliberately left off
+      the mobile screen (decisions §156): the first reassigns a live approval,
+      the second raises the org-wide `auto_approve_below`, and the second's
+      `expected_recommended_threshold` 409 needs a persistent surface naming
+      both figures plus the recomputed recommendation. `GET /feedback` is out
+      separately because it writes an `adaptive_feedback.viewed` access-audit
+      row and therefore needs an explicit "only when asked" load rather than
+      riding along with two eager tabs.
+      **Durable fix:** if an operator asks for either on a phone, design the
+      stale-guard state and the audited-read trigger FIRST — a phone-sized copy
+      of the web control with the explanation cut off is worse than its absence.
+      Routing-apply is the cheaper of the two (no optimistic guard); the
+      threshold apply should stay web-only until its refusal has somewhere to
+      live. **Trigger:** a request for either control on mobile.
+
+- [ ] **(c) Mobile renders money with a hardcoded `$`, and the new adaptive
+      screen had to opt out of it.** `NumberFormat.currency(symbol: '\$')` is
+      declared at the top of `payments_screen.dart`, `cash_flow_screen.dart`,
+      `contract_detail_screen.dart` and `exception_detail_screen.dart`, so every
+      figure on those screens reads as dollars regardless of the org's currency.
+      The adaptive patterns tab could not join that: its per-vendor amounts are
+      in the org's **reporting** currency, which the `approval-patterns` payload
+      does not name, so it renders the exact server strings under a section note
+      instead (decisions §156). That is correct for that screen and makes the
+      inconsistency visible: four screens assert a currency they were never told.
+      **Durable fix:** the data is already there — `GET /api/organization` is
+      `get_current_user` and `services/org_settings_view.NON_ADMIN_SETTINGS`
+      projects the top-level `reporting_currency` (plus
+      `invoice_defaults.currency`) to every role *for exactly this reason*; the
+      web `orgCurrency` store consumes it. So: a small mobile `OrgCurrencyStore`
+      mirroring it (resolution order `reporting_currency` →
+      `invoice_defaults.currency`, the first two rungs of
+      `currency_conversion.resolve_reporting_currency`), plus one shared
+      `formatMoney(amount, currency)` helper that the four `$` screens and the
+      adaptive patterns tab call. Note the mobile `OrgSettings` model does not
+      parse `reporting_currency` yet. **Trigger:** the first non-USD tenant on
+      mobile, or any new mobile screen that renders money.
+
 
 
 ## (a) Blocked on external credentials, accounts, or hardware
