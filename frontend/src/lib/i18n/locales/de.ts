@@ -1162,6 +1162,8 @@ export const messages = {
 	'org.chat.hint':
 		'Sende Ereignisse des Freigabe-Lebenszyklus über den eingehenden Webhook des Anbieters an einen Slack- oder Microsoft-Teams-Kanal. Eine Nachricht pro Ereignis, nie pro Empfänger — zusätzlich zu E-Mail- und In-App-Benachrichtigungen, nicht an deren Stelle.',
 	'org.chat.loading': 'Chat-Benachrichtigungen werden geladen…',
+	'org.chat.adminOnly':
+		'Nur Administratoren können die Einstellungen für Chat-Benachrichtigungen sehen oder ändern.',
 	'org.chat.enabled': 'Freigabe-Ereignisse an den Chat senden',
 	'org.chat.provider': 'Anbieter',
 	'org.chat.events': 'Ereignisse',
@@ -1195,6 +1197,8 @@ export const messages = {
 	'org.chat.webhook.toast.empty': 'Füge zuerst die eingehende Webhook-URL ein',
 	'org.readOnly.banner':
 		'Sie sehen die Organisationseinstellungen im schreibgeschützten Modus. Nur Administratoren können sie ändern, daher sind alle Felder und Schaltflächen hier deaktiviert.',
+	'org.readOnly.sectionAdminOnly':
+		'Nur Administratoren können diesen Abschnitt sehen. Seine Einstellungen werden nicht an andere Rollen übermittelt, daher würden die Felder hier Plattformstandards anzeigen und nicht die tatsächliche Konfiguration dieser Organisation.',
 	'org.section.emailIntake': 'E-Mail-Eingang',
 	'org.emailIntake.hint':
 		'Lieferanten senden Rechnungen per E-Mail direkt in Ihre Kreditoren-Warteschlange. Jedes PDF, Bild oder E-Invoice-XML, das an Ihre Eingangsadresse geschickt wird, wird zu einer Rechnung und durchläuft Extraktion und Freigabe genau wie ein Upload — niemand muss die App öffnen, um sie zu erfassen.',

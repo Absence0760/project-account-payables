@@ -285,12 +285,18 @@
 	const userLoaded = $derived(auth.user !== null);
 	const readOnly = $derived(userLoaded && !auth.isAdmin);
 
+	// The page's ROLE-OPEN reads, and only those. `GET /api/organization`,
+	// `/api/organization/branding/custom-domains` and
+	// `/api/organization/data-residency` are all `get_current_user`, and
+	// `/api/public-config` is public — so every one of these answers a clerk
+	// with real tenant data. The three admin-only reads (chat notifications,
+	// email intake, the fraud-rule defaults) each have their own auth-gated
+	// effect; a doomed request is not a way to find out what your role is.
 	$effect(() => {
 		loadOrg();
 		loadPlatformTenantUrl();
 		loadCustomDomains();
 		loadResidency();
-		loadChat();
 		// `payments.cfo_approval_above` is a bare number denominated in the org's
 		// reporting currency (`payment_controls.cfo_approval_decision`), so the
 		// field names that currency instead of hardcoding a dollar sign.
@@ -353,26 +359,15 @@
 				| undefined;
 			mfaRequired = (mfaCfg?.required as boolean) ?? false;
 
-			// Fraud rules — fetch the canonical defaults once, then layer
-			// any org overrides on top. Both are stored so the Reset button
-			// has something to revert to.
-			if (!fraudDefaults) {
-				try {
-					fraudDefaults = await api.get<FraudRules>(
-						'/api/organization/fraud-rules/defaults'
-					);
-				} catch {
-					/* admin-only; non-critical for non-admin viewers */
-				}
-			}
-			if (fraudDefaults) {
-				const overrides =
-					((data.settings as unknown as Record<string, unknown>).fraud_rules as
-						| Partial<FraudRules>
-						| undefined) ?? {};
-				fraud = { ...fraudDefaults, ...overrides };
-				personalEmailDomainsText = fraud.personal_email_domains.join('\n');
-			}
+			// Fraud rules — this read carries only the org's OVERRIDES. The
+			// canonical defaults they layer onto come from an admin-only endpoint
+			// fetched in its own role-gated effect, so the two halves can land in
+			// either order and whichever arrives second composes the form.
+			fraudOverrides =
+				((data.settings as unknown as Record<string, unknown>).fraud_rules as
+					| Partial<FraudRules>
+					| undefined) ?? {};
+			composeFraud();
 			// Payments
 			const pmt = (data.settings as unknown as Record<string, unknown>).payments as
 				| Record<string, unknown>
@@ -444,6 +439,40 @@
 	let fraud = $state<FraudRules | null>(null);
 	let personalEmailDomainsText = $state('');
 	let savingFraud = $state(false);
+	// The org's stored overrides, held on their own because the two halves of
+	// this form arrive from two endpoints with two different gates: the overrides
+	// ride the role-open `GET /api/organization`, the defaults come from an
+	// admin-only route. `null` is "the org read has not landed", which is NOT the
+	// same fact as `{}` ("this org overrides nothing").
+	let fraudOverrides = $state<Partial<FraudRules> | null>(null);
+
+	/** Compose the form from (defaults ⊕ overrides), once both have landed. */
+	function composeFraud() {
+		if (!fraudDefaults || fraudOverrides === null) return;
+		fraud = { ...fraudDefaults, ...fraudOverrides };
+		personalEmailDomainsText = fraud.personal_email_domains.join('\n');
+	}
+
+	$effect(() => {
+		// `GET /api/organization/fraud-rules/defaults` is admin-only, so this is
+		// gated on the role like the chat and email-intake reads rather than fired
+		// and swallowed. For a non-admin the panel renders the admin-only hint, so
+		// the request was not merely refused — it was pointless.
+		if (!userLoaded || !auth.isAdmin || fraudDefaults) return;
+		loadFraudDefaults();
+	});
+
+	async function loadFraudDefaults() {
+		try {
+			fraudDefaults = await api.get<FraudRules>('/api/organization/fraud-rules/defaults');
+			composeFraud();
+		} catch {
+			// Non-fatal, and deliberately not substituted: a hardcoded client-side
+			// default would render switches claiming a rule set nobody configured,
+			// beside a Reset button with nothing true to reset to. The panel stays
+			// absent instead.
+		}
+	}
 
 	// Payments
 	let paymentsProvider = $state('mock');
@@ -1053,6 +1082,22 @@
 		!!chat && chat.enabled && chat.provider !== 'mock' && !chat.webhook_configured
 	);
 
+	$effect(() => {
+		// Its own effect, the same shape as the email-intake one below and for the
+		// same reason: `GET /api/organization/chat-notifications` is
+		// `require_roles(ROLE_ADMIN)`, so asking as a clerk has exactly one
+		// possible answer — a 403, which this panel then rendered as a
+		// `role="alert"` reading "Your role does not permit this action.". That is
+		// the anti-pattern the comment above says this design avoids, reached by
+		// the one read that was not gated on the role it requires.
+		if (!userLoaded) return;
+		if (!auth.isAdmin) {
+			loadingChat = false;
+			return;
+		}
+		loadChat();
+	});
+
 	async function loadChat() {
 		loadingChat = true;
 		chatError = '';
@@ -1603,8 +1648,16 @@
 				<h2>{m('org.section.chat')}</h2>
 				<p class="card-hint">{m('org.chat.hint')}</p>
 
-				{#if loadingChat}
+				{#if !userLoaded || loadingChat}
 					<p class="card-hint">{m('org.chat.loading')}</p>
+				{:else if readOnly}
+					<!-- GET is admin-only, so nothing is fetched for a non-admin and
+					     there is nothing to show. Say that, exactly as the Email
+					     Intake panel does, instead of rendering a 403 the reader
+					     cannot act on. -->
+					<p class="card-hint" data-testid="chat-admin-only">
+						{m('org.chat.adminOnly')}
+					</p>
 				{:else if chatError}
 					<p class="chat-error" role="alert">{chatError}</p>
 				{:else if chat}
@@ -1848,207 +1901,252 @@
 				{/if}
 			</section>
 
+			<!-- The six panels from here to Fraud Detection have NO non-admin data
+			     to show. `services/org_settings_view.py::NON_ADMIN_SETTINGS` is an
+			     allow-list and admits none of `extraction`, `cards`, `mfa`,
+			     `fraud_rules`, the ERP credentials or the payments credentials —
+			     deliberately: most of them ARE third-party credentials (an ERP client
+			     secret, a processor credential set, a card API key) and the rest have
+			     no non-admin consumer. So for a non-admin those blocks arrive ABSENT
+			     and every field falls back to its initializer, which is a platform
+			     default wearing the tenant's clothes: Extraction reads "Claude Vision
+			     / Platform" whatever the tenant bought, Payments reads "Mock",
+			     Security reads MFA-not-required, and Fraud Detection disappeared
+			     entirely. A disabled <fieldset> around a wrong value is still a wrong
+			     value.
+
+			     Each therefore replaces its BODY with the same admin-only hint the
+			     Email Intake panel already uses, keeping its heading and its
+			     description. Hiding the sections outright was rejected: the heading
+			     is true (the setting exists, and knowing who to ask is the useful
+			     part), Getting Started links to #org-payments, and the page would
+			     otherwise carry two vocabularies for one fact — a hint here, silence
+			     there. Widening the projection to fill the fields was rejected
+			     outright: that is the credential leak `org_settings_view` exists to
+			     close.
+
+			     ONE exception inside these six, recorded so nobody reads the hint as
+			     a stronger claim than it is: the allow-list does admit
+			     `erp.integration_method`, so the ERP panel's routing-mode select
+			     alone could honestly be shown. It is not, because the panel is the
+			     unit and the field beside it (ERP system) plus every credential below
+			     are absent — one live select among fourteen missing ones would be a
+			     THIRD treatment for the same fact, and this page has just finished
+			     getting down to one. That key's declared non-admin consumer is the
+			     workflow builder's ERP hint, which still reads it.
+			     decisions §153. -->
 			<section class="card">
 				<h2>{m('org.section.extraction')}</h2>
 				<p class="card-hint">{m('org.extraction.hint')}</p>
-
-				<div class="form-grid">
-					<label>
-						<span>{m('org.extraction.program')}</span>
-						<select bind:value={extractionProgramType}>
-							<option value="platform">{m('org.extraction.programPlatform')}</option>
-							<option value="byok">{m('org.extraction.programByok')}</option>
-						</select>
-					</label>
-					{#if extractionProgramType === 'byok'}
+				{#if readOnly}
+					<p class="card-hint" data-testid="extraction-admin-only">
+						{m('org.readOnly.sectionAdminOnly')}
+					</p>
+				{:else}
+					<div class="form-grid">
 						<label>
-							<span>{m('org.extraction.provider')}</span>
-							<select bind:value={extractionProvider}>
-								{#each EXTRACTION_PROVIDERS as p}
-									<option value={p.value}>{p.label}</option>
-								{/each}
+							<span>{m('org.extraction.program')}</span>
+							<select bind:value={extractionProgramType}>
+								<option value="platform">{m('org.extraction.programPlatform')}</option>
+								<option value="byok">{m('org.extraction.programByok')}</option>
 							</select>
 						</label>
-					{:else}
-						<label>
-							<span>{m('org.extraction.provider')}</span>
-							<input type="text" value="Claude Vision (Anthropic)" disabled />
-						</label>
+						{#if extractionProgramType === 'byok'}
+							<label>
+								<span>{m('org.extraction.provider')}</span>
+								<select bind:value={extractionProvider}>
+									{#each EXTRACTION_PROVIDERS as p}
+										<option value={p.value}>{p.label}</option>
+									{/each}
+								</select>
+							</label>
+						{:else}
+							<label>
+								<span>{m('org.extraction.provider')}</span>
+								<input type="text" value="Claude Vision (Anthropic)" disabled />
+							</label>
+						{/if}
+					</div>
+
+					{#if extractionProgramType === 'platform'}
+						<p class="card-hint" style="margin-top: 10px;">{m('org.extraction.platformHint')}</p>
+					{:else if extractionProvider === 'claude_vision' || extractionProvider === 'openai_vision'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{extractionProvider === 'claude_vision' ? m('org.extraction.anthropicKey') : m('org.extraction.openaiKey')}</span>
+								<input type="password" bind:value={extractionApiKey} placeholder="sk-..." />
+							</label>
+						</div>
+					{:else if extractionProvider === 'aws_textract'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{m('org.extraction.awsKeyId')}</span>
+								<input type="text" bind:value={extractionAwsKeyId} />
+							</label>
+							<label>
+								<span>{m('org.extraction.awsSecret')}</span>
+								<input type="password" bind:value={extractionAwsSecret} />
+							</label>
+							<label>
+								<span>{m('org.extraction.awsRegion')}</span>
+								<input type="text" bind:value={extractionAwsRegion} placeholder="us-east-1" />
+							</label>
+						</div>
+					{:else if extractionProvider === 'ollama'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{m('org.extraction.ollamaUrl')}</span>
+								<input type="url" bind:value={extractionOllamaUrl} placeholder="http://localhost:11434" />
+							</label>
+							<label>
+								<span>{m('org.extraction.model')}</span>
+								<select bind:value={extractionOllamaModel}>
+									<option value="llama3.2-vision:11b">Llama 3.2 Vision 11B</option>
+									<option value="llama3.2-vision:90b">Llama 3.2 Vision 90B</option>
+									<option value="llava:13b">LLaVA 13B</option>
+									<option value="llava:34b">LLaVA 34B</option>
+								</select>
+							</label>
+						</div>
+						<p class="card-hint" style="margin-top: 8px;">{m('org.extraction.ollamaHint')} <code>brew install ollama && ollama pull {extractionOllamaModel}</code></p>
 					{/if}
-				</div>
 
-				{#if extractionProgramType === 'platform'}
-					<p class="card-hint" style="margin-top: 10px;">{m('org.extraction.platformHint')}</p>
-				{:else if extractionProvider === 'claude_vision' || extractionProvider === 'openai_vision'}
-					<div class="form-grid" style="margin-top: 14px;">
-						<label>
-							<span>{extractionProvider === 'claude_vision' ? m('org.extraction.anthropicKey') : m('org.extraction.openaiKey')}</span>
-							<input type="password" bind:value={extractionApiKey} placeholder="sk-..." />
-						</label>
+					<div class="erp-test-row">
+						<button class="btn-save-section" disabled={savingExtraction} onclick={saveExtraction}>
+							{savingExtraction ? m('org.common.saving') : m('org.extraction.save')}
+						</button>
+						<button class="btn-test" disabled={testingExtraction} onclick={testExtraction}>
+							{testingExtraction ? m('org.common.testing') : m('org.common.testConnection')}
+						</button>
+						{#if extractionTestResult}
+							<span class="test-result" class:success={extractionTestResult.success} class:failure={!extractionTestResult.success}>
+								{extractionTestResult.message}
+							</span>
+						{/if}
 					</div>
-				{:else if extractionProvider === 'aws_textract'}
-					<div class="form-grid" style="margin-top: 14px;">
-						<label>
-							<span>{m('org.extraction.awsKeyId')}</span>
-							<input type="text" bind:value={extractionAwsKeyId} />
-						</label>
-						<label>
-							<span>{m('org.extraction.awsSecret')}</span>
-							<input type="password" bind:value={extractionAwsSecret} />
-						</label>
-						<label>
-							<span>{m('org.extraction.awsRegion')}</span>
-							<input type="text" bind:value={extractionAwsRegion} placeholder="us-east-1" />
-						</label>
-					</div>
-				{:else if extractionProvider === 'ollama'}
-					<div class="form-grid" style="margin-top: 14px;">
-						<label>
-							<span>{m('org.extraction.ollamaUrl')}</span>
-							<input type="url" bind:value={extractionOllamaUrl} placeholder="http://localhost:11434" />
-						</label>
-						<label>
-							<span>{m('org.extraction.model')}</span>
-							<select bind:value={extractionOllamaModel}>
-								<option value="llama3.2-vision:11b">Llama 3.2 Vision 11B</option>
-								<option value="llama3.2-vision:90b">Llama 3.2 Vision 90B</option>
-								<option value="llava:13b">LLaVA 13B</option>
-								<option value="llava:34b">LLaVA 34B</option>
-							</select>
-						</label>
-					</div>
-					<p class="card-hint" style="margin-top: 8px;">{m('org.extraction.ollamaHint')} <code>brew install ollama && ollama pull {extractionOllamaModel}</code></p>
 				{/if}
-
-				<div class="erp-test-row">
-					<button class="btn-save-section" disabled={savingExtraction} onclick={saveExtraction}>
-						{savingExtraction ? m('org.common.saving') : m('org.extraction.save')}
-					</button>
-					<button class="btn-test" disabled={testingExtraction} onclick={testExtraction}>
-						{testingExtraction ? m('org.common.testing') : m('org.common.testConnection')}
-					</button>
-					{#if extractionTestResult}
-						<span class="test-result" class:success={extractionTestResult.success} class:failure={!extractionTestResult.success}>
-							{extractionTestResult.message}
-						</span>
-					{/if}
-				</div>
 			</section>
 
 			<section class="card">
 				<h2>{m('org.section.erp')}</h2>
 				<p class="card-hint">{m('org.erp.hint')}</p>
-				<div class="form-grid">
-					<label>
-						<span>{m('org.erp.system')}</span>
-						<select bind:value={erpType}>
-							{#each ERP_TYPES as erp}
-								<option value={erp.value}>{erp.label}</option>
-							{/each}
-						</select>
-					</label>
-					<label>
-						<span>{m('org.erp.method')}</span>
-						<select bind:value={erpMethod}>
-							<option value="merge_dev">{m('org.erp.methodMergeDev')}</option>
-							<option value="direct">{m('org.erp.methodDirect')}</option>
-						</select>
-					</label>
-				</div>
-
-				{#if erpMethod === 'merge_dev'}
-					<div class="form-grid" style="margin-top: 14px;">
-						<label>
-							<span>{m('org.erp.mergeApiKey')}</span>
-							<input type="password" bind:value={erpApiKey} placeholder="test_..." />
-						</label>
-						<label>
-							<span>{m('org.erp.accountToken')}</span>
-							<input type="password" bind:value={erpAccountToken} placeholder={m('org.erp.accountTokenPlaceholder')} />
-						</label>
-					</div>
-					<p class="card-hint" style="margin-top: 8px;">{m('org.erp.mergeHintPre')} <a href="https://app.merge.dev" target="_blank" rel="noopener">{m('org.erp.mergeDashboard')}</a>{m('org.erp.mergeHintPost')}</p>
-				{:else if erpType === 'dynamics_365_bc'}
-					<div class="form-grid" style="margin-top: 14px;">
-						<label>
-							<span>{m('org.erp.baseUrl')}</span>
-							<input type="url" bind:value={erpBaseUrl} placeholder="https://api.businesscentral.dynamics.com/v2.0" />
-						</label>
-						<label>
-							<span>{m('org.erp.environment')}</span>
-							<input type="text" bind:value={erpEnvironment} placeholder="production" />
-						</label>
-						<label>
-							<span>{m('org.erp.tenantId')}</span>
-							<input type="text" bind:value={erpTenantId} />
-						</label>
-						<label>
-							<span>{m('org.erp.clientId')}</span>
-							<input type="text" bind:value={erpClientId} />
-						</label>
-						<label>
-							<span>{m('org.erp.clientSecret')}</span>
-							<input type="password" bind:value={erpClientSecret} />
-						</label>
-						<label>
-							<span>{m('org.erp.companyId')}</span>
-							<input type="text" bind:value={erpCompanyId} />
-						</label>
-					</div>
-				{:else if erpType === 'netsuite'}
-					<div class="form-grid" style="margin-top: 14px;">
-						<label>
-							<span>{m('org.erp.accountId')}</span>
-							<input type="text" bind:value={erpAccountId} placeholder="1234567" />
-						</label>
-						<label>
-							<span>{m('org.erp.consumerKey')}</span>
-							<input type="text" bind:value={erpConsumerKey} />
-						</label>
-						<label>
-							<span>{m('org.erp.consumerSecret')}</span>
-							<input type="password" bind:value={erpConsumerSecret} />
-						</label>
-						<label>
-							<span>{m('org.erp.tokenId')}</span>
-							<input type="text" bind:value={erpTokenId} />
-						</label>
-						<label>
-							<span>{m('org.erp.tokenSecret')}</span>
-							<input type="password" bind:value={erpTokenSecret} />
-						</label>
-					</div>
+				{#if readOnly}
+					<p class="card-hint" data-testid="erp-admin-only">
+						{m('org.readOnly.sectionAdminOnly')}
+					</p>
 				{:else}
-					<div class="form-grid" style="margin-top: 14px;">
+					<div class="form-grid">
 						<label>
-							<span>{m('org.erp.apiBaseUrl')}</span>
-							<input type="url" bind:value={erpBaseUrl} />
+							<span>{m('org.erp.system')}</span>
+							<select bind:value={erpType}>
+								{#each ERP_TYPES as erp}
+									<option value={erp.value}>{erp.label}</option>
+								{/each}
+							</select>
 						</label>
 						<label>
-							<span>{m('org.erp.apiKeyClientId')}</span>
-							<input type="password" bind:value={erpClientId} />
-						</label>
-						<label>
-							<span>{m('org.erp.apiSecretClientSecret')}</span>
-							<input type="password" bind:value={erpClientSecret} />
+							<span>{m('org.erp.method')}</span>
+							<select bind:value={erpMethod}>
+								<option value="merge_dev">{m('org.erp.methodMergeDev')}</option>
+								<option value="direct">{m('org.erp.methodDirect')}</option>
+							</select>
 						</label>
 					</div>
-					<p class="card-hint" style="margin-top: 8px;">{m('org.erp.directSoonHint', { erp: ERP_TYPES.find(e => e.value === erpType)?.label ?? erpType })}</p>
-				{/if}
 
-				<div class="erp-test-row">
-					<button class="btn-save-section" disabled={savingErp} onclick={saveErp}>
-						{savingErp ? m('org.common.saving') : m('org.erp.save')}
-					</button>
-					<button class="btn-test" disabled={testingConnection} onclick={testConnection}>
-						{testingConnection ? m('org.common.testing') : m('org.common.testConnection')}
-					</button>
-					{#if connectionResult}
-						<span class="test-result" class:success={connectionResult.success} class:failure={!connectionResult.success}>
-							{connectionResult.message}
-						</span>
+					{#if erpMethod === 'merge_dev'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{m('org.erp.mergeApiKey')}</span>
+								<input type="password" bind:value={erpApiKey} placeholder="test_..." />
+							</label>
+							<label>
+								<span>{m('org.erp.accountToken')}</span>
+								<input type="password" bind:value={erpAccountToken} placeholder={m('org.erp.accountTokenPlaceholder')} />
+							</label>
+						</div>
+						<p class="card-hint" style="margin-top: 8px;">{m('org.erp.mergeHintPre')} <a href="https://app.merge.dev" target="_blank" rel="noopener">{m('org.erp.mergeDashboard')}</a>{m('org.erp.mergeHintPost')}</p>
+					{:else if erpType === 'dynamics_365_bc'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{m('org.erp.baseUrl')}</span>
+								<input type="url" bind:value={erpBaseUrl} placeholder="https://api.businesscentral.dynamics.com/v2.0" />
+							</label>
+							<label>
+								<span>{m('org.erp.environment')}</span>
+								<input type="text" bind:value={erpEnvironment} placeholder="production" />
+							</label>
+							<label>
+								<span>{m('org.erp.tenantId')}</span>
+								<input type="text" bind:value={erpTenantId} />
+							</label>
+							<label>
+								<span>{m('org.erp.clientId')}</span>
+								<input type="text" bind:value={erpClientId} />
+							</label>
+							<label>
+								<span>{m('org.erp.clientSecret')}</span>
+								<input type="password" bind:value={erpClientSecret} />
+							</label>
+							<label>
+								<span>{m('org.erp.companyId')}</span>
+								<input type="text" bind:value={erpCompanyId} />
+							</label>
+						</div>
+					{:else if erpType === 'netsuite'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{m('org.erp.accountId')}</span>
+								<input type="text" bind:value={erpAccountId} placeholder="1234567" />
+							</label>
+							<label>
+								<span>{m('org.erp.consumerKey')}</span>
+								<input type="text" bind:value={erpConsumerKey} />
+							</label>
+							<label>
+								<span>{m('org.erp.consumerSecret')}</span>
+								<input type="password" bind:value={erpConsumerSecret} />
+							</label>
+							<label>
+								<span>{m('org.erp.tokenId')}</span>
+								<input type="text" bind:value={erpTokenId} />
+							</label>
+							<label>
+								<span>{m('org.erp.tokenSecret')}</span>
+								<input type="password" bind:value={erpTokenSecret} />
+							</label>
+						</div>
+					{:else}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{m('org.erp.apiBaseUrl')}</span>
+								<input type="url" bind:value={erpBaseUrl} />
+							</label>
+							<label>
+								<span>{m('org.erp.apiKeyClientId')}</span>
+								<input type="password" bind:value={erpClientId} />
+							</label>
+							<label>
+								<span>{m('org.erp.apiSecretClientSecret')}</span>
+								<input type="password" bind:value={erpClientSecret} />
+							</label>
+						</div>
+						<p class="card-hint" style="margin-top: 8px;">{m('org.erp.directSoonHint', { erp: ERP_TYPES.find(e => e.value === erpType)?.label ?? erpType })}</p>
 					{/if}
-				</div>
+
+					<div class="erp-test-row">
+						<button class="btn-save-section" disabled={savingErp} onclick={saveErp}>
+							{savingErp ? m('org.common.saving') : m('org.erp.save')}
+						</button>
+						<button class="btn-test" disabled={testingConnection} onclick={testConnection}>
+							{testingConnection ? m('org.common.testing') : m('org.common.testConnection')}
+						</button>
+						{#if connectionResult}
+							<span class="test-result" class:success={connectionResult.success} class:failure={!connectionResult.success}>
+								{connectionResult.message}
+							</span>
+						{/if}
+					</div>
+				{/if}
 			</section>
 
 			<section class="card" id="org-payments">
@@ -2056,178 +2154,188 @@
 				<p class="card-hint">
 					{m('org.payments.hint')}
 				</p>
-
-				<div class="form-grid">
-					<label>
-						<span>{m('org.payments.provider')}</span>
-						<select bind:value={paymentsProvider}>
-							<option value="mock">{m('org.payments.providerMock')}</option>
-							<option value="modern_treasury">Modern Treasury</option>
-						</select>
-					</label>
-				</div>
-
-				{#if paymentsProvider === 'modern_treasury'}
+				{#if readOnly}
+					<p class="card-hint" data-testid="payments-admin-only">
+						{m('org.readOnly.sectionAdminOnly')}
+					</p>
+				{:else}
 					<div class="form-grid">
 						<label>
-							<span>{m('org.payments.orgId')}</span>
-							<input type="text" bind:value={paymentsOrgId} placeholder="org_..." />
+							<span>{m('org.payments.provider')}</span>
+							<select bind:value={paymentsProvider}>
+								<option value="mock">{m('org.payments.providerMock')}</option>
+								<option value="modern_treasury">Modern Treasury</option>
+							</select>
 						</label>
+					</div>
+
+					{#if paymentsProvider === 'modern_treasury'}
+						<div class="form-grid">
+							<label>
+								<span>{m('org.payments.orgId')}</span>
+								<input type="text" bind:value={paymentsOrgId} placeholder="org_..." />
+							</label>
+							<label>
+								<span>{m('org.payments.apiKey')}</span>
+								<input type="password" bind:value={paymentsApiKey} placeholder="••••••••" autocomplete="off" />
+							</label>
+							<label>
+								<span>{m('org.payments.originatingAccount')}</span>
+								<input type="text" bind:value={paymentsOriginatingAccount} placeholder={m('org.payments.originatingAccountPlaceholder')} />
+							</label>
+							<label>
+								<span>{m('org.payments.webhookSecret')}</span>
+								<input type="password" bind:value={paymentsWebhookSecret} placeholder={m('org.payments.webhookSecretPlaceholder')} autocomplete="off" />
+							</label>
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={paymentsSandbox} />
+								<span>{m('org.payments.sandbox')}</span>
+							</label>
+						</div>
+						<p class="card-hint">
+							{m('org.payments.webhookHint')}
+							<code>{org.created_at ? `${window.location.origin.replace(window.location.host, org.slug + '.' + window.location.host)}/api/payments/webhook/${org.slug}/modern_treasury` : '...'}</code>
+						</p>
+					{/if}
+
+					<div class="form-grid">
 						<label>
-							<span>{m('org.payments.apiKey')}</span>
-							<input type="password" bind:value={paymentsApiKey} placeholder="••••••••" autocomplete="off" />
-						</label>
-						<label>
-							<span>{m('org.payments.originatingAccount')}</span>
-							<input type="text" bind:value={paymentsOriginatingAccount} placeholder={m('org.payments.originatingAccountPlaceholder')} />
-						</label>
-						<label>
-							<span>{m('org.payments.webhookSecret')}</span>
-							<input type="password" bind:value={paymentsWebhookSecret} placeholder={m('org.payments.webhookSecretPlaceholder')} autocomplete="off" />
-						</label>
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={paymentsSandbox} />
-							<span>{m('org.payments.sandbox')}</span>
+							<span>{m('org.payments.cfoThreshold', { currency: orgCurrency.currency })}</span>
+							<input
+								type="number"
+								min="0"
+								step="100"
+								placeholder={m('org.payments.cfoThresholdPlaceholder')}
+								value={paymentsCfoThreshold ?? ''}
+								oninput={(e) => {
+									const v = (e.currentTarget as HTMLInputElement).value;
+									paymentsCfoThreshold = v ? parseFloat(v) : null;
+								}}
+							/>
 						</label>
 					</div>
 					<p class="card-hint">
-						{m('org.payments.webhookHint')}
-						<code>{org.created_at ? `${window.location.origin.replace(window.location.host, org.slug + '.' + window.location.host)}/api/payments/webhook/${org.slug}/modern_treasury` : '...'}</code>
+						{m('org.payments.cfoHint')}
 					</p>
+
+					<div class="section-footer">
+						<button class="btn-save-section" disabled={savingPayments} onclick={savePayments}>
+							{savingPayments ? m('org.common.saving') : m('org.payments.save')}
+						</button>
+						<button class="btn-test" disabled={testingPayments || paymentsProvider === 'mock'} onclick={testPayments}>
+							{testingPayments ? m('org.common.testing') : m('org.common.testConnection')}
+						</button>
+						{#if paymentsTestResult}
+							<span class="test-result" class:success={paymentsTestResult.success} class:failure={!paymentsTestResult.success}>
+								{paymentsTestResult.message}
+							</span>
+						{/if}
+					</div>
 				{/if}
-
-				<div class="form-grid">
-					<label>
-						<span>{m('org.payments.cfoThreshold', { currency: orgCurrency.currency })}</span>
-						<input
-							type="number"
-							min="0"
-							step="100"
-							placeholder={m('org.payments.cfoThresholdPlaceholder')}
-							value={paymentsCfoThreshold ?? ''}
-							oninput={(e) => {
-								const v = (e.currentTarget as HTMLInputElement).value;
-								paymentsCfoThreshold = v ? parseFloat(v) : null;
-							}}
-						/>
-					</label>
-				</div>
-				<p class="card-hint">
-					{m('org.payments.cfoHint')}
-				</p>
-
-				<div class="section-footer">
-					<button class="btn-save-section" disabled={savingPayments} onclick={savePayments}>
-						{savingPayments ? m('org.common.saving') : m('org.payments.save')}
-					</button>
-					<button class="btn-test" disabled={testingPayments || paymentsProvider === 'mock'} onclick={testPayments}>
-						{testingPayments ? m('org.common.testing') : m('org.common.testConnection')}
-					</button>
-					{#if paymentsTestResult}
-						<span class="test-result" class:success={paymentsTestResult.success} class:failure={!paymentsTestResult.success}>
-							{paymentsTestResult.message}
-						</span>
-					{/if}
-				</div>
 			</section>
 
 			<section class="card">
 				<h2>{m('org.section.cards')}</h2>
 				<p class="card-hint">{m('org.cards.hint')}</p>
-
-				<div class="form-grid">
-					<label>
-						<span>{m('org.cards.enabled')}</span>
-						<select bind:value={cardsEnabled}>
-							<option value={false}>{m('org.cards.disabled')}</option>
-							<option value={true}>{m('org.cards.enabledOn')}</option>
-						</select>
-					</label>
-					<label>
-						<span>{m('org.cards.program')}</span>
-						<select bind:value={cardsProgramType}>
-							<option value="platform">{m('org.cards.programPlatform')}</option>
-							<option value="byok">{m('org.cards.programByok')}</option>
-						</select>
-					</label>
-					<label>
-						<span>{m('org.cards.region')}</span>
-						<select bind:value={cardsRegion}>
-							{#each CARD_REGIONS as r}
-								<option value={r.value}>{r.label}</option>
-							{/each}
-						</select>
-					</label>
-					<label>
-						<span>{m('org.cards.expiryDays')}</span>
-						<input type="number" min="1" max="90" bind:value={cardsExpiryDays} />
-					</label>
-				</div>
-
-				{#if cardsEnabled && cardsProgramType === 'platform'}
-					<p class="card-hint" style="margin-top: 10px;">{m('org.cards.platformHint', { provider: autoProvider === 'lithic' ? 'Lithic' : 'Nium' })}</p>
-				{/if}
-
-				{#if cardsEnabled && cardsProgramType === 'byok'}
-					<div class="form-grid" style="margin-top: 14px;">
+				{#if readOnly}
+					<p class="card-hint" data-testid="cards-admin-only">
+						{m('org.readOnly.sectionAdminOnly')}
+					</p>
+				{:else}
+					<div class="form-grid">
 						<label>
-							<span>{m('org.cards.provider')}</span>
-							<select bind:value={cardsProvider}>
-								<option value="">{m('org.cards.providerAuto', { provider: autoProvider === 'lithic' ? 'Lithic' : 'Nium' })}</option>
-								<option value="lithic">{m('org.cards.providerLithic')}</option>
-								<option value="nium">{m('org.cards.providerNium')}</option>
+							<span>{m('org.cards.enabled')}</span>
+							<select bind:value={cardsEnabled}>
+								<option value={false}>{m('org.cards.disabled')}</option>
+								<option value={true}>{m('org.cards.enabledOn')}</option>
 							</select>
+						</label>
+						<label>
+							<span>{m('org.cards.program')}</span>
+							<select bind:value={cardsProgramType}>
+								<option value="platform">{m('org.cards.programPlatform')}</option>
+								<option value="byok">{m('org.cards.programByok')}</option>
+							</select>
+						</label>
+						<label>
+							<span>{m('org.cards.region')}</span>
+							<select bind:value={cardsRegion}>
+								{#each CARD_REGIONS as r}
+									<option value={r.value}>{r.label}</option>
+								{/each}
+							</select>
+						</label>
+						<label>
+							<span>{m('org.cards.expiryDays')}</span>
+							<input type="number" min="1" max="90" bind:value={cardsExpiryDays} />
 						</label>
 					</div>
 
-					{#if effectiveProvider === 'lithic'}
-						<div class="form-grid" style="margin-top: 14px;">
-							<label>
-								<span>{m('org.cards.lithicApiKey')}</span>
-								<input type="password" bind:value={cardsApiKey} placeholder="api-key-..." />
-							</label>
-							<label>
-								<span>{m('org.cards.sandboxMode')}</span>
-								<select bind:value={cardsSandbox}>
-									<option value={true}>{m('org.cards.sandboxTesting')}</option>
-									<option value={false}>{m('org.cards.production')}</option>
-								</select>
-							</label>
-						</div>
-					{:else if effectiveProvider === 'nium'}
-						<div class="form-grid" style="margin-top: 14px;">
-							<label>
-								<span>{m('org.cards.clientId')}</span>
-								<input type="text" bind:value={cardsClientId} />
-							</label>
-							<label>
-								<span>{m('org.cards.clientSecret')}</span>
-								<input type="password" bind:value={cardsClientSecret} />
-							</label>
-							<label>
-								<span>{m('org.cards.customerHashId')}</span>
-								<input type="text" bind:value={cardsCustomerHashId} />
-							</label>
-							<label>
-								<span>{m('org.cards.walletHashId')}</span>
-								<input type="text" bind:value={cardsWalletHashId} />
-							</label>
-							<label>
-								<span>{m('org.cards.sandboxMode')}</span>
-								<select bind:value={cardsSandbox}>
-									<option value={true}>{m('org.cards.sandboxTesting')}</option>
-									<option value={false}>{m('org.cards.production')}</option>
-								</select>
-							</label>
-						</div>
+					{#if cardsEnabled && cardsProgramType === 'platform'}
+						<p class="card-hint" style="margin-top: 10px;">{m('org.cards.platformHint', { provider: autoProvider === 'lithic' ? 'Lithic' : 'Nium' })}</p>
 					{/if}
-				{/if}
 
-				<div class="section-footer">
-					<button class="btn-save-section" disabled={savingCards} onclick={saveCards}>
-						{savingCards ? m('org.common.saving') : m('org.cards.save')}
-					</button>
-				</div>
+					{#if cardsEnabled && cardsProgramType === 'byok'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>{m('org.cards.provider')}</span>
+								<select bind:value={cardsProvider}>
+									<option value="">{m('org.cards.providerAuto', { provider: autoProvider === 'lithic' ? 'Lithic' : 'Nium' })}</option>
+									<option value="lithic">{m('org.cards.providerLithic')}</option>
+									<option value="nium">{m('org.cards.providerNium')}</option>
+								</select>
+							</label>
+						</div>
+
+						{#if effectiveProvider === 'lithic'}
+							<div class="form-grid" style="margin-top: 14px;">
+								<label>
+									<span>{m('org.cards.lithicApiKey')}</span>
+									<input type="password" bind:value={cardsApiKey} placeholder="api-key-..." />
+								</label>
+								<label>
+									<span>{m('org.cards.sandboxMode')}</span>
+									<select bind:value={cardsSandbox}>
+										<option value={true}>{m('org.cards.sandboxTesting')}</option>
+										<option value={false}>{m('org.cards.production')}</option>
+									</select>
+								</label>
+							</div>
+						{:else if effectiveProvider === 'nium'}
+							<div class="form-grid" style="margin-top: 14px;">
+								<label>
+									<span>{m('org.cards.clientId')}</span>
+									<input type="text" bind:value={cardsClientId} />
+								</label>
+								<label>
+									<span>{m('org.cards.clientSecret')}</span>
+									<input type="password" bind:value={cardsClientSecret} />
+								</label>
+								<label>
+									<span>{m('org.cards.customerHashId')}</span>
+									<input type="text" bind:value={cardsCustomerHashId} />
+								</label>
+								<label>
+									<span>{m('org.cards.walletHashId')}</span>
+									<input type="text" bind:value={cardsWalletHashId} />
+								</label>
+								<label>
+									<span>{m('org.cards.sandboxMode')}</span>
+									<select bind:value={cardsSandbox}>
+										<option value={true}>{m('org.cards.sandboxTesting')}</option>
+										<option value={false}>{m('org.cards.production')}</option>
+									</select>
+								</label>
+							</div>
+						{/if}
+					{/if}
+
+					<div class="section-footer">
+						<button class="btn-save-section" disabled={savingCards} onclick={saveCards}>
+							{savingCards ? m('org.common.saving') : m('org.cards.save')}
+						</button>
+					</div>
+				{/if}
 			</section>
 
 			<section class="card">
@@ -2235,207 +2343,217 @@
 				<p class="card-hint">
 					{m('org.security.hint')}
 				</p>
-
-				<label class="switch-row">
-					<input type="checkbox" bind:checked={mfaRequired} />
-					<span>{m('org.security.requireMfa')}</span>
-				</label>
-
-				{#if mfaRequired && !mfaEnforcementActive}
-					<p class="mfa-enforcement-warning" role="alert" data-testid="mfa-enforcement-inactive">
-						{m('org.security.mfaEnforcementInactive')}
+				{#if readOnly}
+					<p class="card-hint" data-testid="security-admin-only">
+						{m('org.readOnly.sectionAdminOnly')}
 					</p>
-				{/if}
+				{:else}
+					<label class="switch-row">
+						<input type="checkbox" bind:checked={mfaRequired} />
+						<span>{m('org.security.requireMfa')}</span>
+					</label>
 
-				<div class="section-footer">
-					<button class="btn-save-section" disabled={savingSecurity} onclick={saveSecurity}>
-						{savingSecurity ? m('org.common.saving') : m('org.security.save')}
-					</button>
-				</div>
+					{#if mfaRequired && !mfaEnforcementActive}
+						<p class="mfa-enforcement-warning" role="alert" data-testid="mfa-enforcement-inactive">
+							{m('org.security.mfaEnforcementInactive')}
+						</p>
+					{/if}
+
+					<div class="section-footer">
+						<button class="btn-save-section" disabled={savingSecurity} onclick={saveSecurity}>
+							{savingSecurity ? m('org.common.saving') : m('org.security.save')}
+						</button>
+					</div>
+				{/if}
 			</section>
 
-			{#if fraud}
+			{#if readOnly || fraud}
 				<section class="card">
 					<h2>{m('org.section.fraud')}</h2>
 					<p class="card-hint">
 						{m('org.fraud.hint')}
 					</p>
-
-					<div class="fraud-grid">
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.round_amount_enabled} />
-							<span>
-								<strong>{m('org.fraud.roundAmount')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.roundAmountHint', { min: fraud.round_amount_min })}
+					{#if readOnly}
+						<p class="card-hint" data-testid="fraud-admin-only">
+							{m('org.readOnly.sectionAdminOnly')}
+						</p>
+					{:else if fraud}
+						<div class="fraud-grid">
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.round_amount_enabled} />
+								<span>
+									<strong>{m('org.fraud.roundAmount')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.roundAmountHint', { min: fraud.round_amount_min })}
+									</span>
 								</span>
-							</span>
-						</label>
-						<div class="threshold-row">
-							<label>
-								<span>{m('org.fraud.minAmount')}</span>
-								<input
-									type="number"
-									min="0"
-									step="100"
-									bind:value={fraud.round_amount_min}
-									disabled={!fraud.round_amount_enabled}
-								/>
+							</label>
+							<div class="threshold-row">
+								<label>
+									<span>{m('org.fraud.minAmount')}</span>
+									<input
+										type="number"
+										min="0"
+										step="100"
+										bind:value={fraud.round_amount_min}
+										disabled={!fraud.round_amount_enabled}
+									/>
+								</label>
+							</div>
+
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.future_date_enabled} />
+								<span>
+									<strong>{m('org.fraud.futureDate')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.futureDateHint')}
+									</span>
+								</span>
+							</label>
+
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.rush_payment_enabled} />
+								<span>
+									<strong>{m('org.fraud.rushPayment')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.rushPaymentHint')}
+									</span>
+								</span>
+							</label>
+							<div class="threshold-row">
+								<label>
+									<span>{m('org.fraud.maxDays')}</span>
+									<input
+										type="number"
+										min="0"
+										max="30"
+										bind:value={fraud.rush_payment_max_days}
+										disabled={!fraud.rush_payment_enabled}
+									/>
+								</label>
+							</div>
+
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.new_vendor_large_enabled} />
+								<span>
+									<strong>{m('org.fraud.newVendorLarge')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.newVendorLargeHint', { amount: fraud.new_vendor_large_amount, days: fraud.new_vendor_max_age_days })}
+									</span>
+								</span>
+							</label>
+							<div class="threshold-row">
+								<label>
+									<span>{m('org.fraud.vendorAge')}</span>
+									<input
+										type="number"
+										min="1"
+										bind:value={fraud.new_vendor_max_age_days}
+										disabled={!fraud.new_vendor_large_enabled}
+									/>
+								</label>
+								<label>
+									<span>{m('org.fraud.largeThreshold')}</span>
+									<input
+										type="number"
+										min="0"
+										step="500"
+										bind:value={fraud.new_vendor_large_amount}
+										disabled={!fraud.new_vendor_large_enabled}
+									/>
+								</label>
+							</div>
+
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.bank_change_enabled} />
+								<span>
+									<strong>{m('org.fraud.bankChange')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.bankChangeHint')}
+									</span>
+								</span>
+							</label>
+
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.personal_email_enabled} />
+								<span>
+									<strong>{m('org.fraud.personalEmail')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.personalEmailHint')}
+									</span>
+								</span>
+							</label>
+							<div class="threshold-row">
+								<label class="full">
+									<span>{m('org.fraud.personalEmailDomains')}</span>
+									<textarea
+										rows="4"
+										bind:value={personalEmailDomainsText}
+										disabled={!fraud.personal_email_enabled}
+									></textarea>
+								</label>
+							</div>
+
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.stat_anomaly_enabled} />
+								<span>
+									<strong>{m('org.fraud.statAnomaly')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.statAnomalyHint')}
+									</span>
+								</span>
+							</label>
+							<div class="threshold-row">
+								<label>
+									<span>{m('org.fraud.sigma')}</span>
+									<input
+										type="number"
+										min="0.5"
+										step="0.1"
+										bind:value={fraud.stat_anomaly_sigma}
+										disabled={!fraud.stat_anomaly_enabled}
+									/>
+								</label>
+								<label>
+									<span>{m('org.fraud.minPriorInvoices')}</span>
+									<input
+										type="number"
+										min="2"
+										bind:value={fraud.stat_anomaly_min_history}
+										disabled={!fraud.stat_anomaly_enabled}
+									/>
+								</label>
+							</div>
+
+							<label class="switch-row">
+								<input type="checkbox" bind:checked={fraud.llm_anomaly_enabled} />
+								<span>
+									<strong>{m('org.fraud.llmAnomaly')}</strong>
+									<span class="rule-hint">
+										{m('org.fraud.llmAnomalyHint')}
+									</span>
+								</span>
 							</label>
 						</div>
 
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.future_date_enabled} />
-							<span>
-								<strong>{m('org.fraud.futureDate')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.futureDateHint')}
-								</span>
-							</span>
-						</label>
-
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.rush_payment_enabled} />
-							<span>
-								<strong>{m('org.fraud.rushPayment')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.rushPaymentHint')}
-								</span>
-							</span>
-						</label>
-						<div class="threshold-row">
-							<label>
-								<span>{m('org.fraud.maxDays')}</span>
-								<input
-									type="number"
-									min="0"
-									max="30"
-									bind:value={fraud.rush_payment_max_days}
-									disabled={!fraud.rush_payment_enabled}
-								/>
-							</label>
+						<div class="section-footer">
+							<button
+								type="button"
+								class="btn-link"
+								onclick={resetFraudToDefaults}
+								disabled={savingFraud}
+							>
+								{m('org.fraud.resetDefaults')}
+							</button>
+							<button
+								class="btn-save-section"
+								disabled={savingFraud}
+								onclick={saveFraud}
+							>
+								{savingFraud ? m('org.common.saving') : m('org.fraud.save')}
+							</button>
 						</div>
-
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.new_vendor_large_enabled} />
-							<span>
-								<strong>{m('org.fraud.newVendorLarge')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.newVendorLargeHint', { amount: fraud.new_vendor_large_amount, days: fraud.new_vendor_max_age_days })}
-								</span>
-							</span>
-						</label>
-						<div class="threshold-row">
-							<label>
-								<span>{m('org.fraud.vendorAge')}</span>
-								<input
-									type="number"
-									min="1"
-									bind:value={fraud.new_vendor_max_age_days}
-									disabled={!fraud.new_vendor_large_enabled}
-								/>
-							</label>
-							<label>
-								<span>{m('org.fraud.largeThreshold')}</span>
-								<input
-									type="number"
-									min="0"
-									step="500"
-									bind:value={fraud.new_vendor_large_amount}
-									disabled={!fraud.new_vendor_large_enabled}
-								/>
-							</label>
-						</div>
-
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.bank_change_enabled} />
-							<span>
-								<strong>{m('org.fraud.bankChange')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.bankChangeHint')}
-								</span>
-							</span>
-						</label>
-
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.personal_email_enabled} />
-							<span>
-								<strong>{m('org.fraud.personalEmail')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.personalEmailHint')}
-								</span>
-							</span>
-						</label>
-						<div class="threshold-row">
-							<label class="full">
-								<span>{m('org.fraud.personalEmailDomains')}</span>
-								<textarea
-									rows="4"
-									bind:value={personalEmailDomainsText}
-									disabled={!fraud.personal_email_enabled}
-								></textarea>
-							</label>
-						</div>
-
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.stat_anomaly_enabled} />
-							<span>
-								<strong>{m('org.fraud.statAnomaly')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.statAnomalyHint')}
-								</span>
-							</span>
-						</label>
-						<div class="threshold-row">
-							<label>
-								<span>{m('org.fraud.sigma')}</span>
-								<input
-									type="number"
-									min="0.5"
-									step="0.1"
-									bind:value={fraud.stat_anomaly_sigma}
-									disabled={!fraud.stat_anomaly_enabled}
-								/>
-							</label>
-							<label>
-								<span>{m('org.fraud.minPriorInvoices')}</span>
-								<input
-									type="number"
-									min="2"
-									bind:value={fraud.stat_anomaly_min_history}
-									disabled={!fraud.stat_anomaly_enabled}
-								/>
-							</label>
-						</div>
-
-						<label class="switch-row">
-							<input type="checkbox" bind:checked={fraud.llm_anomaly_enabled} />
-							<span>
-								<strong>{m('org.fraud.llmAnomaly')}</strong>
-								<span class="rule-hint">
-									{m('org.fraud.llmAnomalyHint')}
-								</span>
-							</span>
-						</label>
-					</div>
-
-					<div class="section-footer">
-						<button
-							type="button"
-							class="btn-link"
-							onclick={resetFraudToDefaults}
-							disabled={savingFraud}
-						>
-							{m('org.fraud.resetDefaults')}
-						</button>
-						<button
-							class="btn-save-section"
-							disabled={savingFraud}
-							onclick={saveFraud}
-						>
-							{savingFraud ? m('org.common.saving') : m('org.fraud.save')}
-						</button>
-					</div>
+					{/if}
 				</section>
 			{/if}
 

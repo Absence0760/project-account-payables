@@ -1,5 +1,6 @@
 import type { Locator, Page, Route } from '@playwright/test';
 
+import { emptyTenantDashboardResponse } from '../dashboard/fixture';
 import { expect, test } from '../fixtures/helpers';
 import { expectNoA11yViolations } from './axe-helper';
 
@@ -24,7 +25,7 @@ import { expectNoA11yViolations } from './axe-helper';
  *
  * **Why this spec exists separately from `axe.spec.ts`.** That suite scans
  * routes; this scans *states*. Every assertion below needs the KPI response
- * held or shaped, and none of the three routes reaches the pending state for
+ * held or shaped, and none of the routes below reaches the pending state for
  * long enough to be scanned incidentally — a route list would report the page
  * clean while the busy affordance went entirely unchecked. It is the same
  * argument `deemphasised-rows.spec.ts` makes for de-emphasised rows.
@@ -59,13 +60,22 @@ const LOADING = 'Loading…';
  * so the same test covers "the pending state is clean" and "the state the user
  * actually lands on is clean" without inventing a payload.
  *
+ * `body` overrides that for the one case where the SETTLED state is the thing
+ * being pinned and the tenant's own data cannot produce it — the dashboard's
+ * zero-invoice hand-off, where the seeded tenant has invoices and the state
+ * under test is the one it will never be in. Held and stubbed has to be the
+ * same handler: two routes on one path means the first installed wins, so
+ * `stubEndpoint` beside `holdEndpoint` would silently answer immediately and
+ * the pending half of the assertion would never be reached.
+ *
  * The glob is broader than the path, so the handler re-checks the pathname and
  * lets anything else through — the guard `tests-e2e/requisitions/search-scope`
  * documents.
  */
 function holdEndpoint(
 	page: Page,
-	pathname: string
+	pathname: string,
+	body?: unknown
 ): { release: () => void; install: () => Promise<void> } {
 	let release!: () => void;
 	const released = new Promise<void>((resolve) => {
@@ -78,6 +88,14 @@ function holdEndpoint(
 				return;
 			}
 			await released;
+			if (body !== undefined) {
+				await route.fulfill({
+					status: 200,
+					contentType: 'application/json',
+					body: JSON.stringify(body)
+				});
+				return;
+			}
 			const response = await route.fetch();
 			await route.fulfill({ response });
 		});
@@ -460,9 +478,79 @@ test.describe('accessibility — KPI pending affordance (WCAG 4.1.2 / 1.3.1)', (
 		await expectNoA11yViolations(page);
 	});
 
+	// --- / (the dashboard) ------------------------------------------------
+
+	test('the dashboard KPI row: pending announces a load, settled announces figures', async ({
+		page
+	}) => {
+		// The app's highest-traffic KPI row, and the last page-level one still
+		// gated on its response: it sat inside `{:else if data}` and collapsed to
+		// nothing on every load of every tenant (`docs/decisions.md` §154).
+		const held = holdEndpoint(page, '/api/dashboard');
+		await held.install();
+
+		try {
+			await page.goto('/');
+			const row = page.locator('.kpi-row');
+			await expect(row.locator('.kpi').first()).toBeVisible();
+
+			// FIVE, not however many the tenant's data produces: the row's spine
+			// is the five figures every tenant has. Exceptions, stale approvals,
+			// rebates and captured discounts appear only when there is something
+			// to report, so they stay gated on the response — a dash promising a
+			// figure for a card that may never render is the same lie pointed the
+			// other way.
+			await expectRowPending(row, 5);
+			await expectNoA11yViolations(page);
+
+			// --- settled (the page's real dashboard response) ---
+			held.release();
+			await expect(row.locator('.kpi').first()).toHaveAttribute('data-kpi-state', 'value');
+			// The settled count is read rather than written, as on `/billing`: the
+			// four conditional cards depend on seed state this test does not own.
+			// What it asserts is that nothing is still announcing a load.
+			await expectRowSettled(row, await row.locator('.kpi').count());
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
+	});
+
+	test('the dashboard pending row gives way to the zero-invoice empty state', async ({ page }) => {
+		// The design collision §154 resolves, asserted as the transition it chose.
+		// While the answer is out, whether the tenant has any invoices is unknown,
+		// so the row renders pending; once the answer says "none", the onboarding
+		// EmptyState REPLACES it. Gating the row on `total_invoices > 0` instead
+		// would spare this one tenant a hand-off by collapsing the row for every
+		// other tenant on every load.
+		const held = holdEndpoint(page, '/api/dashboard', emptyTenantDashboardResponse());
+		await held.install();
+
+		try {
+			await page.goto('/');
+			const row = page.locator('.kpi-row');
+			await expect(row.locator('.kpi').first()).toBeVisible();
+			await expectRowPending(row, 5);
+
+			// The empty state is not on screen YET — so the assertion below is
+			// about the hand-off, not about a page that simply never had a row.
+			await expect(page.getByTestId('dashboard-empty-state')).toHaveCount(0);
+
+			held.release();
+			await expect(page.getByTestId('dashboard-empty-state')).toBeVisible();
+			// And the row is GONE, not left sitting above the empty state with
+			// five zeros — the two are alternatives, not a stack.
+			await expect(page.locator('.kpi-row')).toHaveCount(0);
+			await expect(page.locator('.kpi')).toHaveCount(0);
+			await expectNoA11yViolations(page);
+		} finally {
+			held.release();
+		}
+	});
+
 	// --- panel-scoped rows ------------------------------------------------
 	//
-	// The four above are PAGE-level rows: one row, one headline fetch, the
+	// The rows above are PAGE-level rows: one row, one headline fetch, the
 	// page's own loading flag. The rows below sit inside a PANEL's own
 	// error/loading/data chain — a different loading chain, which is exactly why
 	// they were missed when the convention landed and why they need their own
