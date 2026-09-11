@@ -30,7 +30,7 @@ import pytest
 from fastapi import HTTPException
 
 # Real `bcrypt_sha256` hash of the string "correctpw1" — used by the
-# fake-user fixtures so passlib's `verify` runs the production code
+# fake-user fixtures so `verify_password` runs the production code
 # path and reliably rejects any other guess.
 _HASH_OF_CORRECTPW1 = (
     "$bcrypt-sha256$v=2,t=2b,r=12$Jl.B.u9pD6kCuDNdO0nFfu$cK3Jg2DYkqzysEPJ0Q1opQpBVRQtyka"
@@ -62,8 +62,8 @@ def _fake_user(email: str, *, has_password: bool = True):
         organization_id=uuid.uuid4(),
         is_active=True,
         mfa_enabled=False,
-        # Real bcrypt-shaped hash; passlib will say "doesn't match wrong-pw"
-        # without spending real CPU cycles guessing.
+        # Real bcrypt_sha256 hash, pinned in tests/test_bcrypt_sha256_compat.py;
+        # it rejects any wrong password without the test guessing at CPU cycles.
         hashed_password=_HASH_OF_CORRECTPW1 if has_password else None,
         must_change_password=False,
         full_name="Test User",

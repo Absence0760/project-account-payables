@@ -13,7 +13,13 @@ the stall is charged to *every* login attempt, valid or not.
 `dummy_verify` as coroutines that run the work through `asyncio.to_thread`.
 These tests pin that the work really leaves the loop thread, that the
 timing-equalisation contract survives the change, and that no module under
-`app/` calls the blocking context directly.
+`app/` calls the blocking context — or bcrypt itself — directly.
+
+That last one matters more since the module stopped going through passlib
+(`docs/decisions.md` §151): `bcrypt` is now a direct dependency, so `import
+bcrypt` is a two-line away from a second, unoffloaded, 72-byte-truncating hash
+site. Digest compatibility is a separate file,
+`tests/test_bcrypt_sha256_compat.py`.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from app.utils.passwords import dummy_verify, hash_password, pwd_context, verify
 
 APP_DIR = pathlib.Path(__file__).resolve().parents[1] / "app"
 
-# The blocking passlib operations. `app/utils/passwords.py` owns them; every
+# The blocking context operations. `app/utils/passwords.py` owns them; every
 # other module goes through the awaitable wrappers.
 BLOCKING_OPS = {"verify", "hash"}
 OWNER = APP_DIR / "utils" / "passwords.py"
@@ -159,4 +165,33 @@ def test_no_module_calls_the_blocking_hash_context_directly():
     assert offenders == [], (
         "password hashing must go through `verify_password` / `hash_password` "
         "(which offload bcrypt to a thread); found: " + ", ".join(offenders)
+    )
+
+
+def test_only_the_owning_module_imports_bcrypt():
+    """`bcrypt` is a direct dependency now, so keep its blast radius at one file.
+
+    A second `import bcrypt` would be a second hash site: unoffloaded (bcrypt is
+    synchronous, so it would stall the loop), and almost certainly on raw bcrypt
+    rather than the `bcrypt_sha256` pre-hash, which is the 72-byte truncation the
+    scheme exists to avoid. `.claude/hooks/security-patterns.sh` rule
+    `bcrypt-truncation` catches the call at edit time; this catches it in CI.
+    """
+    offenders: list[str] = []
+    for path in sorted(APP_DIR.rglob("*.py")):
+        if path == OWNER:
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            if any(name.split(".")[0] in {"bcrypt", "passlib"} for name in names):
+                offenders.append(f"{path.relative_to(APP_DIR.parent)}:{node.lineno}")
+
+    assert offenders == [], (
+        "only app/utils/passwords.py may import the hashing library directly; found: "
+        + ", ".join(offenders)
     )
