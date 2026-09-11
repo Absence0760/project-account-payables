@@ -45,6 +45,23 @@ was asked to reset a password. `backend/tests/test_bcrypt_sha256_compat.py`
 holds hashes passlib itself produced as fixed literals and is the proof;
 `docs/decisions.md` §151 has the reasoning.
 
+**CodeQL flags the pre-hash, and the finding is a false positive.** Moving the
+scheme in-repo put the SHA-256 step where `py/weak-sensitive-data-hashing` can
+see it, so `codeql-python` reports two high-severity alerts on
+`_prehash` — "sensitive data (password) is used in a hashing algorithm (SHA256)
+that is insecure for password hashing, since it is not a computationally
+expensive hash function". The query stops at the SHA-256 call and does not model
+what consumes its output. That digest is never stored: `_prehash` returns the
+*key* handed to `bcrypt.hashpw` at `DEFAULT_ROUNDS = 12`, so the stored
+credential is bcrypt over 2^12 rounds, and the pre-hash only reduces the secret
+to a fixed length bcrypt will not truncate. The composition is strictly stronger
+than plain bcrypt and is the same one Django ships as
+`BCryptSHA256PasswordHasher`. The alerts are dismissed as false positives rather
+than worked around: contorting the dataflow to satisfy the query would change
+the digest, and the digest matching passlib's byte-for-byte is the only thing
+keeping every stored credential verifiable. If they reappear on a later run,
+re-dismiss them — do not "fix" them.
+
 ## Auth Flow
 
 1. User visits a tenant subdomain (e.g., `acme.localhost:7777`)
