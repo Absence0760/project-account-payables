@@ -116,12 +116,26 @@ if [[ "$FILE" == *.py ]]; then
 # to brute-force the suffix. The repo standard is bcrypt_sha256 (which
 # pre-hashes with SHA-256 before bcrypt). Bug class: any new hash-context
 # instantiation that picks the wrong scheme.
+#
+# Two shapes, because the hasher no longer goes through passlib: a fresh
+# passlib CryptContext on the raw scheme (should passlib ever come back), and
+# a direct `bcrypt.hashpw` / `bcrypt.checkpw` anywhere but the one module that
+# owns the algorithm — which is now the likelier way to reintroduce the bug.
 while IFS= read -r m; do
   ln="${m%%:*}"
   register "bcrypt-truncation" "$ln" \
     "CryptContext using raw 'bcrypt' silently truncates inputs at 72 bytes" \
     "Use 'from app.utils.passwords import pwd_context' instead of building a fresh CryptContext"
 done < <(hits 'CryptContext\(.*schemes=\["bcrypt"\]' | grep -v 'bcrypt_sha256')
+
+if [[ "$FILE" != */app/utils/passwords.py ]]; then
+  while IFS= read -r m; do
+    ln="${m%%:*}"
+    register "bcrypt-truncation" "$ln" \
+      "raw bcrypt.hashpw/checkpw truncates the password at 72 bytes" \
+      "Use 'from app.utils.passwords import pwd_context' (or the awaitable hash_password / verify_password) — app/utils/passwords.py is the only module that may call bcrypt directly"
+  done < <(hits 'bcrypt\.(hashpw|checkpw|kdf)\(')
+fi
 
 # ----- RULE: exception interpolated into log message ----------------------
 # Why: SDKs sometimes raise with the partial PAN, masked tax id, or

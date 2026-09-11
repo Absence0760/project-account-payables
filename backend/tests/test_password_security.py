@@ -162,14 +162,14 @@ def test_bcrypt_verify_accepts_correct_and_rejects_wrong():
 def test_bcrypt_handles_long_password_without_silent_truncation_collision():
     """bcrypt truncates at 72 bytes, which means two 100-char
     passwords sharing a 72-char prefix would historically verify as
-    equal. passlib applies a SHA-256 pre-hash to avoid that — confirm
-    our context inherits the safe behavior."""
+    equal. The context applies an HMAC-SHA256 pre-hash to avoid that —
+    confirm it is still there."""
     from app.utils.passwords import pwd_context as ctx
 
     base = "A" * 72 + "0aaaaaaaaa"  # first 72 bytes identical
     other = "A" * 72 + "0bbbbbbbbb"
     h = ctx.hash(base)
-    # If passlib pre-hashes, `other` must NOT verify against `base`'s hash.
+    # With the pre-hash, `other` must NOT verify against `base`'s hash.
     assert ctx.verify(base, h) is True
     assert ctx.verify(other, h) is False, "bcrypt truncation collision — pre-hash missing?"
 

@@ -12,19 +12,31 @@ brew services stop postgresql@17   # adjust version as needed
 
 Then re-run `seed.py` or restart the backend.
 
-## `passlib` / `bcrypt` errors
-
-`passlib` is incompatible with `bcrypt` 5.x, resulting in:
+## `bcrypt` errors
 
 ```
 AttributeError: module 'bcrypt' has no attribute '__about__'
 ```
 
-**Fix:** Pin bcrypt to 4.x:
+That is `passlib` failing against bcrypt 5.x, and **this project no longer uses
+passlib** — `backend/app/utils/passwords.py` implements `bcrypt_sha256` directly
+(`docs/decisions.md` §151). If you see it, something is still importing passlib:
+a stale virtualenv holding the old dependency set, or a local edit that
+reintroduced it. Reinstall the venv rather than pinning bcrypt back down:
 
 ```bash
-pip install "bcrypt>=4.0,<4.1"
+cd backend && rm -rf .venv && python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 ```
+
+```
+ValueError: password cannot be longer than 72 bytes, truncate manually if necessary
+```
+
+bcrypt 4.1+ refuses a long secret where 4.0 silently truncated. Nothing in the
+app hands bcrypt a raw password (the `bcrypt_sha256` pre-hash is always 44
+bytes), so this means a new call site is using `bcrypt.hashpw` / `bcrypt.checkpw`
+directly — which is also the 72-byte truncation bug the scheme exists to avoid.
+Route it through `hash_password` / `verify_password` instead.
 
 ## Frontend shows "No tenant found"
 

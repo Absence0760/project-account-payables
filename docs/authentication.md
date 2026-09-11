@@ -1,10 +1,10 @@
 # Authentication
 
-JWT-based authentication using `python-jose` for token handling and `passlib` with bcrypt for password hashing. Tokens are server-side revocable via a Redis blocklist.
+JWT-based authentication using `python-jose` for token handling and `bcrypt_sha256` for password hashing. Tokens are server-side revocable via a Redis blocklist.
 
 **Hash and verify through the awaitable wrappers, never `pwd_context` directly.**
 `backend/app/utils/passwords.py` exposes `verify_password` / `hash_password` /
-`dummy_verify` as coroutines that run passlib in a worker thread via
+`dummy_verify` as coroutines that run the hash in a worker thread via
 `asyncio.to_thread`. bcrypt is deliberately ~200 ms of pure CPU per call, so an
 inline `pwd_context.verify` in a login handler occupies the event loop for that
 whole window and every other in-flight request on the worker waits behind it —
@@ -14,6 +14,36 @@ equalisation. The equalisation guarantee is unchanged: both paths take the same
 thread hop and the same bcrypt cost. `pwd_context` itself stays the single hash
 context (`bcrypt_sha256`); `backend/tests/test_password_hashing_offloaded.py`
 asserts the work leaves the loop thread and AST-scans `app/` for direct calls.
+
+### The hash scheme — `bcrypt_sha256`, implemented in-repo
+
+The password is pre-hashed with HMAC-SHA256 before bcrypt sees it, which
+side-steps bcrypt's 72-byte truncation: without the pre-hash, any two passwords
+sharing their first 72 bytes verify against each other's hash, so an attacker who
+guesses the prefix is done. Stored form:
+
+```
+$bcrypt-sha256$v=2,t=2b,r=12$<22-char salt>$<31-char checksum>
+```
+
+`v=2` is `bcrypt(base64(HMAC-SHA256(key=salt_text, msg=password)))`; `v=1` (read
+only, never written) is the pre-2017 `bcrypt(base64(sha256(password)))`, where a
+stolen `sha256(password)` lookup table could be replayed against the column.
+Plain `$2b$...` hashes written before commit c6a91396 also still verify — the
+legacy arm reproduces bcrypt 4.0's 72-byte truncation deliberately, since bcrypt
+4.1+ raises on a long secret and that would lock those accounts out of their own
+password. `pwd_context.needs_update(hash)` reports which stored hashes are on an
+older scheme.
+
+**This is our code, not passlib's.** passlib 1.7.4 has been the last release
+since 2020 and cannot import against bcrypt 4.1+ (it reads a deleted
+`__about__` attribute and probes the backend with a >72-byte secret), which
+froze the project on bcrypt 4.0.1 — a hashing library receiving no upstream
+fixes. `app/utils/passwords.py` now implements the scheme directly against
+`bcrypt`, byte-for-byte compatible, so no stored credential changed and nobody
+was asked to reset a password. `backend/tests/test_bcrypt_sha256_compat.py`
+holds hashes passlib itself produced as fixed literals and is the proof;
+`docs/decisions.md` §151 has the reasoning.
 
 ## Auth Flow
 
