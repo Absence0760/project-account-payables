@@ -133,6 +133,12 @@ Cross-cutting docs live in [`/docs`](docs/). Backend-specific docs live in [`/ba
 
 | File | Purpose |
 |------|---------|
-| [`backend/CLAUDE.md`](backend/CLAUDE.md) | Backend structure, adapters, conventions |
-| [`frontend/CLAUDE.md`](frontend/CLAUDE.md) | Routes, stores, components, API mappings |
-| [`mobile/CLAUDE.md`](mobile/CLAUDE.md) | Flutter screens, stores, API client |
+| [`backend/CLAUDE.md`](backend/CLAUDE.md) | Backend structure, conventions, test harness |
+| [`backend/docs/`](backend/docs/) | Per-router API surface, services map, adapter families |
+| [`frontend/CLAUDE.md`](frontend/CLAUDE.md) | Frontend rules, stack, conventions |
+| [`frontend/docs/`](frontend/docs/) | UI patterns, component library, routes → API map, i18n |
+| [`mobile/CLAUDE.md`](mobile/CLAUDE.md) | Mobile rules, architecture patterns, role-based UI |
+| [`mobile/docs/`](mobile/docs/) | Feature status, project structure, i18n |
+
+Each `CLAUDE.md` holds the **rules**; the sibling `docs/` directory holds the
+**reference material**, so the always-loaded files stay small.

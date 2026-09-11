@@ -1149,7 +1149,7 @@ needing a design call rather than a mechanical edit. Arming that half before
 fixing them would ship a red build, so it is tracked with its measurements in
 [followups.md](followups.md) instead.
 
-See `frontend/CLAUDE.md` § Colour tokens and contrast, and
+See `frontend/docs/ui-patterns.md` § Colour tokens and contrast, and
 [accessibility.md](accessibility.md).
 
 ---
@@ -1299,7 +1299,7 @@ made first-class to end. Sharing the tone is right (both are waiting); the
 distinction moved to a ring. When a normalisation collapses two colours, check
 what those colours were silently carrying.
 
-See `frontend/CLAUDE.md` § Colour tokens and contrast.
+See `frontend/docs/ui-patterns.md` § Colour tokens and contrast.
 
 ---
 

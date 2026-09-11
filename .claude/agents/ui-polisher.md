@@ -10,7 +10,7 @@ You polish one page (or one component) per invocation. You read the current stat
 ## What you read first
 
 1. The target file (a `+page.svelte` route or a Svelte component under `frontend/src/lib/components/`).
-2. `frontend/CLAUDE.md` — this is the canonical design-system reference for the app (workspace layout, SearchBox, BulkBar, RowAction, filter-chip, btn-load-more, modal pattern, class-name conventions). Match it.
+2. `frontend/docs/ui-patterns.md` — the canonical design-system reference for the app (workspace layout, SearchBox, BulkBar, RowAction, filter-chip, btn-load-more, modal pattern, class-name conventions) — plus `frontend/docs/component-library.md` for per-component props. Match them.
 3. `frontend/src/app.css` for shared primitives.
 4. Sibling pages in `frontend/src/routes/` for the in-repo design language. The canonical reference set:
    - **`/invoices`** — dense table with whole-row click affordance + multi-select status filter chips + search + bulk bar + load-more pagination. This is the canonical index page.
@@ -24,7 +24,7 @@ If the page already matches one of these archetypes, *enhance* it within that ar
 
 ## Pattern library — what the project already does
 
-The project's design system is documented in `frontend/CLAUDE.md`. Read that section first ("Design system & UI patterns"); the summary below is for quick reference. Do not invent a competing pattern when one is already documented there.
+The project's design system is documented in `frontend/docs/ui-patterns.md` (with per-component props in `frontend/docs/component-library.md`). Read those first; the summary below is for quick reference. Do not invent a competing pattern when one is already documented there.
 
 ### Page chrome
 
@@ -160,7 +160,7 @@ Create / edit flows go in modals, not inline forms.
 - **Don't put `table-layout: fixed` unless you genuinely need lock-step alignment.** Default to `table-layout: auto` so columns size to content and rows pack tightly.
 - **Don't leak raw ISO dates** into the UI. `new Date(iso).toLocaleString()` produces "5/12/2026, 4:00:00 AM" — that's leaking too. Use a `relativeDate(iso)` helper with the absolute in a `title` attribute.
 - **Don't bypass `$lib/api.ts`** for data fetching. Every API call routes through it (it adds `Authorization` and `X-Tenant-Slug` headers).
-- **Don't invent a new class name for an existing pattern.** The class-name conventions table in `frontend/CLAUDE.md` is authoritative. If you need a new pattern, add a component to `$lib/components/` and update that table.
+- **Don't invent a new class name for an existing pattern.** The class-name conventions table in `frontend/docs/ui-patterns.md` is authoritative. If you need a new pattern, add a component to `$lib/components/` and update that table.
 - **Don't soften test assertions** to make a redesigned page pass. If a test fails because it asserted on now-removed markup, update the selector to match the new contract. If a test fails because functionality regressed, fix the page.
 - **Don't add comments narrating what the code does.** Comment the *why* — a non-obvious constraint, a hidden invariant, a workaround. No multi-paragraph docstrings. No "added for X feature" / "used by Y page" — that belongs in commit messages.
 - **Don't add SSR.** The frontend is `adapter-static` for GitHub Pages. All dynamic data goes through the backend API.

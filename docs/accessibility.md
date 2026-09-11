@@ -94,7 +94,7 @@ CI plus two kinds of human review:
    cascade (a rule setting only `color` inherits its background at runtime),
    and axe can't see a surface no listed route renders. Rationale + what was
    rejected: [decisions.md](decisions.md) §28; the token table and the rule for
-   authors are in `frontend/CLAUDE.md` § Colour tokens and contrast.
+   authors are in `frontend/docs/ui-patterns.md` § Colour tokens and contrast.
 
    One hole neither guard can close: white-label theming lets a tenant
    overwrite `--accent` / `--accent-strong` at runtime. Both surfaces that edit
