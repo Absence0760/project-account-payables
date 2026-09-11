@@ -1,12 +1,14 @@
 import 'package:flutter/foundation.dart';
 
 import 'package:feohledger_mobile/services/offline_store.dart';
+import 'package:feohledger_mobile/stores/adaptive_store.dart';
 import 'package:feohledger_mobile/stores/admin_user_store.dart';
 import 'package:feohledger_mobile/stores/auth_store.dart';
 import 'package:feohledger_mobile/stores/cash_flow_store.dart';
 import 'package:feohledger_mobile/stores/contract_store.dart';
 import 'package:feohledger_mobile/stores/dashboard_store.dart';
 import 'package:feohledger_mobile/stores/exception_store.dart';
+import 'package:feohledger_mobile/stores/inspection_store.dart';
 import 'package:feohledger_mobile/stores/invoice_store.dart';
 import 'package:feohledger_mobile/stores/notification_store.dart';
 import 'package:feohledger_mobile/stores/org_settings_store.dart';
@@ -71,12 +73,14 @@ class SessionManager {
   /// not account data) and `sequenced_fetch.dart` (the `SequencedFetch` mixin,
   /// not a store singleton).
   static void resetStores() {
+    AdaptiveStore.instance.reset();
     AdminUserStore.instance.reset();
     AuthStore.instance.reset();
     CashFlowStore.instance.reset();
     ContractStore.instance.reset();
     DashboardStore.instance.reset();
     ExceptionStore.instance.reset();
+    InspectionStore.instance.reset();
     InvoiceStore.instance.reset();
     NotificationStore.instance.reset();
     OrgSettingsStore.instance.reset();
