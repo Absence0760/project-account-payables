@@ -15,6 +15,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { formatList } from '$lib/utils/list';
 	import { pruneSelection } from '$lib/utils/selection';
 	import type { MatchingIdsResponse } from '$lib/utils/pagination';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -891,11 +892,22 @@
 							{invoice.invoice_number || '—'}
 						</RowLink>
 						{#if invoice.warnings?.length}
+							<!-- The frame is translated; the findings inside it are the server's
+							     own English prose (`services/invoice_warnings.py` composes each
+							     from the row's data - a PO number, an amount, a variance), so this
+							     aria-label promises a localized sentence AROUND server-English
+							     findings, not a translated finding. Keying the findings needs a
+							     warning-code -> message-key catalogue like the e-invoice one
+							     (`pnpm gen:einvoice-messages`) and is its own slice. `formatList`
+							     moves WITH the frame rather than before it: a locale separator
+							     spliced into a hardcoded English sentence is the half-fix
+							     `decisions.md` §148 refused. -->
+							{@const warningText = formatList(invoice.warnings.map((w) => w.message))}
 							<span
 								class="warning-icon"
 								role="img"
-								aria-label={`Warnings: ${invoice.warnings.map((w) => w.message).join(', ')}`}
-								title={invoice.warnings.map((w) => w.message).join(', ')}
+								aria-label={m('invoices.warningsAria', { warnings: warningText })}
+								title={warningText}
 							>
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 									<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -908,7 +920,10 @@
 						{#if invoice.priors_summary && (invoice.priors_summary.cache > 0 || invoice.priors_summary.rag > 0)}
 							<span
 								class="priors-badge"
-								title="Extraction priors: {invoice.priors_summary.cache} vendor-cache field{invoice.priors_summary.cache === 1 ? '' : 's'}, {invoice.priors_summary.rag} RAG neighbor{invoice.priors_summary.rag === 1 ? '' : 's'}"
+								title={m('invoices.priorsTitle', {
+									cache: invoice.priors_summary.cache,
+									rag: invoice.priors_summary.rag
+								})}
 							>
 								{#if invoice.priors_summary.rag > 0}RAG·{invoice.priors_summary.rag}{/if}{#if invoice.priors_summary.cache > 0 && invoice.priors_summary.rag > 0}·{/if}{#if invoice.priors_summary.cache > 0}cache·{invoice.priors_summary.cache}{/if}
 							</span>
