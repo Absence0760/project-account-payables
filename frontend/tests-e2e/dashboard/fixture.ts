@@ -142,6 +142,36 @@ function base(agingUnconverted: number): DashboardData {
 	} satisfies DashboardData;
 }
 
+/**
+ * A brand-new tenant's `GET /api/dashboard` — every figure a genuine zero,
+ * every series empty.
+ *
+ * Deliberately NOT a `DashboardPatch` knob. `total_invoices` is not a free
+ * field: a tenant with no invoices has no amounts, no aging bands, no pipeline
+ * and no trend either, and a payload claiming zero invoices worth $6,000 is one
+ * the backend cannot produce — exactly the class of fixture this module exists
+ * to stop. The state it represents is the only one the dashboard's onboarding
+ * EmptyState answers (`docs/decisions.md` §154), so it ships whole.
+ */
+export function emptyTenantDashboardResponse() {
+	const payload = base(0);
+	const zeroBands = { current: 0, days_30: 0, days_60: 0, days_90: 0, days_90_plus: 0 };
+	return {
+		...payload,
+		...NON_RENDERED_FIELDS,
+		total_invoices: 0,
+		total_amount: 0,
+		reporting: { ...payload.reporting, total_amount: 0, total_count: 0 },
+		total_paid: 0,
+		total_pending: 0,
+		total_paid_reporting: 0,
+		total_pending_reporting: 0,
+		pipeline: {},
+		aging: zeroBands,
+		aging_reporting: { ...zeroBands, unconverted_count: 0 }
+	};
+}
+
 /** A full `GET /api/dashboard` body, ready to `JSON.stringify`. */
 export function dashboardResponse(patch: DashboardPatch = {}) {
 	const payload = base(patch.agingUnconverted ?? 0);

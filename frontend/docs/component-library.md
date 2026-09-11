@@ -37,19 +37,28 @@ Grouped into subfolders by role. Import with the full path, e.g.
   *different mechanism* — so the one convention grows a second shape and a reader
   cannot learn it once. Render the row on every state and pass `pending`; the
   page's existing loading line stays below it and says a newer answer is coming.
-  Adopted by every KPI row in the tree except one: `/discounts`,
-  `/bank-reconciliation`, `/cfo`, `/tax`, and the panel-scoped rows on
+  Adopted by every KPI row in the tree: the dashboard (`routes/+page.svelte`),
+  `/discounts`, `/bank-reconciliation`, `/cfo`, `/tax`, and the panel-scoped rows on
   `/adaptive` (threshold + feedback), `/admin/access-review`, `/admin/health`,
   `/billing`, `/expenses` (Reports tab), `/audit`, `cfo/ForecastVariancePanel`,
   `CfoMetrics`, `AgentDashboard` and `BudgetModal`'s spend rollup.
   **Two of those keep a gate on purpose** — `/audit` and `ForecastVariancePanel`
   report a sweep the *user* runs, so they gate on `answer || in-flight` rather
   than rendering unconditionally (`docs/decisions.md` §143); dashes before the
-  click would claim a figure was coming for a question nobody asked. **Still
-  collapsing:** the dashboard (`routes/+page.svelte`), whose row sits inside
-  `{:else if data}` alongside a zero-invoice `EmptyState` branch — bringing it
-  into line needs a call on whether a pending row may appear and then be replaced
-  by that empty state.
+  click would claim a figure was coming for a question nobody asked. **The
+  dashboard is the one row with another branch to answer to** — a zero-invoice
+  `EmptyState` — and it is keyed on `isEmptyTenant` (`!!data &&
+  total_invoices === 0`), never on the count alone: gating the row on
+  `total_invoices > 0` gates it on the answer, which is the collapse this whole
+  rule removes. So an empty tenant sees a pending row hand over to the empty
+  state, deliberately (`docs/decisions.md` §154). **A card that may not exist at
+  all stays gated on the response** rather than taking `pending` — the
+  dashboard's exceptions / stale-approvals / rebates / captured-discount cards
+  render only when there is something to report, and a dash promising a figure
+  for a card that then vanishes is the same false promise §143 names. **A failed
+  load** renders the row `unavailable` — dashes, no `aria-busy`, no tint — with
+  the error banner and its retry directly below, which is why /cfo's banner sits
+  under its row rather than replacing it.
 - `VendorPicker.svelte` — the vendor field on every surface that has one (`/catalogs` ×2, `/contracts`, `/recurring`, `/vendor-statements`, `/discounts`, `/credit-memos`). A WAI-ARIA 1.2 combobox over `searchVendorOptions()`: filtering is server-side so a vendor on page 40 is reachable, and a count line states how much of the matching set is on screen. **Never re-add a `<select>` over a client-side vendor list** — that is the bug this replaced, and it made every vendor past the first 100 unselectable in all six places at once. `bind:value` is the vendor uuid; pass `selectedLabel` from the row's `vendor_name` in edit mode, `label` (or `ariaLabel` for an inline control), and `onselect` if you need the chosen option. Escape is bound with `onkeydowncapture` so it closes the popup, not the enclosing `Modal` — do not "tidy" that to `onkeydown` (`docs/decisions.md` §146).
 - `Badge.svelte` — **the** tinted-badge primitive, and the single owner of the `background: var(--<tone>-tint); color: var(--<tone>-on-tint)` recipe. `<Badge tone="accent|success|warning|danger|muted|neutral|erp" variant? title?>{label}</Badge>`. A caller names a *tone*, so it can't spell one wrong, and a tone that is later recalibrated moves in one place. `variant` is passed through as an extra class for **selector hooks only** (`.badge.approved`, `.badge.violation` — the e2e suite reads them); never give a variant a colour rule in the calling component, pick the tone instead. `neutral` is a flat `--bg` chip for the absence of a signal (cancelled / n-a), deliberately not a tint; `erp` is the one measured literal (purple shares no semantic with the five tones, so it stays here rather than becoming a palette token with one caller). **Sizing is fixed on purpose** — call sites varied padding by a pixel or two with no intent behind it. A pill that genuinely needs different metrics is a different component, not a prop: `ScreeningBadge` is the worked example (its own smaller sentence-case metrics, but the palette tokens for colour). Where a status is badged in more than one place, put a `STATUS_TONES: Record<Status, BadgeTone>` map beside the existing `*_STATUS_LABEL_KEYS` in the shared types module so the list page and its modal can't disagree — several did.
 - `SearchBox`, `StatusBadge`, `RowAction`, `BulkBar`, `BulkDeleteButton`, `Toast` — see the pattern sections below.
