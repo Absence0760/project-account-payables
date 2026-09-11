@@ -1754,4 +1754,387 @@ class AppLocalizationsDe extends AppLocalizations {
   String exceptionDetailAssignedTo(String name) {
     return 'Zugewiesen an $name';
   }
+
+  @override
+  String get settingsProcurement => 'Beschaffung';
+
+  @override
+  String get settingsInspections => 'Qualitätsprüfungen';
+
+  @override
+  String get settingsInspectionsHint =>
+      'Prüfungen für den 4-Wege-Abgleich erfassen und ansehen';
+
+  @override
+  String get settingsAdministration => 'Verwaltung';
+
+  @override
+  String get settingsAdminUsers => 'Benutzerverwaltung';
+
+  @override
+  String get settingsAdminUsersHint =>
+      'Rollen, Benutzer aktivieren / deaktivieren';
+
+  @override
+  String get settingsAdminOrg => 'Organisationseinstellungen';
+
+  @override
+  String get settingsAdminOrgHint => 'Firmenprofil, Rechnungsvorgaben';
+
+  @override
+  String get settingsAdminWorkflows => 'Workflows';
+
+  @override
+  String get settingsAdminWorkflowsHint =>
+      'Workflow-Definitionen und Schritte ansehen';
+
+  @override
+  String get settingsAdaptive => 'Adaptive Workflows';
+
+  @override
+  String get settingsAdaptiveHint =>
+      'Freigabemuster, Auffälligkeiten, Vorschläge';
+
+  @override
+  String get inspectionsTitle => 'Qualitätsprüfungen';
+
+  @override
+  String get inspectionsRecord => 'Prüfung erfassen';
+
+  @override
+  String get inspectionsEmpty => 'Keine Qualitätsprüfungen erfasst.';
+
+  @override
+  String get inspectionsEmptyFiltered => 'Keine Prüfungen mit diesem Ergebnis.';
+
+  @override
+  String get inspectionsLoadError => 'Prüfungen konnten nicht geladen werden';
+
+  @override
+  String get inspectionsResultPass => 'Bestanden';
+
+  @override
+  String get inspectionsResultFail => 'Nicht bestanden';
+
+  @override
+  String get inspectionsResultPartial => 'Teilannahme';
+
+  @override
+  String get inspectionsResultUnknown => 'Unbekanntes Ergebnis';
+
+  @override
+  String inspectionsResultAnnounce(String result) {
+    return 'Ergebnis: $result';
+  }
+
+  @override
+  String get inspectionsNotLinked => 'Nicht verknüpft';
+
+  @override
+  String get inspectionsNotLinkedHint =>
+      'Diese Prüfung ist weder einem Wareneingang noch einer Bestellung zugeordnet, der Bestellabgleich liest sie daher nie.';
+
+  @override
+  String get inspectionsReceiptUnnamed => 'Wareneingang ohne Nummer';
+
+  @override
+  String get inspectionsHintPass =>
+      'Ware angenommen — der Abgleich bleibt unverändert.';
+
+  @override
+  String get inspectionsHintFail =>
+      'Ware abgelehnt — die Rechnung fällt auf „Abweichung“ und eine Qualitätssperre blockiert die Zahlung.';
+
+  @override
+  String get inspectionsHintPartial =>
+      'Ware teilweise angenommen — der Abgleich fällt auf „teilweise“ und die angenommene Menge wird markiert.';
+
+  @override
+  String get inspectionsHintUnknown =>
+      'Dieses Ergebnis liegt außerhalb von Bestanden / Nicht bestanden / Teilannahme; seine Auswirkung auf den Abgleich lässt sich nicht angeben.';
+
+  @override
+  String inspectionsRecorded(String number) {
+    return 'Prüfung $number erfasst';
+  }
+
+  @override
+  String inspectionsRecordFailed(String error) {
+    return 'Prüfung konnte nicht erfasst werden: $error';
+  }
+
+  @override
+  String inspectionsReceiptsLoadFailed(String error) {
+    return 'Wareneingänge konnten nicht geladen werden: $error';
+  }
+
+  @override
+  String get inspectionRecordTitle => 'Qualitätsprüfung erfassen';
+
+  @override
+  String get inspectionRecordClose => 'Prüfformular schließen';
+
+  @override
+  String get inspectionRecordReceipt => 'Wareneingang';
+
+  @override
+  String get inspectionRecordReceiptHint =>
+      'Der Bestellabgleich liest eine Prüfung nur über ihren Wareneingang, daher muss eine Prüfung die Lieferung benennen, die sie abdeckt.';
+
+  @override
+  String inspectionRecordReceiptsBounded(int shown, int total) {
+    return 'Es werden die $shown neuesten von $total Wareneingängen angezeigt. Erfassen Sie die Prüfung in der Web-App, wenn die gesuchte Lieferung nicht aufgeführt ist.';
+  }
+
+  @override
+  String get inspectionRecordNoReceipts =>
+      'Noch keine Wareneingänge — eine Prüfung bezieht sich auf eine Lieferung, es gibt also nichts zu erfassen.';
+
+  @override
+  String get inspectionRecordNumber => 'Prüfnr.';
+
+  @override
+  String get inspectionRecordNumberRequired => 'Prüfnummer eingeben';
+
+  @override
+  String get inspectionRecordResult => 'Ergebnis';
+
+  @override
+  String get inspectionRecordAcceptedQuantity => 'Angenommene Menge';
+
+  @override
+  String get inspectionRecordRejectedQuantity => 'Abgelehnte Menge';
+
+  @override
+  String get inspectionRecordAcceptedRequired =>
+      'Bei einer Teilannahme erforderlich';
+
+  @override
+  String get inspectionRecordInvalidQuantity =>
+      'Maximal 8 Ziffern und 4 Dezimalstellen';
+
+  @override
+  String get inspectionRecordInspectedDate => 'Prüfdatum';
+
+  @override
+  String get inspectionRecordDateNotSet => 'Nicht festgelegt';
+
+  @override
+  String get inspectionRecordClearDate => 'Prüfdatum löschen';
+
+  @override
+  String get inspectionRecordInspector => 'Prüfer';
+
+  @override
+  String get inspectionRecordNotes => 'Abweichungsnotizen';
+
+  @override
+  String get inspectionRecordNotesHint =>
+      'Werden bei einer nicht bestandenen Prüfung wörtlich in den Abgleichshinweis der Rechnung übernommen und von der Person gelesen, die die Qualitätssperre bearbeitet.';
+
+  @override
+  String get inspectionRecordSubmit => 'Prüfung erfassen';
+
+  @override
+  String get inspectionDetailTitle => 'Prüfung';
+
+  @override
+  String get inspectionDetailNotFound => 'Prüfung nicht gefunden';
+
+  @override
+  String inspectionDetailErrorPrefix(String error) {
+    return 'Prüfung konnte nicht geladen werden: $error';
+  }
+
+  @override
+  String get inspectionDetailFieldReceipt => 'Wareneingang';
+
+  @override
+  String get inspectionDetailFieldInspectedDate => 'Geprüft';
+
+  @override
+  String get inspectionDetailFieldInspector => 'Prüfer';
+
+  @override
+  String get inspectionDetailFieldAccepted => 'Angenommene Menge';
+
+  @override
+  String get inspectionDetailFieldRejected => 'Abgelehnte Menge';
+
+  @override
+  String get inspectionDetailFieldStatus => 'Status';
+
+  @override
+  String get inspectionDetailFieldCreated => 'Erstellt';
+
+  @override
+  String get inspectionDetailSectionNotes => 'Abweichungsnotizen';
+
+  @override
+  String get adaptiveTitle => 'Adaptive Workflows';
+
+  @override
+  String get adaptiveTabSuggestions => 'Vorschläge';
+
+  @override
+  String get adaptiveTabPatterns => 'Freigabemuster';
+
+  @override
+  String get adaptiveTabAnomalies => 'Auffälligkeiten';
+
+  @override
+  String get adaptiveAdvisoryNote =>
+      'Alles hier ist eine Empfehlung. Auf diesem Bildschirm wurde kein Workflow geändert — eine Empfehlung wird erst wirksam, wenn jemand mit der passenden Rolle sie in der Web-App anwendet, über denselben protokollierten Weg wie eine manuelle Änderung.';
+
+  @override
+  String get adaptiveSuggestionsEmpty =>
+      'Keine Vorschläge — noch zu wenig konsistente Freigabehistorie.';
+
+  @override
+  String get adaptiveSuggestionsError =>
+      'Die Vorschläge konnten nicht geladen werden.';
+
+  @override
+  String get adaptiveSuggestionsShowOpen => 'Offen';
+
+  @override
+  String get adaptiveSuggestionsShowAll => 'Alle';
+
+  @override
+  String adaptiveSuggestionsConfidence(String pct) {
+    return 'Konfidenz $pct %';
+  }
+
+  @override
+  String get adaptiveSuggestionsDismiss => 'Verwerfen';
+
+  @override
+  String get adaptiveSuggestionsDismissTitle => 'Diesen Vorschlag verwerfen?';
+
+  @override
+  String get adaptiveSuggestionsDismissBody =>
+      'Er bleibt auch nach einer Neuberechnung verworfen, und es ändert sich ohnehin kein Workflow.';
+
+  @override
+  String get adaptiveSuggestionsDismissed => 'Vorschlag verworfen.';
+
+  @override
+  String adaptiveSuggestionsDismissFailed(String error) {
+    return 'Der Vorschlag konnte nicht verworfen werden: $error';
+  }
+
+  @override
+  String get adaptiveSuggestionStatusOpen => 'Offen';
+
+  @override
+  String get adaptiveSuggestionStatusDismissed => 'Verworfen';
+
+  @override
+  String get adaptiveSuggestionStatusApplied => 'Angewendet';
+
+  @override
+  String get adaptiveSuggestionStatusStale => 'Veraltet';
+
+  @override
+  String get adaptiveSuggestionStatusUnknown => 'Unbekannter Status';
+
+  @override
+  String adaptiveSuggestionStatusAnnounce(String status) {
+    return 'Status: $status';
+  }
+
+  @override
+  String get adaptivePatternsError =>
+      'Die Freigabemuster konnten nicht geladen werden.';
+
+  @override
+  String get adaptivePatternsEmptyApprovers =>
+      'In diesem Zeitraum noch keine Freigabeentscheidungen.';
+
+  @override
+  String get adaptivePatternsEmptyVendors =>
+      'In diesem Zeitraum noch keine Lieferantenhistorie.';
+
+  @override
+  String get adaptivePatternsSectionApprovers => 'Nach Freigebendem';
+
+  @override
+  String get adaptivePatternsSectionVendors => 'Nach Lieferant';
+
+  @override
+  String adaptivePatternsLookback(int days) {
+    return 'Deterministische Statistiken über die Freigabehistorie dieses Mandanten der letzten $days Tage — kein Modell, bei jedem Aufruf neu berechnet.';
+  }
+
+  @override
+  String get adaptivePatternsCurrencyNote =>
+      'Beträge sind in der Berichtswährung Ihrer Organisation angegeben.';
+
+  @override
+  String get adaptivePatternsUnknownApprover => 'Unbekannte freigebende Person';
+
+  @override
+  String adaptivePatternsApproverSummary(int approved, int rejected) {
+    return '$approved freigegeben · $rejected abgelehnt';
+  }
+
+  @override
+  String adaptivePatternsApproverTiming(String rate, String days) {
+    return '$rate % Freigabequote · Median $days Tage';
+  }
+
+  @override
+  String adaptivePatternsVendorConsistency(String pct) {
+    return '$pct % ohne Korrektur freigegeben';
+  }
+
+  @override
+  String adaptivePatternsVendorMoney(String median, String avg) {
+    return 'Median $median · Durchschnitt $avg';
+  }
+
+  @override
+  String adaptivePatternsUnconverted(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          '$count Genehmigungen konnten nicht in der Berichtswährung ausgedrückt werden und sind von den Beträgen oben ausgeschlossen — die Stichprobe zählt sie weiterhin',
+      one:
+          '$count Genehmigung konnte nicht in der Berichtswährung ausgedrückt werden und ist von den Beträgen oben ausgeschlossen — die Stichprobe zählt sie weiterhin',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get adaptiveAnomaliesIntro =>
+      'Rechnungen in Prüfung, die außerhalb des etablierten Musters ihres Lieferanten liegen — beim Betrag, bei der freigebenden Person oder bei der Wartezeit. Nur lesend: eine Markierung hier löst nichts aus und blockiert nichts.';
+
+  @override
+  String get adaptiveAnomaliesEmpty =>
+      'Nichts in Prüfung liegt außerhalb des üblichen Musters seines Lieferanten.';
+
+  @override
+  String get adaptiveAnomaliesError =>
+      'Der Auffälligkeitsscan konnte nicht geladen werden.';
+
+  @override
+  String adaptiveAnomaliesScanned(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Rechnungen in Prüfung untersucht.',
+      one: '$count Rechnung in Prüfung untersucht.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String adaptiveAnomaliesAmount(String amount, String currency) {
+    return '$amount $currency';
+  }
+
+  @override
+  String get adaptiveAnomaliesInsufficient =>
+      'Für diesen Lieferanten liegt noch zu wenig Historie vor.';
 }

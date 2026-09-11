@@ -677,6 +677,49 @@ Seven contracts the page encodes, each of which is easy to get wrong:
   figures are a floor — the §79/§82 treatment. The sample count is left alone:
   the two are reconciled by telling the reader, not by moving a denominator.
 
+### Mobile — `AdaptiveScreen`
+
+`mobile/lib/screens/adaptive_screen.dart` over `AdaptiveApi` +
+`AdaptiveStore`, reached from **Settings → Administration** and gated on
+`AuthStore.canViewAdaptive` (the same `_READ_ROLES`, so a clerk never sees the
+entry point rather than tapping into a guaranteed 403). Three tabs — Suggestions,
+Approval patterns, Anomalies — each with its own loading / error / empty state
+and its own request sequence, so a failing anomaly scan cannot blank the
+patterns a reader is looking at.
+
+**Read-first, and the omissions are the design.** The only write is
+`POST /suggestions/{id}/dismiss` (behind a confirm dialog, gated on
+`canDismissSuggestion` = `_WRITE_ROLES`, so a CFO reads and is not offered it).
+Neither apply path is exposed: `routing-suggestion/apply` reassigns a live
+approval, `threshold-recommendation/apply` raises the org-wide threshold that
+decides which invoices skip human review, and the second one carries the
+stale-value 409 whose *whole point* is a surface that names both figures and
+re-reads the recommendation. That is a desk decision with a desk-sized
+affordance; a phone-sized one would be the same control with the explanation cut
+off (`docs/decisions.md` §156). The Feedback tab is absent for a different
+reason — `GET /feedback` writes an `adaptive_feedback.viewed` access-audit row,
+so a second surface that could fetch it needs its own deliberate
+"only when asked" treatment rather than riding along with two other tabs.
+
+Two presentation calls mirror the web's, for the same reasons:
+
+- **Per-vendor amounts render with no currency symbol**, under one section note
+  saying they are in the org's reporting currency. The payload does not name that
+  currency, and mobile has no org-currency store — stamping `$` on a ZAR org's
+  averages would be a wrong number, not a missing one. Anomaly rows DO carry
+  `amount_currency` and are labelled with it.
+- **The unconverted count is disclosed** whenever it is non-zero: the excluded
+  approvals are still in `sample_size`, so an average beside a count is an
+  average over fewer rows than the count claims unless the reader is told.
+
+`title` / `rationale` are rendered verbatim — they are sentences the backend
+composes with the numbers and currency code in them, so they are English on both
+surfaces; the screen's own chrome is localized in all six locales.
+
+Tests: `mobile/test/stores/adaptive_store_test.dart`,
+`mobile/test/screens/adaptive_screen_test.dart`, plus the `AdaptiveScreen` groups
+in `mobile/test/a11y/accessibility_test.dart`.
+
 Smart routing ranks *people*, so each candidate carries its `base_score`, the
 `outcome_penalty` with the `overturn_rate_pct` and `outcome_sample_size` it was
 read over, and the backend's own `reasons` list — an unexplained ranking of
@@ -917,4 +960,5 @@ not apply.
   with no key (mirror `services/audit_summary.py`).
 - Business-day-weighted time-to-approve (currently simple elapsed days).
 - **Web UI** — ✅ **Shipped** as `/adaptive`; see § Frontend — `/adaptive` above.
-  No **mobile** (Flutter) surface yet.
+- **Mobile UI** — ✅ **Shipped** as `AdaptiveScreen`; see § Mobile —
+  `AdaptiveScreen` above. Read-first: the two apply paths stay on the web.

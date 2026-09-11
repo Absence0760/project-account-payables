@@ -88,6 +88,24 @@ class AuthStore extends ChangeNotifier {
   // user, so this is a UI gate matching the desktop entry point, not a security
   // boundary.
   bool get canViewWorkflows => isAdmin;
+  // Adaptive AI workflows (read) — mirrors the backend `_READ_ROLES` on every
+  // /api/adaptive route (admin / ap_manager / cfo). Clerks are excluded there,
+  // so the Settings entry point is hidden for them rather than handing them a
+  // guaranteed 403 on first paint.
+  bool get canViewAdaptive => isAdmin || isManager || isCfo;
+  // Dismissing an advisory suggestion — the backend `_WRITE_ROLES`
+  // (require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)) on
+  // POST /api/adaptive/suggestions/{id}/dismiss. A CFO reads the suggestions
+  // and simply isn't offered the action. Mobile exposes no other adaptive
+  // write: the two apply paths change live approval routing and the org-wide
+  // auto-approve threshold, and stay on the web.
+  bool get canDismissSuggestion => isAdmin || isManager;
+  // Recording a quality inspection — mirrors
+  // require_roles(ROLE_ADMIN, ROLE_AP_MANAGER) on POST /api/inspections. The
+  // inspection *list* and detail are `get_current_user` (role-open), so every
+  // role can read the queue and only these two get the record affordance —
+  // the same split the web /goods-receipts Inspections tab applies.
+  bool get canRecordInspection => isAdmin || isManager;
 
   /// Drop all in-memory state. Called on logout / forced logout through
   /// `SessionManager.endSession` — this is a process-lifetime singleton, so

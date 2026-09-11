@@ -373,9 +373,34 @@ correctly without them:
   browser; against a PAGE that would render an empty "no inspections" panel for
   any receipt whose rows had not been paged to yet.
 
+A third filter, **`?result=pass|fail|partial`**, was added for the mobile
+screen's outcome chips (`mobile/lib/screens/inspections_screen.dart`). It is
+server-side for the same reason `?gr_id=` is: filtering a page on the client
+hides every matching row past the page boundary, and "show me the failures" is
+the question this list exists to answer — a `fail` is what puts a quality hold
+on a payable invoice. It is typed as a `Literal`, so a value outside the
+vocabulary is a 422 rather than an empty page that reads as "no failures"; the
+column itself stays free-form (`qms_sync.normalize_disposition` is what
+constrains a synced row, not the DB).
+
 There is no rollup beside this list — inspections are counted, not summed — so
 the only figure to keep honest is `total`, and it comes from
 `_inspection_list_filters`, the same builder the rows go through.
+
+**Mobile ships the same surface** (`mobile/lib/screens/inspections_screen.dart`
++ `inspection_detail_screen.dart` + `widgets/record_inspection_sheet.dart`, over
+`InspectionApi` / `InspectionStore`), reached from **Settings → Procurement**.
+The entry point is NOT role-gated — the list and detail are `get_current_user`,
+and a clerk chasing a quality hold is exactly who needs to read a failed
+inspection — while the record affordance is `admin | ap_manager`, the same split
+the web tab makes. Recording at the receiving dock is the strongest case for a
+phone here; **syncing from a QMS deliberately is not** on mobile: it is an
+operator action against org-level configuration that 409s unless
+`settings.qms.provider` is set, and the place to configure it is the web app.
+The form requires a goods receipt for the same reason the web modal does, loads
+one page of receipts *before* opening (the form cannot be submitted without the
+one thing it would otherwise still be fetching), and says so when the tenant has
+more receipts than the picker is offering. See `docs/decisions.md` §156.
 
 Quantities are held and sent as the **raw text** the inspector typed, validated
 by shape (`\d{1,8}(\.\d{1,4})?`, matching the `Numeric(12, 4)` column) rather
@@ -573,6 +598,8 @@ PATCH→`refresh_warnings`→`match_invoice_to_po` path (PO/GR rows seeded via
   the paginated envelope + its `page_size` cap, `?gr_id=` narrowing, `gr_number`
   on every path,
   result-enum + bad-uuid 400s, 404, and the create RBAC gate (clerk denied).
+  `backend/tests/test_list_pagination_rebates_inspections.py` covers `?result=`
+  (including its 422 on a junk value) and that it composes with `?gr_id=`.
 - `inspection-ui.spec.ts` — the same three gate outcomes driven through the
   **app** instead of the API: a `pass` recorded from a receipt's detail modal, a
   `fail` recorded from the Inspections tab (with the notes typed into the form

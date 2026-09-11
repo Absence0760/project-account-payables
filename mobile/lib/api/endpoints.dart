@@ -1,11 +1,14 @@
 import 'dart:typed_data';
 
 import 'package:feohledger_mobile/api/api_client.dart';
+import 'package:feohledger_mobile/models/adaptive.dart';
 import 'package:feohledger_mobile/models/admin_user.dart';
 import 'package:feohledger_mobile/models/audit_entry.dart';
 import 'package:feohledger_mobile/models/cash_flow.dart';
 import 'package:feohledger_mobile/models/contract.dart';
 import 'package:feohledger_mobile/models/exception.dart';
+import 'package:feohledger_mobile/models/goods_receipt.dart';
+import 'package:feohledger_mobile/models/inspection.dart';
 import 'package:feohledger_mobile/models/invoice.dart';
 import 'package:feohledger_mobile/models/notification.dart';
 import 'package:feohledger_mobile/models/organization.dart';
@@ -737,5 +740,149 @@ class WorkflowApi {
   static Future<WorkflowDefinition> getById(String id) async {
     final data = await _api.get('/workflows/$id');
     return WorkflowDefinition.fromJson(data);
+  }
+}
+
+/// Quality inspections — the 4th leg of 4-way matching (`/api/inspections`).
+///
+/// RBAC mirrors `backend/app/api/inspections.py`:
+///   * `GET /inspections` + `GET /inspections/{id}` — any authenticated user
+///     (`get_current_user`). The list is entity-scoped; the detail is not.
+///   * `POST /inspections` — admin / ap_manager (`require_roles`). The screen
+///     gates the record affordance on the same split; the backend is
+///     authoritative regardless.
+///
+/// `POST /inspections/sync` (pull from the org's QMS) is deliberately NOT
+/// exposed on mobile: it is an operator action against org-level configuration
+/// that 409s unless `settings.qms` is set, and the place to configure it — and
+/// therefore to run it — is the web `/goods-receipts` Inspections tab.
+class InspectionApi {
+  static final _api = ApiClient();
+
+  /// One page of inspections, newest first.
+  ///
+  /// [result] and [grId] are **server-side** filters (`?result=` / `?gr_id=`).
+  /// Filtering a page on the device would hide every matching row past the page
+  /// boundary — the defect the approvals tab already shipped once.
+  static Future<List<Inspection>> list({
+    String? result,
+    String? grId,
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    final params = <String, String>{
+      'page': page.toString(),
+      'page_size': pageSize.toString(),
+    };
+    if (result != null && result.isNotEmpty) params['result'] = result;
+    if (grId != null && grId.isNotEmpty) params['gr_id'] = grId;
+
+    final items = await _api.getList('/inspections', params);
+    return items
+        .map((e) => Inspection.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// `GET /api/inspections/{id}` — 404 when it isn't this tenant's.
+  static Future<Inspection> getById(String id) async {
+    final data = await _api.get('/inspections/$id');
+    return Inspection.fromJson(data);
+  }
+
+  /// `POST /api/inspections` → 201 with the created row (`gr_number` included,
+  /// so the list can render it without a re-read). Admin / ap_manager only.
+  static Future<Inspection> create(InspectionDraft draft) async {
+    final data = await _api.post('/inspections', draft.toJson());
+    return Inspection.fromJson(data);
+  }
+}
+
+/// Goods receipts — `GET /api/goods-receipts` (auth-gated, role-open).
+///
+/// Mobile reads them only to populate the record-inspection picker: an
+/// inspection has to name the delivery it covers.
+class GoodsReceiptApi {
+  static final _api = ApiClient();
+
+  /// One page of receipts plus the whole-set `total`.
+  ///
+  /// The envelope's `total` is read rather than discarded (so this goes through
+  /// `get`, not `getList`): the picker shows one page and the form has to be
+  /// able to say when there are more receipts than it is offering, instead of
+  /// implying the list is everything.
+  static Future<({List<GoodsReceipt> items, int total})> list({
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    final data = await _api.get('/goods-receipts', {
+      'page': page.toString(),
+      'page_size': pageSize.toString(),
+    });
+    final items = ((data['items'] as List?) ?? const [])
+        .map((e) => GoodsReceipt.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return (items: items, total: (data['total'] as num?)?.toInt() ?? items.length);
+  }
+}
+
+/// Adaptive AI workflows — `/api/adaptive` (admin / ap_manager / cfo read,
+/// mirroring the backend `_READ_ROLES`).
+///
+/// **Read-first by design.** The three read models plus the one safe write
+/// (dismiss a suggestion, `_WRITE_ROLES` = admin / ap_manager) are here. The two
+/// APPLY paths — `routing-suggestion/apply` and `threshold-recommendation/apply`
+/// — are deliberately absent: they reassign a live approval and raise the
+/// org-wide auto-approve threshold respectively, which is a money-path control
+/// surface, and the threshold apply also carries a stale-value optimistic guard
+/// whose 409 needs a real "the recommendation changed, nothing was applied"
+/// state to land safely. Those stay on the web `/adaptive` page.
+class AdaptiveApi {
+  static final _api = ApiClient();
+
+  /// `GET /api/adaptive/approval-patterns` — deterministic statistics over the
+  /// tenant's own approval history. [days] is the lookback (backend default
+  /// 180, bounded 1-730).
+  static Future<ApprovalPatterns> approvalPatterns({int days = 180}) async {
+    final data = await _api.get('/adaptive/approval-patterns', {
+      'days': days.toString(),
+    });
+    return ApprovalPatterns.fromJson(data);
+  }
+
+  /// `GET /api/adaptive/anomalies` (batch) — in-review invoices sitting outside
+  /// their own vendor's baseline. Read-only: it raises nothing and blocks
+  /// nothing.
+  static Future<AnomalyBatch> anomalies() async {
+    final data = await _api.get('/adaptive/anomalies');
+    return AnomalyBatch.fromJson(data);
+  }
+
+  /// `GET /api/adaptive/suggestions` — advisory suggestions. [status] is one of
+  /// `open` / `dismissed` / `applied` / `stale` / `all` (backend default
+  /// `open`).
+  ///
+  /// The endpoint performs an idempotent upsert on read (it recomputes the
+  /// derived set and re-opens / stales rows), which is why a dismissal is
+  /// durable across recomputation. It moves no money and is not an auditable
+  /// status change.
+  static Future<List<WorkflowSuggestion>> suggestions({
+    String status = 'open',
+  }) async {
+    final items = await _api.getList('/adaptive/suggestions', {
+      'status': status,
+    });
+    return items
+        .map((e) => WorkflowSuggestion.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// `POST /api/adaptive/suggestions/{id}/dismiss` — idempotent; dismissing an
+  /// already-dismissed row is a no-op. Returns the single dismissed row (the
+  /// endpoint answers with a `SuggestionListResponse` carrying just it).
+  static Future<WorkflowSuggestion?> dismissSuggestion(String id) async {
+    final data = await _api.post('/adaptive/suggestions/$id/dismiss');
+    final rows = (data['suggestions'] as List?) ?? const [];
+    if (rows.isEmpty) return null;
+    return WorkflowSuggestion.fromJson(rows.first as Map<String, dynamic>);
   }
 }

@@ -1703,4 +1703,365 @@ class AppLocalizationsJa extends AppLocalizations {
   String exceptionDetailAssignedTo(String name) {
     return '$nameに割り当てました';
   }
+
+  @override
+  String get settingsProcurement => '調達';
+
+  @override
+  String get settingsInspections => '品質検査';
+
+  @override
+  String get settingsInspectionsHint => '4 ウェイ照合の検査を登録・確認';
+
+  @override
+  String get settingsAdministration => '管理';
+
+  @override
+  String get settingsAdminUsers => 'ユーザー管理';
+
+  @override
+  String get settingsAdminUsersHint => 'ロール、ユーザーの有効化 / 無効化';
+
+  @override
+  String get settingsAdminOrg => '組織設定';
+
+  @override
+  String get settingsAdminOrgHint => '会社プロフィール、請求書の既定値';
+
+  @override
+  String get settingsAdminWorkflows => 'ワークフロー';
+
+  @override
+  String get settingsAdminWorkflowsHint => 'ワークフロー定義とステップを表示';
+
+  @override
+  String get settingsAdaptive => '適応型ワークフロー';
+
+  @override
+  String get settingsAdaptiveHint => '承認パターン、異常、推奨';
+
+  @override
+  String get inspectionsTitle => '品質検査';
+
+  @override
+  String get inspectionsRecord => '検査を登録';
+
+  @override
+  String get inspectionsEmpty => '品質検査は登録されていません。';
+
+  @override
+  String get inspectionsEmptyFiltered => 'この結果の検査はありません。';
+
+  @override
+  String get inspectionsLoadError => '検査の読み込みに失敗しました';
+
+  @override
+  String get inspectionsResultPass => '合格';
+
+  @override
+  String get inspectionsResultFail => '不合格';
+
+  @override
+  String get inspectionsResultPartial => '一部受入';
+
+  @override
+  String get inspectionsResultUnknown => '不明な結果';
+
+  @override
+  String inspectionsResultAnnounce(String result) {
+    return '結果: $result';
+  }
+
+  @override
+  String get inspectionsNotLinked => '未リンク';
+
+  @override
+  String get inspectionsNotLinkedHint =>
+      'この検査は入荷にも発注にも紐づいていないため、発注照合が参照することはありません。';
+
+  @override
+  String get inspectionsReceiptUnnamed => '入荷番号なし';
+
+  @override
+  String get inspectionsHintPass => '受入 — 照合結果は変わりません。';
+
+  @override
+  String get inspectionsHintFail => '不受入 — 請求書は不一致となり、品質保留が支払をブロックします。';
+
+  @override
+  String get inspectionsHintPartial => '一部受入 — 照合結果は「一部」となり、受入数量が記録されます。';
+
+  @override
+  String get inspectionsHintUnknown =>
+      'この結果は合格 / 不合格 / 一部受入のいずれにも該当しないため、照合への影響は示せません。';
+
+  @override
+  String inspectionsRecorded(String number) {
+    return '検査 $number を登録しました';
+  }
+
+  @override
+  String inspectionsRecordFailed(String error) {
+    return '検査を登録できませんでした: $error';
+  }
+
+  @override
+  String inspectionsReceiptsLoadFailed(String error) {
+    return '入荷を読み込めませんでした: $error';
+  }
+
+  @override
+  String get inspectionRecordTitle => '品質検査の登録';
+
+  @override
+  String get inspectionRecordClose => '検査フォームを閉じる';
+
+  @override
+  String get inspectionRecordReceipt => '入荷';
+
+  @override
+  String get inspectionRecordReceiptHint =>
+      '発注照合は入荷を通じてのみ検査を参照するため、検査には対象の入荷を指定する必要があります。';
+
+  @override
+  String inspectionRecordReceiptsBounded(int shown, int total) {
+    return '$total 件のうち最新 $shown 件の入荷を表示しています。対象の入荷が見つからない場合は Web アプリから登録してください。';
+  }
+
+  @override
+  String get inspectionRecordNoReceipts =>
+      '入荷がまだありません。検査は入荷に対して行うため、登録する対象がありません。';
+
+  @override
+  String get inspectionRecordNumber => '検査番号';
+
+  @override
+  String get inspectionRecordNumberRequired => '検査番号を入力してください';
+
+  @override
+  String get inspectionRecordResult => '結果';
+
+  @override
+  String get inspectionRecordAcceptedQuantity => '受入数量';
+
+  @override
+  String get inspectionRecordRejectedQuantity => '不合格数量';
+
+  @override
+  String get inspectionRecordAcceptedRequired => '一部受入の場合は必須';
+
+  @override
+  String get inspectionRecordInvalidQuantity => '整数 8 桁・小数 4 桁までで入力してください';
+
+  @override
+  String get inspectionRecordInspectedDate => '検査日';
+
+  @override
+  String get inspectionRecordDateNotSet => '未設定';
+
+  @override
+  String get inspectionRecordClearDate => '検査日をクリア';
+
+  @override
+  String get inspectionRecordInspector => '検査者';
+
+  @override
+  String get inspectionRecordNotes => '逸脱メモ';
+
+  @override
+  String get inspectionRecordNotesHint =>
+      '不合格の場合、請求書の照合メッセージにそのまま引用され、品質保留を処理する担当者が読みます。';
+
+  @override
+  String get inspectionRecordSubmit => '検査を登録';
+
+  @override
+  String get inspectionDetailTitle => '検査';
+
+  @override
+  String get inspectionDetailNotFound => '検査が見つかりません';
+
+  @override
+  String inspectionDetailErrorPrefix(String error) {
+    return '検査を読み込めませんでした: $error';
+  }
+
+  @override
+  String get inspectionDetailFieldReceipt => '入荷';
+
+  @override
+  String get inspectionDetailFieldInspectedDate => '検査日';
+
+  @override
+  String get inspectionDetailFieldInspector => '検査者';
+
+  @override
+  String get inspectionDetailFieldAccepted => '受入数量';
+
+  @override
+  String get inspectionDetailFieldRejected => '不合格数量';
+
+  @override
+  String get inspectionDetailFieldStatus => 'ステータス';
+
+  @override
+  String get inspectionDetailFieldCreated => '作成日時';
+
+  @override
+  String get inspectionDetailSectionNotes => '逸脱メモ';
+
+  @override
+  String get adaptiveTitle => '適応型ワークフロー';
+
+  @override
+  String get adaptiveTabSuggestions => '推奨';
+
+  @override
+  String get adaptiveTabPatterns => '承認パターン';
+
+  @override
+  String get adaptiveTabAnomalies => '異常検知';
+
+  @override
+  String get adaptiveAdvisoryNote =>
+      'ここに表示される内容はすべて助言です。この画面でワークフローが変更されたことはありません。推奨は、適切なロールを持つ担当者が Web アプリで適用したときに初めて有効になり、その適用は手動編集と同じ監査対象の経路を通ります。';
+
+  @override
+  String get adaptiveSuggestionsEmpty => '推奨はありません。一貫した承認履歴がまだ十分ではありません。';
+
+  @override
+  String get adaptiveSuggestionsError => '推奨を読み込めませんでした。';
+
+  @override
+  String get adaptiveSuggestionsShowOpen => '未処理';
+
+  @override
+  String get adaptiveSuggestionsShowAll => 'すべて';
+
+  @override
+  String adaptiveSuggestionsConfidence(String pct) {
+    return '信頼度 $pct%';
+  }
+
+  @override
+  String get adaptiveSuggestionsDismiss => '却下';
+
+  @override
+  String get adaptiveSuggestionsDismissTitle => 'この推奨を却下しますか？';
+
+  @override
+  String get adaptiveSuggestionsDismissBody =>
+      '再計算後も却下状態が維持されます。いずれの場合もワークフローは変更されません。';
+
+  @override
+  String get adaptiveSuggestionsDismissed => '推奨を却下しました。';
+
+  @override
+  String adaptiveSuggestionsDismissFailed(String error) {
+    return 'その推奨を却下できませんでした: $error';
+  }
+
+  @override
+  String get adaptiveSuggestionStatusOpen => '未処理';
+
+  @override
+  String get adaptiveSuggestionStatusDismissed => '却下済み';
+
+  @override
+  String get adaptiveSuggestionStatusApplied => '適用済み';
+
+  @override
+  String get adaptiveSuggestionStatusStale => '陳腐化';
+
+  @override
+  String get adaptiveSuggestionStatusUnknown => '不明なステータス';
+
+  @override
+  String adaptiveSuggestionStatusAnnounce(String status) {
+    return 'ステータス: $status';
+  }
+
+  @override
+  String get adaptivePatternsError => '承認パターンを読み込めませんでした。';
+
+  @override
+  String get adaptivePatternsEmptyApprovers => 'この期間の承認判断はまだありません。';
+
+  @override
+  String get adaptivePatternsEmptyVendors => 'この期間の取引先の承認履歴はまだありません。';
+
+  @override
+  String get adaptivePatternsSectionApprovers => '承認者別';
+
+  @override
+  String get adaptivePatternsSectionVendors => '取引先別';
+
+  @override
+  String adaptivePatternsLookback(int days) {
+    return 'このテナント自身の直近 $days 日間の承認履歴に基づく決定論的な統計です。モデルは使わず、表示ごとに再計算されます。';
+  }
+
+  @override
+  String get adaptivePatternsCurrencyNote => '金額は組織の報告通貨で表示されます。';
+
+  @override
+  String get adaptivePatternsUnknownApprover => '不明な承認者';
+
+  @override
+  String adaptivePatternsApproverSummary(int approved, int rejected) {
+    return '承認 $approved 件 · 却下 $rejected 件';
+  }
+
+  @override
+  String adaptivePatternsApproverTiming(String rate, String days) {
+    return '承認率 $rate% · 中央値 $days 日';
+  }
+
+  @override
+  String adaptivePatternsVendorConsistency(String pct) {
+    return '無修正での承認 $pct%';
+  }
+
+  @override
+  String adaptivePatternsVendorMoney(String median, String avg) {
+    return '中央値 $median · 平均 $avg';
+  }
+
+  @override
+  String adaptivePatternsUnconverted(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count 件の承認を報告通貨で表現できなかったため、上の金額からは除外されています（サンプル件数には含まれます）',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get adaptiveAnomaliesIntro =>
+      'レビュー中の請求書のうち、金額・承認者・滞留時間の面で取引先の確立したパターンから外れているものです。読み取り専用で、ここでの表示が何かを発生させたり止めたりすることはありません。';
+
+  @override
+  String get adaptiveAnomaliesEmpty => 'レビュー中で取引先の通常パターンから外れているものはありません。';
+
+  @override
+  String get adaptiveAnomaliesError => '異常スキャンを読み込めませんでした。';
+
+  @override
+  String adaptiveAnomaliesScanned(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'レビュー中の請求書 $count 件をスキャンしました。',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String adaptiveAnomaliesAmount(String amount, String currency) {
+    return '$amount $currency';
+  }
+
+  @override
+  String get adaptiveAnomaliesInsufficient => 'この取引先の履歴はまだ十分ではありません。';
 }

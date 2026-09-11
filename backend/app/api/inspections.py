@@ -9,6 +9,7 @@ router is the CRUD surface that creates those rows. See
 
 import logging
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -75,7 +76,13 @@ def _serialize(qi: QualityInspection, gr_number: str | None = None) -> dict:
     }
 
 
-def _inspection_list_filters(query, *, gr_id: uuid.UUID | None, entity_id: uuid.UUID | None):
+def _inspection_list_filters(
+    query,
+    *,
+    gr_id: uuid.UUID | None,
+    result: str | None,
+    entity_id: uuid.UUID | None,
+):
     """The predicates the inspection page and its row count both apply.
 
     One builder, two callers, so ``total`` can never describe a different set
@@ -85,6 +92,8 @@ def _inspection_list_filters(query, *, gr_id: uuid.UUID | None, entity_id: uuid.
     query = apply_entity_scope(query, QualityInspection, entity_id)
     if gr_id is not None:
         query = query.where(QualityInspection.gr_id == gr_id)
+    if result is not None:
+        query = query.where(QualityInspection.result == result)
     return query
 
 
@@ -92,6 +101,9 @@ def _inspection_list_filters(query, *, gr_id: uuid.UUID | None, entity_id: uuid.
 async def list_inspections(
     gr_id: uuid.UUID | None = Query(
         None, description="Only inspections recorded against this goods receipt."
+    ),
+    result: Literal["pass", "fail", "partial"] | None = Query(
+        None, description="Only inspections with this outcome."
     ),
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
@@ -110,12 +122,23 @@ async def list_inspections(
     ``gr_id`` narrows to one goods receipt, which is what the receipt detail
     modal actually wants: it used to load the whole list and filter it in the
     browser because the server offered no way to ask.
+
+    ``result`` narrows to one outcome, and is here for the same reason: the
+    mobile screen's pass / fail / partial filter chips. Filtering a *page* on
+    the client cannot be made correct — it would hide every matching row past
+    the page boundary and leave ``total`` describing a different set than the
+    rows under it — and "show me the failures" is the question this list exists
+    to answer, since a ``fail`` is what puts a quality hold on a payable
+    invoice. Typed as a ``Literal`` so a junk value is a 422 rather than a
+    silently empty page; the column itself stays free-form (a QMS row is
+    normalised by ``qms_sync``, not constrained by the DB).
     """
 
     def _joined(selectable):
         return _inspection_list_filters(
             selectable.outerjoin(GoodsReceipt, QualityInspection.gr_id == GoodsReceipt.id),
             gr_id=gr_id,
+            result=result,
             entity_id=entity_id,
         )
 

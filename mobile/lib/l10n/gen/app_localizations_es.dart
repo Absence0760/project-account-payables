@@ -1755,4 +1755,387 @@ class AppLocalizationsEs extends AppLocalizations {
   String exceptionDetailAssignedTo(String name) {
     return 'Asignada a $name';
   }
+
+  @override
+  String get settingsProcurement => 'Compras';
+
+  @override
+  String get settingsInspections => 'Inspecciones de calidad';
+
+  @override
+  String get settingsInspectionsHint =>
+      'Registrar y consultar inspecciones del cotejo de 4 vías';
+
+  @override
+  String get settingsAdministration => 'Administración';
+
+  @override
+  String get settingsAdminUsers => 'Gestión de usuarios';
+
+  @override
+  String get settingsAdminUsersHint => 'Roles, activar / desactivar usuarios';
+
+  @override
+  String get settingsAdminOrg => 'Ajustes de la organización';
+
+  @override
+  String get settingsAdminOrgHint =>
+      'Perfil de la empresa, valores por defecto de facturas';
+
+  @override
+  String get settingsAdminWorkflows => 'Flujos de trabajo';
+
+  @override
+  String get settingsAdminWorkflowsHint =>
+      'Ver definiciones de flujo y sus pasos';
+
+  @override
+  String get settingsAdaptive => 'Flujos adaptativos';
+
+  @override
+  String get settingsAdaptiveHint =>
+      'Patrones de aprobación, anomalías, sugerencias';
+
+  @override
+  String get inspectionsTitle => 'Inspecciones de calidad';
+
+  @override
+  String get inspectionsRecord => 'Registrar inspección';
+
+  @override
+  String get inspectionsEmpty => 'No hay inspecciones de calidad registradas.';
+
+  @override
+  String get inspectionsEmptyFiltered =>
+      'No hay inspecciones con este resultado.';
+
+  @override
+  String get inspectionsLoadError => 'No se pudieron cargar las inspecciones';
+
+  @override
+  String get inspectionsResultPass => 'Aprobada';
+
+  @override
+  String get inspectionsResultFail => 'Rechazada';
+
+  @override
+  String get inspectionsResultPartial => 'Aceptación parcial';
+
+  @override
+  String get inspectionsResultUnknown => 'Resultado desconocido';
+
+  @override
+  String inspectionsResultAnnounce(String result) {
+    return 'Resultado: $result';
+  }
+
+  @override
+  String get inspectionsNotLinked => 'Sin vincular';
+
+  @override
+  String get inspectionsNotLinkedHint =>
+      'Esta inspección no está ligada a ninguna recepción ni orden de compra, por lo que el cotejo nunca la leerá.';
+
+  @override
+  String get inspectionsReceiptUnnamed => 'Recepción sin nombre';
+
+  @override
+  String get inspectionsHintPass => 'Mercancía aceptada: el cotejo no cambia.';
+
+  @override
+  String get inspectionsHintFail =>
+      'Mercancía rechazada: la factura pasa a discrepancia y una retención de calidad bloquea el pago.';
+
+  @override
+  String get inspectionsHintPartial =>
+      'Parte de la mercancía aceptada: el cotejo pasa a parcial y se marca la cantidad aceptada.';
+
+  @override
+  String get inspectionsHintUnknown =>
+      'Este resultado está fuera del vocabulario aprobada / rechazada / parcial, así que no se puede indicar su efecto en el cotejo.';
+
+  @override
+  String inspectionsRecorded(String number) {
+    return 'Inspección $number registrada';
+  }
+
+  @override
+  String inspectionsRecordFailed(String error) {
+    return 'No se pudo registrar la inspección: $error';
+  }
+
+  @override
+  String inspectionsReceiptsLoadFailed(String error) {
+    return 'No se pudieron cargar las recepciones: $error';
+  }
+
+  @override
+  String get inspectionRecordTitle => 'Registrar inspección de calidad';
+
+  @override
+  String get inspectionRecordClose => 'Cerrar el formulario de inspección';
+
+  @override
+  String get inspectionRecordReceipt => 'Recepción';
+
+  @override
+  String get inspectionRecordReceiptHint =>
+      'El cotejo solo lee una inspección a través de su recepción, así que la inspección debe indicar la entrega que cubre.';
+
+  @override
+  String inspectionRecordReceiptsBounded(int shown, int total) {
+    return 'Se muestran las $shown recepciones más recientes de $total. Regístrela desde la aplicación web si la entrega que busca no aparece.';
+  }
+
+  @override
+  String get inspectionRecordNoReceipts =>
+      'Aún no hay recepciones: una inspección cubre una entrega, así que no hay nada que registrar.';
+
+  @override
+  String get inspectionRecordNumber => 'N.º de inspección';
+
+  @override
+  String get inspectionRecordNumberRequired =>
+      'Introduzca un n.º de inspección';
+
+  @override
+  String get inspectionRecordResult => 'Resultado';
+
+  @override
+  String get inspectionRecordAcceptedQuantity => 'Cantidad aceptada';
+
+  @override
+  String get inspectionRecordRejectedQuantity => 'Cantidad rechazada';
+
+  @override
+  String get inspectionRecordAcceptedRequired =>
+      'Obligatoria en una aceptación parcial';
+
+  @override
+  String get inspectionRecordInvalidQuantity => 'Hasta 8 dígitos y 4 decimales';
+
+  @override
+  String get inspectionRecordInspectedDate => 'Fecha de inspección';
+
+  @override
+  String get inspectionRecordDateNotSet => 'Sin definir';
+
+  @override
+  String get inspectionRecordClearDate => 'Borrar la fecha de inspección';
+
+  @override
+  String get inspectionRecordInspector => 'Inspector';
+
+  @override
+  String get inspectionRecordNotes => 'Notas de desviación';
+
+  @override
+  String get inspectionRecordNotesHint =>
+      'Se citan literalmente en la incidencia de cotejo de la factura cuando la inspección se rechaza, para quien atienda la retención de calidad.';
+
+  @override
+  String get inspectionRecordSubmit => 'Registrar inspección';
+
+  @override
+  String get inspectionDetailTitle => 'Inspección';
+
+  @override
+  String get inspectionDetailNotFound => 'Inspección no encontrada';
+
+  @override
+  String inspectionDetailErrorPrefix(String error) {
+    return 'No se pudo cargar la inspección: $error';
+  }
+
+  @override
+  String get inspectionDetailFieldReceipt => 'Recepción';
+
+  @override
+  String get inspectionDetailFieldInspectedDate => 'Inspeccionada';
+
+  @override
+  String get inspectionDetailFieldInspector => 'Inspector';
+
+  @override
+  String get inspectionDetailFieldAccepted => 'Cantidad aceptada';
+
+  @override
+  String get inspectionDetailFieldRejected => 'Cantidad rechazada';
+
+  @override
+  String get inspectionDetailFieldStatus => 'Estado';
+
+  @override
+  String get inspectionDetailFieldCreated => 'Creada';
+
+  @override
+  String get inspectionDetailSectionNotes => 'Notas de desviación';
+
+  @override
+  String get adaptiveTitle => 'Flujos adaptativos';
+
+  @override
+  String get adaptiveTabSuggestions => 'Sugerencias';
+
+  @override
+  String get adaptiveTabPatterns => 'Patrones de aprobación';
+
+  @override
+  String get adaptiveTabAnomalies => 'Anomalías';
+
+  @override
+  String get adaptiveAdvisoryNote =>
+      'Todo aquí es orientativo. Nada en esta pantalla ha cambiado ningún flujo: una recomendación solo surte efecto cuando alguien con el rol adecuado la aplica en la aplicación web, por la misma vía auditada que una edición manual.';
+
+  @override
+  String get adaptiveSuggestionsEmpty =>
+      'Sin sugerencias: todavía no hay historial de aprobación suficientemente consistente.';
+
+  @override
+  String get adaptiveSuggestionsError =>
+      'No se pudieron cargar las sugerencias.';
+
+  @override
+  String get adaptiveSuggestionsShowOpen => 'Abiertas';
+
+  @override
+  String get adaptiveSuggestionsShowAll => 'Todas';
+
+  @override
+  String adaptiveSuggestionsConfidence(String pct) {
+    return 'Confianza $pct %';
+  }
+
+  @override
+  String get adaptiveSuggestionsDismiss => 'Descartar';
+
+  @override
+  String get adaptiveSuggestionsDismissTitle => '¿Descartar esta sugerencia?';
+
+  @override
+  String get adaptiveSuggestionsDismissBody =>
+      'Seguirá descartada tras el recálculo, y en ningún caso cambia ningún flujo.';
+
+  @override
+  String get adaptiveSuggestionsDismissed => 'Sugerencia descartada.';
+
+  @override
+  String adaptiveSuggestionsDismissFailed(String error) {
+    return 'No se pudo descartar esa sugerencia: $error';
+  }
+
+  @override
+  String get adaptiveSuggestionStatusOpen => 'Abierta';
+
+  @override
+  String get adaptiveSuggestionStatusDismissed => 'Descartada';
+
+  @override
+  String get adaptiveSuggestionStatusApplied => 'Aplicada';
+
+  @override
+  String get adaptiveSuggestionStatusStale => 'Obsoleta';
+
+  @override
+  String get adaptiveSuggestionStatusUnknown => 'Estado desconocido';
+
+  @override
+  String adaptiveSuggestionStatusAnnounce(String status) {
+    return 'Estado: $status';
+  }
+
+  @override
+  String get adaptivePatternsError =>
+      'No se pudieron cargar los patrones de aprobación.';
+
+  @override
+  String get adaptivePatternsEmptyApprovers =>
+      'Aún no hay decisiones de aprobación en esta ventana.';
+
+  @override
+  String get adaptivePatternsEmptyVendors =>
+      'Aún no hay historial de proveedores en esta ventana.';
+
+  @override
+  String get adaptivePatternsSectionApprovers => 'Por aprobador';
+
+  @override
+  String get adaptivePatternsSectionVendors => 'Por proveedor';
+
+  @override
+  String adaptivePatternsLookback(int days) {
+    return 'Estadísticas deterministas sobre los últimos $days días del historial de aprobación de este inquilino: sin modelo, recalculadas cada vez que las consulta.';
+  }
+
+  @override
+  String get adaptivePatternsCurrencyNote =>
+      'Los importes están en la moneda de reporte de su organización.';
+
+  @override
+  String get adaptivePatternsUnknownApprover => 'Aprobador desconocido';
+
+  @override
+  String adaptivePatternsApproverSummary(int approved, int rejected) {
+    return '$approved aprobadas · $rejected rechazadas';
+  }
+
+  @override
+  String adaptivePatternsApproverTiming(String rate, String days) {
+    return 'Tasa de aprobación $rate % · mediana $days días';
+  }
+
+  @override
+  String adaptivePatternsVendorConsistency(String pct) {
+    return '$pct % aprobadas sin editar';
+  }
+
+  @override
+  String adaptivePatternsVendorMoney(String median, String avg) {
+    return 'Mediana $median · promedio $avg';
+  }
+
+  @override
+  String adaptivePatternsUnconverted(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          '$count aprobaciones no pudieron expresarse en la moneda de reporte y quedan excluidas de los importes de arriba; la muestra sigue contándolas',
+      one:
+          '$count aprobación no pudo expresarse en la moneda de reporte y queda excluida de los importes de arriba; la muestra sigue contándola',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get adaptiveAnomaliesIntro =>
+      'Facturas en revisión que se salen del patrón establecido de su proveedor: por importe, por aprobador o por cuánto llevan esperando. Solo lectura: marcar aquí no genera nada ni bloquea nada.';
+
+  @override
+  String get adaptiveAnomaliesEmpty =>
+      'Nada en revisión se sale del patrón normal de su proveedor.';
+
+  @override
+  String get adaptiveAnomaliesError =>
+      'No se pudo cargar el análisis de anomalías.';
+
+  @override
+  String adaptiveAnomaliesScanned(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count facturas en revisión analizadas.',
+      one: '$count factura en revisión analizada.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String adaptiveAnomaliesAmount(String amount, String currency) {
+    return '$amount $currency';
+  }
+
+  @override
+  String get adaptiveAnomaliesInsufficient =>
+      'Todavía no hay suficiente historial para este proveedor.';
 }
