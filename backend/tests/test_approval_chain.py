@@ -21,12 +21,18 @@ from fastapi import HTTPException
 # ---------------------------------------------------------------------------
 
 
-def _make_invoice(*, uploaded_by_id=None, amount=None):
-    """Return a minimal Invoice-like object for use in segregation tests."""
+def _make_invoice(*, uploaded_by_id=None, amount=None, segregation_actor_ids=None):
+    """Return a minimal Invoice-like object for use in segregation tests.
+
+    Carries ``segregation_actor_ids`` because the real ``Invoice`` does: SoD keys
+    on the uploader **plus** that set (the recurring template's author and its
+    material editors). A stand-in without it would exercise only half the rule.
+    """
     return SimpleNamespace(
         id=uuid.uuid4(),
         uploaded_by_id=uploaded_by_id,
         amount=amount,
+        segregation_actor_ids=segregation_actor_ids,
     )
 
 
@@ -178,6 +184,137 @@ def test_violates_segregation_false_when_disabled_or_null_uploader():
 
     legacy = _make_invoice(uploaded_by_id=None)
     assert violates_segregation(legacy, actor_id, {"require_segregation": True}) is False
+
+
+def test_violates_segregation_true_for_an_implicated_actor():
+    """The set is the other half of the rule.
+
+    A recurring template's author lands in `uploaded_by_id`; a later material
+    editor of that template lands here. One column can only name one of them, so
+    stamping the editor *instead* would merely have moved the exemption to the
+    author — the gap this set closes.
+    """
+    from app.services.approval_chain import violates_segregation
+
+    editor = uuid.uuid4()
+    author = uuid.uuid4()
+    invoice = _make_invoice(uploaded_by_id=author, segregation_actor_ids=[str(editor)])
+
+    assert violates_segregation(invoice, editor, {"require_segregation": True}) is True
+    # The author is still refused via the column, and a third party still approves.
+    assert violates_segregation(invoice, author, {"require_segregation": True}) is True
+    assert violates_segregation(invoice, uuid.uuid4(), {"require_segregation": True}) is False
+
+
+def test_violates_segregation_matches_an_implicated_actor_stored_as_uuid():
+    """Stored JSONB is strings, but an in-memory row built by a service may hold
+    UUID objects before the flush. Compare stringified, so the predicate's answer
+    cannot depend on whether the row has been round-tripped through Postgres."""
+    from app.services.approval_chain import violates_segregation
+
+    editor = uuid.uuid4()
+    invoice = _make_invoice(uploaded_by_id=None, segregation_actor_ids=[editor])
+    assert violates_segregation(invoice, editor, {"require_segregation": True}) is True
+
+
+def test_violates_segregation_false_for_an_empty_implicated_set():
+    """`[]` must read exactly as NULL does — "nobody beyond the uploader"."""
+    from app.services.approval_chain import violates_segregation
+
+    invoice = _make_invoice(uploaded_by_id=None, segregation_actor_ids=[])
+    assert violates_segregation(invoice, uuid.uuid4(), {"require_segregation": True}) is False
+
+
+def test_violates_segregation_tolerates_a_subject_without_the_attribute():
+    """The subject is not always an ``Invoice``.
+
+    Expense reports, requisitions and expense pre-approvals reuse this rule
+    through a ``SimpleNamespace`` shim. They pass the attribute explicitly, but a
+    future subject that forgets must not raise ``AttributeError`` on the approval
+    path: a 500 there takes the control out altogether, which is strictly worse
+    than reading "no additional implicated actors" for a subject that has none.
+    """
+    from app.services.approval_chain import violates_segregation
+
+    uploader = uuid.uuid4()
+    bare = SimpleNamespace(uploaded_by_id=uploader)
+
+    assert violates_segregation(bare, uploader, {"require_segregation": True}) is True
+    assert violates_segregation(bare, uuid.uuid4(), {"require_segregation": True}) is False
+
+
+def test_violates_segregation_opt_out_beats_the_implicated_set_too():
+    """`require_segregation: false` is an org-level opt-out of the whole rule, so
+    it must short-circuit the set as well as the column — otherwise widening the
+    rule would have quietly re-enabled SoD for single-operator accounts."""
+    from app.services.approval_chain import violates_segregation
+
+    editor = uuid.uuid4()
+    invoice = _make_invoice(uploaded_by_id=uuid.uuid4(), segregation_actor_ids=[str(editor)])
+    assert violates_segregation(invoice, editor, {"require_segregation": False}) is False
+
+
+def test_check_segregation_raises_403_for_an_implicated_actor():
+    """The raising half must refuse the set, not just the column."""
+    from app.services.approval_chain import check_segregation
+
+    editor = uuid.uuid4()
+    invoice = _make_invoice(uploaded_by_id=uuid.uuid4(), segregation_actor_ids=[str(editor)])
+
+    with pytest.raises(HTTPException) as exc_info:
+        check_segregation(invoice, editor, {})
+    assert exc_info.value.status_code == 403
+    assert "segregation" in exc_info.value.detail.lower()
+
+
+def test_every_segregation_shim_states_both_attributes():
+    """Drift guard on the non-invoice subjects.
+
+    ``check_segregation`` is reused for expense reports, requisitions and expense
+    pre-approvals via a ``SimpleNamespace`` attribute shim. The predicate reads
+    ``segregation_actor_ids`` with a ``getattr`` default, so a shim that omits it
+    still *works* — which is exactly the failure mode
+    ``test_invoice_uploader_stamping`` exists to prevent: an absent attribute on a
+    fraud control reads as an oversight and behaves as an exemption. Every shim
+    must answer, even when the answer is ``None``.
+    """
+    import ast
+    from pathlib import Path
+
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    offenders: list[str] = []
+    found = 0
+    for path in sorted(app_root.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        rel = path.relative_to(app_root.parent).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name != "check_segregation" or not node.args:
+                continue
+            subject = node.args[0]
+            if not (
+                isinstance(subject, ast.Call)
+                and getattr(subject.func, "id", None) == "SimpleNamespace"
+            ):
+                continue  # a real Invoice — the model guarantees the attribute
+            found += 1
+            kwargs = {kw.arg for kw in subject.keywords}
+            if "segregation_actor_ids" not in kwargs:
+                offenders.append(f"{rel}:{subject.lineno}")
+
+    assert found >= 3, (
+        f"expected the expense-report / requisition / pre-approval shims, found {found} — "
+        "the scan has stopped matching them, so it guards nothing"
+    )
+    assert not offenders, (
+        "check_segregation(SimpleNamespace(...)) omits `segregation_actor_ids` at "
+        + ", ".join(offenders)
+        + " — state it (None is a fine answer when the table records no editors) so "
+        "the exemption is argued rather than inherited from a getattr default."
+    )
 
 
 def test_default_steps_config_has_segregation_enabled():

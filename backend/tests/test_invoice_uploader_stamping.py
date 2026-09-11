@@ -26,6 +26,16 @@ it was the one that did not belong: nobody *ran* the sweep, but an employee
 ``generate_one`` stamps ``actor_id or template.created_by_user_id``, so the
 sweep's invoices name a creator. That is why ``recurring_invoices.py`` is
 asserted below to pass a *value* rather than being excused here.
+
+Migration 0097 widened the rule from that one column to a **set**:
+``Invoice.segregation_actor_ids`` carries every other actor the payable's terms
+are attributable to, because a recurring template can be shaped by its author
+*and* by whoever later repointed its vendor and amount. That column is **not**
+required at every construction site — unlike ``uploaded_by_id`` it has exactly
+one possible source, a template behind the invoice, and every other path has no
+second actor to name, so demanding the kwarg there would be noise with no
+safety in it. ``recurring_invoices.py`` is the site where omitting it *would*
+silently drop a real implicated actor, so that one site is pinned below.
 """
 
 from __future__ import annotations
@@ -256,4 +266,45 @@ def test_employee_paths_stamp_a_real_actor(module: str):
         assert not _is_literal_none(value), (
             f"{rel}:{lineno} hardcodes uploaded_by_id=None on a path an employee "
             "reaches — the creator would be able to approve their own invoice"
+        )
+
+
+def _kwarg(call: ast.Call, name: str) -> ast.expr | None:
+    for kw in call.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
+def test_the_recurring_generator_stamps_the_implicated_actor_set():
+    """``generate_one`` is the only writer of ``Invoice.segregation_actor_ids``.
+
+    Segregation of duties keys on the uploader **plus** that set
+    (``approval_chain.violates_segregation``), and the set is how a material
+    editor of someone else's recurring template is kept from approving the
+    invoice it raises. Drop the kwarg and nothing fails loudly: the column reads
+    NULL, the predicate reads "nobody beyond the uploader", and the editor can
+    approve again — exactly the silent regression the uploader guard above
+    exists to prevent, so this one site is pinned too.
+
+    Only this site. Every other construction path has no template behind it and
+    therefore no second actor to name; requiring the kwarg there would add a
+    ``None`` to six call sites and guard nothing.
+    """
+    sites = [
+        (rel, ln, call)
+        for rel, ln, call in _construction_sites()
+        if rel == "app/services/recurring_invoices.py"
+    ]
+    assert sites, "no Invoice construction site found in app/services/recurring_invoices.py"
+    for rel, lineno, call in sites:
+        value = _kwarg(call, "segregation_actor_ids")
+        assert value is not None, (
+            f"{rel}:{lineno} does not pass `segregation_actor_ids` — a material editor "
+            "of the template would no longer be refused the approval"
+        )
+        assert not _is_literal_none(value), (
+            f"{rel}:{lineno} hardcodes `segregation_actor_ids=None`, which discards the "
+            "template's author and every material editor. Pass "
+            "`implicated_actor_ids(template, uploader_id=...)`."
         )
