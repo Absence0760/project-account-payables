@@ -58,7 +58,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 
 | Control | Status | Where it lives |
 |---|---|---|
-| Password complexity + storage (bcrypt_sha256) | Done | `backend/app/utils/passwords.py` — single shared `pwd_context` uses `bcrypt_sha256` (SHA-256 pre-hash → bcrypt) to side-step bcrypt's 72-byte truncation. Legacy `$2b$` hashes still verify via the schemes list. |
+| Password complexity + storage (bcrypt_sha256) | Done | `backend/app/utils/passwords.py` — single shared `pwd_context` implements `bcrypt_sha256` (HMAC-SHA256 pre-hash → bcrypt) to side-step bcrypt's 72-byte truncation; no passlib (`docs/decisions.md` §151). Legacy `$2b$` and v1 hashes still verify. Digest compatibility: `backend/tests/test_bcrypt_sha256_compat.py`. |
 | Cross-tenant guard (JWT-org vs X-Tenant-Slug) | Done | `backend/app/tenant.py::get_tenant` — refuses to resolve the tenant when the employee JWT's `org` claim doesn't match the header. Tests: `backend/tests/test_tenant_isolation.py` + `frontend/tests-e2e/auth/tenant-isolation.spec.ts`. |
 | MFA support (TOTP + email backup) | Done | `backend/app/services/mfa.py` |
 | MFA enforcement (org-level toggle) | Done | `Organization.settings.mfa.required` |
