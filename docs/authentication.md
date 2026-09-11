@@ -1523,7 +1523,8 @@ The matrix below is the source of truth — it mirrors the per-route `roles` gat
 | Endpoint area | Read | Write |
 |---|---|---|
 | `/admin/*` (user CRUD, role list) | admin | admin |
-| `/organization` settings + tests + SCIM token | admin | admin |
+| `/organization` — `GET` settings / branding / custom-domains / data-residency | any-authenticated (**payload projected by role**) | admin |
+| `/organization` — chat notifications, email intake, fraud-rule defaults, connection tests, SCIM token | admin | admin |
 | `/workflows` (definition CUD) | any-authenticated | admin |
 | `/exceptions` (list + resolve) | admin · ap_manager | admin · ap_manager |
 | `/vendors/{id}/verify`, `/reject`, `/sync-erp` | — | admin · ap_manager |
@@ -1542,6 +1543,8 @@ The matrix below is the source of truth — it mirrors the per-route `roles` gat
 ### "Read open to all authenticated" surfaces
 
 Invoices, workflow definitions list/active-steps, GL accounts list, and POs list are readable by every authenticated user (including pure clerks). Clerks can see the work; they just can't take action on it. This matches the frontend, where the invoice list page is visible to clerks but write controls are hidden.
+
+The org settings read is open too, but its `settings` payload is **projected by role** — `backend/app/services/org_settings_view.py::NON_ADMIN_SETTINGS` is an allow-list, so a non-admin gets `company`, `invoice_defaults`, `reporting_currency`, `payments.home_currency`, `brand` and `erp.integration_method`, and never the tenant's third-party credentials (ERP client secret, processor credentials, card API key, the SSO client secret). The `/organization` page is therefore read-only for a non-admin **and says which panels it cannot fill**, rather than rendering the platform defaults its fields fall back to; widening the projection to populate them would re-open the leak that module closed (`docs/decisions.md` §153).
 
 ### Endpoints that intentionally do **not** require a JWT
 

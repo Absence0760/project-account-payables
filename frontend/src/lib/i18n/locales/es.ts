@@ -1158,6 +1158,8 @@ export const messages = {
 	'org.chat.hint':
 		'Publica los eventos del ciclo de aprobación en un canal de Slack o Microsoft Teams mediante el webhook entrante del proveedor. Un mensaje por evento, nunca por destinatario: se suma a las notificaciones por correo y en la aplicación, no las sustituye.',
 	'org.chat.loading': 'Cargando notificaciones de chat…',
+	'org.chat.adminOnly':
+		'Solo un administrador puede ver o cambiar la configuración de notificaciones de chat.',
 	'org.chat.enabled': 'Enviar eventos de aprobación al chat',
 	'org.chat.provider': 'Proveedor',
 	'org.chat.events': 'Eventos',
@@ -1191,6 +1193,8 @@ export const messages = {
 	'org.chat.webhook.toast.empty': 'Pega primero la URL del webhook entrante',
 	'org.readOnly.banner':
 		'Está viendo la configuración de la organización en modo de solo lectura. Solo un administrador puede cambiarla, por lo que todos los campos y botones están desactivados.',
+	'org.readOnly.sectionAdminOnly':
+		'Solo un administrador puede ver esta sección. Su configuración no se envía a otros roles, por lo que los campos mostrarían los valores predeterminados de la plataforma en lugar de la configuración real de esta organización.',
 	'org.section.emailIntake': 'Recepción por correo',
 	'org.emailIntake.hint':
 		'Los proveedores envían facturas por correo directamente a su cola de cuentas por pagar. Cada PDF, imagen o XML de factura electrónica adjunto a un mensaje enviado a su dirección de recepción se convierte en una factura y pasa por extracción y aprobación igual que una carga — nadie tiene que abrir la aplicación para registrarla.',

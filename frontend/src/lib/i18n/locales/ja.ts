@@ -1142,6 +1142,8 @@ export const messages = {
 	'org.chat.hint':
 		'承認ライフサイクルのイベントを、各プロバイダーの受信 Webhook 経由で Slack または Microsoft Teams のチャンネルに投稿します。投稿は受信者ごとではなくイベントごとに 1 回です。メールおよびアプリ内通知の代わりではなく、それらに加えて送信されます。',
 	'org.chat.loading': 'チャット通知を読み込んでいます…',
+	'org.chat.adminOnly':
+		'チャット通知の設定を表示・変更できるのは管理者だけです。',
 	'org.chat.enabled': '承認イベントをチャットに送信する',
 	'org.chat.provider': 'プロバイダー',
 	'org.chat.events': 'イベント',
@@ -1175,6 +1177,8 @@ export const messages = {
 	'org.chat.webhook.toast.empty': 'まず受信 Webhook の URL を貼り付けてください',
 	'org.readOnly.banner':
 		'組織設定を読み取り専用モードで表示しています。変更できるのは管理者だけのため、このページのすべての入力欄とボタンは無効になっています。',
+	'org.readOnly.sectionAdminOnly':
+		'このセクションを表示できるのは管理者だけです。ここの設定は他のロールには送信されないため、入力欄にはこの組織の実際の構成ではなくプラットフォームの既定値が表示されてしまいます。',
 	'org.section.emailIntake': 'メール受信',
 	'org.emailIntake.hint':
 		'仕入先がメールで請求書を直接 AP キューへ送れます。受信アドレス宛のメールに添付された PDF・画像・電子請求書 XML はそれぞれ請求書となり、アップロードと同じように抽出と承認を通ります。誰もアプリを開いて登録する必要はありません。',

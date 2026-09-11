@@ -1230,6 +1230,8 @@ export const en = {
 	'org.chat.hint':
 		'Post approval-lifecycle events to a Slack or Microsoft Teams channel via that provider’s incoming webhook. One post per event, never per recipient — this is in addition to email and in-app notifications, not instead of them.',
 	'org.chat.loading': 'Loading chat notifications…',
+	'org.chat.adminOnly':
+		'Only an administrator can see or change the chat notification settings.',
 	'org.chat.enabled': 'Send approval events to chat',
 	'org.chat.provider': 'Provider',
 	'org.chat.events': 'Events',
@@ -1263,6 +1265,8 @@ export const en = {
 	'org.chat.webhook.toast.empty': 'Paste the incoming-webhook URL first',
 	'org.readOnly.banner':
 		'You are viewing organization settings in read-only mode. Only an administrator can change them, so every field and button here is disabled.',
+	'org.readOnly.sectionAdminOnly':
+		'Only an administrator can see this section. Its settings are not sent to other roles, so the fields here would read as platform defaults rather than this organization’s own configuration.',
 	'org.section.emailIntake': 'Email Intake',
 	'org.emailIntake.hint':
 		'Vendors email invoices straight into your AP queue. Every PDF, image or e-invoice XML attached to a message sent to your intake address becomes an invoice and goes through extraction and approval exactly like an upload — nobody has to open the app to file it.',
