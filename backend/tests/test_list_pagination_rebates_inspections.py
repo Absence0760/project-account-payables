@@ -221,13 +221,15 @@ async def _seed_receipt(mk, org_id, *, gr_number: str) -> uuid.UUID:
         return gr.id
 
 
-async def _seed_inspection(mk, org_id, *, number: str, gr_id: uuid.UUID | None):
+async def _seed_inspection(
+    mk, org_id, *, number: str, gr_id: uuid.UUID | None, result: str = "pass"
+):
     async with mk() as s:
         s.add(
             QualityInspection(
                 inspection_number=number,
                 gr_id=gr_id,
-                result="pass",
+                result=result,
                 organization_id=org_id,
             )
         )
@@ -334,3 +336,55 @@ async def test_the_inspection_page_size_is_bounded(realdb):
     async with realdb.client(key=TENANT, role="admin") as c:
         resp = await c.get("/api/inspections?page_size=5000")
     assert resp.status_code == 422
+
+
+async def test_the_inspection_list_filters_by_result(realdb):
+    """`?result=` is what the mobile screen's pass / fail / partial chips ask.
+
+    Filtering a PAGE on the client cannot be made correct — it hides every
+    matching row past the page boundary, and `total` then describes a different
+    set than the rows under it. So the predicate goes through the shared
+    `_inspection_list_filters` builder, which both the rows and the count use.
+    """
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    await _seed_inspection(mk, org_id, number="QI-R-PASS", gr_id=None, result="pass")
+    await _seed_inspection(mk, org_id, number="QI-R-FAIL-1", gr_id=None, result="fail")
+    await _seed_inspection(mk, org_id, number="QI-R-FAIL-2", gr_id=None, result="fail")
+    await _seed_inspection(mk, org_id, number="QI-R-PART", gr_id=None, result="partial")
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        failed = await c.get("/api/inspections?result=fail")
+        partial = await c.get("/api/inspections?result=partial")
+        junk = await c.get("/api/inspections?result=probably")
+
+    assert failed.status_code == 200, failed.text
+    body = failed.json()
+    assert {r["inspection_number"] for r in body["items"]} == {"QI-R-FAIL-1", "QI-R-FAIL-2"}
+    # The count narrows WITH the rows — the defect family this file exists for.
+    assert body["total"] == 2
+
+    assert {r["inspection_number"] for r in partial.json()["items"]} == {"QI-R-PART"}
+    assert partial.json()["total"] == 1
+
+    # A value outside the vocabulary is a 422, not a clean-looking empty page:
+    # an empty result would read as "no failures" for a caller that simply
+    # spelled the outcome wrong.
+    assert junk.status_code == 422
+
+
+async def test_the_inspection_result_and_receipt_filters_compose(realdb):
+    """Both predicates are in the one builder, so asking for both narrows to the
+    intersection — not whichever happened to be applied last."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    mine = await _seed_receipt(mk, org_id, gr_number="GR-COMPOSE")
+    await _seed_inspection(mk, org_id, number="QI-C-MINE-FAIL", gr_id=mine, result="fail")
+    await _seed_inspection(mk, org_id, number="QI-C-MINE-PASS", gr_id=mine, result="pass")
+    await _seed_inspection(mk, org_id, number="QI-C-OTHER-FAIL", gr_id=None, result="fail")
+
+    async with realdb.client(key=TENANT, role="admin") as c:
+        resp = await c.get(f"/api/inspections?gr_id={mine}&result=fail")
+    body = resp.json()
+    assert {r["inspection_number"] for r in body["items"]} == {"QI-C-MINE-FAIL"}
+    assert body["total"] == 1
