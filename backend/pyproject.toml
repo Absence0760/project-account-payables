@@ -20,22 +20,17 @@ dependencies = [
     "pydantic-settings>=2.15.0,<3",
     "python-multipart>=0.0.32,<1",
     "boto3>=1.43.89,<2",
-    "passlib[bcrypt]>=1.7.4,<2",
-    # bcrypt held at 4.x: passlib 1.7.4 reads `bcrypt.__about__.__version__`
-    # which was removed in bcrypt 5.0, and 5.0's strict >72-byte handling
-    # collides with passlib's bcrypt-detection probe. Lift only when passlib
-    # ships a fix or the codebase migrates off passlib for bcrypt_sha256.
-    #
-    # Dependabot proposed >=5.0.0,<5.1 in #392 and CI reproduced the second
-    # half of that exactly: passlib's `_finalize_backend_mixin` probes for a
-    # historical wrap bug by hashing a >72-byte secret, bcrypt 5.0 raises
-    # `ValueError` where 4.x truncated, and every module importing
-    # `app.utils.passwords` died at COLLECTION — 29 collection errors, all
-    # four backend shards red. The range is `<4.1`, not `<5`, because 4.1
-    # also carries the strict-length change. `.github/dependabot.yml` now
-    # ignores bcrypt so this does not arrive again each Monday; the comment
-    # alone could not prevent it, since Dependabot reads ranges, not prose.
-    "bcrypt>=4.0.1,<4.1",
+    # Password hashing, called directly — there is no passlib here any more.
+    # passlib 1.7.4 (its last release, 2020) held this floor at 4.0.1 for two
+    # years: it reads `bcrypt.__about__.__version__`, deleted in bcrypt 5.0, and
+    # its backend probe hashes a >72-byte secret, which bcrypt raises on from
+    # 4.1. Both fire at import, so PR #392's bump to 5.0 took out every module
+    # that touches `app.utils.passwords` — 29 collection errors across all four
+    # shards. `app/utils/passwords.py` now implements the `bcrypt_sha256`
+    # scheme itself (same digest, byte for byte; `tests/test_bcrypt_sha256_compat.py`
+    # pins it against hashes passlib produced), so the floor follows upstream
+    # again. See `docs/decisions.md` §151.
+    "bcrypt>=5.0.0,<6",
     "redis>=8.1.0,<9",
     "python-jose[cryptography]>=3.5.0,<4",
     "httpx>=0.28.1,<1",
@@ -125,9 +120,7 @@ exclude = ["*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-filterwarnings = [
-    # passlib (1.7.4) still imports the deprecated stdlib `crypt` module
-    # on every import. We pin passlib via deps; nothing we can do until
-    # upstream releases a fix (tracked at https://foss.heptapod.net/python-libs/passlib/-/issues/188).
-    "ignore:'crypt' is deprecated:DeprecationWarning",
-]
+# No `filterwarnings` entries. The only one this project ever needed suppressed
+# passlib's import of the deprecated stdlib `crypt` module; dropping passlib
+# (`docs/decisions.md` §151) retired it. Keep the list absent rather than empty
+# so a future entry has to justify itself.
